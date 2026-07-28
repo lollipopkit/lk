@@ -402,9 +402,38 @@ impl TypeChecker {
                 None,
             ));
         }
+        let mut callback_result: Option<Type> = None;
         for (index, ((_, param_type), arg)) in sig.params.iter().zip(args.iter()).enumerate() {
-            let arg_type = self.check_expr(arg)?;
+            // A callback applied to each element: its first parameter *is* the
+            // element type. Handed to the closure before its body is read, so
+            // the body is checked against it — `["a"].map(|s| s.bogus())` is a
+            // missing method rather than an unknown one.
+            let arg_type = match (sig.elementwise_callback == Some(index), arg.as_ref()) {
+                (true, Expr::Closure { params, body }) => {
+                    self.check_closure(params, body, core::slice::from_ref(&sig.elem))?
+                }
+                _ => self.check_expr(arg)?,
+            };
+            if sig.elementwise_callback == Some(index)
+                && let Type::Function {
+                    params, return_type, ..
+                } = &self.resolve_aliases(&arg_type)
+            {
+                if let Some(first) = params.first() {
+                    self.inference_engine.add_constraint(first.clone(), sig.elem.clone());
+                }
+                callback_result = Some(self.resolve_aliases(return_type));
+            }
             self.check_argument(param_type, &arg_type, index, arg)?;
+        }
+        // `map`'s element type is the callback's return type, instantiated
+        // here rather than declared in the table — the table cannot name it,
+        // and `List<Any>` is what it said until a call site could.
+        if callback_result.is_some()
+            && let Some(instantiated) =
+                crate::typ::builtin_method_signature_with(&resolved_receiver, method, callback_result)
+        {
+            return Ok(Some(instantiated.return_type));
         }
         Ok(Some(sig.return_type))
     }

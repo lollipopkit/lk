@@ -443,6 +443,11 @@ impl<'a> Parser<'a> {
                 | Token::UInt(_)
                 | Token::Float(_)
                 | Token::Str(_)
+                // A template string is a string. Leaving it out made `|x|
+                // "n=${x}"` a syntax error while `|x| "n"` parsed — the
+                // interpolation, not the closure, was what the parser objected
+                // to, and it is the more common of the two by far.
+                | Token::TemplateString(_)
                 | Token::Id(_)
                 | Token::LBracket
                 | Token::LBrace

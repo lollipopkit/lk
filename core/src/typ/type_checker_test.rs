@@ -107,4 +107,51 @@ mod tests {
         let err = check_program("const A = A + 1;\n").expect_err("must be reported");
         assert!(err.to_string().contains("`A` is used before it is defined"), "{err}");
     }
+
+    /// `map`'s element type is the callback's, decided at the call site.
+    ///
+    /// The table cannot name it — there is no type there to name until someone
+    /// passes a function — so it declared `List<Any>` and every `map` result
+    /// was unchecked from then on.
+    #[test]
+    fn map_takes_its_element_type_from_the_callback() {
+        assert!(check_program("let xs = [1, 2]; let bad: String = xs.map(|x| x * 2)[0];").is_err());
+        assert!(check_program("let xs = [1, 2]; let ok: Int = xs.map(|x| x * 2)[0];").is_ok());
+        // Including when the callback changes the type.
+        assert!(check_program(r#"let xs = [1, 2]; let bad: Int = xs.map(|x| "n=${x}")[0];"#).is_err());
+        assert!(check_program(r#"let xs = [1, 2]; let ok: String = xs.map(|x| "n=${x}")[0];"#).is_ok());
+        // And when it is a named function rather than a literal.
+        assert!(
+            check_program("fn twice(x: Int) -> Int { return x * 2; } let bad: String = [1].map(twice)[0];").is_err()
+        );
+    }
+
+    /// A callback's parameter is the receiver's element type, known *before*
+    /// its body is checked.
+    ///
+    /// Adding it afterwards as a constraint types the result but checks
+    /// nothing: the body was already read with the parameter still free, so a
+    /// method that does not exist on the element type went unnoticed.
+    #[test]
+    fn a_callback_parameter_is_the_element_type_while_its_body_is_checked() {
+        assert!(check_program(r#"let ws = ["a"]; let n: Int = ws.map(|s| s.len())[0];"#).is_ok());
+        let error =
+            check_program(r#"let ws = ["a"]; let bad = ws.map(|s| s.bogus());"#).expect_err("a String has no `bogus`");
+        assert!(
+            format!("{error:#}").contains("String has no method 'bogus'"),
+            "unexpected error: {error:#}"
+        );
+        // `filter` keeps the element type, so its predicate sees it too.
+        assert!(check_program(r#"let ws = ["a"]; let kept: List<String> = ws.filter(|s| s.len() > 0);"#).is_ok());
+    }
+
+    /// A template string is a string, closure body included.
+    ///
+    /// `|x| "n=${x}"` was a syntax error while `|x| "n"` parsed: the token that
+    /// starts an interpolated string was missing from the set a closure body
+    /// may begin with.
+    #[test]
+    fn a_closure_body_may_be_a_template_string() {
+        assert!(check_program(r#"let f = |x| "n=${x}"; let s: String = f(1);"#).is_ok());
+    }
 }

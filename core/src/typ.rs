@@ -26,7 +26,7 @@ mod type_system_test;
 pub use crate::val::{NumericClass, NumericHierarchy};
 pub use builtin_method_sig::{
     BUILTIN_METHODS, BuiltinMethodSig, BuiltinParam, BuiltinReceiverKind, ResolvedBuiltinMethod,
-    builtin_method_signature, builtin_methods_for, receiver_kind, slice_of,
+    builtin_method_signature, builtin_method_signature_with, builtin_methods_for, receiver_kind, slice_of,
 };
 #[cfg(feature = "std")]
 pub use imports::seed_imported_signatures;

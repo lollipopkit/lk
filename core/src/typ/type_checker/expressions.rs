@@ -806,31 +806,7 @@ impl TypeChecker {
                 }
                 Ok(Type::List(Box::new(Type::Int)))
             }
-            Expr::Closure { params, body } => {
-                // Infer closure as a function type with param type variables and an inferred return
-                let mut param_types = Vec::with_capacity(params.len());
-                for _ in params {
-                    param_types.push(self.inference_engine.fresh_type_var());
-                }
-                // Body type is inferred by checking the body expression. Its own
-                // return frame: a `return` inside a closure body belongs to the
-                // closure, and must not be collected as a return of the enclosing
-                // function (whose declared type it would then have to satisfy).
-                self.push_return_frame();
-                // Like a named function's body: a closure runs when it is
-                // called, which is after the top level has finished, so it may
-                // read a binding declared below it.
-                let pending = self.suspend_pending_top_level();
-                let ret_type = self.check_expr(body);
-                self.restore_pending_top_level(pending);
-                let _ = self.pop_return_frame();
-                let ret_type = ret_type?;
-                Ok(Type::Function {
-                    params: param_types,
-                    named_params: Vec::new(),
-                    return_type: Box::new(ret_type),
-                })
-            }
+            Expr::Closure { params, body } => self.check_closure(params, body, &[]),
             Expr::Match { value, arms } => {
                 // Check the matched value type
                 let value_type = self.check_expr(value)?;
@@ -1606,6 +1582,54 @@ impl TypeChecker {
                 None,
             )),
         }
+    }
+
+    /// A closure's type: its parameters, and the type its body has.
+    ///
+    /// `expected_params` is what the *call site* already knows about them —
+    /// `xs.map(|x| …)` on a `List<String>` knows `x` is a `String` before the
+    /// body is read. Without that, the body is checked with `x` still a free
+    /// variable, so `x.bogus()` is unknowable rather than wrong, and the
+    /// element type only arrives afterwards as a constraint, too late to have
+    /// checked anything. Anything not supplied stays a fresh variable, which is
+    /// every closure that is not an argument to a method that knows better.
+    pub(super) fn check_closure(&mut self, params: &[String], body: &Expr, expected_params: &[Type]) -> Result<Type> {
+        let param_types: Vec<Type> = params
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                expected_params
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| self.inference_engine.fresh_type_var())
+            })
+            .collect();
+
+        // The parameters are in scope for the body — which is the point of
+        // knowing their types.
+        self.push_scope();
+        for (name, ty) in params.iter().zip(param_types.iter()) {
+            self.add_local_type(name.clone(), ty.clone());
+        }
+        // Body type is inferred by checking the body expression. Its own
+        // return frame: a `return` inside a closure body belongs to the
+        // closure, and must not be collected as a return of the enclosing
+        // function (whose declared type it would then have to satisfy).
+        self.push_return_frame();
+        // Like a named function's body: a closure runs when it is called,
+        // which is after the top level has finished, so it may read a binding
+        // declared below it.
+        let pending = self.suspend_pending_top_level();
+        let ret_type = self.check_expr(body);
+        self.restore_pending_top_level(pending);
+        let _ = self.pop_return_frame();
+        self.pop_scope();
+        let ret_type = ret_type?;
+        Ok(Type::Function {
+            params: param_types,
+            named_params: Vec::new(),
+            return_type: Box::new(ret_type),
+        })
     }
 
     fn check_builtin_container_method(

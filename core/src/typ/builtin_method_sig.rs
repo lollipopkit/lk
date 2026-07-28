@@ -85,6 +85,13 @@ pub struct BuiltinMethodSig {
     pub returns: &'static str,
     /// One line, shown on hover and in completion.
     pub docs: &'static str,
+    /// Which parameter, if any, is a callback applied to each element — its
+    /// first parameter is the receiver's element type.
+    ///
+    /// This is what lets `xs.map(|x| …)` type `x` at all: the closure arrives
+    /// with a fresh variable for its parameter, and nothing but the receiver
+    /// can say what it holds.
+    pub elementwise_callback: Option<usize>,
 }
 
 use BuiltinReceiverKind::{List, Map, Set, Slice, Str};
@@ -102,6 +109,26 @@ const fn m(
         params,
         returns,
         docs,
+        elementwise_callback: None,
+    }
+}
+
+/// [`m`] for a method whose parameter `callback` is applied to each element.
+const fn hof(
+    receiver: BuiltinReceiverKind,
+    name: &'static str,
+    params: &'static [BuiltinParam],
+    returns: &'static str,
+    docs: &'static str,
+    callback: usize,
+) -> BuiltinMethodSig {
+    BuiltinMethodSig {
+        receiver,
+        name,
+        params,
+        returns,
+        docs,
+        elementwise_callback: Some(callback),
     }
 }
 
@@ -228,22 +255,25 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Slice<Elem>",
         "A window over `[start, end)` — a view, not a copy (`to_list` copies)",
     ),
-    // The higher-order three. Their result element type is the callback's
-    // return type, which nothing here can name until a call site instantiates
-    // it, so `map` says `List<Any>` rather than guessing.
-    m(
+    // The higher-order three. `map`'s result element type is the callback's
+    // return type, which nothing here can name — `CallbackResult` is the
+    // placeholder the *call site* fills in, and `Any` is what it means when the
+    // argument is not a function literal the checker can read.
+    hof(
         List,
         "map",
         &[p("transform", "Fn")],
-        "List<Any>",
+        "List<CallbackResult>",
         "Each element through `transform`",
+        0,
     ),
-    m(
+    hof(
         List,
         "filter",
         &[p("predicate", "Fn")],
         "Self",
         "The elements `predicate` keeps (only nil and false drop one)",
+        0,
     ),
     m(
         List,
@@ -424,6 +454,11 @@ pub struct ResolvedBuiltinMethod {
     pub required: usize,
     pub return_type: Type,
     pub docs: &'static str,
+    /// See [`BuiltinMethodSig::elementwise_callback`].
+    pub elementwise_callback: Option<usize>,
+    /// The receiver's element type, for a caller that needs to constrain a
+    /// callback's parameter against it.
+    pub elem: Type,
 }
 
 /// What the placeholders stand for, given a concrete receiver.
@@ -433,6 +468,8 @@ struct Bindings {
     key: Type,
     val: Type,
     receiver: Type,
+    /// What the call site says a callback parameter returns, if it could tell.
+    callback_result: Option<Type>,
 }
 
 /// The declared signature of `method` on `receiver`, or `None` when the
@@ -442,7 +479,21 @@ struct Bindings {
 /// type is still a variable, or a user type with a trait method of the same
 /// name, must be left to the rest of the checker.
 pub fn builtin_method_signature(receiver: &Type, method: &str) -> Option<ResolvedBuiltinMethod> {
-    let bindings = bind(receiver)?;
+    builtin_method_signature_with(receiver, method, None)
+}
+
+/// [`builtin_method_signature`] with the call site's answer for
+/// `CallbackResult` — the type the callback argument returns.
+///
+/// `None` means the call site could not tell, and the placeholder widens to
+/// `Any`, which is what every `map` used to be.
+pub fn builtin_method_signature_with(
+    receiver: &Type,
+    method: &str,
+    callback_result: Option<Type>,
+) -> Option<ResolvedBuiltinMethod> {
+    let mut bindings = bind(receiver)?;
+    bindings.callback_result = callback_result;
     let declared = BUILTIN_METHODS
         .iter()
         .find(|sig| sig.receiver == bindings.kind && sig.name == method)?;
@@ -456,6 +507,8 @@ pub fn builtin_method_signature(receiver: &Type, method: &str) -> Option<Resolve
         required: declared.params.iter().filter(|param| !param.optional).count(),
         return_type: resolve(declared.returns, &bindings),
         docs: declared.docs,
+        elementwise_callback: declared.elementwise_callback,
+        elem: bindings.elem.clone(),
     })
 }
 
@@ -505,6 +558,7 @@ fn bind(receiver: &Type) -> Option<Bindings> {
         key,
         val,
         receiver: receiver.clone(),
+        callback_result: None,
     })
 }
 
@@ -525,6 +579,7 @@ fn substitute(ty: &Type, bindings: &Bindings) -> Type {
             "Key" => bindings.key.clone(),
             "Val" => bindings.val.clone(),
             "Self" => bindings.receiver.clone(),
+            "CallbackResult" => bindings.callback_result.clone().unwrap_or(Type::Any),
             // Not a placeholder: hand it to the same table the standard
             // library's declarations go through, so `Fn` and `Bytes` mean here
             // what they mean there rather than becoming a named type nothing
