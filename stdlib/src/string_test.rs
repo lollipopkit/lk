@@ -171,7 +171,10 @@ mod tests {
         // was the module form's own convention (it raised) while the method
         // form clamped, so the two disagreed about the same call.
         let result = execute_string("use string; return string.substring(\"abc\", 10, 1);")?;
-        assert_eq!(result.first_return(), &RuntimeVal::ShortStr(ShortStr::new("").expect("empty")));
+        assert_eq!(
+            result.first_return(),
+            &RuntimeVal::ShortStr(ShortStr::new("").expect("empty"))
+        );
 
         Ok(())
     }
