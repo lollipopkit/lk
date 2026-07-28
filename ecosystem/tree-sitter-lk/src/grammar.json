@@ -2160,6 +2160,14 @@
         },
         {
           "type": "STRING",
+          "value": "Number"
+        },
+        {
+          "type": "STRING",
+          "value": "f64"
+        },
+        {
+          "type": "STRING",
           "value": "i8"
         },
         {

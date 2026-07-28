@@ -5356,6 +5356,10 @@
     "named": false
   },
   {
+    "type": "Number",
+    "named": false
+  },
+  {
     "type": "String",
     "named": false
   },
@@ -5414,6 +5418,10 @@
   },
   {
     "type": "export",
+    "named": false
+  },
+  {
+    "type": "f64",
     "named": false
   },
   {

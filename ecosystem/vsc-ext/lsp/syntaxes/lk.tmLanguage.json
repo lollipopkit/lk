@@ -501,11 +501,11 @@
       "patterns": [
         {
           "name": "support.type.primitive.lk",
-          "match": "\\b(Int|Float|String|Bool|Nil|Any|List|Map|Set|Tuple|Task|Channel|Box|Boxed)\\b"
+          "match": "\\b(Int|Float|Number|String|Bool|Nil|Any|List|Map|Set|Tuple|Task|Channel|Box|Boxed)\\b"
         },
         {
           "name": "support.type.primitive.lk",
-          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize)\\b"
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f64)\\b"
         }
       ]
     },

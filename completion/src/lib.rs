@@ -1218,6 +1218,11 @@ const OPERATORS: &[&str] = &["==", "!=", "<=", ">=", "&&", "||", "in", "<-", "??
 const TYPES: &[&str] = &[
     "Int",
     "Float",
+    // `Int | Float`, and the second spellings of each. A completion list is a
+    // claim about what can be written down.
+    "Number",
+    "i64",
+    "f64",
     "Bool",
     "String",
     "Str",

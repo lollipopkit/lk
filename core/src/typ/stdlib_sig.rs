@@ -157,10 +157,13 @@ fn resolve(declared: &StdlibCallableSig) -> ResolvedStdlibSig {
 /// for. Spelled out rather than inferred, so that adding one is a decision
 /// somebody makes rather than a silent widening to `Any`.
 ///
-/// `Number` is the only true alias — the rest name runtime handles that are
-/// opaque to the type system.
+/// These all name runtime handles that are opaque to the type system. `Number`
+/// used to be here too, as the one true alias; it is a type the language can
+/// write now, so `Type::parse` answers it and this table does not.
 const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
-    ("Number", AliasTarget::IntOrFloat),
+    // `Number` is not here any more: the language parses it now
+    // (`NUMBER_TYPE_NAME`), so `Type::parse` below answers it and this table
+    // does not need a second copy of the answer.
     // Runtime handles. The checker cannot see *into* one, but it can tell them
     // apart from each other and from everything else, which is the part that
     // catches `bytes.slice(some_string, …)`. They were `Any` until now, so a
@@ -183,7 +186,6 @@ const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
 
 #[derive(Clone, Copy)]
 enum AliasTarget {
-    IntOrFloat,
     /// A named type with no structure the checker can look inside.
     Handle,
     TaskOfAny,
@@ -230,7 +232,6 @@ pub fn type_from_text(text: &str) -> Type {
 
     if let Some((name, target)) = DOCUMENTED_ALIASES.iter().find(|(name, _)| *name == text) {
         return match target {
-            AliasTarget::IntOrFloat => Type::Union(vec![Type::Int, Type::Float]),
             AliasTarget::Handle => Type::Named((*name).to_string()),
             AliasTarget::TaskOfAny => Type::Task(Box::new(Type::Any)),
             AliasTarget::ChannelOfAny => Type::Channel(Box::new(Type::Any)),

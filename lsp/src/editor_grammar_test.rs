@@ -12,7 +12,7 @@
 
 #[cfg(test)]
 mod tests {
-    use lk_core::val::{IntKind, CONTAINER_TYPE_NAMES, PRIMITIVE_TYPES};
+    use lk_core::val::{IntKind, CONTAINER_TYPE_NAMES, NUMBER_TYPE_NAME, PRIMITIVE_TYPES, TYPE_SPELLINGS};
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
@@ -41,6 +41,12 @@ mod tests {
             .map(|(name, _)| (*name).to_string())
             .chain(CONTAINER_TYPE_NAMES.iter().map(|name| (*name).to_string()))
             .chain(IntKind::ALL.iter().map(|kind| kind.name().to_string()))
+            // Second spellings are types too, as far as a reader and a
+            // highlighter are concerned: `f64` names the same type as `Float`,
+            // and leaving it out of the grammars would render it as an
+            // identifier.
+            .chain(TYPE_SPELLINGS.iter().map(|(name, _)| (*name).to_string()))
+            .chain(core::iter::once(NUMBER_TYPE_NAME.to_string()))
             .collect()
     }
 

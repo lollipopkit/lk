@@ -452,6 +452,11 @@ module.exports = grammar({
     // `type_identifier`, which still highlights as a type.
     primitive_type: $ => choice(
       'Int', 'Float', 'String', 'Bool', 'Nil', 'Any',
+      // `Number` is `Int | Float`; `i64`/`f64` are second spellings of
+      // `Int`/`Float` — see `TYPE_SPELLINGS` in lk-values. One type, two
+      // names: the widthed one for code that is about widths, the plain one
+      // for code that is not.
+      'Number', 'f64',
       'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'isize', 'usize',
     ),
 

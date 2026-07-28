@@ -449,6 +449,28 @@ pub const PRIMITIVE_TYPES: &[(&str, Type)] = &[
     ("Any", Type::Any),
 ];
 
+/// Second spellings of types that already exist.
+///
+/// A language that wants to be written down to machine code without ambiguity
+/// needs a name that says the width — and one that does not, for the code that
+/// is not about widths. `Int` and `i64` are that pair: one type, two spellings,
+/// so a driver's `i64` and a front end's `Int` are the same value and pass
+/// through each other's functions without a cast.
+///
+/// They are *aliases*, not two types that happen to convert. Two convertible
+/// types would be more ambiguity, not less: the reader would have to know which
+/// one a value is to know what it does.
+///
+/// `isize`/`usize` are deliberately not here. Pointer width is the whole reason
+/// those names exist, and equating either with a fixed width is the mistake
+/// this table exists to avoid.
+pub const TYPE_SPELLINGS: &[(&str, Type)] = &[("i64", Type::Int), ("f64", Type::Float)];
+
+/// `Number` — `Int | Float`, and the one spelling that cannot live in
+/// [`TYPE_SPELLINGS`] because a `const` cannot build the `Vec` a union needs.
+/// [`Type::parse`] resolves it; this is here so the name has one home.
+pub const NUMBER_TYPE_NAME: &str = "Number";
+
 /// Builtin types that take parameters: `List<T>`, `Map<K, V>`, `Set<T>`, …
 ///
 /// Names only. What each does with its parameters is `Type::parse`'s business,
@@ -463,6 +485,20 @@ impl Type {
         // Handle primitive types
         if let Some((_, ty)) = PRIMITIVE_TYPES.iter().find(|(name, _)| *name == s) {
             return Some(ty.clone());
+        }
+
+        // A second spelling of one of them (`i64` is `Int`), checked before
+        // `IntKind` so that `i64` does not become a *machine* int distinct from
+        // the `Int` it is a spelling of.
+        if let Some((_, ty)) = TYPE_SPELLINGS.iter().find(|(name, _)| *name == s) {
+            return Some(ty.clone());
+        }
+
+        // `Number` is what the standard library's declarations have always
+        // called `Int | Float`; until now it was a name the documentation could
+        // write and the language could not.
+        if s == NUMBER_TYPE_NAME {
+            return Some(Type::Union(vec![Type::Int, Type::Float]));
         }
 
         if let Some(kind) = IntKind::parse(s) {
@@ -1132,6 +1168,7 @@ fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
 mod tests {
     use super::{IntKind, ShortStr, ShortStrOrStr, Type};
     use alloc::boxed::Box;
+    use alloc::vec;
 
     #[test]
     fn short_str_concat_int_falls_back_when_prefix_fills_inline_buffer() {
@@ -1160,12 +1197,16 @@ mod tests {
             IntKind::Usize,
         ] {
             assert_eq!(IntKind::parse(kind.name()), Some(kind), "{}", kind.name());
-            assert_eq!(
-                Type::parse(kind.name()),
-                Some(Type::MachineInt(kind)),
-                "{}",
-                kind.name()
-            );
+            // `i64` is the exception, and deliberately: it is a second spelling
+            // of `Int` rather than a machine int of its own, so that a driver's
+            // `i64` and a front end's `Int` are one type instead of two that
+            // need a cast between them (see `TYPE_SPELLINGS`).
+            let expected = if kind == IntKind::I64 {
+                Type::Int
+            } else {
+                Type::MachineInt(kind)
+            };
+            assert_eq!(Type::parse(kind.name()), Some(expected), "{}", kind.name());
             assert_eq!(Type::MachineInt(kind).display(), kind.name());
         }
     }
@@ -1251,5 +1292,39 @@ mod tests {
         let u8_ = Type::MachineInt(IntKind::U8);
         assert!(u8_.is_assignable_to(&Type::Any));
         assert!(Type::Any.is_assignable_to(&u8_));
+    }
+
+    /// One type, two spellings — so a driver's `i64` and a front end's `Int`
+    /// are the same value and pass through each other's functions.
+    ///
+    /// Two *convertible* types would be more ambiguity, not less: a reader
+    /// would have to know which one a value is to know what it does.
+    #[test]
+    fn a_widthed_spelling_and_a_plain_one_name_the_same_type() {
+        assert_eq!(Type::parse("i64"), Some(Type::Int));
+        assert_eq!(Type::parse("f64"), Some(Type::Float));
+        assert!(Type::Int.is_assignable_to(&Type::parse("i64").unwrap()));
+        assert!(Type::parse("i64").unwrap().is_assignable_to(&Type::Int));
+    }
+
+    /// `isize` is deliberately *not* one of them.
+    ///
+    /// Pointer width is the entire reason that name exists, and equating it
+    /// with a fixed width would put the language's plain integer at the mercy
+    /// of the target: on `thumbv7em-none-eabi` it is 32 bits while the VM's
+    /// `RuntimeVal::Int` is still an `i64`. One name, two widths.
+    #[test]
+    fn pointer_width_is_its_own_type() {
+        assert_eq!(Type::parse("isize"), Some(Type::MachineInt(IntKind::Isize)));
+        assert_eq!(Type::parse("usize"), Some(Type::MachineInt(IntKind::Usize)));
+        assert_ne!(Type::parse("isize"), Some(Type::Int));
+    }
+
+    #[test]
+    fn number_is_int_or_float() {
+        assert_eq!(Type::parse("Number"), Some(Type::Union(vec![Type::Int, Type::Float])));
+        assert!(Type::Int.is_assignable_to(&Type::parse("Number").unwrap()));
+        assert!(Type::Float.is_assignable_to(&Type::parse("Number").unwrap()));
+        assert!(!Type::String.is_assignable_to(&Type::parse("Number").unwrap()));
     }
 }
