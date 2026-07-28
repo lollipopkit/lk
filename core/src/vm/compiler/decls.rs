@@ -61,7 +61,7 @@ impl Compiler {
             };
             // The compiled body's index is the durable identity of this method;
             // the registration call below only re-encodes it as a runtime value.
-            let function_index = self.compile_impl_method_function_indexed(params, named_params, body)?;
+            let function_index = self.compile_impl_method_function_indexed(params, param_types, named_params, body)?;
             let method_type = impl_method_type(target_type, params, param_types, named_params, return_type);
             let method_type_text = method_type.display();
             decl_methods.push(crate::vm::ImplMethod {
@@ -91,6 +91,7 @@ impl Compiler {
     pub(super) fn compile_impl_method_function_indexed(
         &mut self,
         params: &[String],
+        param_types: &[Option<crate::val::Type>],
         named_params: &[crate::stmt::NamedParamDecl],
         body: &Stmt,
     ) -> Result<u32> {
@@ -100,6 +101,7 @@ impl Compiler {
             .ok_or_else(|| anyhow!("Compiler dynamic impl method index overflow"))?;
         let mut compiled = Self::compile_function_body(
             params,
+            param_types,
             named_params,
             body,
             self.function_names.clone(),

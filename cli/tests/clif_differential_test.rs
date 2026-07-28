@@ -197,6 +197,237 @@ fn clif_differential_higher_order() {
 /// is then interpolated.
 ///
 /// Marking a function VM-executed changes the type lattice, and signatures have
+/// A declared width survives a function boundary — and being inlined.
+///
+/// Every machine-integer rule is chosen from a compile-time fact about a
+/// register, and there were two places that fact was never written down: a
+/// *parameter* declared `u8`/`u64`/…, and a `let` inside a body the compiler
+/// chose to *inline*. Everything held for an annotated local and an `as` cast,
+/// which is what every earlier test and every driver that casts on entry
+/// happens to use.
+///
+/// So `fn f(a: u8) -> u8 { return a + 1; }` answered 256, `a * 2` on 200
+/// answered 400, and `fn f(a: u64, b: u64) { return a > b; }` compared two
+/// addresses as if they were signed. A helper taking a register value is the
+/// ordinary shape of driver code.
+///
+/// Absolute, and it has to be: the fact is missing in the *compiler*, so both
+/// backends are handed the same wrong instruction and agree with each other
+/// perfectly.
+#[test]
+fn a_declared_width_crosses_a_function_boundary() {
+    let dir = unique_tmp_dir("param_width");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "params.lk";
+    // Each helper is small enough to be inlined at the call site *and* is
+    // compiled out of line for the module, so both paths are exercised by the
+    // same source.
+    let src = "fn add_u8(a: u8) -> u8 { return a + 1; }\n\
+               fn mul_u8(a: u8) -> u8 { return a * 2; }\n\
+               fn sub_u8(a: u8) -> u8 { return a - 1; }\n\
+               fn add_i8(a: i8) -> i8 { return a + 1; }\n\
+               fn shr_u64(a: u64) -> u64 { return a >> 32; }\n\
+               fn gt_u64(a: u64, b: u64) -> Bool { return a > b; }\n\
+               fn half_u64(a: u64) -> u64 { return a / 2; }\n\
+               // A `let` inside the body, which is the half that only breaks\n\
+               // once the function is inlined.\n\
+               fn neg_u32(bits: u32) -> u32 { let zero: u32 = 0; return zero - bits; }\n\
+               println(add_u8(255 as u8));\n\
+               println(mul_u8(200 as u8));\n\
+               println(sub_u8(0 as u8));\n\
+               println(add_i8(127 as i8));\n\
+               println(shr_u64(0xFFFF800000000000 as u64));\n\
+               println(gt_u64(0x8000000000000000 as u64, 1 as u64));\n\
+               println(half_u64(0xFFFFFFFFFFFFFFFF as u64));\n\
+               println(neg_u32(0xFFFFFF80 as u32));\n";
+    let expected = concat!(
+        "0\n144\n255\n-128\n",
+        "4294934528\ntrue\n9223372036854775807\n128\n",
+    );
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        expected,
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "native compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("params"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Sizing a PCI BAR: two's complement at the register's own width.
+///
+/// `drivers/pci.lk` asks a device how large its region is the only way the bus
+/// allows — write all ones, read back, and the lowest bit the device still
+/// leaves set is the size. Turning that into a number is `-bits` at 32 bits, or
+/// equivalently `~bits + 1`, and both forms are asserted here because both are
+/// what someone writes and they must not disagree.
+///
+/// What makes it a test rather than a tautology is the width. On the `i64`
+/// carrier every one of these values has 32 high zero bits that the register
+/// never had, so a complement or a negation that runs at 64 bits answers
+/// something with no relation to a BAR size. The four cases are real region
+/// sizes, and the expected values were computed elsewhere.
+#[test]
+fn a_pci_bar_sizes_at_its_own_width() {
+    let dir = unique_tmp_dir("bar_size");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "bar.lk";
+    let src = "fn size_of(probed: u32, mask: u32) -> u32 {\n\
+               \x20   let bits = probed & mask;\n\
+               \x20   let zero: u32 = 0;\n\
+               \x20   return zero - bits;\n\
+               }\n\
+               fn size_by_complement(probed: u32, mask: u32) -> u32 {\n\
+               \x20   let bits = probed & mask;\n\
+               \x20   return (~bits) + 1;\n\
+               }\n\
+               let mem: u32 = 0xFFFFFFF0;\n\
+               let io: u32 = 0xFFFFFFFC;\n\
+               println(size_of(0xFFFFFF80 as u32, mem));\n\
+               println(size_of(0xFFFFF000 as u32, mem));\n\
+               println(size_of(0xFFFFFFE1 as u32, io));\n\
+               println(size_of(0xF0000000 as u32, mem));\n\
+               println(size_by_complement(0xFFFFFF80 as u32, mem) == size_of(0xFFFFFF80 as u32, mem));\n\
+               println(size_by_complement(0xF0000000 as u32, mem) == size_of(0xF0000000 as u32, mem));\n";
+    let expected = "128\n4096\n32\n268435456\ntrue\ntrue\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        expected,
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "native compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("bar"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A hardware descriptor, packed and unpacked, with the answers computed
+/// elsewhere.
+///
+/// This is `drivers/idt.lk`'s `set_gate` in miniature: a 64-bit handler address
+/// split across three fields that are not adjacent, the two words written, and
+/// the address rebuilt from them. Nothing else in the suite exercises that
+/// shape, and the only thing that currently notices a mistake in it is a QEMU
+/// run that triple-faults — which says the machine died, not which shift was
+/// wrong.
+///
+/// The address has bit 63 set, which is what a higher-half kernel's handler
+/// looks like and what makes the shifts *mean* something: `handler >> 32` is a
+/// logical shift because the value is a `u64`, and the same expression on an
+/// `Int` carrier would sign-extend. The two masked fields would survive that —
+/// the mask hides it — so the unmasked `>> 32` is here as well, which is the
+/// shape a driver writes to take the high half of a 64-bit BAR.
+///
+/// Expected values computed independently (Python, arbitrary-precision), not
+/// read back from this implementation.
+#[test]
+fn a_gate_descriptor_packs_and_unpacks() {
+    let dir = unique_tmp_dir("gate_pack");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "gate.lk";
+    let src = "let handler: u64 = 0xFFFF800012345678;\n\
+               let selector: u64 = 0x08;\n\
+               let dpl: u64 = 0;\n\
+               let kind: u64 = 0x8E;\n\
+               let low = (handler & 0xFFFF)\n\
+               \x20   | (selector << 16)\n\
+               \x20   | ((kind | (dpl << 5)) << 40)\n\
+               \x20   | (((handler >> 16) & 0xFFFF) << 48);\n\
+               let high = (handler >> 32) & 0xFFFFFFFF;\n\
+               println(low);\n\
+               println(high);\n\
+               let rebuilt = (low & 0xFFFF) | (((low >> 48) & 0xFFFF) << 16) | (high << 32);\n\
+               println(rebuilt);\n\
+               println(rebuilt == handler);\n\
+               println(handler >> 32);\n";
+    let expected = "1311829522123347576\n4294934528\n18446603336526616184\ntrue\n4294934528\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        expected,
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "native compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("gate"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The whole machine-integer matrix, answers written out.
 ///
 /// Six rounds of work went into this family one operator at a time — shift,

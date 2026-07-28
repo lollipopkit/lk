@@ -87,6 +87,7 @@ impl Compiler {
             if let Stmt::Function {
                 name,
                 params,
+                param_types,
                 named_params,
                 body,
                 ..
@@ -97,6 +98,7 @@ impl Compiler {
                     .ok_or_else(|| anyhow!("Compiler missing function index for `{name}`"))?;
                 let mut compiled = Self::compile_function_body(
                     params,
+                    param_types,
                     named_params,
                     body,
                     function_names.clone(),
@@ -217,6 +219,7 @@ impl Compiler {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn compile_function_body(
         params: &[String],
+        param_types: &[Option<crate::val::Type>],
         named_params: &[crate::stmt::NamedParamDecl],
         body: &Stmt,
         function_names: HashMap<String, u32>,
@@ -259,6 +262,36 @@ impl Compiler {
         compiler.peak_reg = compiler.function.param_count;
         for (index, param) in frame_params.iter().enumerate() {
             compiler.insert_local(param.clone(), index as u16);
+        }
+        // A parameter's declared width is a width the body can rely on.
+        //
+        // Without this, every machine-integer rule stopped at the function
+        // boundary: `fn f(a: u8) -> u8 { return a + 1; }` answered 256, and
+        // `fn f(a: u64, b: u64) { return a > b; }` compared two addresses
+        // *signed*. All of it — the wrap, the unsigned compare, the logical
+        // shift, the unsigned divide — is chosen from `machine_regs`, and a
+        // parameter register was never in it. The rules held for an annotated
+        // `let` and for an `as` cast, which is why every test and every driver
+        // that casts on entry looked right.
+        //
+        // No differential test could see it: the fact is missing in the
+        // compiler, so both backends are handed the same wrong instruction.
+        for (index, declared) in param_types.iter().enumerate() {
+            if let Some(crate::val::Type::MachineInt(kind)) = declared
+                && index < params.len()
+            {
+                compiler.machine_regs.insert(index as u16, *kind);
+            }
+        }
+        // Named parameters carry their own annotations and sit after the
+        // positional ones in the frame, in `function_frame_params` order.
+        for (offset, named) in named_params.iter().enumerate() {
+            if let Some(crate::val::Type::MachineInt(kind)) = &named.type_annotation {
+                let index = params.len() + offset;
+                if index < frame_params.len() {
+                    compiler.machine_regs.insert(index as u16, *kind);
+                }
+            }
         }
         compiler.lower_stmt(body)?;
         if !compiler.emitted_return {

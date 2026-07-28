@@ -164,17 +164,36 @@ impl Compiler {
             }
             Stmt::Let {
                 pattern: Pattern::Variable(name),
+                type_annotation,
                 value,
                 ..
-            }
-            | Stmt::Define { name, value, .. } => {
-                let slot = self.alloc_reg();
-                if !self.try_lower_expr_to_register(slot, value)? {
-                    let value = self.lower_expr(value)?;
-                    let move_source = !self.is_current_local_slot(value);
-                    self.emit_move_with_policy(slot, value, "inline local", move_source)?;
+            } => {
+                let slot = self.bind_inline_local(name, value)?;
+                // The same two rules `lower_let` applies, which this arm did
+                // not: the annotation if there is one, otherwise whatever the
+                // initializer establishes.
+                //
+                // Without them a machine integer lost its width the moment its
+                // function was inlined — and a small function is exactly the
+                // one that gets inlined. `fn size(p: u32, m: u32) -> u32 { let
+                // z: u32 = 0; return z - (p & m); }` is `drivers/pci.lk`'s BAR
+                // sizing, and inlined it subtracted at 64 bits and answered a
+                // negative number.
+                match type_annotation {
+                    Some(_) => self.note_machine_reg(slot, type_annotation.as_ref()),
+                    None => {
+                        if let Some(kind) = self.initializer_machine_width(value) {
+                            self.machine_regs.insert(slot, kind);
+                        }
+                    }
                 }
-                self.insert_fresh_local(name.clone(), slot);
+                Ok(())
+            }
+            Stmt::Define { name, value, .. } => {
+                let slot = self.bind_inline_local(name, value)?;
+                if let Some(kind) = self.initializer_machine_width(value) {
+                    self.machine_regs.insert(slot, kind);
+                }
                 Ok(())
             }
             Stmt::Assign { name, value, .. } => self.lower_assign(name, value),
@@ -192,6 +211,20 @@ impl Compiler {
             }
             _ => bail!("Compiler unsupported inline prefix statement"),
         }
+    }
+
+    /// Lowers an inlined `let`/`def` initializer into a fresh register and binds
+    /// the name to it, answering the register so the caller can record what it
+    /// knows about the value's width.
+    fn bind_inline_local(&mut self, name: &str, value: &Expr) -> Result<u16> {
+        let slot = self.alloc_reg();
+        if !self.try_lower_expr_to_register(slot, value)? {
+            let lowered = self.lower_expr(value)?;
+            let move_source = !self.is_current_local_slot(lowered);
+            self.emit_move_with_policy(slot, lowered, "inline local", move_source)?;
+        }
+        self.insert_fresh_local(alloc::string::String::from(name), slot);
+        Ok(slot)
     }
 
     fn lower_inline_stmt_sequence(
