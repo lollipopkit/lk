@@ -399,6 +399,20 @@ impl TypeInferenceEngine {
     }
 
     fn unify(&mut self, t1: Type, t2: Type) -> Result<()> {
+        // Before substitution, because substitution is what hides this case: a
+        // variable already bound to one type, now required to be another.
+        //
+        // `let l = []; l.push(1); l.push("a");` is the shape. The element type
+        // starts as a variable, the first push binds it to `Int`, and by the
+        // second push substitution has already turned the variable into `Int`
+        // — so what reaches the match below is `Int` against `String`, with no
+        // sign that a *variable* is what disagrees. LK's lists are
+        // heterogeneous, so the answer is not a conflict: the variable is both,
+        // and widening it to `Int | String` says so.
+        if let Some(()) = self.widen_rebound_variable(&t1, &t2) {
+            return Ok(());
+        }
+
         let t1 = Self::normalize_union(self.apply_substitution(&t1));
         let t2 = Self::normalize_union(self.apply_substitution(&t2));
 
@@ -588,14 +602,73 @@ impl TypeInferenceEngine {
             (ref lhs, ref rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => Ok(()),
 
             // Concrete-concrete mismatch with no type variables on either side.
-            // In a gradually-typed language, the same context can hold different concrete types
-            // at different call sites; the runtime handles dispatch. Silently accept to avoid
-            // false-positive type errors in unannotated code.
+            //
+            // The reason given for this used to be that a gradually-typed
+            // language legitimately holds different concrete types in one
+            // context at different call sites. Measured, that turned out to
+            // describe three specific gaps rather than the language:
+            //
+            //   - a binding that starts `nil` kept the type `Nil` after being
+            //     assigned (fixed in `Stmt::Assign`),
+            //   - `==` constrained its operands to the *same* type, so
+            //     `x == nil` was a conflict (fixed in `check_binary_op`),
+            //   - a type variable bound once could not be bound again, so
+            //     `l.push(1); l.push("a")` conflicted on a heterogeneous list
+            //     (fixed by `widen_rebound_variable`).
+            //
+            // With those closed it is never reached by `lk check`: 0 hits
+            // across every example and bench workload, where there were 9.
+            //
+            // TODO: remove this arm once constraint solving is scoped. It
+            // cannot go yet — turning it into an error fails
+            // `examples_differential_test` on `error_handling.lk` with
+            // "Cannot unify String with Nil", and only on the *compile* path.
+            // The reason is above this file's pay grade: `lk check` is strict
+            // and defers solving to one `finalize` at the end, while
+            // `lk compile`/`lk FILE` are not and solve at the end of *every
+            // function* (`Stmt::Function`), against a constraint pool that is
+            // global. A later function's constraints therefore get solved
+            // against an earlier one's leftovers, and which types meet depends
+            // on where the file happens to end — truncating that example at 40
+            // lines fails, at 50 passes, at 60 fails again. The pool cannot
+            // simply be made per-function either: inferring a parameter from a
+            // *later* call site is a feature with a test on it
+            // (`test_business_workload_should_run_infers_from_string_calls`).
+            // What is needed is for both paths to defer like the strict one
+            // does, which is a change to how signatures get built, not a rule.
             (ref lhs, ref rhs) if !lhs.contains_variables() && !rhs.contains_variables() => Ok(()),
 
             // Type mismatch
             _ => Err(anyhow!("Cannot unify {} with {}", t1.display(), t2.display())),
         }
+    }
+
+    /// A variable bound to one concrete type and now required to be another:
+    /// rebind it to both. Returns `Some(())` when it did.
+    ///
+    /// Only for a variable against a concrete type. Two variables, or anything
+    /// still undetermined, is ordinary unification's business — widening there
+    /// would decide a type that inference has not finished deciding.
+    fn widen_rebound_variable(&mut self, t1: &Type, t2: &Type) -> Option<()> {
+        let (var, incoming) = match (t1, t2) {
+            (Type::Variable(var), other) | (other, Type::Variable(var)) => (var, other),
+            _ => return None,
+        };
+        let incoming = Self::normalize_union(self.apply_substitution(incoming));
+        if incoming.contains_variables() {
+            return None;
+        }
+        let bound = self.substitutions.get(var)?.clone();
+        if bound.contains_variables() || bound == incoming {
+            return None;
+        }
+        // `Any` already accepts everything; widening it says nothing new.
+        if bound == Type::Any || incoming == Type::Any {
+            return None;
+        }
+        let widened = Self::normalize_union(Type::Union(vec![bound, incoming]));
+        self.substitutions.insert(var.clone(), widened);
+        Some(())
     }
 
     /// Apply current substitutions to a type

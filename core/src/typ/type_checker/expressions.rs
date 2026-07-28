@@ -962,8 +962,26 @@ impl TypeChecker {
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
             }
             BinOp::Eq | BinOp::Ne => {
-                self.inference_engine
-                    .add_constraint(left_type.clone(), right_type.clone());
+                // Comparing two values of different concrete types is legal and
+                // answers false. `x == nil` is the shape this language is made
+                // of; a constraint between the operands asserts they must be
+                // the *same* type, which is not what `==` means — it made
+                // `let x = nil; x == "k"` a type conflict.
+                //
+                // Kept when either side is still undetermined: `if x == 1` is
+                // real evidence about `x`, and the checker has no other source
+                // for it.
+                // Kept when either side is still undetermined *and* neither is
+                // `nil`: `if x == 1` is real evidence about `x`, but `if x == nil`
+                // is not evidence that `x` **is** nil — it is a test for the one
+                // case where it might be. Binding it to `Nil` is how
+                // `if (val == nil) { … } return [true, val];` came to think `val`
+                // was nil on the path where it demonstrably is not.
+                let comparing_against_nil = left_type == Type::Nil || right_type == Type::Nil;
+                if (left_type.contains_variables() || right_type.contains_variables()) && !comparing_against_nil {
+                    self.inference_engine
+                        .add_constraint(left_type.clone(), right_type.clone());
+                }
                 Ok(Type::Bool)
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {

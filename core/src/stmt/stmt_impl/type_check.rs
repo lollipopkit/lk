@@ -163,6 +163,24 @@ impl Stmt {
                     if matches!(var_type, Type::Variable(_)) {
                         // Refine previously unknown binding with the inferred expression type.
                         type_checker.add_local_type(name.clone(), expr_type.clone());
+                    } else if *var_type == Type::Nil && expr_type != Type::Nil && !expr_type.contains_variables() {
+                        // A binding that started as `nil` and now holds something
+                        // is *that*, made optional — it is not `Nil` any more.
+                        //
+                        // Leaving it `Nil` is what made `let caught = nil; …;
+                        // caught == "kaboom"` compare a string against nil. The
+                        // comparison did not fail only because the solver ends in
+                        // a rule that accepts any two disagreeing concrete types;
+                        // the type was wrong either way, and everything reading
+                        // it downstream — a hint, a hover, a completion — read
+                        // the wrong one.
+                        let widened = Type::Optional(Box::new(expr_type.clone()));
+                        type_checker.add_local_type(name.clone(), widened);
+                    } else if expr_type == Type::Nil && !matches!(var_type, Type::Optional(_) | Type::Any) {
+                        // The other direction: a typed binding assigned `nil`
+                        // becomes optional rather than staying what it was.
+                        let widened = Type::Optional(Box::new(var_type.clone()));
+                        type_checker.add_local_type(name.clone(), widened);
                     } else if expr_type.contains_variables() {
                         // Expression has unresolved type variables; add constraint instead of failing.
                         type_checker.add_constraint(expr_type, var_type.clone());
