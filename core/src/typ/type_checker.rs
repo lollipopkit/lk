@@ -628,6 +628,12 @@ impl TypeChecker {
         pending_functions: &[PendingStrictFunction],
         subs: &HashMap<String, Type>,
     ) -> Result<()> {
+        // The check this defers is the strict-Any one, so a non-strict run has
+        // nothing to do here. It matters now that *both* modes defer: the
+        // deferral used to imply strictness, and it no longer does.
+        if !self.strict_any() {
+            return Ok(());
+        }
         for pending in pending_functions {
             let mut issues = Vec::new();
             let mut first_param_name = None;

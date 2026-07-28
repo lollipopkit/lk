@@ -601,44 +601,36 @@ impl TypeInferenceEngine {
             // This handles cases where arithmetic on typed variables creates subtype constraints.
             (ref lhs, ref rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => Ok(()),
 
-            // Concrete-concrete mismatch with no type variables on either side.
+            // A machine int meets a plain `Int` wherever a literal appears in a
+            // machine-width context — `match ALL_ONES { 0xFFFFFFFFFFFFFFFF => … }`,
+            // or `reg + 1`. The literal takes the width, which is the rule
+            // `Stmt::Let` already applies to `let x: u8 = 5`.
             //
-            // The reason given for this used to be that a gradually-typed
-            // language legitimately holds different concrete types in one
-            // context at different call sites. Measured, that turned out to
-            // describe three specific gaps rather than the language:
+            // `NumericHierarchy::classify` deliberately does not rank machine
+            // ints (they convert only explicitly, and *assignability* still
+            // refuses both directions). That is a question about values;
+            // unification is asking a different one, about which type a literal
+            // takes. Two machine widths still do not unify with each other.
+            (Type::MachineInt(_), Type::Int) | (Type::Int, Type::MachineInt(_)) => Ok(()),
+
+            // Type mismatch.
             //
-            //   - a binding that starts `nil` kept the type `Nil` after being
-            //     assigned (fixed in `Stmt::Assign`),
-            //   - `==` constrained its operands to the *same* type, so
-            //     `x == nil` was a conflict (fixed in `check_binary_op`),
+            // Two disagreeing concrete types used to be accepted here, on the
+            // grounds that a gradually-typed language legitimately holds
+            // different concrete types in one context at different call sites.
+            // Measured, that described four fixable gaps rather than the
+            // language, and each is now closed:
+            //
+            //   - a binding that started `nil` kept the type `Nil` after being
+            //     assigned (`Stmt::Assign` widens it),
+            //   - `==` constrained its operands to be the *same* type, so
+            //     `x == nil` was a conflict (`check_binary_op` no longer does),
             //   - a type variable bound once could not be bound again, so
             //     `l.push(1); l.push("a")` conflicted on a heterogeneous list
-            //     (fixed by `widen_rebound_variable`).
-            //
-            // With those closed it is never reached by `lk check`: 0 hits
-            // across every example and bench workload, where there were 9.
-            //
-            // TODO: remove this arm once constraint solving is scoped. It
-            // cannot go yet — turning it into an error fails
-            // `examples_differential_test` on `error_handling.lk` with
-            // "Cannot unify String with Nil", and only on the *compile* path.
-            // The reason is above this file's pay grade: `lk check` is strict
-            // and defers solving to one `finalize` at the end, while
-            // `lk compile`/`lk FILE` are not and solve at the end of *every
-            // function* (`Stmt::Function`), against a constraint pool that is
-            // global. A later function's constraints therefore get solved
-            // against an earlier one's leftovers, and which types meet depends
-            // on where the file happens to end — truncating that example at 40
-            // lines fails, at 50 passes, at 60 fails again. The pool cannot
-            // simply be made per-function either: inferring a parameter from a
-            // *later* call site is a feature with a test on it
-            // (`test_business_workload_should_run_infers_from_string_calls`).
-            // What is needed is for both paths to defer like the strict one
-            // does, which is a change to how signatures get built, not a rule.
-            (ref lhs, ref rhs) if !lhs.contains_variables() && !rhs.contains_variables() => Ok(()),
-
-            // Type mismatch
+            //     (`widen_rebound_variable`),
+            //   - constraints were solved at the end of every function against
+            //     a global pool, so one function's leftovers met the next one's
+            //     (`Program::type_check` defers in both modes now).
             _ => Err(anyhow!("Cannot unify {} with {}", t1.display(), t2.display())),
         }
     }

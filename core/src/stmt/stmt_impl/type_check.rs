@@ -973,22 +973,26 @@ impl Program {
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
-        if type_checker.strict_any() {
-            let previous_defer = type_checker.begin_deferred_strict_function_checks();
-            let result = (|| {
-                for stmt in &self.statements {
-                    stmt.type_check(type_checker)?;
-                }
-                type_checker.finalize_deferred_strict_function_checks()
-            })();
-            type_checker.restore_deferred_strict_function_checks(previous_defer);
-            return result;
-        }
 
-        for stmt in &self.statements {
-            stmt.type_check(type_checker)?;
-        }
-        Ok(())
+        // Both modes defer: constraints are solved once, at the end, instead of
+        // at the end of every function.
+        //
+        // Only the strict one used to. The other solved the *global* constraint
+        // pool each time a function finished, so a later function's constraints
+        // met an earlier one's leftovers and which types were compared depended
+        // on how much of the file had been read — cutting one example at 40
+        // lines failed, at 50 passed, at 60 failed again. The pool cannot be
+        // made per-function instead: inferring a parameter from a call site
+        // further down is a feature.
+        let previous_defer = type_checker.begin_deferred_strict_function_checks();
+        let result = (|| {
+            for stmt in &self.statements {
+                stmt.type_check(type_checker)?;
+            }
+            type_checker.finalize_deferred_strict_function_checks()
+        })();
+        type_checker.restore_deferred_strict_function_checks(previous_defer);
+        result
     }
 
     /// Type-check every statement, reporting all the errors instead of the first.
@@ -1002,8 +1006,8 @@ impl Program {
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
 
-        let strict = type_checker.strict_any();
-        let previous_defer = strict.then(|| type_checker.begin_deferred_strict_function_checks());
+        // Deferred whether or not this is a strict run — see `Program::type_check`.
+        let previous_defer = type_checker.begin_deferred_strict_function_checks();
 
         let depth = type_checker.scope_depth();
         let mut errors = Vec::new();
@@ -1017,12 +1021,10 @@ impl Program {
             }
         }
 
-        if let Some(previous_defer) = previous_defer {
-            if let Err(err) = type_checker.finalize_deferred_strict_function_checks() {
-                errors.push(err);
-            }
-            type_checker.restore_deferred_strict_function_checks(previous_defer);
+        if let Err(err) = type_checker.finalize_deferred_strict_function_checks() {
+            errors.push(err);
         }
+        type_checker.restore_deferred_strict_function_checks(previous_defer);
         errors
     }
 }

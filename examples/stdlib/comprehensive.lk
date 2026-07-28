@@ -31,8 +31,9 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-// `temp_dir()` is declared `String?`, so unwrap before passing it on.
-assert(fs.exists(fs.temp_dir()!));
+// `temp_dir()` is declared `String?`; `??` supplies the String it is
+// declared to maybe not be.
+assert(fs.exists(fs.temp_dir() ?? "/tmp"));
 assert(path.sep() != "");
 
 // Builtin Set
