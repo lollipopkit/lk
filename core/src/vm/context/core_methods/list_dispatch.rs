@@ -147,6 +147,11 @@ pub(super) fn dispatch_list_builtin_method(
             )))
         }
         "slice" => {
+            // A window, not a copy. This used to materialize `items[a..b]` into
+            // a fresh list, which meant every window over a large list
+            // duplicated the part it looked at. `to_list()` is how you ask for
+            // the copy now, and asking is the point — the two are different
+            // operations and used to share one name.
             if positional.is_empty() || positional.len() > 2 {
                 bail!(
                     "list.slice() expects 1 or 2 arguments (start[, end]), got {}",
@@ -154,19 +159,22 @@ pub(super) fn dispatch_list_builtin_method(
                 );
             }
             let start = list_index_arg(&positional[0], "list.slice() start")?;
-            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let source_len = clone_list(receiver, heap)?.len();
             let end = match positional.get(1) {
-                Some(value) => list_index_arg(value, "list.slice() end")?.min(items.len()),
-                None => items.len(),
+                Some(value) => list_index_arg(value, "list.slice() end")?,
+                None => source_len,
             };
-            let sliced = if start >= end {
-                Vec::new()
-            } else {
-                items[start..end].to_vec()
-            };
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(sliced))),
-            )))
+            // Clamped, like every other position in this language.
+            let start = start.min(source_len);
+            let end = end.clamp(start, source_len);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
+                SliceValue {
+                    source: *receiver,
+                    kind: SliceKind::List,
+                    start,
+                    len: end - start,
+                },
+            ))))))
         }
         "insert" => {
             if positional.len() != 2 {

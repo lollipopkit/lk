@@ -27,6 +27,7 @@ enum IndexTargetKind {
     Map,
     Object,
     String,
+    Slice,
 }
 
 enum SliceFromPlan {
@@ -262,6 +263,7 @@ impl Executor {
             HeapValue::Map(_) => Ok(IndexTargetKind::Map),
             HeapValue::Object(_) => Ok(IndexTargetKind::Object),
             HeapValue::String(_) => Ok(IndexTargetKind::String),
+            HeapValue::Slice(_) => Ok(IndexTargetKind::Slice),
             other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(other)),
         }
     }
@@ -450,6 +452,9 @@ impl Executor {
                     .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 {
                     HeapValue::List(_) => ToIterPlan::ExistingList(handle),
+                    // A window is indexable and knows its length, which is all
+                    // the loop needs — copying it out would defeat the point.
+                    HeapValue::Slice(_) => ToIterPlan::ExistingList(handle),
                     HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
                     HeapValue::Set(values) => ToIterPlan::Set(values.entries().cloned().collect()),
@@ -627,6 +632,13 @@ impl Executor {
             }),
             HeapValue::String(_) => Ok(PerfIndexFact {
                 target_kind: PerfIndexTargetKind::String,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            // A window is indexable but has no specialised fast path to record
+            // a fact for: `Unknown` sends the read down the general path, which
+            // resolves it against the source list.
+            HeapValue::Slice(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Unknown,
                 value_kind: PerfValueKind::Unknown,
             }),
             other => bail!("index target object is not indexable: {:?}", heap_kind(other)),

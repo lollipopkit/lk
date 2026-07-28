@@ -330,6 +330,25 @@ impl Executor {
         })
     }
 
+    /// One element of a window, by its position *within the window*.
+    ///
+    /// Negative indices count from the window's end, as they do for a list.
+    /// Out of range is nil.
+    pub(in crate::vm::exec) fn slice_element(&mut self, handle: crate::val::HeapRef, index: i64) -> RuntimeVal {
+        let Some(HeapValue::Slice(slice)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let (source, start, len) = (slice.source, slice.start, slice.len);
+        let index = if index < 0 { len as i64 + index } else { index };
+        if index < 0 || index as usize >= len {
+            return RuntimeVal::Nil;
+        }
+        let RuntimeVal::Obj(source) = source else {
+            return RuntimeVal::Nil;
+        };
+        self.get_typed_list_element_allocating(source, start + index as usize)
+    }
+
     /// The same read, allowed to allocate. Used where the fast path declines.
     fn get_typed_list_element_allocating(&mut self, handle: crate::val::HeapRef, index: usize) -> RuntimeVal {
         let Some(HeapValue::List(list)) = self.state.heap.get(handle) else {
@@ -435,6 +454,12 @@ impl Executor {
         };
 
         match target_kind {
+            IndexTargetKind::Slice => {
+                let RuntimeVal::Int(index) = *self.read(key_reg)? else {
+                    bail!("slice index must be Int");
+                };
+                Ok(self.slice_element(handle, index))
+            }
             IndexTargetKind::List => {
                 if let Some(pos) = self.negative_list_index(handle, key_reg) {
                     let orig_val = *self.read(key_reg)?;
