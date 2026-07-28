@@ -1078,6 +1078,24 @@ impl TypeChecker {
             return Ok(Type::MachineInt(*left_kind));
         }
         // A machine integer on one side only is a width mistake, not a promotion.
+        //
+        // Including when the other side is a *literal*, and that is a gap rather
+        // than a decision. `let x: u8 = 5` works — a literal is retyped there,
+        // because requiring `5 as u8` would make a fixed width unusable — and
+        // `reg + 1` is the same need with more force: `reg + (1 as u32)` at every
+        // increment is what gets fixed widths abandoned in favour of `Int`.
+        //
+        // Relaxing it *here alone* is a miscompile, which is worth writing down
+        // because the change is a five-line one and looks complete. The type
+        // checker would say `u8`, and the compiler would go on materialising the
+        // literal as an ordinary `Int` and doing 64-bit arithmetic: `255u8 + 1`
+        // answers 256, with the type still claiming `u8`. Two `u8` *variables*
+        // wrap correctly, because a runtime value carries its own width and the
+        // executor honours it — a literal carries nothing.
+        //
+        // So the fix is in the compiler, not here: the literal has to be
+        // materialised at the width the checker just proved. Until then this
+        // rejects, which is the honest half.
         if matches!(resolved_left, Type::MachineInt(_)) || matches!(resolved_right, Type::MachineInt(_)) {
             let (offending, expr) = if matches!(resolved_left, Type::MachineInt(_)) {
                 (&resolved_right, right_expr)

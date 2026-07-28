@@ -262,6 +262,19 @@ impl IntKind {
     /// the real width is the target's and the narrower target is the binding
     /// one — a literal that fits everywhere is the only one that is portably
     /// safe to accept without a cast.
+    /// Whether a literal fits.
+    ///
+    /// One shape is rejected that arguably should not be: a radix literal past
+    /// `i64::MAX`. `let bit: u64 = 0x8000000000000000;` is a perfectly good u64
+    /// — it is the NX bit in a page-table entry, and the high half of a 64-bit
+    /// BAR — but the lexer has already narrowed it to `i64`, so what arrives
+    /// here is `-9223372036854775808` and the range check says so.
+    ///
+    /// Reinterpreting a negative value as its unsigned bit pattern is *not* the
+    /// fix: `let y: u8 = -1;` reaches this function too, and is rightly refused.
+    /// The two are indistinguishable once the sign is the only evidence left, so
+    /// the fix belongs in the lexer, where the source text still says which one
+    /// it was.
     pub fn accepts_literal(self, value: i128) -> bool {
         match self.range() {
             Some((lo, hi)) => value >= lo && value <= hi,
