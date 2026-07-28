@@ -84,6 +84,11 @@ pub(crate) enum Builtin {
     ModU,
     /// `__lk_u64_to_float(x)` — the unsigned read of the carrier as a float.
     U64ToFloat,
+    /// `__lk_u64_str(x)` — the unsigned read of the carrier as its decimal
+    /// string. Inserted by the compiler at the sites that *render* a value
+    /// (a `println` argument, a template-string part) rather than compute with
+    /// it, because that is the last place the width is still known.
+    U64Str,
     /// `symbol_address("name")` — the address of an `#[export]`ed function, and
     /// `call_address_2(addr, a, b)` — a call through one. Together they are
     /// what a driver table is made of: an array of function pointers, indexed

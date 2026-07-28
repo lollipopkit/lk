@@ -236,6 +236,25 @@ impl Compiler {
             Expr::Call(name, args) if name.as_str() == "__lk_bit_not" && args.len() == 1 => {
                 self.expr_machine_width(&args[0])
             }
+            // Arithmetic keeps the width too, and leaving it out was not merely
+            // untidy. `println(top + 5)` printed a negative number where
+            // `let big = top + 5; println(big);` printed the right one, because
+            // only the second had a *register* to carry the fact. The same hole
+            // made `(a + b) >> 1` on a `u64` shift arithmetically — a wrong
+            // value, not just a wrong rendering — since the shift asks this
+            // question about its left operand and got `None`.
+            //
+            // The literal is admitted on either side for the reason
+            // `lower_unsigned_bin` admits it: the type checker has already
+            // measured it against this width, so it is that width.
+            Expr::Bin(lhs, op, rhs) if op.is_arith() => {
+                match (self.expr_machine_width(lhs), self.expr_machine_width(rhs)) {
+                    (Some(left), Some(right)) => (left == right).then_some(left),
+                    (Some(left), None) => support::is_int_literal(rhs).then_some(left),
+                    (None, Some(right)) => support::is_int_literal(lhs).then_some(right),
+                    (None, None) => None,
+                }
+            }
             // Both shapes, because name resolution rewrites a plain call:
             // `read()` is `Call("read", …)` in the parser's output and
             // `CallExpr(Var("read"), …)` by the time the compiler sees it.
@@ -285,6 +304,18 @@ impl Compiler {
                 .and_then(|reg| self.machine_regs.get(&reg).copied()),
             other => self.initializer_machine_width(other),
         }
+    }
+
+    /// `__lk_u64_str(expr)` when `expr` is a `u64`/`usize`, otherwise `None`.
+    ///
+    /// The narrow question the two display sites — a rendering call's arguments
+    /// and a template string's parts — both have to ask. Only the widths that
+    /// *fill* the carrier: below 64 bits the high bits are zero, so the signed
+    /// reading and the unsigned one are the same digits.
+    pub(in crate::vm::compiler) fn unsigned_rendering_if_carrier_filling(&self, expr: &Expr) -> Option<Expr> {
+        let kind = self.expr_machine_width(expr)?;
+        matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize)
+            .then(|| call::unsigned_rendering_of(expr))
     }
 
     /// The machine width both operands share, if they have one.
@@ -471,6 +502,11 @@ impl Compiler {
         match part {
             TemplateStringPart::Literal(value) => self.lower_val(&LiteralVal::from_str(value)),
             TemplateStringPart::Expr(expr) => {
+                // The other half of the rendering fix in `lower_named_call`: a
+                // template part is a display site too, and `"${top}"` was
+                // showing the same negative number `println(top)` did.
+                let rendered = self.unsigned_rendering_if_carrier_filling(expr);
+                let expr = rendered.as_ref().unwrap_or(expr.as_ref());
                 let value = self.lower_readonly_operand(expr)?;
                 if !force_expr_string || self.function.performance.value_kind(value) == PerfValueKind::String {
                     return Ok(value);
@@ -497,6 +533,11 @@ impl Compiler {
         match part {
             TemplateStringPart::Literal(value) => self.emit_literal_to_register(dst, &LiteralVal::from_str(value)),
             TemplateStringPart::Expr(expr) => {
+                // Before the `force_expr_string` split, not after: with several
+                // parts the flag is *off* because `Concat` stringifies at
+                // runtime — which is exactly where the width is already gone.
+                let rendered = self.unsigned_rendering_if_carrier_filling(expr);
+                let expr = rendered.as_ref().unwrap_or(expr.as_ref());
                 if !force_expr_string {
                     return self.lower_expr_to_register(dst, expr, "template part");
                 }

@@ -495,6 +495,9 @@ impl VmContext {
         self.install_runtime_builtin("__lk_div_u", NativeFunction::Plain(core_div_unsigned_builtin), 2);
         self.install_runtime_builtin("__lk_mod_u", NativeFunction::Plain(core_mod_unsigned_builtin), 2);
         self.install_runtime_builtin("__lk_u64_to_float", NativeFunction::Plain(core_u64_to_float_builtin), 1);
+        // And the display, which the compiler inserts at the places that render
+        // a value rather than compute with it.
+        self.install_runtime_builtin("__lk_u64_str", NativeFunction::Plain(core_u64_to_str_builtin), 1);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -1306,6 +1309,26 @@ fn core_u64_to_float_builtin(
     }
     let value = bit_arg(args.get(0).expect("arity checked"), "__lk_u64_to_float")? as u64;
     Ok(crate::val::RuntimeVal::Float(value as f64))
+}
+
+/// The unsigned decimal rendering of the carrier.
+///
+/// Every other member of this family fixes an *operation*; this one fixes the
+/// *display*, which is the last place a `u64` above `i64::MAX` still told a
+/// visible lie. The value was always right — `top + 5` computes the right bits —
+/// but `println` handed those bits to an `i64` formatter and got a negative
+/// number, so a page-table entry or a physical address printed as nonsense.
+fn core_u64_to_str_builtin(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    use alloc::string::ToString;
+    if args.len() != 1 {
+        return Err(anyhow!("__lk_u64_str(value) expects exactly 1 argument"));
+    }
+    let value = bit_arg(args.get(0).expect("arity checked"), "__lk_u64_str")? as u64;
+    // 20 digits at most, so never a `ShortStr` — `runtime_string_value` picks.
+    Ok(runtime_string_value(&value.to_string(), runtime.heap_mut()))
 }
 
 fn core_bit_not_builtin(

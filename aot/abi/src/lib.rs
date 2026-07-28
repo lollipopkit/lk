@@ -407,6 +407,8 @@ macro_rules! for_each_abi_fn {
             ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr, Constructs);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
+            // The unsigned reading of the carrier — see `lkrt_u64_to_str`.
+            ("str", "from_u64", lkrt_u64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);
             ("str", "from_bool", lkrt_bool_to_str, WritesHost, [I64], StrPtr);
             // Divisor-guarded arithmetic: abort on a zero divisor (matching the VM's fatal

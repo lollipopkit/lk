@@ -238,3 +238,61 @@ fn compiler_template_string_preserves_to_string_for_single_expression() {
     let result = execute(&function).expect("execute");
     assert_eq!(returned_string(&result), "7");
 }
+
+/// A `u64` in a template string renders unsigned.
+///
+/// Absolute rather than differential: two backends that both print a physical
+/// address as a negative number agree with each other perfectly. The value was
+/// never wrong — `one << 63` has the right bits — but the display handed the
+/// carrier to an `i64` formatter, so this asserts the digits.
+#[test]
+fn compiler_template_string_renders_u64_unsigned() {
+    // `execute_source` rather than this module's bare `compile_source`: the
+    // rendering is a call to a runtime builtin, and the bare harness installs
+    // none. The comparison is done in LK so the answer is a `Bool` and no heap
+    // string has to be reached into.
+    let result = crate::vm::execute_source(
+        r#"
+        let minus_one = 0 - 1;
+        let top = minus_one as u64;
+        return "${top}" == "18446744073709551615";
+        "#,
+    )
+    .expect("execute source");
+
+    assert_eq!(result.first_return(), &crate::val::RuntimeVal::Bool(true));
+}
+
+/// And with more than one part, where the flag that forces a `ToString` is off
+/// because `Concat` stringifies at run time instead — which is exactly where the
+/// width has already been lost.
+#[test]
+fn compiler_template_string_renders_u64_unsigned_among_other_parts() {
+    let result = crate::vm::execute_source(
+        r#"
+        let minus_one = 0 - 1;
+        let top = minus_one as u64;
+        return "at ${top} end" == "at 18446744073709551615 end";
+        "#,
+    )
+    .expect("execute source");
+
+    assert_eq!(result.first_return(), &crate::val::RuntimeVal::Bool(true));
+}
+
+/// A width below the carrier is untouched: its high bits are zero, so the signed
+/// reading and the unsigned one are the same digits, and inserting a call there
+/// would be cost without a difference.
+#[test]
+fn compiler_template_string_leaves_narrow_widths_alone() {
+    let function = compile_source(
+        r#"
+        let value: u32 = 4294967295;
+        return "${value}";
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(returned_string(&result), "4294967295");
+}

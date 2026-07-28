@@ -197,6 +197,70 @@ fn clif_differential_higher_order() {
 /// is then interpolated.
 ///
 /// Marking a function VM-executed changes the type lattice, and signatures have
+/// What a `u64` above `i64::MAX` prints, absolutely — not just identically.
+///
+/// A differential cannot see this one: two backends that both hand the carrier
+/// to an `i64` formatter agree with each other perfectly, and print a physical
+/// address as a negative number. So the expected digits are written out, and
+/// both engines are held to them.
+#[test]
+fn u64_renders_unsigned_on_both_engines() {
+    let dir = unique_tmp_dir("u64_render");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "u64render.lk";
+    // `one << 63` rather than the literal: `9223372036854775808` does not fit an
+    // `i64`, and the lexer has no way yet to tell a `u64` literal from an
+    // overflowing one (`let y: u8 = -1` has to stay refused).
+    let src = "let one: u64 = 1;\n\
+               let top = one << 63;\n\
+               println(top);\n\
+               println(\"${top}\");\n\
+               println(top + 5);\n\
+               let narrow: u32 = 4294967295;\n\
+               println(narrow);\n\
+               println((top + 2) >> 1);\n";
+    // The last line is the reason arithmetic has to carry the width at all: the
+    // shift asks its left operand how wide it is, and a bare `a + b` used to
+    // answer "no idea" — so it shifted arithmetically and produced a *wrong
+    // value*, not merely a wrong rendering.
+    let expected = "9223372036854775808\n9223372036854775808\n9223372036854775813\n4294967295\n\
+                    4611686018427387905\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        expected,
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "native compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("u64render"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// to re-converge before the module is emitted. They did not: the final pass
 /// never wrote `ret_types` back, so `helper` — a native callee whose parameter
 /// widens to `Dyn` because its argument is bridge-tainted — kept its

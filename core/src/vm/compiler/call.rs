@@ -20,6 +20,15 @@ use super::{
     support::{FunctionSignature, checked_u8, simple_local_expr_name},
 };
 
+/// `__lk_u64_str(expr)` — the unsigned decimal rendering of a carrier-filling
+/// value, as an expression the caller can lower in the argument's place.
+pub(in crate::vm::compiler) fn unsigned_rendering_of(expr: &Expr) -> Expr {
+    Expr::Call(
+        alloc::string::String::from("__lk_u64_str"),
+        alloc::vec![Box::new(expr.clone())],
+    )
+}
+
 impl Compiler {
     /// `__lk_shr` becomes `__lk_shr_u` when the value being shifted is a `u64`.
     ///
@@ -38,7 +47,63 @@ impl Compiler {
         Ok(if fills_the_carrier { "__lk_shr_u" } else { name }.to_string())
     }
 
+    /// The globals that do nothing with an argument but format it.
+    ///
+    /// Deliberately short, and the boundary is not "prints" but "*only* prints".
+    /// `assert_eq` prints its arguments too, and also compares them — turning one
+    /// into a string there would make the comparison ask whether a string equals
+    /// a number, which is a wrong answer traded for a right rendering. A call
+    /// that computes with the value keeps the value.
+    fn renders_its_arguments(name: &str) -> bool {
+        matches!(name, "print" | "println" | "panic" | "error")
+    }
+
+    /// Rewrites carrier-filling arguments into their unsigned rendering.
+    ///
+    /// `None` when nothing changed, so the common call pays one width lookup per
+    /// argument and no allocation.
+    fn render_arguments_unsigned(&self, name: &str, args: &[Box<Expr>]) -> Option<Vec<Box<Expr>>> {
+        if !Self::renders_its_arguments(name) {
+            return None;
+        }
+        let fills_carrier = |expr: &Expr| {
+            self.expr_machine_width(expr)
+                .is_some_and(|kind| matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize))
+        };
+        if !args.iter().any(|arg| fills_carrier(arg)) {
+            return None;
+        }
+        Some(
+            args.iter()
+                .map(|arg| {
+                    if fills_carrier(arg) {
+                        Box::new(unsigned_rendering_of(arg))
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn lower_named_call(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // A `u64` handed to something that only *renders* it prints unsigned.
+        //
+        // The value was never wrong: `top + 5` computes the right bits. What was
+        // wrong is that `println` receives runtime values, where the width is
+        // gone, and hands the carrier to an `i64` formatter — so a page-table
+        // entry or a physical address above `i64::MAX` printed as a negative
+        // number. The width exists only here, at the call site, so this is where
+        // the rendering has to be chosen.
+        //
+        // Only for callees that *purely* render. Rewriting an argument changes
+        // its type from `Int` to `Str`, which is harmless for something that was
+        // going to format it and destructive for anything that compares or
+        // computes: `assert_eq(top, other)` would compare a string with a
+        // number. See `renders_its_arguments`.
+        if let Some(rendered) = self.render_arguments_unsigned(name, args) {
+            return self.lower_named_call(name, &rendered);
+        }
         // `~x` on a machine integer is that width's complement.
         //
         // Every value rides an `i64` carrier, so complementing a `u32` sets the

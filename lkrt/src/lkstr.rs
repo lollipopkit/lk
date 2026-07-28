@@ -223,6 +223,34 @@ pub extern "C" fn lkrt_i64_to_str(n: i64) -> *mut c_char {
     arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
 }
 
+/// Renders the carrier as an *unsigned* decimal string.
+///
+/// The same rendering `lkrt_i64_to_str` does, for the one case where the carrier
+/// is not an `i64`: a `u64` above `i64::MAX` has bit 63 set, and reading that as
+/// a sign turns a physical address into a negative number. The compiler picks
+/// this at the display site, which is the last place the width still exists.
+///
+/// 20 digits fits `u64::MAX` exactly (18446744073709551615), and there is no
+/// sign to leave room for.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_to_str(n: i64) -> *mut c_char {
+    let mut buf = [0u8; 20];
+    let mut magnitude = n as u64;
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    let mut bytes = Vec::with_capacity(buf.len() - at + 1);
+    bytes.extend_from_slice(&buf[at..]);
+    // SAFETY: decimal digits are ASCII, never NUL.
+    arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
+}
+
 /// Renders an `f64` as its display string. The VM formats floats with Rust's
 /// `f64::to_string()` (see `runtime_value_display_string`), so this uses the same —
 /// giving byte-identical output (`2.0 → "2"`, `1.0/3.0 → "0.3333333333333333"`).
