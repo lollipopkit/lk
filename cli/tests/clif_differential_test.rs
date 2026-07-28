@@ -543,6 +543,21 @@ fn machine_int_differential() {
                 "complement_clears_a_bit",
                 "let flags: u32 = 0xff;\nlet bit: u32 = 0x80;\nreturn (flags & ~bit) as Int;\n",
             ),
+            // `~x` on a machine integer is *that width's* complement.
+            //
+            // Every value rides an `i64` carrier, so complementing a `u32` set
+            // the 32 bits above it too: `~(0xff as u32)` answered
+            // `0xFFFFFFFFFFFFFF00`, which reads back as -256. It stayed
+            // unnoticed because the shape people write is `a & ~b`, where the
+            // `&` masks the strays away — and the one that does not, `~mask` on
+            // its own, is exactly what a driver writes to clear a field.
+            new("complement_wraps_to_the_width", "let a: u8 = 0x0f;\nreturn (~a) as Int;\n"),
+            new("complement_u32", "let a: u32 = 0xff;\nreturn (~a) as Int;\n"),
+            new(
+                "complement_clears_a_bit",
+                "let flags: u32 = 0xff;\nlet bit: u32 = 0x80;\nreturn (flags & ~bit) as Int;\n",
+            ),
+            new("complement_u64", "let one: u64 = 1;\nreturn ((~one) >> 32) as Int;\n"),
             // A signed comparison is still signed, which is the property the
             // change must not have taken away.
             new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),

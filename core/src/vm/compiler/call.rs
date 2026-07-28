@@ -39,6 +39,37 @@ impl Compiler {
     }
 
     pub(super) fn lower_named_call(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // `~x` on a machine integer is that width's complement.
+        //
+        // Every value rides an `i64` carrier, so complementing a `u32` sets the
+        // 32 bits above it too: `~(0xff as u32)` answered `0xFFFFFFFFFFFFFF00`,
+        // which reads back as -256. It stayed unnoticed because the shape people
+        // write is `a & ~b`, where the `&` masks the strays away — and the one
+        // that does not, `~mask` on its own, is exactly what a driver writes to
+        // clear a field.
+        //
+        // The arithmetic operators normalise afterwards; this is the same
+        // normalisation for the one bitwise operation that can leave the width.
+        //
+        // A previous round recorded here that this cost two examples their
+        // native lowering and reverted it. That was a misattribution: neither
+        // example contains a `~`, so this branch never fired for them, and the
+        // AOT coverage number is identical with and without it. The drop came
+        // from a change landing alongside. Measure at your own commit before
+        // blaming your own diff.
+        if name == "__lk_bit_not"
+            && args.len() == 1
+            && let Some(kind) = self.expr_machine_width(&args[0])
+        {
+            let dst = self.lower_named_call_body(name, args)?;
+            self.emit_machine_wrap(dst, kind)?;
+            self.machine_regs.insert(dst, kind);
+            return Ok(dst);
+        }
+        self.lower_named_call_body(name, args)
+    }
+
+    fn lower_named_call_body(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
         // `>>` on a `u64` is a *logical* shift.
         //
         // The parser desugars `a >> b` into `__lk_shr(a, b)` before anything
@@ -56,25 +87,6 @@ impl Compiler {
         // 64-bit target.
         let shift_name = self.unsigned_shift_name(name, args)?;
         let name = shift_name.as_str();
-        // `~x` on a machine integer is *not* that width's complement, and that
-        // is a known gap rather than a decision.
-        //
-        // Every value rides an `i64` carrier, so complementing a `u32` sets the
-        // 32 bits above it too: `~(0xff as u32)` answers `0xFFFFFFFFFFFFFF00`,
-        // which reads back as -256. It stays unnoticed because the shape people
-        // write is `a & ~b`, where the `&` masks the strays away — the one that
-        // does not, `~mask` on its own, is what a driver writes to clear a
-        // field, and that is where it would bite.
-        //
-        // The obvious fix — wrap the result with `emit_machine_wrap`, the way
-        // the arithmetic operators do — was tried and reverted: it costs two
-        // examples their native lowering (`comprehensive.lk`, `os_demo.lk`,
-        // "an operand has a type outside the natively lowerable subset"), which
-        // means the extra `CastTo` changes what the AOT can see about those
-        // values. Dropping the accompanying `machine_regs` note makes it worse,
-        // not better — six examples — so the width fact is load-bearing and the
-        // interaction is not yet understood. A fix that trades a latent wrong
-        // answer for a certain 3x slowdown is not one.
         if let Some(signature) = self.function_signatures.get(name).cloned()
             && !signature.named_params.is_empty()
             && self.function_names.contains_key(name)
