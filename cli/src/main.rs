@@ -570,6 +570,12 @@ fn main() -> anyhow::Result<()> {
     let macro_free = expansion.proc_macro_dependencies.is_empty();
     let program = expansion.program;
 
+    // Built before the type check, not after: registering the standard library
+    // is what publishes its declared signatures to the checker, and a check that
+    // runs first sees only the small fallback table in core — `string.split("a")`
+    // would go unchecked here while `lk check` caught it.
+    let mut base_env = build_vm_context(&safe)?;
+
     // Cross-file signatures, checked here rather than inside the VM: the type
     // check `execute_with_ctx` runs has no path to resolve imports against, so
     // this is the only place a running program gets the same checking that
@@ -579,8 +585,6 @@ fn main() -> anyhow::Result<()> {
         seed_imports(&program, &safe, &mut checker);
         program.type_check(&mut checker)?;
     }
-
-    let mut base_env = build_vm_context(&safe)?;
 
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
@@ -792,6 +796,7 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         diagnostic::parse_error(&parse_err, &input);
         anyhow::anyhow!(parse_err.to_string())
     })?;
+    ensure_stdlib_signatures();
     let mut checker = TypeChecker::new_strict();
     seed_imports(&expanded.program, path, &mut checker);
     if let Err(err) = expanded.program.type_check(&mut checker) {
@@ -916,6 +921,20 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     Ok(VmContext::new()
         .with_resolver(Arc::clone(&resolver))
         .with_type_checker(Some(TypeChecker::new_strict())))
+}
+
+/// Publish the standard library's declared signatures to the type checker.
+///
+/// Registering the modules is what does it — `register_stdlib_module_metadata`
+/// forwards each module's signatures to `lk_core::typ`, process-wide. The
+/// commands that type-check without running (`lk check`, `lk compile`) never
+/// build a `VmContext`, so without this they fall back to the small table core
+/// keeps for its own tests and miss everything outside `os`/`env`/`math`.
+///
+/// The registry is built and dropped; what survives is global. Idempotent.
+pub(crate) fn ensure_stdlib_signatures() {
+    let mut registry = ModuleRegistry::new();
+    let _ = register_enabled_stdlib(&mut registry);
 }
 
 pub(crate) fn register_enabled_stdlib(registry: &mut ModuleRegistry) -> anyhow::Result<()> {

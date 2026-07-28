@@ -83,6 +83,7 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     // for `lk FILE`. Without this the two paths disagreed on which programs are
     // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
     // compiled and *ran* fine as a native binary, printing `s`.
+    crate::ensure_stdlib_signatures();
     let mut type_checker = lk_core::typ::TypeChecker::new();
     // Cross-file signatures first: without them an imported call is unchecked
     // here and fails much later in the lowering, naming an opcode.
