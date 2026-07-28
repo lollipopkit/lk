@@ -206,6 +206,19 @@ impl Compiler {
     pub(super) fn initializer_machine_width(&self, expr: &Expr) -> Option<crate::val::IntKind> {
         match expr {
             Expr::Paren(inner) => self.initializer_machine_width(inner),
+            // A shift keeps the width of what is being shifted.
+            //
+            // `let mask = flags << 3;` is a `u32` if `flags` is one, and until
+            // this was here it was nothing: the parser desugars `<<` into a call
+            // and a call's width came only from a declared return type. That
+            // mattered beyond tidiness — `(1u64 << 63) >> 63` could not be told
+            // to shift logically, because by the time the `>>` was lowered its
+            // operand had no proven width left to consult.
+            Expr::Call(name, args)
+                if matches!(name.as_str(), "__lk_shl" | "__lk_shr" | "__lk_shr_u") && args.len() == 2 =>
+            {
+                self.expr_machine_width(&args[0])
+            }
             // Both shapes, because name resolution rewrites a plain call:
             // `read()` is `Call("read", …)` in the parser's output and
             // `CallExpr(Var("read"), …)` by the time the compiler sees it.
@@ -237,6 +250,23 @@ impl Compiler {
             _ => {
                 self.machine_regs.remove(&reg);
             }
+        }
+    }
+
+    /// The machine width an expression is known to produce, without lowering it.
+    ///
+    /// A local whose slot was recorded, or a call whose declared return type
+    /// says so. Deliberately narrow: anything it cannot prove stays unproven,
+    /// which everywhere else in this path means "do the ordinary thing".
+    pub(in crate::vm::compiler) fn expr_machine_width(&self, expr: &Expr) -> Option<crate::val::IntKind> {
+        match expr {
+            Expr::Paren(inner) => self.expr_machine_width(inner),
+            Expr::Var(name) => self
+                .locals
+                .get(name)
+                .copied()
+                .and_then(|reg| self.machine_regs.get(&reg).copied()),
+            other => self.initializer_machine_width(other),
         }
     }
 

@@ -73,6 +73,10 @@ pub(crate) enum Builtin {
     // build blocks mid-instruction; a call per shift is the price of the check.
     Shl,
     Shr,
+    /// `__lk_shr_u(l, r)` — the compiler picks this when the left operand is a
+    /// `u64`, where an arithmetic shift would replicate a bit that is part of
+    /// the value rather than its sign.
+    ShrU,
     /// `symbol_address("name")` — the address of an `#[export]`ed function, and
     /// `call_address_2(addr, a, b)` — a call through one. Together they are
     /// what a driver table is made of: an array of function pointers, indexed

@@ -55,6 +55,22 @@ pub extern "C" fn lkrt_i64_shr_checked(lhs: i64, rhs: i64) -> i64 {
     lhs.wrapping_shr(rhs as u32)
 }
 
+/// `lhs >> rhs`, *logical* — zeros come in at the top — with the same range rule.
+///
+/// The one shift `>>` cannot always be. Every value in this language rides an
+/// `i64` carrier, so for a `u8`, `u16` or `u32` the high bits are zero and an
+/// arithmetic shift happens to give the right answer. A `u64` fills the carrier:
+/// bit 63 *is* the sign bit, and shifting `1u64 << 63` right by 63 answered -1
+/// instead of 1 — silently, on both backends, which is what a physical address
+/// or a page-table entry is made of.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_shr_checked(lhs: i64, rhs: i64) -> i64 {
+    if !(0..64).contains(&rhs) {
+        crate::panic::raise_str(&format!("__lk_shr_u shift amount {rhs} is out of range 0..63"));
+    }
+    ((lhs as u64).wrapping_shr(rhs as u32)) as i64
+}
+
 /// `lhs % rhs` for integers, aborting on a zero divisor. `i64::MIN % -1` wraps to
 /// `0` instead of overflowing.
 #[unsafe(no_mangle)]

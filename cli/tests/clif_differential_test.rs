@@ -429,6 +429,33 @@ fn machine_int_differential() {
                 "literal_in_a_wider_width",
                 "let a: u32 = 4294967295;\nreturn (a + 2) as Int;\n",
             ),
+            // `>>` on a `u64` is a *logical* shift, and this is the one width
+            // where that is not automatic.
+            //
+            // Every value rides an `i64` carrier, so for a `u8`, `u16` or `u32`
+            // the high bits are zero and an arithmetic shift has no sign to
+            // replicate — it happens to be right. A `u64` fills the carrier: bit
+            // 63 *is* the sign bit, and `(1u64 << 63) >> 63` answered -1 instead
+            // of 1, silently, on both backends. That value is a physical
+            // address, a page-table entry, the high half of a 64-bit BAR.
+            new(
+                "u64_shifts_logically",
+                "let one: u64 = 1;\nlet top = one << 63;\nreturn (top >> 63) as Int;\n",
+            ),
+            new(
+                "u64_shifts_logically_partway",
+                "let one: u64 = 1;\nlet top = one << 63;\nreturn (top >> 32) as Int;\n",
+            ),
+            // The width has to survive the `<<` for the `>>` to know: until it
+            // did, there was nothing left to consult by the time the second
+            // shift was lowered.
+            new(
+                "width_survives_a_shift",
+                "let one: u32 = 1;\nlet top = one << 31;\nreturn (top >> 31) as Int;\n",
+            ),
+            // And a signed shift is still arithmetic, which is the property the
+            // change must not have taken away.
+            new("i8_shifts_arithmetically", "let a: i8 = 0 - 128;\nlet s: i8 = 7;\nreturn (a >> s) as Int;\n"),
             // And through a function, so the width survives a call boundary —
             // the shape every driver helper has.
             new(

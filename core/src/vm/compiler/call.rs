@@ -21,7 +21,41 @@ use super::{
 };
 
 impl Compiler {
+    /// `__lk_shr` becomes `__lk_shr_u` when the value being shifted is a `u64`.
+    ///
+    /// Answering a `String` rather than a `&str` so the caller can rebind the
+    /// name: the operand has to be *peeked at* to decide, and peeking means
+    /// lowering it, which cannot happen twice.
+    fn unsigned_shift_name(&self, name: &str, args: &[Box<Expr>]) -> Result<alloc::string::String> {
+        use alloc::string::ToString;
+        if name != "__lk_shr" || args.len() != 2 {
+            return Ok(name.to_string());
+        }
+        let Some(kind) = self.expr_machine_width(&args[0]) else {
+            return Ok(name.to_string());
+        };
+        let fills_the_carrier = matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize);
+        Ok(if fills_the_carrier { "__lk_shr_u" } else { name }.to_string())
+    }
+
     pub(super) fn lower_named_call(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // `>>` on a `u64` is a *logical* shift.
+        //
+        // The parser desugars `a >> b` into `__lk_shr(a, b)` before anything
+        // knows a type, and the builtin behind that name shifts an `i64`
+        // arithmetically. Every value in this language rides an `i64` carrier,
+        // so for a `u8`, `u16` or `u32` the high bits are zero and the sign
+        // replication has nothing to replicate — it happens to be right. A
+        // `u64` fills the carrier: bit 63 *is* the sign bit, so
+        // `(1u64 << 63) >> 63` answered -1 instead of 1, silently and on both
+        // backends. That value is a physical address, a page-table entry, the
+        // high half of a 64-bit BAR.
+        //
+        // The choice is made here because this is the first place that has both
+        // the operator and a proven width. `usize` too, for the same reason on a
+        // 64-bit target.
+        let shift_name = self.unsigned_shift_name(name, args)?;
+        let name = shift_name.as_str();
         if let Some(signature) = self.function_signatures.get(name).cloned()
             && !signature.named_params.is_empty()
             && self.function_names.contains_key(name)

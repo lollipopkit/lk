@@ -51,7 +51,7 @@ pub(crate) fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
-        Builtin::Shl | Builtin::Shr => {
+        Builtin::Shl | Builtin::Shr | Builtin::ShrU => {
             if argc != 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
@@ -62,10 +62,13 @@ pub(crate) fn lower_builtin_call(
                 dst: Some(dst),
                 callee: AbiRef::new(
                     "arith",
-                    if matches!(builtin, Builtin::Shl) {
-                        "i64_shl"
-                    } else {
-                        "i64_shr"
+                    match builtin {
+                        Builtin::Shl => "i64_shl",
+                        // Logical, because the compiler only picks this name
+                        // when the left operand is a `u64` — where bit 63 is
+                        // part of the value and not its sign.
+                        Builtin::ShrU => "u64_shr",
+                        _ => "i64_shr",
                     },
                 ),
                 args: vec![lhs, rhs],

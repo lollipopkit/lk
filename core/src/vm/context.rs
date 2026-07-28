@@ -480,6 +480,12 @@ impl VmContext {
         self.install_runtime_builtin("call_address_2", NativeFunction::Plain(core_call_address_2_builtin), 3);
         self.install_runtime_builtin("__lk_shl", NativeFunction::Plain(core_shl_builtin), 2);
         self.install_runtime_builtin("__lk_shr", NativeFunction::Plain(core_shr_builtin), 2);
+        // The same shift, logical. The compiler picks this name when the left
+        // operand is a `u64`: every value rides an `i64` carrier, so for a `u8`,
+        // `u16` or `u32` the high bits are zero and an arithmetic shift happens
+        // to be right — a `u64` fills the carrier, and bit 63 is part of the
+        // value rather than its sign.
+        self.install_runtime_builtin("__lk_shr_u", NativeFunction::Plain(core_shr_unsigned_builtin), 2);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -1226,6 +1232,18 @@ fn core_shr_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> a
     let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr")?;
     let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr")?;
     Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shr(rhs)))
+}
+
+fn core_shr_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shr_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr_u")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr_u")?;
+    Ok(crate::val::RuntimeVal::Int(((lhs as u64).wrapping_shr(rhs)) as i64))
 }
 
 fn core_bit_not_builtin(

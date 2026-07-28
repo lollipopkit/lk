@@ -70,7 +70,7 @@ pub use abi::{
 };
 pub use arith::{
     lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked, lkrt_i64_shl_checked,
-    lkrt_i64_shr_checked,
+    lkrt_i64_shr_checked, lkrt_u64_shr_checked,
 };
 #[cfg(feature = "std")]
 pub use chan::{
