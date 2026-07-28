@@ -50,12 +50,28 @@ impl Compiler {
         if self.next_reg > self.peak_reg {
             self.peak_reg = self.next_reg;
         }
+        // A width fact belongs to the value in the register, and handing the
+        // register to a new value ends it.
+        //
+        // Registers are recycled at every statement boundary, and the fact
+        // outliving its value is a wrong answer rather than a missed
+        // optimisation: `let z: u8 = 0; println(z - 1)` answered -1 instead of
+        // 255 when the literal `1` happened to land on a register an `i8` had
+        // used two statements earlier. The literal takes the *other* operand's
+        // width only if its own register claims none — and that register was
+        // still claiming `i8`, so the two disagreed and nothing was wrapped.
+        // Nothing about the failing program mentioned `i8`.
+        self.machine_regs.remove(&reg);
         reg
     }
 
     pub(super) fn alloc_regs(&mut self, count: usize) -> Result<u16> {
         let count = u16::try_from(count).map_err(|_| anyhow!("Compiler register block too large: {count}"))?;
         let base = self.next_reg;
+        // Same reason as `alloc_reg`, for the whole block.
+        for reg in base..base.saturating_add(count) {
+            self.machine_regs.remove(&reg);
+        }
         self.next_reg = self
             .next_reg
             .checked_add(count)
