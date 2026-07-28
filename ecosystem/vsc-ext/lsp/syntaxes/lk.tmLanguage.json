@@ -501,7 +501,7 @@
       "patterns": [
         {
           "name": "support.type.primitive.lk",
-          "match": "\\b(Int|Float|String|Bool|Nil|Any|List|Map|Set|Tuple|Task|Channel|Box)\\b"
+          "match": "\\b(Int|Float|String|Bool|Nil|Any|List|Map|Set|Tuple|Task|Channel|Box|Boxed)\\b"
         },
         {
           "name": "support.type.primitive.lk",

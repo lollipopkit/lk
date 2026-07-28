@@ -285,20 +285,27 @@ impl IntKind {
         }
     }
 
+    /// Every machine-int kind.
+    ///
+    /// Enumerated because the names are read from outside — the editor grammars
+    /// keep their own copy, and `type_name_lists_agree` checks those against
+    /// this. The *names* are not repeated here: they stay in `name()`, whose
+    /// `match` the compiler keeps exhaustive.
+    pub const ALL: &'static [IntKind] = &[
+        Self::I8,
+        Self::I16,
+        Self::I32,
+        Self::I64,
+        Self::U8,
+        Self::U16,
+        Self::U32,
+        Self::U64,
+        Self::Isize,
+        Self::Usize,
+    ];
+
     pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "i8" => Self::I8,
-            "i16" => Self::I16,
-            "i32" => Self::I32,
-            "i64" => Self::I64,
-            "u8" => Self::U8,
-            "u16" => Self::U16,
-            "u32" => Self::U32,
-            "u64" => Self::U64,
-            "isize" => Self::Isize,
-            "usize" => Self::Usize,
-            _ => return None,
-        })
+        Self::ALL.iter().copied().find(|kind| kind.name() == name)
     }
 
     pub fn name(self) -> &'static str {
@@ -413,19 +420,35 @@ pub enum Type {
     Any,
 }
 
+/// The parameterless builtin types, with the name the language spells each.
+///
+/// A list rather than a `match` arm because three other places keep their own
+/// copy of these names — the tree-sitter grammar, the TextMate grammar, and
+/// completion's receiver table — and a copy nobody can read is a copy that
+/// drifts. `type_name_lists_agree` checks the editor grammars against this.
+pub const PRIMITIVE_TYPES: &[(&str, Type)] = &[
+    ("Int", Type::Int),
+    ("Float", Type::Float),
+    ("String", Type::String),
+    ("Bool", Type::Bool),
+    ("Nil", Type::Nil),
+    ("Any", Type::Any),
+];
+
+/// Builtin types that take parameters: `List<T>`, `Map<K, V>`, `Set<T>`, …
+///
+/// Names only. What each does with its parameters is `Type::parse`'s business,
+/// and the arities differ; this is the list of *names* the editors have to know
+/// about, which is the part that drifts.
+pub const CONTAINER_TYPE_NAMES: &[&str] = &["List", "Map", "Set", "Tuple", "Task", "Channel", "Box", "Boxed"];
+
 impl Type {
     pub fn parse(s: &str) -> Option<Type> {
         let s = s.trim();
 
         // Handle primitive types
-        match s {
-            "Int" => return Some(Type::Int),
-            "Float" => return Some(Type::Float),
-            "String" => return Some(Type::String),
-            "Bool" => return Some(Type::Bool),
-            "Nil" => return Some(Type::Nil),
-            "Any" => return Some(Type::Any),
-            _ => {}
+        if let Some((_, ty)) = PRIMITIVE_TYPES.iter().find(|(name, _)| *name == s) {
+            return Some(ty.clone());
         }
 
         if let Some(kind) = IntKind::parse(s) {

@@ -943,14 +943,15 @@ fn receiver_type_from_type(ty: &Type) -> Option<ReceiverType> {
     }
 }
 
+/// The receiver an annotation names, read through the language's own parser.
+///
+/// This used to be a fourth hand-written list of type names, and it had drifted:
+/// it accepted `Str`, which the language has never had, and it had no idea what
+/// `List<String>` was because it only ever saw the bare word. Asking `Type::parse`
+/// costs a string parse on a path that already tokenized the whole document, and
+/// it cannot disagree with the language about what a type is called.
 fn receiver_type_from_name(name: &str) -> Option<ReceiverType> {
-    match name {
-        "String" | "Str" => Some(ReceiverType::String),
-        "List" => Some(ReceiverType::List),
-        "Map" => Some(ReceiverType::Map),
-        "Set" => Some(ReceiverType::Set),
-        _ => None,
-    }
+    receiver_type_from_type(&Type::parse(name)?)
 }
 
 fn merged_symbol_source(source: &str, session_source: Option<&str>) -> String {

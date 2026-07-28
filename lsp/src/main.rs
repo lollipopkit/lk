@@ -4,6 +4,8 @@ mod server;
 #[cfg(test)]
 mod bench_test;
 #[cfg(test)]
+mod editor_grammar_test;
+#[cfg(test)]
 mod inlay_hint_test;
 
 pub use server::compute_inlay_hints;
