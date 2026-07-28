@@ -215,6 +215,12 @@ pub enum Inst {
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
     Not { dst: ValueId, src: ValueId },
+    /// `dst = -src` — float negation (`fneg`).
+    ///
+    /// Not `0.0 - src`: IEEE has two zeros, and `0.0 - 0.0` is `+0.0` where
+    /// `-(0.0)` is `-0.0`. The VM does a real negation, so this does too, or
+    /// the two backends disagree on a value a program can print.
+    FloatNeg { dst: ValueId, src: ValueId },
     /// `dst = lhs & rhs` on `Bool` (`and i1`). Used by fused conjunction
     /// branches (`TestEqIntI2`).
     BoolAnd { dst: ValueId, lhs: ValueId, rhs: ValueId },
@@ -868,6 +874,7 @@ fn render_inst(inst: &Inst) -> String {
             if *signed { "signed" } else { "unsigned" }
         ),
         Inst::Not { dst, src } => format!("{} = not {}", v(*dst), v(*src)),
+        Inst::FloatNeg { dst, src } => format!("{} = fneg {}", v(*dst), v(*src)),
         Inst::BoolAnd { dst, lhs, rhs } => format!("{} = bool.and {}, {}", v(*dst), v(*lhs), v(*rhs)),
         Inst::MaybePresent { dst, src, maybe_ty } => {
             format!("{} = maybe.present<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
@@ -1023,6 +1030,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::ZextBool { dst, .. }
         | Inst::IntTruncate { dst, .. }
         | Inst::Not { dst, .. }
+        | Inst::FloatNeg { dst, .. }
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
         | Inst::ListGetMaybe { dst, .. }
@@ -1065,6 +1073,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
+        | Inst::FloatNeg { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::UnwrapMaybeI64 { src, .. }
         | Inst::UnwrapMaybeF64 { src, .. }

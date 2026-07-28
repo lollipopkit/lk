@@ -1077,6 +1077,11 @@ impl Lower {
                 let v = b.ins().bxor_imm(s, 1);
                 self.set1(*dst, v);
             }
+            Inst::FloatNeg { dst, src } => {
+                let s = self.v(*src)?;
+                let v = b.ins().fneg(s);
+                self.set1(*dst, v);
+            }
             Inst::BoolAnd { dst, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
                 let v = b.ins().band(l, r);

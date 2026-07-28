@@ -176,6 +176,23 @@ impl Executor {
         Ok(())
     }
 
+    /// `A = -B`.
+    ///
+    /// Deliberately not lowered as `0 - B`: floats have two zeros, and
+    /// `-(0.0)` is `-0.0` while `0.0 - 0.0` is `0.0`. Negating `Int::MIN`
+    /// wraps, the same as every other integer overflow in the VM.
+    pub(super) fn dispatch_neg(&mut self, instr: Instr) -> Result<()> {
+        let index = self.stack_index_unchecked(instr.b());
+        let value = match &self.state.stack[index] {
+            RuntimeVal::Int(value) => RuntimeVal::Int(value.wrapping_neg()),
+            RuntimeVal::Float(value) => RuntimeVal::Float(-value),
+            other => bail!("Neg expected Int or Float, got {:?}", other.kind()),
+        };
+        self.write_unchecked(instr.a(), value);
+        self.pc += 1;
+        Ok(())
+    }
+
     pub(super) fn dispatch_not(&mut self, function: &Function, instr: Instr) -> Result<()> {
         let index = self.stack_index_unchecked(instr.b());
         let value = match &self.state.stack[index] {
@@ -630,6 +647,9 @@ impl Executor {
             }
             Opcode::Not => {
                 self.dispatch_not(function, instr)?;
+            }
+            Opcode::Neg => {
+                self.dispatch_neg(instr)?;
             }
             Opcode::CastTo => {
                 self.dispatch_cast(instr)?;

@@ -460,6 +460,9 @@ macro_rules! for_each_abi_fn {
             // `!x` on a boxed value: Bool negates, Nil is true, anything else
             // is the VM's loud type error.
             ("dyn", "not", lkrt_dyn_not, ReadsHost, [DynVal], I64);
+            // `-x` on a boxed value: Int and Float negate, anything else is
+            // the VM's loud type error.
+            ("dyn", "neg", lkrt_dyn_neg, ReadsHost, [DynVal], DynVal);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "cast_to_i64", lkrt_dyn_cast_to_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);

@@ -8,12 +8,19 @@ use crate::val::LiteralVal;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UnaryOp {
     Not,
+    /// `-expr`.
+    ///
+    /// Not a desugaring of `0 - expr`: those differ on floats, where `-0.0` is
+    /// a value distinct from `0.0 - 0.0`, and the point of writing `-x` is to
+    /// get the negation the hardware has.
+    Neg,
 }
 
 impl Display for UnaryOp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             UnaryOp::Not => write!(f, "!"),
+            UnaryOp::Neg => write!(f, "-"),
         }
     }
 }

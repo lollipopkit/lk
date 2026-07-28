@@ -328,6 +328,11 @@ pub enum Opcode {
     /// the source type is only known at runtime anyway, so a per-pair opcode
     /// would not save the dispatch on it.
     CastTo = 106,
+    /// `A = -B`.
+    ///
+    /// Not `0 - B`: the two differ on floats, where `-0.0` is a value distinct
+    /// from `0.0 - 0.0`, and negation is what the writer asked for.
+    Neg = 107,
 }
 
 impl Opcode {
@@ -444,6 +449,7 @@ impl Opcode {
             104 => Some(Self::Wide),
             105 => Some(Self::CallMethodK),
             106 => Some(Self::CastTo),
+            107 => Some(Self::Neg),
             _ => None,
         }
     }

@@ -324,8 +324,7 @@ pub(crate) fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, glob
             // and boxing a container copies it — so the write was refused and
             // the whole program fell back, for a call that never touched a
             // global.
-            Opcode::CallDirect
-                if !global_readers.get(instr.b() as usize).copied().unwrap_or(true) => {}
+            Opcode::CallDirect if !global_readers.get(instr.b() as usize).copied().unwrap_or(true) => {}
             Opcode::Jmp
             | Opcode::Test
             | Opcode::BrFalse

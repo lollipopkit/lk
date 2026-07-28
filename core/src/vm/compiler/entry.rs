@@ -13,10 +13,10 @@ use crate::{
 use super::{
     CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, NativeEntry,
     collect_function_inline_bodies, collect_function_machine_returns, collect_function_names,
-    collect_struct_field_machine_widths, collect_top_level_machine_widths,
     collect_function_signatures, collect_function_visible_let_names, collect_global_names_with_external,
-    collect_native_names, export_name_from_attributes, extern_name_from_attributes, function_frame_params,
-    global_slots_from_names, item_without_attributes,
+    collect_native_names, collect_struct_field_machine_widths, collect_top_level_machine_widths,
+    export_name_from_attributes, extern_name_from_attributes, function_frame_params, global_slots_from_names,
+    item_without_attributes,
 };
 
 impl Compiler {

@@ -93,7 +93,7 @@ fn test_numeric_type_error_message() {
         Box::new(Expr::Literal(LiteralVal::Bool(true))),
     );
     let err = checker.check_expr(&bad_expr).unwrap_err();
-    assert!(err.to_string().contains("must by numeric types"));
+    assert!(err.to_string().contains("must be numeric types"));
 }
 
 #[test]

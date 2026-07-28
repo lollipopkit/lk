@@ -8,7 +8,7 @@ use super::{NamedParamSig, TypeChecker};
 use crate::expr::Expr;
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
-use crate::val::{FunctionNamedParamType, LiteralVal, Type};
+use crate::val::{FunctionNamedParamType, IntKind, LiteralVal, Type};
 use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
@@ -1252,7 +1252,7 @@ impl TypeChecker {
             return Ok(NumericClass::Int);
         }
         Err(Self::type_err(
-            &format!("{label} must by numeric types"),
+            &format!("{label} must be numeric types"),
             Some(NumericHierarchy::expected_type()),
             Some(resolved.clone()),
             Some(expr.clone()),
@@ -1349,6 +1349,31 @@ impl TypeChecker {
                     self.inference_engine.add_constraint(expr_type, Type::Any);
                 }
                 Ok(Type::Bool)
+            }
+            // Negation keeps the operand's type: an `Int` stays an `Int`, a
+            // `Float` a `Float`. Widening to a `Number` union would throw away
+            // the width the rest of the checker relies on, and `-x` never
+            // changes it.
+            //
+            // Machine integers are admitted for the signed kinds only. `-x` on
+            // a `u8` has no answer the writer could have meant: the negation
+            // does not fit the type, and wrapping to `256 - x` silently is
+            // worse than saying so.
+            UnaryOp::Neg => {
+                let resolved = self.resolve_aliases(&expr_type);
+                if let Type::MachineInt(kind) = resolved {
+                    return match kind {
+                        IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64 | IntKind::Isize => Ok(expr_type),
+                        _ => Err(Self::type_err(
+                            "cannot negate an unsigned integer",
+                            Some(Type::Int),
+                            Some(resolved.clone()),
+                            Some(expr.clone()),
+                        )),
+                    };
+                }
+                self.classify_numeric_operand(&expr_type, &resolved, expr, "negation operand")?;
+                Ok(expr_type)
             }
         }
     }

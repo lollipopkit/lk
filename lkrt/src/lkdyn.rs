@@ -205,6 +205,18 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
     i64::from(!(v.tag == DYN_NIL || (v.tag == DYN_BOOL && v.payload == 0)))
 }
 
+/// `-x` on a boxed value: an Int wraps at `i64::MIN` and a Float gets a real
+/// `fneg`, exactly as `Executor::dispatch_neg` does. Anything else is the
+/// VM's loud type error.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_neg(v: LkDyn) -> LkDyn {
+    match v.tag {
+        DYN_I64 => from_i64(v.payload.wrapping_neg()),
+        DYN_F64 => from_f64(-v.f64_value()),
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 /// `!x`: a Bool negates, Nil is `true`, anything else is the VM's loud
 /// type error.
 #[unsafe(no_mangle)]

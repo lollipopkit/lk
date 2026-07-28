@@ -638,6 +638,7 @@ impl<'a> Parser<'a> {
     }
 
     /// - `!expr`
+    /// - `-expr`
     /// - `expr`
     fn parse_unary(&mut self) -> Result<Expr> {
         if self.eof() {
@@ -645,6 +646,25 @@ impl<'a> Parser<'a> {
         }
         let token = &self.tokens[self.pos];
         match token {
+            // `-expr`.
+            //
+            // The lexer already folds a *literal* `-5` into `Int(-5)` where it
+            // can tell an operand is expected, which is why the language got
+            // this far without a negation operator at all: `-5` worked and
+            // `-x` was a syntax error everywhere, with `0 - x` as the
+            // workaround. That lexer path stays — it is the only thing that can
+            // spell `-9223372036854775808`, whose magnitude does not fit in an
+            // `i64` — so this arm folds literals the same way to keep the two
+            // routes producing identical code.
+            Token::Sub => {
+                self.pos += 1;
+                let expr = self.deeper(Self::parse_unary)?;
+                Ok(match expr {
+                    Expr::Literal(LiteralVal::Int(value)) => Expr::Literal(LiteralVal::Int(-value)),
+                    Expr::Literal(LiteralVal::Float(value)) => Expr::Literal(LiteralVal::Float(-value)),
+                    other => Expr::Unary(UnaryOp::Neg, Box::new(other)),
+                })
+            }
             Token::Not => {
                 self.pos += 1;
                 let expr = self.deeper(Self::parse_unary)?;

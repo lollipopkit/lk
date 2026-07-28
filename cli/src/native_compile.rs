@@ -2,6 +2,7 @@ use super::*;
 
 /// The lk-api C-ABI staticlib (VM + `lk_hybrid_*` bridge), built on demand.
 /// Shared by the Tier 0 bundle and the Tier 1 hybrid link.
+#[cfg(feature = "aot")]
 pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
     // A caller that supplies its own `lkrt` (`LKRT_STATICLIB`) must be able to
     // supply a matching `lk-api`. Both archives statically link `std`, so two
@@ -37,6 +38,7 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
 }
 
 /// Escape a string for embedding as a C double-quoted string literal.
+#[cfg(feature = "aot")]
 pub(super) fn c_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for ch in s.chars() {

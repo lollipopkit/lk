@@ -1,5 +1,3 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use core::ops::Range;
 
 use anyhow::{Result, bail};

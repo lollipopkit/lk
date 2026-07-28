@@ -274,6 +274,7 @@ impl Compiler {
         let dst = self.alloc_reg();
         let opcode = match op {
             UnaryOp::Not => Opcode::Not,
+            UnaryOp::Neg => Opcode::Neg,
         };
         self.emit(Instr::abc(
             opcode,

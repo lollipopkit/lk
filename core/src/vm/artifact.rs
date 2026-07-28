@@ -47,7 +47,7 @@ use super::{
 // `false` is the *permissive* answer — a v11 artifact would let a
 // global-writing method run against a temporary copy of its module's globals
 // and silently drop the write, so this one cannot degrade quietly either.
-pub const MODULE_ARTIFACT_VERSION: u32 = 12;
+pub const MODULE_ARTIFACT_VERSION: u32 = 13;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -513,7 +513,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 12);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 13);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

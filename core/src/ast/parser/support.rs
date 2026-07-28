@@ -462,6 +462,7 @@ impl<'a> Parser<'a> {
                 | Token::LBrace
                 | Token::LParen
                 | Token::Not
+                | Token::Sub
                 | Token::BitNot
                 | Token::Select
                 | Token::Pipe

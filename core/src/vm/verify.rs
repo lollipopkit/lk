@@ -268,6 +268,7 @@ impl FunctionVerifier<'_> {
                 | Opcode::ToIter
                 | Opcode::ToString
                 | Opcode::Not
+                | Opcode::Neg
                 | Opcode::IsNil
                 | Opcode::IsList
                 | Opcode::IsMap

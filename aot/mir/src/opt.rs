@@ -601,6 +601,7 @@ fn is_removable(inst: &Inst) -> bool {
         | Inst::ZextBool { .. }
         | Inst::IntTruncate { .. }
         | Inst::Not { .. }
+        | Inst::FloatNeg { .. }
         | Inst::BoolAnd { .. }
         | Inst::MaybePresent { .. }
         | Inst::MaybeValue { .. }
@@ -656,6 +657,7 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
+        | Inst::FloatNeg { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::MaybeValue { src, .. }
         | Inst::MaybeWrap { src, .. }

@@ -100,7 +100,11 @@ pub(crate) fn lower_builtin_call(
             });
             // `u64_lt` answers 1 or 0; the comparison's result is a Bool
             // everywhere else, so it is one here too.
-            let ty = if matches!(builtin, Builtin::LtU) { Ty::Bool } else { Ty::I64 };
+            let ty = if matches!(builtin, Builtin::LtU) {
+                Ty::Bool
+            } else {
+                Ty::I64
+            };
             if matches!(builtin, Builtin::LtU) {
                 let zero = ssa.new_val();
                 insts.push(Inst::Const {

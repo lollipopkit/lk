@@ -375,6 +375,64 @@ mod tests {
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
     }
 
+    /// `-x` — negation of anything that is not a literal.
+    ///
+    /// The language had no negation operator at all: `UnaryOp` held only
+    /// `Not`, and only the *lexer* could produce a negative number, by folding
+    /// `-5` into an `Int(-5)` token where it could tell an operand was
+    /// expected. So `-5` worked and `-x` was a syntax error in every position,
+    /// with `0 - x` as the workaround. That workaround is also not a
+    /// substitute: `0.0 - 0.0` is `+0.0` where `-(0.0)` is `-0.0`.
+    #[test]
+    fn negation_works_on_values_and_not_only_literals() {
+        let source = "let i = 7;\n\
+                      let f = 2.5;\n\
+                      let z = 0.0;\n\
+                      let neg = |v| -v;\n\
+                      return [-i, -f, -(-i), neg(i), -z, -9223372036854775808];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("scalars only");
+        assert_eq!(items[0], RuntimeVal::Int(-7));
+        assert_eq!(items[1], RuntimeVal::Float(-2.5));
+        assert_eq!(items[2], RuntimeVal::Int(7));
+        assert_eq!(items[3], RuntimeVal::Int(-7));
+        // The zero's *sign* survives, which is the whole reason this is a real
+        // negation and not `0 - x`: the latter answers `+0.0` here. `==` cannot
+        // see the difference, so ask for the sign bit.
+        let RuntimeVal::Float(negative_zero) = items[4] else {
+            panic!("expected a float");
+        };
+        assert!(
+            negative_zero == 0.0 && negative_zero.is_sign_negative(),
+            "-0.0 should keep its sign, got {negative_zero}"
+        );
+        // `i64::MIN`'s magnitude does not fit an `i64`, so the lexer still owns
+        // this one; it has to keep agreeing with the operator.
+        assert_eq!(items[5], RuntimeVal::Int(i64::MIN));
+    }
+
+    #[test]
+    fn negating_a_non_number_is_a_type_error() {
+        let tokens = crate::token::Tokenizer::tokenize("-\"text\"").expect("tokenize");
+        let expr = crate::ast::Parser::new(&tokens).parse().expect("parse");
+        let error = crate::typ::TypeChecker::new()
+            .check_expr(&expr)
+            .expect_err("negating a String has no answer");
+        assert!(
+            error.to_string().contains("numeric"),
+            "the error should say the operand is not numeric, said: {error}"
+        );
+    }
+
     #[test]
     fn long_string_elements_survive_every_read_path() {
         // `ShortStr` inlines up to seven bytes. Every path that reads an
@@ -397,7 +455,9 @@ mod tests {
         let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
             panic!("expected a heap list");
         };
-        let items = list.collect_owned().expect("results are heap objects, not inline strings");
+        let items = list
+            .collect_owned()
+            .expect("results are heap objects, not inline strings");
 
         let long = |value: &RuntimeVal| -> String {
             match value {
@@ -448,7 +508,9 @@ mod tests {
         let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
             panic!("result handle must stay live in the outcome state");
         };
-        let items = list.collect_owned().expect("the result list holds no inline-limited strings");
+        let items = list
+            .collect_owned()
+            .expect("the result list holds no inline-limited strings");
         assert_eq!(items[0], RuntimeVal::Int(7));
         let RuntimeVal::Obj(text) = items[1] else {
             panic!("expected the long string element on the heap");

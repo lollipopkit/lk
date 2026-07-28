@@ -472,8 +472,18 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Commands::Bundle { file, output } => {
-                run_bundle(&file, &output)?;
-                return Ok(());
+                #[cfg(not(feature = "aot"))]
+                {
+                    let _ = (&file, &output);
+                    anyhow::bail!(
+                        "bundling links the VM in through lk-api's staticlib, which is part of the native backend; rebuild with `--features aot`"
+                    );
+                }
+                #[cfg(feature = "aot")]
+                {
+                    run_bundle(&file, &output)?;
+                    return Ok(());
+                }
             }
             Commands::Coverage {
                 file,
@@ -856,6 +866,7 @@ fn heap_object_limit_from_env() -> Option<usize> {
 /// embeds the program source and the VM (via lk-api's C-ABI staticlib). 100%
 /// coverage — the produced binary just runs the VM at launch, so any program that
 /// runs under the VM bundles (unlike the MIR native path). Linux/`cc` for now.
+#[cfg(feature = "aot")]
 fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     let source =
         std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
@@ -1003,6 +1014,7 @@ struct PendingBundle {
     dep_consts: Vec<(String, BundledConst)>,
 }
 
+#[cfg(feature = "aot")]
 fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Result<BundleOutcome> {
     use lk_core::vm::{Instr, Opcode};
 
@@ -1484,7 +1496,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
             // alias's slot: a module of its own with that name shadows the
             // import, which is what the VM does, and folding would answer the
             // constant where the VM answers the variable.
-            for (alias, original) in renamed_items.iter().filter(|(_, original)| *original == name) {
+            for (alias, _) in renamed_items.iter().filter(|(_, original)| *original == name) {
                 let slot = slot_of(alias, &mut merged.module.globals);
                 let written = merged.module.functions.iter().any(|function| {
                     function.code.iter().any(|raw| {
@@ -1827,6 +1839,7 @@ enum BundledConst {
 /// a module whose top level does arithmetic this does not evaluate, and saying
 /// which register held what is the difference between "fix your constant" and
 /// "the bundler is broken".
+#[cfg(feature = "aot")]
 fn int_operand(
     reg_const: &std::collections::HashMap<u8, BundledConst>,
     reg: u8,

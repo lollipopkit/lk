@@ -804,7 +804,7 @@ fn test_macro_generated_type_diagnostic_includes_origin_stack() {
     let diagnostic = result
         .diagnostics
         .iter()
-        .find(|diag| diag.message.contains("must by numeric types"))
+        .find(|diag| diag.message.contains("must be numeric types"))
         .expect("expected numeric type diagnostic");
     assert!(diagnostic.message.contains("Macro origin stack:"));
     assert!(diagnostic.message.contains("bad_numeric"));

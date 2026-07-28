@@ -320,6 +320,46 @@ pub(super) fn lower(
                 }
             }
         }
+        Opcode::Neg => {
+            // `-x`: `a` = dst, `b` = src. Integers negate as `0 - x` (exact,
+            // and it wraps at `i64::MIN` exactly as the VM's `wrapping_neg`
+            // does); floats need a real `fneg`, because `0.0 - 0.0` is `+0.0`
+            // where `-(0.0)` is `-0.0`. A boxed operand falls back — there is
+            // no `dyn.neg` in the ABI yet.
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            let dst = ssa.new_val();
+            match ty {
+                Ty::I64 => {
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    insts.push(Inst::IntBin {
+                        dst,
+                        op: IntBinOp::Sub,
+                        lhs: zero,
+                        rhs: v,
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::I64));
+                }
+                Ty::F64 => {
+                    insts.push(Inst::FloatNeg { dst, src: v });
+                    ssa.write(instr.a(), block, (dst, Ty::F64));
+                }
+                // A boxed operand dispatches at runtime, the same way `Not`
+                // does: Int and Float negate, anything else raises.
+                Ty::Dyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "neg"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            }
+        }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as
             // `true`; a non-bool/non-nil operand is a VM error, so reject (fall back).

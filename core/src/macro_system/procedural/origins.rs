@@ -953,6 +953,7 @@ fn generated_compound_assign_origin_label(op: &BinOp) -> &'static str {
 fn generated_unary_origin_label(op: &UnaryOp) -> &'static str {
     match op {
         UnaryOp::Not => "unary not",
+        UnaryOp::Neg => "unary neg",
     }
 }
 

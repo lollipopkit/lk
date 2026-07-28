@@ -22,7 +22,7 @@ fn reports_numeric_operand_error() -> Result<(), Box<dyn Error>> {
     cmd.args(["check", script_path.to_str().unwrap()]);
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("must by numeric types"));
+        .stderr(predicate::str::contains("must be numeric types"));
 
     Ok(())
 }

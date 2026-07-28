@@ -15,9 +15,6 @@
 //! than fail: `&s[2..5]` on `"héllo"` lands inside `é`, and inside the VM a
 //! panic is not an error the program can see — it takes the process down.
 
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
-
 /// The number of characters in `text`.
 ///
 /// The ASCII fast path matters: this is on the hot path for every `s.len()`,

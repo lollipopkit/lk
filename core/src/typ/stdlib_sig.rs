@@ -107,7 +107,10 @@ fn registry() -> &'static Mutex<HashMap<&'static str, StdlibCallableSig>> {
 /// the same signature is fine — module registration is idempotent and happens
 /// per `ModuleRegistry`, not once per process.
 pub fn register_stdlib_signatures(signatures: &'static [StdlibCallableSig]) {
-    let Ok(mut registry) = registry().lock() else {
+    // `lock()` is fallible on std (a poisoned mutex) and infallible on the
+    // no_std shim, so `let Ok(..) else` reads as an irrefutable pattern there.
+    // `ok()` says the same thing in one shape both profiles accept.
+    let Some(mut registry) = registry().lock().ok() else {
         return;
     };
     for signature in signatures {
