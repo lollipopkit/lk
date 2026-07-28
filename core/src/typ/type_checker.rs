@@ -51,8 +51,29 @@ pub struct TypeError {
     pub expected: Option<Type>,
     pub actual: Option<Type>,
     pub expr: Option<Expr>,
+    /// The statement the error was raised in.
+    ///
+    /// `Expr` carries no position, so an error about an expression can only be
+    /// placed by searching the token stream for something that looks like it —
+    /// which finds the *first* match, not this one (`let a = 1; let b = 1;`
+    /// reported the second one's error on the first). The enclosing statement
+    /// does have a position, and `Stmt::type_check` attaches it on the way out,
+    /// innermost first.
+    pub span: Option<Span>,
     pub function_name: Option<String>,
     pub parameter_name: Option<String>,
+}
+
+impl TypeError {
+    /// Remember the statement this error came from, if it does not know already.
+    ///
+    /// Innermost wins: a nested statement attaches its own span before an outer
+    /// one gets the chance, and the inner one is the smaller, truer range.
+    pub fn attach_span(&mut self, span: &Span) {
+        if self.span.is_none() {
+            self.span = Some(span.clone());
+        }
+    }
 }
 
 impl core::fmt::Display for TypeError {
@@ -152,6 +173,7 @@ impl TypeChecker {
             expected,
             actual,
             expr,
+            span: None,
             function_name: None,
             parameter_name: None,
         };
@@ -173,6 +195,7 @@ impl TypeChecker {
             expected: None,
             actual: None,
             expr: None,
+            span: None,
             function_name: Some(function_name.to_string()),
             parameter_name: parameter_name.map(str::to_string),
         })

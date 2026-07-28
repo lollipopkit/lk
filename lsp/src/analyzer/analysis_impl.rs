@@ -1167,6 +1167,13 @@ impl LkAnalyzer {
         spans: &[Span],
         content: &str,
     ) -> Range {
+        // The statement the error came from, when one was recorded. Preferred
+        // over the search below, which matches the *first* token in the file
+        // that looks like the offending expression — in `let a = 1; let b = 1;`
+        // that is the wrong `1`.
+        if let Some(span) = &recorded.span {
+            return Self::span_to_range(span);
+        }
         if let Some(type_error) = recorded.typed.as_ref() {
             if let Some(expr) = &type_error.expr {
                 if let Some(range) = Self::range_for_expr(expr, tokens, spans) {

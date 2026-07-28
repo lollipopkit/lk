@@ -84,13 +84,29 @@ pub(crate) struct DocumentTypes {
 #[derive(Debug, Clone)]
 pub(crate) struct RecordedTypeError {
     pub(crate) typed: Option<typ::TypeError>,
+    /// The span of an error raised as a `ParseError` rather than a `TypeError`.
+    ///
+    /// A `let` whose annotation disagrees with its value is reported that way,
+    /// and it already carries the statement's position — the diagnostic just
+    /// never read it, and fell back to highlighting the first line of the file.
+    pub(crate) span: Option<Span>,
     pub(crate) message: String,
 }
 
 impl RecordedTypeError {
     fn from_error(error: &anyhow::Error) -> Self {
+        let typed = error.downcast_ref::<typ::TypeError>().cloned();
+        let span = typed
+            .as_ref()
+            .and_then(|type_error| type_error.span.clone())
+            .or_else(|| {
+                error
+                    .downcast_ref::<lk_core::token::ParseError>()
+                    .and_then(|parse_error| parse_error.span.clone())
+            });
         Self {
-            typed: error.downcast_ref::<typ::TypeError>().cloned(),
+            typed,
+            span,
             message: error.to_string(),
         }
     }

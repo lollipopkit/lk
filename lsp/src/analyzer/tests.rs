@@ -686,6 +686,26 @@ fn test_one_bad_statement_does_not_cost_the_rest_their_hints() {
 }
 
 #[test]
+fn test_type_error_points_at_the_offending_statement() {
+    let mut analyzer = create_analyzer();
+    // Two statements whose expressions are token-identical. Locating the error
+    // by hunting the token stream finds the first `1`; the error is in the
+    // second statement.
+    let result = analyzer.analyze("let a: Int = 1;\nlet b: Bool = 1;\n");
+
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("Type mismatch"))
+        .unwrap_or_else(|| panic!("expected a type mismatch, got {:?}", result.diagnostics));
+    assert_eq!(
+        diagnostic.range.start.line, 1,
+        "the error belongs to line 2, got {:?}",
+        diagnostic.range
+    );
+}
+
+#[test]
 fn test_expression_document_is_type_checked_once() {
     let mut analyzer = create_analyzer();
     // A document that parses as a single expression never reaches the statement

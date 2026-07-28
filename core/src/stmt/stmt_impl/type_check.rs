@@ -16,6 +16,39 @@ use hashbrown::HashMap;
 impl Stmt {
     /// 静态类型检查语句
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        let result = self.type_check_inner(type_checker);
+        let Err(error) = result else {
+            return Ok(());
+        };
+        // Give the error this statement's position, if it does not have one.
+        // An expression has no position of its own, so without this the only
+        // way to place the error is to hunt the token stream for a token that
+        // looks like the offending expression — which finds the first such
+        // token in the file rather than this one.
+        let Some(span) = self.span() else {
+            return Err(error);
+        };
+        Err(match error.downcast::<crate::typ::TypeError>() {
+            Ok(mut type_error) => {
+                type_error.attach_span(&span);
+                anyhow!(type_error)
+            }
+            Err(error) => error,
+        })
+    }
+
+    /// This statement's own position, for the statements that carry one.
+    fn span(&self) -> Option<crate::token::Span> {
+        match self {
+            Stmt::Let { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::CompoundAssign { span, .. }
+            | Stmt::Define { span, .. } => span.clone(),
+            _ => None,
+        }
+    }
+
+    fn type_check_inner(&self, type_checker: &mut TypeChecker) -> Result<()> {
         match self {
             Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => item.type_check(type_checker),
             Stmt::TypeAlias { name, target } => {
