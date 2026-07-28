@@ -6,7 +6,7 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::runtime_display_value;
+use lk_stdlib_common::runtime_native::{runtime_display_value, runtime_values_equal};
 
 thread_local! {
     static STDOUT: RefCell<String> = const { RefCell::new(String::new()) };
@@ -159,7 +159,7 @@ fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_assert_args(args, 2, 3, "assert_eq")?;
     let values = args.as_slice();
-    if runtime_values_equal(&values[0], &values[1]) {
+    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
     }
     let actual = runtime_display(&values[0], runtime)?;
@@ -175,7 +175,7 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_assert_args(args, 2, 3, "assert_ne")?;
     let values = args.as_slice();
-    if !runtime_values_equal(&values[0], &values[1]) {
+    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
     }
     let mut message = "assertion failed: values should not be equal".to_string();
@@ -246,10 +246,6 @@ fn runtime_string_maybe(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     })
 }
 
-fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal) -> bool {
-    left == right
-}
-
 fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
     if args.has_named() {
         return Err(anyhow!("{name}() does not accept named arguments"));
@@ -291,5 +287,45 @@ impl ModuleProvider for UnsupportedWebModule {
             "module '{}' is not available in the browser playground",
             self.name
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lk_core::stmt::stmt_parser::StmtParser;
+    use lk_core::token::Tokenizer;
+    use lk_core::vm::{ModuleResolver, ProgramExec, VmContext};
+    use std::sync::Arc;
+
+    fn run(source: &str) -> Result<()> {
+        let tokens = Tokenizer::tokenize(source)?;
+        let program = StmtParser::new(&tokens).parse_program()?;
+        let mut registry = ModuleRegistry::new();
+        register_web_stdlib(&mut registry)?;
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut env = VmContext::new().with_resolver(resolver);
+        program.execute_with_ctx(&mut env)?;
+        Ok(())
+    }
+
+    /// `assert_eq` in the playground compared values, not handles.
+    ///
+    /// It was `left == right` — the *derived* `PartialEq` on `RuntimeVal`,
+    /// which is structural for a `ShortStr` and handle identity for an `Obj`.
+    /// So an assertion held or failed depending on whether its strings fitted
+    /// in seven bytes, and the same program passed in the CLI and failed in the
+    /// browser.
+    #[test]
+    fn assert_eq_compares_values_not_handles() {
+        // Seven bytes or fewer: inline, and this always worked.
+        run(r#"assert_eq("ab", "ab");"#).expect("short strings");
+        // Eight or more: a heap object each, and this did not.
+        run(r#"assert_eq("abcdefghij", "abcdefghij");"#).expect("long strings");
+        run("assert_eq([1, 2], [1, 2]);").expect("lists");
+        run(r#"assert_eq({"a": 1}, {"a": 1});"#).expect("maps");
+        // And it still tells unequal values apart.
+        run(r#"assert_eq("abcdefghij", "abcdefghik");"#).expect_err("different strings must fail");
+        run("assert_eq([1, 2], [1, 3]);").expect_err("different lists must fail");
     }
 }
