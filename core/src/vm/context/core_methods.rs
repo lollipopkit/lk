@@ -742,9 +742,13 @@ fn dispatch_string_builtin_method(
                 bail!("string.find() expects 1 argument (needle), got {}", positional.len());
             }
             let needle = extract_string_detached(&positional[0], heap, "string.find() needle")?;
-            match s.find(needle.as_str()) {
-                Some(pos) => Ok(Some(RuntimeVal::Int(pos as i64))),
-                None => Ok(Some(RuntimeVal::Int(-1))),
+            // A character index, and `nil` when absent. It used to answer a
+            // *byte* offset and `-1`: the offset could not be handed back to
+            // `substring` (which counts characters), and `-1` is itself a valid
+            // index, so a missed search went wrong quietly instead of loudly.
+            match crate::util::text::find_char_index(s, needle.as_str()) {
+                Some(index) => Ok(Some(RuntimeVal::Int(index as i64))),
+                None => Ok(Some(RuntimeVal::Nil)),
             }
         }
         "substring" => {
@@ -760,16 +764,10 @@ fn dispatch_string_builtin_method(
             let RuntimeVal::Int(length) = &positional[1] else {
                 bail!("string.substring() length must be Int");
             };
-            let start_val = *start as usize;
-            let length_val = *length as usize;
-
-            let end = (start_val.saturating_add(length_val)).min(s.len());
-
-            if end <= start_val {
-                Ok(Some(make_string_val("", heap)))
-            } else {
-                Ok(Some(make_string_val(&s[start_val..end], heap)))
-            }
+            // Character positions. Byte slicing panicked on a multi-byte
+            // boundary — `"héllo".substring(2, 3)` took the process down.
+            let text = crate::util::text::substring(s, *start as usize, *length as usize);
+            Ok(Some(make_string_val(text, heap)))
         }
         "reverse" => {
             if !positional.is_empty() {
@@ -1100,7 +1098,9 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
 
 fn runtime_string_access(value: &str, field: &str) -> Option<RuntimeVal> {
     match field {
-        "len" => Some(RuntimeVal::Int(value.len() as i64)),
+        // Characters, like `s.len()` and `s[i]`. This answered bytes, so
+        // `s.len` and `s.len()` disagreed on the same string.
+        "len" => Some(RuntimeVal::Int(crate::util::text::char_len(value) as i64)),
         _ => None,
     }
 }

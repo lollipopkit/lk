@@ -41,7 +41,9 @@ impl StringModule {
     #[stdlib_export(params(text: String), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "len()")?;
-        Ok(RuntimeVal::Int(value.len() as i64))
+        // Characters. This answered bytes while the method form `s.len()`
+        // answered characters, so `"héllo wörld"` was 13 here and 11 there.
+        Ok(RuntimeVal::Int(lk_core::util::text::char_len(&value) as i64))
     }
 
     #[stdlib_export(params(text: String), returns = String)]
@@ -155,15 +157,11 @@ impl StringModule {
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
         let start = usize_arg(&values[1], "substring() second argument")?;
         let length = usize_arg(&values[2], "substring() third argument")?;
-        if start > value.len() {
-            bail!("substring() start index out of bounds");
-        }
-        // `saturating_add`, not `+`: `usize` is 32-bit on the bare-metal
-        // targets, where two large `Int` arguments overflow it. In release
-        // that wraps to a small `end`, and `value[start..end]` with
-        // `end < start` panics — which on an MCU means a halt, not a message.
-        let end = core::cmp::min(start.saturating_add(length), value.len());
-        Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
+        // Character positions, and never a panic: byte slicing halted on a
+        // multi-byte boundary, which on an MCU means a halt rather than a
+        // message. Out of range yields an empty string, as the method form did.
+        let text = lk_core::util::text::substring(&value, start, length);
+        Ok(runtime_string_value(text, runtime.heap_mut()))
     }
 
     #[stdlib_export(params(text: String, separator: String), returns = List<String>)]
@@ -262,12 +260,12 @@ impl StringModule {
         } else {
             0
         };
-        if start > value.len() {
-            return Ok(RuntimeVal::Nil);
-        }
-        Ok(value[start..]
-            .find(pattern.as_ref())
-            .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int((start + index) as i64)))
+        // Character positions in and out, so the answer can be handed straight
+        // to `substring`. `start` past the end simply finds nothing.
+        Ok(
+            lk_core::util::text::find_char_index_from(&value, pattern.as_ref(), start)
+                .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64)),
+        )
     }
 
     #[stdlib_export(params(text: String), returns = Bool)]

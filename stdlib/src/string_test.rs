@@ -164,10 +164,49 @@ mod tests {
     }
 
     #[test]
-    fn test_string_substring_out_of_bounds_error() {
-        let source = "use string; return string.substring(\"abc\", 10, 1);";
-        let err = execute_string(source).expect_err("out-of-bounds substring should error");
-        assert!(err.to_string().contains("start index out of bounds"));
+    fn test_string_substring_out_of_range_is_empty() -> Result<()> {
+        // Clamped, not an error — the same as everywhere else a position runs
+        // past the end in this language: `s[1..99]` answers `"bc"`,
+        // `xs[0..99]` answers the whole list, `xs.get(99)` answers nil. This
+        // was the module form's own convention (it raised) while the method
+        // form clamped, so the two disagreed about the same call.
+        let result = execute_string("use string; return string.substring(\"abc\", 10, 1);")?;
+        assert_eq!(result.first_return(), &RuntimeVal::ShortStr(ShortStr::new("").expect("empty")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_and_module_forms_agree_on_multibyte_text() -> Result<()> {
+        // The two spellings of every string operation had drifted apart:
+        // `"héllo wörld".len()` answered 11 (characters) while
+        // `string.len(…)` answered 13 (bytes), `find` answered `-1` on one
+        // side and `nil` on the other, and `substring` panicked on both when a
+        // position landed inside a multi-byte character. They share one
+        // implementation now; this is what keeps them sharing it.
+        let source = r#"
+            use string;
+            let s = "héllo wörld";
+            return [
+                s.len() == string.len(s),
+                s.find("wörld") == string.find(s, "wörld"),
+                s.find("zz") == string.find(s, "zz"),
+                s.substring(2, 3) == string.substring(s, 2, 3),
+                s.substring(0, s.len()) == s,
+                s.substring(s.find("wörld"), 5) == "wörld",
+                s.len() == 11,
+                s.find("zz") == nil,
+            ];
+        "#;
+        let result = execute_string(source)?;
+        let TypedList::Bool(values) = runtime_list(result.first_return(), result.state.heap()) else {
+            panic!("expected a list of booleans");
+        };
+        assert!(
+            values.iter().all(|holds| *holds),
+            "method and module forms disagree: {values:?}"
+        );
+        Ok(())
     }
 
     #[test]
