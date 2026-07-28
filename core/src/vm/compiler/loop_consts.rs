@@ -328,7 +328,9 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
 
 fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>, keys: &mut Vec<ScalarLoopConstKey>) {
     match stmt {
-        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => collect_stmt_folded_int_consts(item, locals, keys),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
+            collect_stmt_folded_int_consts(item, locals, keys)
+        }
         Stmt::Let { pattern, value, .. } => {
             collect_expr_folded_int_consts(value, locals, keys);
             if let crate::expr::Pattern::Variable(name) = pattern {

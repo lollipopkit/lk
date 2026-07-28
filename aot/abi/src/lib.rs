@@ -567,6 +567,7 @@ macro_rules! for_each_abi_fn {
             ("arith", "u64_lt", lkrt_u64_lt, Pure, [I64, I64], I64);
             ("arith", "u64_div", lkrt_u64_div, ReadsHost, [I64, I64], I64);
             ("arith", "u64_rem", lkrt_u64_rem, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_to_f64", lkrt_u64_to_f64, Pure, [I64], F64);
         }
     };
 }

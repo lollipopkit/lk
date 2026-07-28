@@ -7,20 +7,20 @@ use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    LParen,            // (
-    RParen,            // )
-    LBrace,            // {
-    RBrace,            // }
-    LBracket,          // [
-    RBracket,          // ]
-    Dot,               // .
-    ColonColon,        // ::
-    OptionalDot,       // ?.
-    Colon,             // :
-    Comma,             // ,
-    Semicolon,         // ;
-    Dollar,            // $
-    Hash,              // #
+    LParen,      // (
+    RParen,      // )
+    LBrace,      // {
+    RBrace,      // }
+    LBracket,    // [
+    RBracket,    // ]
+    Dot,         // .
+    ColonColon,  // ::
+    OptionalDot, // ?.
+    Colon,       // :
+    Comma,       // ,
+    Semicolon,   // ;
+    Dollar,      // $
+    Hash,        // #
     /// `defer` — run this when the function is done, whichever way it leaves.
     Defer,
     /// `@`, which the grammar gives no meaning to.
@@ -34,7 +34,7 @@ pub enum Token {
     ///
     /// Outside a macro it is still an error; it is a *parse* error now rather
     /// than a lexer one, which is the same answer with a better message.
-    At,                // @
+    At, // @
     Assign,            // =
     AddAssign,         // +=
     SubAssign,         // -=
@@ -1248,7 +1248,8 @@ impl<'a> Tokenizer<'a> {
     fn is_punctuation(&self, c: char) -> bool {
         matches!(
             c,
-            '@' | '(' | ')'
+            '@' | '('
+                | ')'
                 | '{'
                 | '}'
                 | '['

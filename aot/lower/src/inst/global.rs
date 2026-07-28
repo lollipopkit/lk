@@ -395,6 +395,7 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "__lk_lt_u" => Builtin::LtU,
         "__lk_div_u" => Builtin::DivU,
         "__lk_mod_u" => Builtin::ModU,
+        "__lk_u64_to_float" => Builtin::U64ToFloat,
         "chan" => Builtin::ChanNew,
         "send" => Builtin::ChanSend,
         "recv" => Builtin::ChanRecv,

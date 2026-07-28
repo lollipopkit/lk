@@ -51,6 +51,20 @@ pub(crate) fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
+        Builtin::U64ToFloat => {
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let value = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("arith", "u64_to_f64"),
+                args: vec![value],
+            });
+            ssa.write(base, block, (dst, Ty::F64));
+            return Ok(());
+        }
         Builtin::LtU | Builtin::DivU | Builtin::ModU => {
             if argc != 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });

@@ -100,6 +100,17 @@ pub extern "C" fn lkrt_u64_rem(lhs: i64, rhs: i64) -> i64 {
     ((lhs as u64) % (rhs as u64)) as i64
 }
 
+/// `value as Float`, reading the carrier as unsigned.
+///
+/// The last place a `u64` is read as an `i64`. A value with bit 63 set is a
+/// negative carrier, so the ordinary conversion answers a negative float — and
+/// unlike a comparison or a divide, nothing about the result *looks* wrong until
+/// it is compared with zero.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_to_f64(value: i64) -> f64 {
+    (value as u64) as f64
+}
+
 /// `lhs % rhs` for integers, aborting on a zero divisor. `i64::MIN % -1` wraps to
 /// `0` instead of overflowing.
 #[unsafe(no_mangle)]

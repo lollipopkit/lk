@@ -73,10 +73,7 @@ fn a_caller_reaches_the_entry_rule_and_not_the_internal_one() {
         text.contains("100"),
         "the entry rule should have gone through the internal one, got: {text}"
     );
-    assert!(
-        !text.contains('@'),
-        "no `@` should survive expansion, got: {text}"
-    );
+    assert!(!text.contains('@'), "no `@` should survive expansion, got: {text}");
 }
 
 /// Outside a macro, `@` is still an error — a parse error rather than a lexer

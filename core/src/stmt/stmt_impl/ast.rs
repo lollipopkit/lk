@@ -84,7 +84,10 @@ pub enum Stmt {
         else_stmt: Option<Box<Stmt>>,
     },
     /// while (condition) body
-    While { condition: Box<Expr>, body: Box<Stmt> },
+    While {
+        condition: Box<Expr>,
+        body: Box<Stmt>,
+    },
     /// while let pattern = expression { body }
     WhileLet {
         pattern: Pattern,
@@ -138,20 +141,28 @@ pub enum Stmt {
     /// the resolver, both compilers and both backends — a release that has to
     /// happen on every path is a *shape*, not a runtime mechanism, and the one
     /// thing worse than not having it would be having it in one backend.
-    Defer { body: Box<Stmt>, span: Option<Span> },
+    Defer {
+        body: Box<Stmt>,
+        span: Option<Span>,
+    },
 
     Break,
     /// continue;
     Continue,
     /// return [expression];
-    Return { value: Option<Box<Expr>> },
+    Return {
+        value: Option<Box<Expr>>,
+    },
     /// struct Name { field: Type, ... }
     Struct {
         name: String,
         fields: Vec<(String, Option<Type>)>,
     },
     /// type Alias = ExistingType;
-    TypeAlias { name: String, target: Type },
+    TypeAlias {
+        name: String,
+        target: Type,
+    },
     /// fn name(param1[: type], ...) [-> type] { body }
     Function {
         name: String,
@@ -196,7 +207,9 @@ pub enum Stmt {
         handler: Vec<Box<Stmt>>,
     },
     /// { statements }
-    Block { statements: Vec<Box<Stmt>> },
+    Block {
+        statements: Vec<Box<Stmt>>,
+    },
     /// 空语句 (用于处理解析时的占位)
     Empty,
 }

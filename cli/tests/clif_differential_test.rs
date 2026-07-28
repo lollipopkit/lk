@@ -496,6 +496,17 @@ fn machine_int_differential() {
             // width.
             new("u32_compares_a_literal", "let a: u32 = 7;\nif (a > 3) { return 1; }\nreturn 0;\n"),
             new("u8_compares_a_literal", "let a: u8 = 0;\nif (a > 0) { return 1; }\nreturn 0;\n"),
+            // `u64 as Float` reads the carrier as unsigned. The last conversion
+            // in this family, and the one whose result does not *look* wrong
+            // until it is compared with zero.
+            new(
+                "u64_converts_to_float_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nif ((top as Float) > 0.0) { return 1; }\nreturn 0;\n",
+            ),
+            new(
+                "i64_converts_to_float_signed",
+                "let a = 0 - 8;\nif ((a as Float) < 0.0) { return 1; }\nreturn 0;\n",
+            ),
             // A signed comparison is still signed, which is the property the
             // change must not have taken away.
             new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),

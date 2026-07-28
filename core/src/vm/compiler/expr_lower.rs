@@ -206,6 +206,21 @@ impl Compiler {
             self.machine_regs.remove(&src);
             return Ok(src);
         }
+        // `u64 as Float` reads the carrier as unsigned.
+        //
+        // The last conversion in this family. A `u64` with bit 63 set is a
+        // negative `i64` carrier, and unlike a comparison or a divide the result
+        // does not *look* wrong until it is compared with zero.
+        if matches!(ty, crate::val::Type::Float)
+            && let Some(kind) = self.expr_machine_width(inner)
+            && matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize)
+        {
+            let call = Expr::Call(
+                alloc::string::String::from("__lk_u64_to_float"),
+                alloc::vec![Box::new(inner.clone())],
+            );
+            return self.lower_expr(&call);
+        }
         let Some(target) = crate::vm::ir::CastTarget::from_type(ty) else {
             anyhow::bail!("internal error: cast target {} reached lowering", ty.display());
         };

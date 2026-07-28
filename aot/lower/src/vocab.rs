@@ -82,6 +82,8 @@ pub(crate) enum Builtin {
     LtU,
     DivU,
     ModU,
+    /// `__lk_u64_to_float(x)` — the unsigned read of the carrier as a float.
+    U64ToFloat,
     /// `symbol_address("name")` — the address of an `#[export]`ed function, and
     /// `call_address_2(addr, a, b)` — a call through one. Together they are
     /// what a driver table is made of: an array of function pointers, indexed

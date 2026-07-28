@@ -785,12 +785,18 @@ impl Compiler {
         // against this width: a value that fits `u64` has the same bits read
         // either way, so the unsigned operation is the right one.
         //
-        // Two things in this class are still signed, and both are conversions
-        // rather than operations. `println(top)` on a `u64` with bit 63 set
-        // shows a negative number, and `top as Float` goes through `i64` and
-        // answers a negative float. Neither is reachable by accident — a value
-        // that large has to be built deliberately — and both want the same fix:
-        // a conversion that consults the *static* width rather than the carrier.
+        // One thing in this class is still signed: `println(top)` on a `u64`
+        // with bit 63 set shows a negative number.
+        //
+        // Not done, and the reason is that it is a different kind of change from
+        // the five before it. Shift, compare, divide, modulo and `as Float` are
+        // all *operators* — the compiler chooses an unsigned form where it has
+        // the width. `println` is a variadic stdlib function that receives
+        // runtime values, so making it right means rewriting its *arguments* at
+        // the call site, and the same would go for every other function a `u64`
+        // is handed to. What is wrong there is the display, not the value; the
+        // arithmetic above is exact, and printing the halves or the hex is a
+        // workaround that computes the right thing.
         let proven_or_literal = |this: &Self, expr: &Expr| {
             this.expr_machine_width(expr).is_some_and(fills_carrier) || support::is_int_literal(expr)
         };
