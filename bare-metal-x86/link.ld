@@ -22,7 +22,7 @@ ENTRY(_start)
  * heap ends" is a statement rather than an arithmetic coincidence between two
  * constants nobody recomputed.
  *
- *   0x00100000  the image, and its .bss (below, by ASSERT)
+ *   0x00100000  the image: code, data, page tables and stacks (bounded by ASSERT)
  *   0x00300000  the shared page, which the program and its handlers agree on
  *   0x00380000  64 KiB staging for a source file read off the disk
  *   0x00400000  the interpreter's heap
@@ -177,9 +177,25 @@ SECTIONS
      * not fail to boot: it would quietly put the key handler's line buffer on
      * top of the kernel's own data. Since the interpreter went in, the image is
      * ten times the size it was, so this is a real bound rather than a
-     * theoretical one. */
-    ASSERT(__bss_end < __shared_base,
+     * theoretical one.
+     *
+     * `__stack_top`, not `__bss_end`. Everything reserved above — the page
+     * tables, the ring-0 stack, and the stack itself — comes *after* `.bss`,
+     * and at the time of writing that is 111 KiB the old test could not see.
+     * It would have let the stack sit 111 KiB inside the shared page and still
+     * called the layout fine, which is the same mistake the ring-3 grant made
+     * with `__pt0`: an invariant checked against the wrong quantity does not
+     * announce that it is the wrong one. */
+    ASSERT(__stack_top <= __shared_base,
            "the image has grown into the shared page (see the memory map at the top of this file)")
+
+    /* And the staging area must stop below the interpreter's heap.
+     *
+     * `__source_max` is a length, not an address, so the two are only related
+     * by an addition nobody was performing. A file one byte too long would be
+     * read straight into the heap the interpreter is about to allocate from. */
+    ASSERT(__source_base + __source_max <= __heap_base,
+           "the source staging area overlaps the interpreter heap")
 
     /DISCARD/ : { *(.eh_frame*) *(.comment) }
 }
