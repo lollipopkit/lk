@@ -252,6 +252,9 @@ impl LkAnalyzer {
             if binding.annotated {
                 continue;
             }
+            let Some(rendered) = readable_type(&binding.ty) else {
+                continue;
+            };
             let position = Position::new(
                 binding.span.end.line.saturating_sub(1),
                 binding.span.end.column.saturating_sub(1),
@@ -261,7 +264,7 @@ impl LkAnalyzer {
             }
             hints.push(InlayHint {
                 position,
-                label: InlayHintLabel::from(format!(": {}", binding.ty.display())),
+                label: InlayHintLabel::from(format!(": {rendered}")),
                 kind: Some(InlayHintKind::TYPE),
                 text_edits: None,
                 tooltip: None,
@@ -337,6 +340,9 @@ impl LkAnalyzer {
             let Some(return_type) = types.function_returns.get(name) else {
                 continue;
             };
+            let Some(rendered) = readable_type(return_type) else {
+                continue;
+            };
             let Some(span) = spans.get(rparen) else { continue };
             let position = Position::new(span.end.line.saturating_sub(1), span.end.column.saturating_sub(1));
             if position.line < range.start.line || position.line > range.end.line {
@@ -344,7 +350,7 @@ impl LkAnalyzer {
             }
             hints.push(InlayHint {
                 position,
-                label: InlayHintLabel::from(format!(" -> {}", return_type.display())),
+                label: InlayHintLabel::from(format!(" -> {rendered}")),
                 kind: Some(InlayHintKind::TYPE),
                 text_edits: None,
                 tooltip: None,

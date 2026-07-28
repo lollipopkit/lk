@@ -66,6 +66,31 @@ pub(crate) struct TokenCacheEntry {
     expr_ast: OnceCell<Arc<Expr>>,
 }
 
+/// A type as the reader should see it, or `None` when there is nothing to say.
+///
+/// The checker's unresolved type variables are internal numbering — `'T0`,
+/// `'T14`. Showing them is worse than showing nothing: `let double : ('T0) -> Int`
+/// asks the reader to decode a solver detail, and two unrelated bindings can
+/// even display the *same* `'T14` because the variable is shared, which reads as
+/// a relationship that is not there.
+///
+/// So a variable renders as `_` — `(_) -> Int` still says the return type — and
+/// a type that is nothing *but* a variable produces no hint at all.
+pub(crate) fn readable_type(ty: &val::Type) -> Option<String> {
+    if matches!(ty, val::Type::Variable(_)) {
+        return None;
+    }
+    let rendered = ty.display();
+    if !rendered.contains('\'') {
+        return Some(rendered);
+    }
+    // `Type::display` writes a variable as `'name`, and no other type spelling
+    // contains an apostrophe.
+    static TYPE_VARIABLE: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"'[A-Za-z_][A-Za-z0-9_]*").expect("valid regex"));
+    Some(TYPE_VARIABLE.replace_all(&rendered, "_").into_owned())
+}
+
 /// What one program-wide type check yields, cached per document revision.
 #[derive(Debug, Default)]
 pub(crate) struct DocumentTypes {

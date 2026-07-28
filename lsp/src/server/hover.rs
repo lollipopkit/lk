@@ -161,8 +161,12 @@ fn binding_type_hover(tokens: &[Token], spans: &[Span], idx: usize, bindings: &[
         // `const` declared below it — still has that binding's type.
         .or_else(|| bindings.iter().find(|binding| &binding.name == name))?;
 
+    // Hover answers even when the type is only partly known — unlike a hint,
+    // there is a question here that deserves an answer — but the solver's
+    // variable numbering is not part of it.
+    let rendered = crate::analyzer::readable_type(&binding.ty).unwrap_or_else(|| "_".to_string());
     Some(markdown_hover(
-        format!("```lk\n{}: {}\n```", binding.name, binding.ty.display()),
+        format!("```lk\n{}: {}\n```", binding.name, rendered),
         Some(lsp_range_from_span(cursor)),
     ))
 }

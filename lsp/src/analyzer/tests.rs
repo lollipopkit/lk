@@ -618,6 +618,30 @@ fn test_return_type_hints_come_from_the_checked_signature() {
 }
 
 #[test]
+fn test_hints_never_show_solver_type_variables() {
+    let mut analyzer = LkAnalyzer::new();
+    // The shape from closure.lk: the parameter type is undetermined, the return
+    // type is not. Rendering the whole thing gave `('T0) -> Int`.
+    let src = "let double = |x| x * 2;\nlet plain = 7;\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+    let labels = hint_labels(&hints);
+
+    assert!(
+        !labels.iter().any(|label| label.contains('\'')),
+        "a solver variable reached the editor: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == ": Int"),
+        "the known type should still be shown: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label.contains("(_)")),
+        "an unknown parameter should read as `_`, not disappear: {labels:?}"
+    );
+}
+
+#[test]
 fn test_type_hints_use_imported_signatures() {
     let dir = unique_tmp_dir("imported_signature_hints");
     fs::create_dir_all(&dir).expect("create temp dir");
