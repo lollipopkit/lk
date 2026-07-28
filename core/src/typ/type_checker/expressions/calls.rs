@@ -295,14 +295,6 @@ impl TypeChecker {
             for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
                 let arg_type = self.check_expr(arg)?;
                 bind_instance_variables(param_type, &self.resolve_aliases(&arg_type), &mut bindings);
-                if std::env::var("LK_DBG").is_ok() {
-                    eprintln!(
-                        "DBG param={:?} arg={:?} bindings={:?}",
-                        param_type,
-                        self.resolve_aliases(&arg_type),
-                        bindings
-                    );
-                }
                 let declared = annotated
                     .as_ref()
                     .is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
