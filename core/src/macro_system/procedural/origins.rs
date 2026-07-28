@@ -295,6 +295,7 @@ fn collect_generated_expr_origins_from_stmt(
             origins.extend(generated_attribute_origins(attributes, span.clone()));
             collect_generated_expr_origins_from_stmt(item, span, origins);
         }
+        Stmt::Defer { body, .. } => collect_generated_expr_origins_from_stmt(body, span, origins),
         Stmt::If {
             condition,
             then_stmt,

@@ -12,6 +12,7 @@ use core::fmt::{self, Display};
 impl Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Stmt::Defer { body, .. } => write!(f, "defer {body}"),
             Stmt::Attributed { attributes, item } => {
                 for attr in attributes {
                     writeln!(f, "#[{}]", format_attribute_tokens(&attr.tokens))?;

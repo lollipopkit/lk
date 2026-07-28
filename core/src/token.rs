@@ -33,6 +33,7 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::Dollar => "$".to_string(),
         Token::Hash => "#".to_string(),
         Token::At => "@".to_string(),
+        Token::Defer => "defer".to_string(),
         Token::Assign => "=".to_string(),
         Token::AddAssign => "+=".to_string(),
         Token::SubAssign => "-=".to_string(),

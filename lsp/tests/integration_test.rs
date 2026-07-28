@@ -350,6 +350,7 @@ impl TestLanguageServer {
             T::Let => "Keyword: let".to_string(),
             T::Break => "Keyword: break".to_string(),
             T::Continue => "Keyword: continue".to_string(),
+            T::Defer => "Keyword: defer".to_string(),
             T::Return => "Keyword: return".to_string(),
             T::Struct => "Keyword: struct".to_string(),
             T::Fn => "Keyword: fn".to_string(),

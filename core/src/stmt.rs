@@ -1,6 +1,7 @@
 // The file-import resolver (fs/path) is std-gated; under no_std its cache field
 // and `Path` import are legitimately unused (M0.7/8).
 #[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
+pub mod defer;
 pub mod import;
 mod stmt_impl;
 pub mod stmt_parser;

@@ -130,6 +130,16 @@ pub enum Stmt {
         span: Option<Span>,
     },
     /// break;
+    /// `defer <statement>` — run it when the function leaves, whichever way.
+    ///
+    /// Gone by the time anything but the parser sees it: a pass rewrites each
+    /// function's body so the deferred statements appear before every `return`
+    /// and at the end, in reverse order. That keeps it out of the type checker,
+    /// the resolver, both compilers and both backends — a release that has to
+    /// happen on every path is a *shape*, not a runtime mechanism, and the one
+    /// thing worse than not having it would be having it in one backend.
+    Defer { body: Box<Stmt>, span: Option<Span> },
+
     Break,
     /// continue;
     Continue,

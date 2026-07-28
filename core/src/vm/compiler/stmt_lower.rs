@@ -3,7 +3,7 @@ use super::*;
 impl Compiler {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         match stmt {
-            Stmt::Attributed { item, .. } => self.lower_stmt(item)?,
+            Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => self.lower_stmt(item)?,
             Stmt::Empty => {}
             Stmt::Expr(expr) => {
                 let watermark = self.next_reg;

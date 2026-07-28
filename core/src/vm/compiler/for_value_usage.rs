@@ -7,7 +7,7 @@ use crate::{
 
 pub(super) fn stmt_uses_for_binding_value(stmt: &Stmt, name: &str) -> bool {
     match stmt {
-        Stmt::Attributed { item, .. } => stmt_uses_for_binding_value(item, name),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => stmt_uses_for_binding_value(item, name),
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
             false
         }
@@ -179,7 +179,7 @@ pub(super) fn stmt_shadows_name_deep(stmt: &Stmt, name: &str) -> bool {
         return true;
     }
     match stmt {
-        Stmt::Attributed { item, .. } => stmt_shadows_name_deep(item, name),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => stmt_shadows_name_deep(item, name),
         Stmt::If {
             then_stmt, else_stmt, ..
         } => {

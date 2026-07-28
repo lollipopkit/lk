@@ -75,12 +75,19 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     let parsed_program = parser
         .parse_program_with_enhanced_errors(source)
         .map_err(|error| enrich_parse_error_with_macro_origins(error, &source_expansion))?;
-    let (program, ast_macro_origins) = if expand_ast {
+    let (mut program, ast_macro_origins) = if expand_ast {
         let expanded = expand_ast_macros_with_metadata(parsed_program.clone(), proc_macro_options)?;
         (expanded.program, expanded.origins)
     } else {
         (parsed_program.clone(), Vec::new())
     };
+    // `defer` is erased here, after macros and before everything else.
+    //
+    // After macros because a macro may expand to one; before everything else
+    // because nothing downstream should know it existed. It is a rewrite of the
+    // program's *shape*, not a runtime mechanism — see `stmt::defer`.
+    crate::stmt::defer::desugar_defers(&mut program.statements)
+        .map_err(|message| ParseError::new(message))?;
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,

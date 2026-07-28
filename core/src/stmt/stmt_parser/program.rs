@@ -189,6 +189,21 @@ impl<'a> StmtParser<'a> {
         (statements, errors)
     }
 
+    /// `defer <statement>` — run it when the function leaves, whichever way.
+    ///
+    /// The statement is parsed here and *erased* by `desugar_defers`, which
+    /// rewrites the enclosing function so it appears before every `return` and
+    /// at the end, in reverse order. Nothing downstream ever sees one.
+    fn parse_defer_stmt(&mut self) -> Result<Stmt> {
+        let span = self.current_span();
+        self.expect_token(Token::Defer)?;
+        let body = self.parse_statement()?;
+        Ok(Stmt::Defer {
+            body: Box::new(body),
+            span,
+        })
+    }
+
     /// 解析单个语句
     pub fn parse_statement(&mut self) -> Result<Stmt> {
         if self.eof() {
@@ -209,6 +224,7 @@ impl<'a> StmtParser<'a> {
             Token::Impl => self.parse_impl_stmt(),
             Token::Let => self.parse_let_stmt(),
             Token::Const => self.parse_const_stmt(),
+            Token::Defer => self.parse_defer_stmt(),
             Token::Break => self.parse_break_stmt(),
             Token::Continue => self.parse_continue_stmt(),
             Token::Return => self.parse_return_stmt(),

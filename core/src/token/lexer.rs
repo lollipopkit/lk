@@ -21,6 +21,8 @@ pub enum Token {
     Semicolon,         // ;
     Dollar,            // $
     Hash,              // #
+    /// `defer` — run this when the function is done, whichever way it leaves.
+    Defer,
     /// `@`, which the grammar gives no meaning to.
     ///
     /// It exists so `macro_rules!` can use it the way Rust's do: as the marker
@@ -685,6 +687,10 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "continue") {
             self.push_span_only(Token::Continue, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "defer") {
+            self.push_span_only(Token::Defer, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "return") {

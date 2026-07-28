@@ -241,7 +241,7 @@ pub(super) fn pattern_binds_scrutinee_directly(pattern: &Pattern) -> bool {
 
 fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_mutated_names(item, names),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => collect_mutated_names(item, names),
         Stmt::Try { body, handler, .. } => {
             for stmt in body.iter().chain(handler) {
                 collect_mutated_names(stmt, names);
