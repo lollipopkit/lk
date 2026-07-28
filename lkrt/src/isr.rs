@@ -136,3 +136,90 @@ core::arch::global_asm!(
     "   add rsp, 8",
     "   iretq",
 );
+
+// ---------------------------------------------------------- raising, not taking
+//
+// The other direction, and the same obstacle. `int` takes its vector as an
+// *immediate*: there is no operand to pass one in through, so a kernel that
+// wanted to raise vector `n` for a computed `n` could not say so at all. That is
+// why the board's `kernel_yield` was a Rust function containing `int 0x30`, and
+// why the vector was written down twice — once where the gate is installed and
+// once where it is raised, in two languages, with nothing checking they agree.
+//
+// Two hundred and fifty-six stubs answer it the same way the entry side does. A
+// stub is three bytes; the padding is what makes the stride derivable, and the
+// caller divides `end - start` by 256 rather than being told.
+
+/// One stub per vector: `int n` and return.
+///
+/// `.byte 0xcd` then the vector, rather than `int $n`, because the assembler
+/// will happily encode `int 3` as the one-byte breakpoint `0xcc` — a different
+/// instruction, on the one vector a debugger is most likely to be watching.
+/// Writing the opcode out means all 256 slots are the same two instructions.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+core::arch::global_asm!(
+    ".section .text, \"ax\"",
+    ".align 8",
+    ".globl lkrt_int_stubs",
+    "lkrt_int_stubs:",
+    ".set intvec, 0",
+    ".rept 256",
+    "   .align 8",
+    "   .byte 0xcd",
+    "   .byte intvec",
+    "   ret",
+    "   .set intvec, intvec + 1",
+    ".endr",
+    // Past the padding of the last stub, not past its last instruction: a caller
+    // divides `end - start` by 256 to get the stride, and without this the array
+    // ends three bytes into its final slot.
+    ".align 8",
+    ".globl lkrt_int_stubs_end",
+    "lkrt_int_stubs_end:",
+);
+
+/// Raises `vector`, whatever it is.
+///
+/// The call lands in the stub, the stub raises the interrupt, and the handler's
+/// `iretq` comes back to the `ret` — so from the caller this is an ordinary
+/// function call that happens to have run a gate in the middle. A gate that
+/// switches stacks (a task switch) simply does not come back until the caller is
+/// resumed, at which point its frame is exactly as it left it.
+///
+/// # Safety
+/// The vector must have a gate installed. Raising one that does not is a general
+/// protection fault, which is the same thing that happens when a device does it.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_cpu_raise_interrupt(vector: i64) {
+    unsafe extern "C" {
+        static lkrt_int_stubs: u8;
+        static lkrt_int_stubs_end: u8;
+    }
+    if !(0..256).contains(&vector) {
+        return;
+    }
+    let start = &raw const lkrt_int_stubs as usize;
+    let stride = ((&raw const lkrt_int_stubs_end as usize) - start) / 256;
+    let target = start + vector as usize * stride;
+    // SAFETY: `target` is inside the stub array, which is `int`+`ret` and takes
+    // no arguments.
+    let stub: extern "C" fn() = unsafe { core::mem::transmute(target) };
+    stub();
+}
+
+/// Anywhere else, this is refused rather than ignored.
+///
+/// Refused, and that is the point: under a process there is no interrupt table,
+/// and a runtime that went ahead and raised a real `int 0x80` would be making a
+/// Linux system call with whatever happened to be in the registers. Doing
+/// nothing would be worse than either — it is the answer that lets a program
+/// look like it worked, and it would put the two backends into disagreement,
+/// since the interpreter refuses.
+#[cfg(not(all(not(feature = "std"), target_arch = "x86_64")))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_cpu_raise_interrupt(_vector: i64) {
+    crate::panic::raise_str(
+        "cpu_raise_interrupt requires bare-metal execution on x86-64: no other target has this instruction",
+    );
+}

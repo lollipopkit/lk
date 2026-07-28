@@ -82,6 +82,10 @@ pub use cpu::{
     lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_timestamp,
     lkrt_cpu_wait_for_interrupt,
 };
+// A `cpu_*` intrinsic that lives with the interrupt stubs rather than with the
+// rest of them, because it *is* one of them: `isr.rs` holds both directions of
+// the same obstacle — a vector that cannot be an operand, answered by a table.
+pub use isr::lkrt_cpu_raise_interrupt;
 pub use encoding::lkrt_json_parse;
 #[cfg(feature = "std")]
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};

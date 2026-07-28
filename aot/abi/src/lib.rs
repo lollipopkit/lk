@@ -132,6 +132,7 @@ macro_rules! for_each_abi_fn {
             ("cpu", "read_cr2", lkrt_cpu_read_cr2, WritesHost, [], I64);
             ("cpu", "read_cr3", lkrt_cpu_read_cr3, WritesHost, [], I64);
             ("cpu", "write_cr3", lkrt_cpu_write_cr3, WritesHost, [I64], Nil);
+            ("cpu", "raise_interrupt", lkrt_cpu_raise_interrupt, WritesHost, [I64], Nil);
             ("cpu", "invalidate_page", lkrt_cpu_invalidate_page, WritesHost, [I64], Nil);
             // Volatile MMIO has no entries here any more, and that absence is
             // the point: `volatile_read_uN`/`volatile_write_uN` lower to a real

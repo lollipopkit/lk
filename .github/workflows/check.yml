@@ -289,7 +289,7 @@ jobs:
         # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
         run: |
           cargo build -p lk-cli --features aot
-          # 52/52, and no allow list. The try/catch corpus was the last thing
+          # 53/53, and no allow list. The try/catch corpus was the last thing
           # on it; each of the three came off by a different fix, and each was
           # checked by *running* it against the VM rather than by the fact that
           # it compiled — see `aot/lower/src/try_region.rs`, where the two

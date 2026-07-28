@@ -192,7 +192,8 @@ impl TypeChecker {
         let (arity, result) = match name {
             "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
             "cpu_irq_save" | "cpu_timestamp" | "cpu_read_cr2" | "cpu_read_cr3" => (0, Type::Int),
-            "cpu_irq_restore" | "cpu_load_task_register" | "cpu_write_cr3" | "cpu_invalidate_page" => (1, Type::Nil),
+            "cpu_irq_restore" | "cpu_load_task_register" | "cpu_write_cr3" | "cpu_invalidate_page"
+            | "cpu_raise_interrupt" => (1, Type::Nil),
             "cpu_load_idt" | "cpu_load_gdt" | "cpu_reload_segments" => (2, Type::Nil),
             _ => return Ok(None),
         };

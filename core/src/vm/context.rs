@@ -409,6 +409,15 @@ impl VmContext {
             NativeFunction::Plain(core_cpu_wait_for_interrupt_builtin),
             0,
         );
+        // The one x86 instruction whose operand a program cannot supply: `int`
+        // takes its vector as an immediate. Without this a kernel written in
+        // this language can handle an interrupt but not raise one, which is the
+        // difference between defining a syscall and merely answering it.
+        self.install_runtime_builtin(
+            "cpu_raise_interrupt",
+            NativeFunction::Plain(core_cpu_raise_interrupt_builtin),
+            1,
+        );
         // System control: descriptor tables, CR2/CR3, the TLB. Gated like port
         // I/O rather than always refused — the bare-metal x86 kernel hosts this
         // interpreter, and a program it loads off a disk reaches the same
@@ -1257,6 +1266,7 @@ hardware_builtins! {
     core_cpu_irq_save_builtin => super::hardware::cpu_irq_save;
     core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
     core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
+    core_cpu_raise_interrupt_builtin => super::hardware::cpu_raise_interrupt;
     core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
     core_cpu_load_idt_builtin => super::hardware::cpu_load_idt;
     core_cpu_load_gdt_builtin => super::hardware::cpu_load_gdt;

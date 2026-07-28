@@ -305,6 +305,38 @@ pub(super) fn cpu_read_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     Err(system_refusal("cpu_read_cr3"))
 }
 
+/// Raises a software interrupt, whatever its number is.
+///
+/// The one x86 instruction whose operand a program cannot supply: `int` takes
+/// its vector as an immediate, so a kernel that wants to raise a vector it
+/// computed has nowhere to put it. The runtime answers that with a table of 256
+/// stubs — see `lkrt/src/isr.rs`, which does the same thing for the entry side —
+/// and this is the interpreter reaching the same table.
+///
+/// Without it a kernel written in this language cannot raise its own syscall or
+/// reschedule vector, which is not a small gap: it is the difference between
+/// defining an interrupt and merely handling one.
+pub(super) fn cpu_raise_interrupt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        // Declared, not depended on. `lk-core` must not have `lkrt` as a crate
+        // dependency — that boundary is what keeps the runtime free of the
+        // parser and the compiler — but on the one target where this means
+        // anything, both are linked into the same image and the symbol is simply
+        // there. A link-time reference is not an architectural edge.
+        unsafe extern "C" {
+            fn lkrt_cpu_raise_interrupt(vector: i64);
+        }
+        let vector = word_operand(&_args, 0, "cpu_raise_interrupt")?;
+        // SAFETY: the vector is bounds-checked inside, and a vector with no gate
+        // faults exactly as it would if a device had raised it.
+        unsafe { lkrt_cpu_raise_interrupt(vector as i64) };
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_raise_interrupt"))
+}
+
 /// Switches address spaces, flushing the TLB in doing so. The code after it
 /// must be mapped in the new space at the same address — which is why a kernel
 /// is mapped into every one.
