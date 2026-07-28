@@ -181,6 +181,18 @@ pub(super) fn lower(
             // otherwise find the slot untyped. So this falls back today for a
             // provisional guess rather than for anything the program does.
             //
+            // The obvious fix does not work, and it is worth writing down which
+            // one. Making the entry *refuse* a call whose callee's return type
+            // is not yet known — safe-looking, since the entry cannot be
+            // recursive and the fixpoint runs again — recovers this shape and
+            // breaks another: `examples/syntax/defer.lk` began printing a list
+            // as empty, natively, with no fallback and no warning. An early
+            // pass that rejects is not a pass that did nothing. It is a pass
+            // that did not *observe* anything, and the parameter types the
+            // entry's calls would have contributed are missing from every pass
+            // after it. The fixpoint's passes are how facts are collected, not
+            // just attempts.
+            //
             // The slot reaches `Dyn` two ways: two writes that disagree, and a
             // reader that could observe the slot before it is written (only the
             // `Dyn` carrier's zeroinit is nil). Either way the write has to box,

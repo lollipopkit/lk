@@ -793,6 +793,19 @@ impl Generator {
             let arg = self.fresh("tl");
             let _ = writeln!(out, "let {arg}: List<Int> = [{}];", self.rng.below(40));
             let value = self.rng.below(50);
+            // And a level of indirection: a function that takes the container
+            // and hands it on. That is the shape a real miscompile lived in and
+            // this generator still missed — `fn_taker` called only from the top
+            // level exercises one call boundary, while a container that travels
+            // *through* a function exercises the order in which the two get
+            // lowered, which is where a signature the fixpoint had not settled
+            // yet gets read.
+            let relay = self.fresh("fn_relay");
+            let _ = writeln!(
+                out,
+                "fn {relay}(xs: List<Int>, p0: Int) -> Int {{ let a = {taker}(xs, p0); return a + {taker}(xs, p0 + 1); }}"
+            );
+            let _ = writeln!(out, "println({relay}({arg}, {value}));");
             let _ = writeln!(out, "println({taker}({arg}, {value}));");
             let _ = writeln!(out, "println({arg}.len());");
             let _ = writeln!(out, "println({arg}[{arg}.len() - 1]);");
