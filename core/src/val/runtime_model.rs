@@ -328,6 +328,46 @@ impl ErrorVal {
     }
 }
 
+/// The one shape a whole list of runtime values shares, if any.
+///
+/// Companion to [`TypedList::from_runtime_values`]; lives beside it so the
+/// narrowing rule and the shapes it can produce cannot drift apart.
+pub(crate) enum RuntimeListShape {
+    Mixed,
+    Int,
+    Float,
+    Bool,
+    String,
+}
+
+pub(crate) fn runtime_value_list_shape(values: &[RuntimeVal], heap: &HeapStore) -> RuntimeListShape {
+    if values.is_empty() {
+        return RuntimeListShape::Mixed;
+    }
+    let mut shape: Option<RuntimeListShape> = None;
+    for value in values {
+        let next = match value {
+            RuntimeVal::Int(_) => RuntimeListShape::Int,
+            RuntimeVal::Float(_) => RuntimeListShape::Float,
+            RuntimeVal::Bool(_) => RuntimeListShape::Bool,
+            RuntimeVal::ShortStr(_) => RuntimeListShape::String,
+            RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::String(_))) => {
+                RuntimeListShape::String
+            }
+            _ => return RuntimeListShape::Mixed,
+        };
+        match (&shape, next) {
+            (None, next) => shape = Some(next),
+            (Some(RuntimeListShape::Int), RuntimeListShape::Int)
+            | (Some(RuntimeListShape::Float), RuntimeListShape::Float)
+            | (Some(RuntimeListShape::Bool), RuntimeListShape::Bool)
+            | (Some(RuntimeListShape::String), RuntimeListShape::String) => {}
+            _ => return RuntimeListShape::Mixed,
+        }
+    }
+    shape.unwrap_or(RuntimeListShape::Mixed)
+}
+
 #[derive(Clone, Debug)]
 pub enum TypedList {
     Mixed(Vec<RuntimeVal>),
@@ -338,6 +378,61 @@ pub enum TypedList {
 }
 
 impl TypedList {
+    /// Build a list from runtime values, keeping the compact representation
+    /// when they all share one shape.
+    ///
+    /// A list should look the same whether it came from a literal, a `push`
+    /// loop, or a projection like `map` / `keys` / `values`. Producers that
+    /// reach for `Mixed` directly are invisible in the *answer* but not in the
+    /// cost: `Mixed` holds 16 bytes per element instead of 8, and every typed
+    /// fast path downstream (arithmetic, `sort`, index reads) drops to the
+    /// generic one. The scan is O(n) over a vector the caller just built.
+    pub fn from_runtime_values(values: &[RuntimeVal], heap: &HeapStore) -> Self {
+        match runtime_value_list_shape(values, heap) {
+            RuntimeListShape::Mixed => Self::Mixed(values.to_vec()),
+            RuntimeListShape::Int => Self::Int(
+                values
+                    .iter()
+                    .map(|value| match value {
+                        RuntimeVal::Int(value) => *value,
+                        _ => unreachable!("shape scan only returns Int for int values"),
+                    })
+                    .collect(),
+            ),
+            RuntimeListShape::Float => Self::Float(
+                values
+                    .iter()
+                    .map(|value| match value {
+                        RuntimeVal::Float(value) => *value,
+                        _ => unreachable!("shape scan only returns Float for float values"),
+                    })
+                    .collect(),
+            ),
+            RuntimeListShape::Bool => Self::Bool(
+                values
+                    .iter()
+                    .map(|value| match value {
+                        RuntimeVal::Bool(value) => *value,
+                        _ => unreachable!("shape scan only returns Bool for bool values"),
+                    })
+                    .collect(),
+            ),
+            RuntimeListShape::String => Self::String(
+                values
+                    .iter()
+                    .map(|value| match value {
+                        RuntimeVal::ShortStr(value) => Arc::<str>::from(value.as_str()),
+                        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                            Some(HeapValue::String(value)) => Arc::clone(value),
+                            _ => unreachable!("shape scan only returns String for string values"),
+                        },
+                        _ => unreachable!("shape scan only returns String for string values"),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         match self {

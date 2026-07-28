@@ -430,6 +430,15 @@ impl<'a> Parser<'a> {
     }
 
     /// Check if the current token can start a valid expression.
+    /// Can an expression begin at the current token?
+    ///
+    /// This is the *predicate* form of the grammar `parse_primary` and
+    /// `parse_unary` implement, used wherever an expression is optional — a
+    /// range with no end, a trailing list element, a closure body. It has to
+    /// list every form those two accept, and it is checked by hand, so it
+    /// drifts: `Unsafe` and `Match` were missing, which is why
+    /// `|x| match x { … }` was a syntax error while `let a = match x { … };`
+    /// parsed fine. Adding a primary form means adding it here too.
     pub(super) fn is_valid_expr_start(&self) -> bool {
         if self.eof() {
             return false;
@@ -457,6 +466,8 @@ impl<'a> Parser<'a> {
                 | Token::Select
                 | Token::Pipe
                 | Token::Fn
+                | Token::Match
+                | Token::Unsafe
         )
     }
 

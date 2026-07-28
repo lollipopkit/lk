@@ -458,9 +458,8 @@ fn dispatch_map_builtin_method(
                 }
                 _ => return Ok(None),
             };
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(keys))),
-            )))
+            let keys = TypedList::from_runtime_values(&keys, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(keys)))))
         }
         "values" => {
             if !positional.is_empty() {
@@ -480,9 +479,8 @@ fn dispatch_map_builtin_method(
                 }
                 _ => return Ok(None),
             };
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(vals))),
-            )))
+            let vals = TypedList::from_runtime_values(&vals, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(vals)))))
         }
         _ => Ok(None),
     }
@@ -569,13 +567,12 @@ fn dispatch_set_builtin_method(
                 Some(HeapValue::Set(values)) => values.entries().cloned().collect::<Vec<_>>(),
                 _ => Vec::new(),
             };
-            let vals = vals
+            let vals: Vec<RuntimeVal> = vals
                 .into_iter()
                 .map(|value| runtime_map_key_to_value(value, heap))
                 .collect();
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(vals))),
-            )))
+            let vals = TypedList::from_runtime_values(&vals, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(vals)))))
         }
         _ => Ok(None),
     }
@@ -1397,7 +1394,7 @@ fn list_filter(
             filtered.push(*item);
         }
     }
-    let result = TypedList::Mixed(filtered);
+    let result = TypedList::from_runtime_values(&filtered, state.heap());
     Ok(Some(RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(result)))))
 }
 
@@ -1420,7 +1417,7 @@ fn list_map(
         state.host_root_push(result);
         mapped.push(result);
     }
-    let result = TypedList::Mixed(mapped);
+    let result = TypedList::from_runtime_values(&mapped, state.heap());
     Ok(Some(RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(result)))))
 }
 

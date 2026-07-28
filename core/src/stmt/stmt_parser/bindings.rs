@@ -75,8 +75,7 @@ impl<'a> StmtParser<'a> {
 
         // Use AST parser to parse the pattern
         let pattern_tokens = &self.tokens[start_pos..end_pos];
-        let mut ast_parser = ExprParser::new(pattern_tokens);
-        let pattern = ast_parser.parse_pattern()?;
+        let pattern = ExprParser::parse_whole_pattern(pattern_tokens)?;
 
         // Update position
         self.pos = end_pos;

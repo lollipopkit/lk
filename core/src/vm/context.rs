@@ -1401,6 +1401,7 @@ hardware_builtins! {
 mod tests {
     use super::*;
     use crate::util::fast_map::fast_hash_map_from_iter;
+    use crate::val::TypedList;
     use crate::vm::{Module, RuntimeModuleState};
 
     fn module_with_impl(type_name: &str, method: &str, function: u32) -> Arc<Module> {
@@ -1810,5 +1811,63 @@ mod tests {
         };
         assert!(matches!(map, TypedMap::StringBool(_)));
         assert_eq!(map.get_str("ok"), Some(RuntimeVal::Bool(true)));
+    }
+
+    /// A list's representation follows its *contents*, not the route that
+    /// built it.
+    ///
+    /// Every projection used to allocate `TypedList::Mixed` unconditionally, so
+    /// `[1, 2, 3].map(f)` came back as 16-bytes-per-element boxes even when
+    /// every element was an `Int`, and so did `push`, `keys`, `values`,
+    /// `flatten`, `chunk`, `zip`. Representation is not observable from LK, so
+    /// nothing failed — it just cost double the memory and gave up the typed
+    /// fast paths. (In-place mutation may still *degrade* a list; re-narrowing
+    /// on every write would be O(n) per write. This is about construction.)
+    #[test]
+    fn a_new_list_narrows_to_the_shape_of_what_is_in_it() {
+        fn returned_list_variant(source: &str) -> String {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::stmt_parser::StmtParser::new(&tokens)
+                .parse_program()
+                .expect("parse");
+            let result = crate::vm::test_support::run_program_default(&program).expect("run");
+            let RuntimeVal::Obj(handle) = result.first_return() else {
+                panic!("{source} should return a list");
+            };
+            let Some(HeapValue::List(list)) = result.state.heap.get(*handle) else {
+                panic!("{source} should return a list");
+            };
+            match list {
+                TypedList::Mixed(_) => "Mixed",
+                TypedList::Int(_) => "Int",
+                TypedList::Float(_) => "Float",
+                TypedList::Bool(_) => "Bool",
+                TypedList::String(_) => "String",
+            }
+            .to_string()
+        }
+
+        for (source, expected) in [
+            ("return [1, 2, 3];", "Int"),
+            ("return [1, 2, 3].map(|x| x * 2);", "Int"),
+            ("return [1, 2, 3].filter(|x| x > 1);", "Int"),
+            ("return [1, 2].push(3);", "Int"),
+            ("return [1, 2, 3].flatten();", "Int"),
+            ("return [[1, 2], [3]].flatten();", "Int"),
+            ("return {\"a\": 1, \"b\": 2}.values();", "Int"),
+            ("return {\"a\": 1, \"b\": 2}.keys();", "String"),
+            ("return [1, 2, 3].map(|x| \"long-enough-to-heap\");", "String"),
+            // A genuinely mixed result stays mixed — the scan reports what is
+            // there, it does not force a shape.
+            ("return [1, \"two\", 3.0];", "Mixed"),
+            // Pairs are heap objects, so zip is mixed no matter what went in.
+            ("return [1, 2].zip([3, 4]);", "Mixed"),
+        ] {
+            assert_eq!(
+                returned_list_variant(source),
+                expected,
+                "{source} should be represented as {expected}"
+            );
+        }
     }
 }

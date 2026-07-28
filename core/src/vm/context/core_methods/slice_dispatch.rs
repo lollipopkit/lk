@@ -146,9 +146,8 @@ pub(super) fn dispatch_slice_builtin_method(
                 bail!("slice.to_list() expects no arguments, got {}", positional.len());
             }
             let items: Vec<RuntimeVal> = (0..slice.len).map(|index| slice_item(&slice, index, heap)).collect();
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
-            )))
+            let items = TypedList::from_runtime_values(&items, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
         }
         _ => Ok(None),
     }

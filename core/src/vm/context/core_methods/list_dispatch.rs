@@ -162,9 +162,8 @@ pub(super) fn dispatch_list_builtin_method(
             }
             let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
             items.push(positional[0]);
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
-            )))
+            let items = TypedList::from_runtime_values(&items, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
         }
         "slice" => {
             // A window, not a copy. This used to materialize `items[a..b]` into
@@ -208,9 +207,8 @@ pub(super) fn dispatch_list_builtin_method(
                 bail!("list.insert() index {} out of bounds (len={})", index, items.len());
             }
             items.insert(index, positional[1]);
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
-            )))
+            let items = TypedList::from_runtime_values(&items, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
         }
         "remove_at" => {
             if positional.len() != 1 {
@@ -222,10 +220,10 @@ pub(super) fn dispatch_list_builtin_method(
                 bail!("list.remove_at() index {} out of bounds (len={})", index, items.len());
             }
             let old = items.remove(index);
-            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
-            )))
+            let items = TypedList::from_runtime_values(&items, heap);
+            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));
+            let pair = TypedList::from_runtime_values(&[updated, old], heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair)))))
         }
         "set" => {
             if positional.len() != 2 {
@@ -240,10 +238,10 @@ pub(super) fn dispatch_list_builtin_method(
                 bail!("list.set() index {} out of bounds (len={})", index, items.len());
             };
             let old = core::mem::replace(slot, positional[1]);
-            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
-            )))
+            let items = TypedList::from_runtime_values(&items, heap);
+            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));
+            let pair = TypedList::from_runtime_values(&[updated, old], heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair)))))
         }
         "sort" => {
             if !positional.is_empty() {
@@ -270,7 +268,7 @@ pub(super) fn dispatch_list_builtin_method(
                     None => {
                         let mut items = list_runtime_items(left, heap);
                         items.extend(list_runtime_items(right, heap));
-                        TypedList::Mixed(items)
+                        TypedList::from_runtime_values(&items, heap)
                     }
                 }
             };
@@ -284,13 +282,11 @@ pub(super) fn dispatch_list_builtin_method(
             let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
             let mut pairs = Vec::with_capacity(lhs.len().min(rhs.len()));
             for (a, b) in lhs.into_iter().zip(rhs) {
-                pairs.push(RuntimeVal::Obj(
-                    heap.alloc(HeapValue::List(TypedList::Mixed(vec![a, b]))),
-                ));
+                let pair = TypedList::from_runtime_values(&[a, b], heap);
+                pairs.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair))));
             }
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
-            )))
+            let pairs = TypedList::from_runtime_values(&pairs, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pairs)))))
         }
         "flatten" => {
             if !positional.is_empty() {
@@ -308,9 +304,8 @@ pub(super) fn dispatch_list_builtin_method(
                 }
                 flat.push(item);
             }
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(flat))),
-            )))
+            let flat = TypedList::from_runtime_values(&flat, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(flat)))))
         }
         "chunk" => {
             if positional.len() != 1 {
@@ -328,12 +323,12 @@ pub(super) fn dispatch_list_builtin_method(
             while i < items.len() {
                 let end = (i + *size as usize).min(items.len());
                 let chunk: Vec<RuntimeVal> = items[i..end].to_vec();
-                chunks.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(chunk)))));
+                let chunk = TypedList::from_runtime_values(&chunk, heap);
+                chunks.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(chunk))));
                 i = end;
             }
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(chunks))),
-            )))
+            let chunks = TypedList::from_runtime_values(&chunks, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(chunks)))))
         }
         "enumerate" => {
             if !positional.is_empty() {
@@ -342,14 +337,11 @@ pub(super) fn dispatch_list_builtin_method(
             let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut pairs = Vec::with_capacity(items.len());
             for (i, item) in items.into_iter().enumerate() {
-                pairs.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(vec![
-                    RuntimeVal::Int(i as i64),
-                    item,
-                ])))));
+                let pair = TypedList::from_runtime_values(&[RuntimeVal::Int(i as i64), item], heap);
+                pairs.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair))));
             }
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
-            )))
+            let pairs = TypedList::from_runtime_values(&pairs, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pairs)))))
         }
         "join" => {
             if positional.len() != 1 {

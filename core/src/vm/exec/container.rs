@@ -211,9 +211,8 @@ impl Executor {
                         for index in start..end {
                             slice.push(self.typed_list_element_allocating(&list, index));
                         }
-                        Ok(RuntimeVal::Obj(
-                            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(slice))),
-                        ))
+                        let slice = TypedList::from_runtime_values(&slice, &self.state.heap);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(slice))))
                     }
                     _ => bail!("Slice target must be string or list"),
                 }
@@ -497,13 +496,12 @@ impl Executor {
     }
 
     fn set_values_to_iter_list(&mut self, values: Vec<RuntimeMapKey>) -> Result<RuntimeVal> {
-        let values = values
+        let values: Vec<RuntimeVal> = values
             .into_iter()
             .map(|value| self.runtime_map_key_to_value(value))
             .collect();
-        Ok(RuntimeVal::Obj(
-            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(values))),
-        ))
+        let values = TypedList::from_runtime_values(&values, &self.state.heap);
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values))))
     }
 
     fn map_entries_to_iter_list(&mut self, entries: TypedMapIterSnapshot) -> Result<RuntimeVal> {
@@ -540,13 +538,12 @@ impl Executor {
                 }
             }
         }
-        Ok(RuntimeVal::Obj(
-            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(pairs))),
-        ))
+        let pairs = TypedList::from_runtime_values(&pairs, &self.state.heap);
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(pairs))))
     }
 
     fn push_iter_pair(&mut self, pairs: &mut Vec<RuntimeVal>, key: RuntimeVal, value: RuntimeVal) {
-        let pair = HeapValue::List(TypedList::Mixed(vec![key, value]));
+        let pair = HeapValue::List(TypedList::from_runtime_values(&[key, value], &self.state.heap));
         pairs.push(RuntimeVal::Obj(self.alloc_heap_value(pair)));
     }
 
