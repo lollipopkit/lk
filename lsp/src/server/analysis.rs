@@ -180,14 +180,15 @@ impl LkLanguageServer {
             (doc.content.to_string(), off)
         };
 
-        let (tokens, spans, ast_macro_origins) = {
+        let (tokens, spans, ast_macro_origins, document_types) = {
             if let Ok(mut analyzer) = self.analyzer.lock() {
                 match analyzer.tokenize_with_spans_cached(&content) {
                     Ok(entry) => {
                         let tokens = entry.tokens.clone();
                         let spans = entry.spans.clone();
                         let ast_macro_origins = analyzer.ast_macro_origins(&content);
-                        (tokens, spans, ast_macro_origins)
+                        let document_types = analyzer.document_types_for(&content);
+                        (tokens, spans, ast_macro_origins, document_types)
                     }
                     Err(_) => return None,
                 }
@@ -214,6 +215,7 @@ impl LkLanguageServer {
                 idx,
                 &ast_macro_origins,
                 &package_modules,
+                &document_types.bindings,
             ));
         }
 

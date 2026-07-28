@@ -194,6 +194,15 @@ impl LkAnalyzer {
         }
     }
 
+    /// The document's one type check, for callers that want more than the types
+    /// by name — hover needs the spans, to tell two bindings of one name apart.
+    pub(crate) fn document_types_for(&mut self, content: &str) -> Arc<DocumentTypes> {
+        match self.tokenize_with_spans_cached(content) {
+            Ok(entry) => entry.document_types(content),
+            Err(_) => Arc::new(DocumentTypes::default()),
+        }
+    }
+
     /// The type of every binding in the document, by name.
     ///
     /// Later bindings win, which is what a completion at the end of the file
