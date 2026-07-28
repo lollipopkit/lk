@@ -166,6 +166,29 @@ impl Stmt {
                     } else if expr_type.contains_variables() {
                         // Expression has unresolved type variables; add constraint instead of failing.
                         type_checker.add_constraint(expr_type, var_type.clone());
+                    } else if let Type::MachineInt(kind) = var_type
+                        && !matches!(expr_type, Type::MachineInt(_))
+                        && let Some(literal) = int_literal_value(value)
+                    {
+                        // A literal takes the variable's machine width, the same
+                        // as `let x: u8 = 5` does one line earlier and as
+                        // `x + 1` and `x > 1` do.
+                        //
+                        // This was the last of the four and it was found by
+                        // converting a driver: `mask = 0xfffffffc;` on a `u32`
+                        // was refused, which is the shape a register-mask
+                        // variable has every time.
+                        if !kind.accepts_literal(literal) {
+                            let error_msg = alloc::format!(
+                                "literal {literal} is out of range for {}",
+                                Type::MachineInt(*kind).display()
+                            );
+                            return if let Some(span) = span {
+                                Err(anyhow!(ParseError::with_span(error_msg, span.clone())))
+                            } else {
+                                Err(anyhow!(error_msg))
+                            };
+                        }
                     } else if !type_checker.is_assignable(&expr_type, var_type) {
                         let error_msg = format!(
                             "Type mismatch in assignment: variable '{}' has type {}, but right-hand side has type {}",

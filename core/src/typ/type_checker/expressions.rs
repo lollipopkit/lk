@@ -525,12 +525,14 @@ impl TypeChecker {
                 if let Some(result) = self.check_volatile_builtin(func, args)? {
                     return Ok(result);
                 }
-                // A shift keeps the width of what is being shifted.
+                // A shift or a bitwise operation keeps the width it is given.
                 //
-                // The parser desugars `a << b` into `__lk_shl(a, b)` before
-                // anything knows a type, so without this the result of shifting
-                // a `u32` is an ordinary `Int` and the next thing done with it
-                // is a width mistake.
+                // The parser desugars `a << b` and `a & b` into calls before
+                // anything knows a type, so without this the result of masking a
+                // `u32` is an ordinary `Any` — and the next thing done with it
+                // is a width mistake. `let bits = probed & mask;` in a PCI
+                // driver was exactly that: every piece around it checked, and
+                // the whole did not.
                 //
                 // This is the *last* piece of the unsigned-`u64` work rather than
                 // the first, and the order mattered: on its own it makes
@@ -1043,11 +1045,18 @@ impl TypeChecker {
     /// `flags << 3` is what people write, and requiring `3 as u32` there is the
     /// ceremony that gets fixed widths abandoned.
     fn check_shift_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
-        if !matches!(func, "__lk_shl" | "__lk_shr" | "__lk_shr_u") || args.len() != 2 {
+        let arity = match func {
+            "__lk_shl" | "__lk_shr" | "__lk_shr_u" | "__lk_bit_and" | "__lk_bit_or" | "__lk_bit_xor" => 2,
+            "__lk_bit_not" => 1,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
             return Ok(None);
         }
         let left = self.check_expr(&args[0])?;
-        let _ = self.check_expr(&args[1])?;
+        if arity == 2 {
+            let _ = self.check_expr(&args[1])?;
+        }
         let resolved = self.resolve_aliases(&left);
         Ok(match resolved {
             Type::MachineInt(_) => Some(resolved),

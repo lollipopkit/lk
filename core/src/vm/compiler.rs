@@ -206,7 +206,7 @@ impl Compiler {
     pub(super) fn initializer_machine_width(&self, expr: &Expr) -> Option<crate::val::IntKind> {
         match expr {
             Expr::Paren(inner) => self.initializer_machine_width(inner),
-            // A shift keeps the width of what is being shifted.
+            // A shift or a bitwise operation keeps the width it is given.
             //
             // `let mask = flags << 3;` is a `u32` if `flags` is one, and until
             // this was here it was nothing: the parser desugars `<<` into a call
@@ -226,8 +226,14 @@ impl Compiler {
             // modulo — opcodes, in both backends — and the checker's half is the
             // last piece of that, not the first.
             Expr::Call(name, args)
-                if matches!(name.as_str(), "__lk_shl" | "__lk_shr" | "__lk_shr_u") && args.len() == 2 =>
+                if matches!(
+                    name.as_str(),
+                    "__lk_shl" | "__lk_shr" | "__lk_shr_u" | "__lk_bit_and" | "__lk_bit_or" | "__lk_bit_xor"
+                ) && args.len() == 2 =>
             {
+                self.expr_machine_width(&args[0])
+            }
+            Expr::Call(name, args) if name.as_str() == "__lk_bit_not" && args.len() == 1 => {
                 self.expr_machine_width(&args[0])
             }
             // Both shapes, because name resolution rewrites a plain call:

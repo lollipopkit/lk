@@ -507,6 +507,28 @@ fn machine_int_differential() {
                 "i64_converts_to_float_signed",
                 "let a = 0 - 8;\nif ((a as Float) < 0.0) { return 1; }\nreturn 0;\n",
             ),
+            // A mask keeps its width, and so does a reassignment.
+            //
+            // Both were found by converting a PCI driver to compute a BAR's size
+            // at the register's own width. `mask = 0xfffffffc;` on a `u32` was
+            // refused — the literal-takes-the-width rule reached `let`, addition
+            // and comparison but not assignment — and `probed & mask` came back
+            // as `Any`, because `&` desugars to a call whose result the checker
+            // did not type. Every piece around it checked; the whole did not.
+            //
+            // The size itself is the two's complement of the probed bits. In
+            // `Int` that had to be spelled `((0xffffffff - bits) + 1) & 0xffffffff`:
+            // a subtraction standing in for a complement and a mask standing in
+            // for the wrap. At the register's width it is a subtraction from
+            // zero.
+            new(
+                "bar_size_at_the_registers_width",
+                "fn size(probed_raw: Int, io: Int) -> Int {\n                 \x20 let mask: u32 = 0xfffffff0;\n                 \x20 if (io == 1) { mask = 0xfffffffc; }\n                 \x20 let probed = probed_raw as u32;\n                 \x20 let bits = probed & mask;\n                 \x20 if (bits == 0) { return 0; }\n                 \x20 let zero: u32 = 0;\n                 \x20 return (zero - bits) as Int;\n                 }\n                 return size(0xfff00000, 0) + size(0xffffff00, 0);\n",
+            ),
+            new(
+                "bitwise_keeps_the_width",
+                "let a: u32 = 0xf0f0f0f0;\nlet b = a & 0xffff;\nlet c = b | 0x10000;\nreturn (c + 1) as Int;\n",
+            ),
             // A signed comparison is still signed, which is the property the
             // change must not have taken away.
             new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),

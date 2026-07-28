@@ -186,14 +186,21 @@ fn pci_bar(bdf: Int, index: Int) -> Int {
 //
 // Only the low half is sized here. A 64-bit BAR whose size needs the high half
 // is a region of at least 4 GiB, which this machine has nowhere to put.
+//
+// Computed in `u32`, which is the width the register answered in. The
+// arithmetic below is two's complement — the value of the lowest set bit is
+// `~bits + 1` — and in `Int` that had to be written as
+// `((0xffffffff - bits) + 1) & 0xffffffff`: a subtraction standing in for a
+// complement, and a mask standing in for the wrap. At the register's own width
+// both of those are what the arithmetic already does.
 fn pci_bar_size(bdf: Int, index: Int) -> Int {
     let offset = pci_bar_offset(index);
     let original = pci_read(bdf, offset);
     pci_write(bdf, offset, 0xffffffff);
-    let probed = pci_read(bdf, offset);
+    let probed = pci_read(bdf, offset) as u32;
     pci_write(bdf, offset, original);
 
-    let mask = 0xfffffff0;
+    let mask: u32 = 0xfffffff0;
     if ((original & 0x01) != 0) {
         mask = 0xfffffffc;
     }
@@ -201,9 +208,9 @@ fn pci_bar_size(bdf: Int, index: Int) -> Int {
     if (bits == 0) {
         return 0;
     }
-    // The size is the value of the lowest set bit: ~bits + 1, done in 32 bits
-    // because that is the width the register answered in.
-    return ((0xffffffff - bits) + 1) & 0xffffffff;
+    // `-bits`, at 32 bits, which is the lowest set bit's value.
+    let zero: u32 = 0;
+    return (zero - bits) as Int;
 }
 
 // -------------------------------------------------------------- enumeration
