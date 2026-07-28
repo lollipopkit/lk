@@ -35,8 +35,10 @@ assert(epoch > 0);
 let cwd = process.cwd();
 assert(cwd != nil);
 
-let tmp = fs.temp_dir();
-assert(tmp != nil);
+// `temp_dir()` is declared `String?`. `!` unwraps it, which is also what
+// makes the `read_dir` below type-check: the checker does not narrow a type
+// from a `!= nil` assertion.
+let tmp = fs.temp_dir()!;
 
 let listing = fs.read_dir(tmp);
 assert(listing != nil);

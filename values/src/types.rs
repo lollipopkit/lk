@@ -741,6 +741,14 @@ impl Type {
             (Type::Tuple(as_), Type::Tuple(bs)) => {
                 as_.len() == bs.len() && as_.iter().zip(bs.iter()).all(|(a, b)| a.is_assignable_to(b))
             }
+            // A tuple *is* a list. `Tuple` is not a runtime thing — `HeapValue`
+            // has `List` and no tuple at all; the variant exists so a
+            // heterogeneous literal can keep each element's type instead of
+            // collapsing to `List<Any>`. Without this rule that extra precision
+            // reads as a different type, and `let xs: List = [1, "a"];` — an
+            // ordinary list in a language whose lists are heterogeneous — was
+            // rejected by the annotation written to describe it.
+            (Type::Tuple(elems), Type::List(target)) => elems.iter().all(|elem| elem.is_assignable_to(target)),
             // Function types (contravariant parameters, covariant return)
             (
                 Type::Function {
