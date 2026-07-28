@@ -1,1 +1,0 @@
-fn f(x) { if x { return 1; } } println(f(true));

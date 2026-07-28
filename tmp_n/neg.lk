@@ -1,7 +1,0 @@
-fn negi(x: Int) -> Int { return -x; }
-fn negf(x: Float) -> Float { return -x; }
-let a = negi(7);
-let b = negf(2.5);
-let z = negf(0.0);
-println("${a} ${b} ${z}");
-println(-a);

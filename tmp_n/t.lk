@@ -1,1 +1,0 @@
-fn f(x: Float) -> Float { return -x; } println(f(0.0));
