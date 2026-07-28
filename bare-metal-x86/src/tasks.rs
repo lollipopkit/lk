@@ -20,25 +20,6 @@
 
 use core::arch::global_asm;
 
-/// Gives up the rest of this task's slice.
-///
-/// A software interrupt rather than a direct call: the switch has to happen
-/// with a complete interrupt frame on the stack, because that is what the
-/// resume path expects to find. `int` builds one; a call does not.
-///
-/// This is what an `#[extern]` declaration in `program.lk` names — the LK
-/// program asks the board for something the board alone can do.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_yield() {
-    // The number is a literal here and named `VECTOR_YIELD` in `program.lk`,
-    // which is the file that installs its gate. Two spellings of one number,
-    // and this is the side that cannot avoid it: `int` takes its vector as an
-    // immediate, so there is no operand to pass one in through.
-    //
-    // SAFETY: the vector has a gate — `program.lk` installs it before it asks
-    // the board to enable interrupts, which is the only order that works.
-    unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
-}
 
 // The timer's trampoline, extended to switch tasks.
 //

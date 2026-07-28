@@ -2527,8 +2527,19 @@ fn build_user_space(stack_physical: Int) -> Int {
 
 // Where that stack is in the task's own address space — a different number for
 // the same memory.
-#[extern("kernel_yield")]
+// Give up the rest of this task's slice.
+//
+// `int VECTOR_YIELD` — and the vector is the *same constant* the gate is
+// installed with, twenty lines up, because it can finally be one. It used to be
+// two spellings of one number in two languages: `int` takes its vector as an
+// immediate, so the board owned a Rust function containing `int 0x30` and
+// nothing checked that it matched the gate this file installs.
+//
+// The runtime answers it with a table of 256 stubs, which is what `isr.rs`
+// already did for the entry side. A kernel that can handle an interrupt but not
+// raise one can answer a syscall and not define one.
 fn task_yield() {
+    unsafe { cpu_raise_interrupt(VECTOR_YIELD); };
 }
 
 
