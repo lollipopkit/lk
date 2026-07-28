@@ -793,19 +793,31 @@ impl Generator {
             let arg = self.fresh("tl");
             let _ = writeln!(out, "let {arg}: List<Int> = [{}];", self.rng.below(40));
             let value = self.rng.below(50);
-            // And a level of indirection: a function that takes the container
-            // and hands it on. That is the shape a real miscompile lived in and
-            // this generator still missed — `fn_taker` called only from the top
-            // level exercises one call boundary, while a container that travels
-            // *through* a function exercises the order in which the two get
-            // lowered, which is where a signature the fixpoint had not settled
-            // yet gets read.
-            let relay = self.fresh("fn_relay");
+            // Two *siblings* that hand the same container on, not one relay.
+            //
+            // That plurality is the shape, and it took bisecting a real
+            // miscompile to find out. One caller passing a container down does
+            // not reproduce it; two callers of the same mutator, both reached
+            // from the top level, do — the container's type is settled from
+            // whichever call the fixpoint looked at first, and a pass that fails
+            // to look leaves the other holding a guess.
+            //
+            // The bug this reconstructs was mine: an attempt to make the entry
+            // refuse a call whose callee's return type was not yet known, which
+            // recovered one shape and made this one print an empty list with no
+            // fallback and no warning. See the note in `inst/global.rs`.
+            let relay_a = self.fresh("fn_relay");
+            let relay_b = self.fresh("fn_relay");
             let _ = writeln!(
                 out,
-                "fn {relay}(xs: List<Int>, p0: Int) -> Int {{ let a = {taker}(xs, p0); return a + {taker}(xs, p0 + 1); }}"
+                "fn {relay_a}(xs: List<Int>, which: Int) -> Int {{ if (which == 1) {{ {taker}(xs, 91); return 0 - 1; }} {taker}(xs, 92); return 33; }}"
             );
-            let _ = writeln!(out, "println({relay}({arg}, {value}));");
+            let _ = writeln!(
+                out,
+                "fn {relay_b}(xs: List<Int>) -> Int {{ let r = {taker}(xs, 3); {taker}(xs, 4); return r; }}"
+            );
+            let _ = writeln!(out, "println({relay_a}({arg}, 1));");
+            let _ = writeln!(out, "println({relay_b}({arg}));");
             let _ = writeln!(out, "println({taker}({arg}, {value}));");
             let _ = writeln!(out, "println({arg}.len());");
             let _ = writeln!(out, "println({arg}[{arg}.len() - 1]);");

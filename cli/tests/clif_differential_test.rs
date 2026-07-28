@@ -346,6 +346,22 @@ fn global_container_differential() {
                 "map_written_from_a_function",
                 "let m: Map<String, Int> = {};\nfn put(k: String) { m[k] = 1; }\nput(\"a\");\nput(\"b\");\nreturn m.len();\n",
             ),
+            // A container the *entry* owns, handed to two sibling functions that
+            // both pass it on to a third.
+            //
+            // Not a global at all, and that plurality is the point. One caller
+            // passing a container down does not reproduce anything; two callers
+            // of the same mutator do, because the container's type is settled
+            // from whichever call the signature fixpoint looked at first. This
+            // shape printed an empty list — natively, with no fallback and no
+            // warning — under an attempted lowering change, and it took
+            // bisecting `examples/syntax/defer.lk` to find it. `defer` had
+            // nothing to do with it; the example was just the first program
+            // with two siblings in it.
+            new(
+                "two_siblings_share_the_entrys_container",
+                "fn note(xs: List<Int>, n: Int) -> Int { xs.push(n); return n; }\n                 fn first(xs: List<Int>, which: Int) -> Int {\n  if (which == 1) { note(xs, 91); return 0 - 1; }\n  note(xs, 92);\n  return 33;\n}\n                 fn second(xs: List<Int>) -> Int {\n  let r = note(xs, 3);\n  note(xs, 4);\n  return r;\n}\n                 let xs: List<Int> = [];\nfirst(xs, 1);\nsecond(xs);\nreturn xs.len();\n",
+            ),
             // Read back through the function too, so a build where the two
             // views are swapped fails as loudly as one where they are split.
             new(
