@@ -372,4 +372,23 @@ mod tests {
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// `x in xs` compares values too.
+    ///
+    /// The mixed-list arm was `value == needle` — the derived `PartialEq` on
+    /// `RuntimeVal`, which is handle identity for anything on the heap. Strings
+    /// happened to work because a `TypedList::String` has its own arm; a list,
+    /// a map or a set never did.
+    #[test]
+    fn the_in_operator_compares_values() -> Result<()> {
+        let source = r#"
+            return [1, 2] in [[1, 2], [3]]
+                && {"a": 1} in [{"a": 1}, {"b": 2}]
+                && "abcdefghij" in ["abcdefghij", "x"]
+                && !([9, 9] in [[1, 2], [3]]);
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
 }

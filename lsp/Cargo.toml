@@ -27,3 +27,8 @@ dashmap = { workspace = true }
 ropey = "1"
 twox-hash = "2"
 once_cell = { workspace = true }
+
+[dev-dependencies]
+# `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
+# feature in lk-core.
+lk-core = { path = "../core", features = ["testing"] }

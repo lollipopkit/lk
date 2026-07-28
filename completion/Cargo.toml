@@ -16,4 +16,7 @@ lk-stdlib = { path = "../stdlib", optional = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
+# `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
+# feature in lk-core.
+lk-core = { path = "../core", features = ["testing"] }
 tempfile = { workspace = true }

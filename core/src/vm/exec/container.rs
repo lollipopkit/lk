@@ -389,7 +389,19 @@ impl Executor {
 
     fn list_contains(&self, values: &TypedList, needle: &RuntimeVal) -> Result<bool> {
         Ok(match values {
-            TypedList::Mixed(values) => values.iter().any(|value| value == needle),
+            // `x in xs` compares values, and a mixed list is where non-scalar
+            // elements live. This used to be `==` — handle identity — so
+            // `[1, 2] in [[1, 2], [3]]` answered false.
+            TypedList::Mixed(values) => {
+                let mut found = false;
+                for value in values {
+                    if self.runtime_values_equal(value, needle)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
             TypedList::Int(values) => matches!(needle, RuntimeVal::Int(needle) if values.contains(needle)),
             TypedList::Float(values) => matches!(needle, RuntimeVal::Float(needle) if values.contains(needle)),
             TypedList::Bool(values) => matches!(needle, RuntimeVal::Bool(needle) if values.contains(needle)),

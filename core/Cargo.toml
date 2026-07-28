@@ -15,6 +15,12 @@ tempfile = { workspace = true }
 
 [features]
 default = ["std", "async-runtime"]
+# `RuntimeVal`'s `PartialEq`, for test code only. The type cannot answer `==`
+# correctly — equality of a heap value needs the heap — so production code has
+# no `==` at all and asks `Executor::runtime_values_equal` or
+# `lk_stdlib_common::runtime_native::runtime_values_equal` instead. A test
+# compares against values it wrote down, which is a different question.
+testing = []
 # `std` gates the std-heavy, VM-core-independent modules (currently the
 # `package` manager: Lk.toml/lock, git, filesystem). Disabling it is a step
 # toward the no_std `lk-vm-core` split (plan M0.7/8): the VM core (token/ast/

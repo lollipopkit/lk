@@ -15,7 +15,29 @@ mod heap;
 
 pub use heap::{HeapRef, HeapStore};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A value, 16 bytes and `Copy`.
+///
+/// **No `PartialEq`, deliberately.** A derived one means two different things
+/// for two of these variants: structural for a `ShortStr`, and *handle
+/// identity* for an `Obj`. Every place that reached for `==` got identity
+/// without noticing, and `ShortStr`'s seven-byte inline limit made half the
+/// cases accidentally right — so the bug looked like "strings longer than
+/// seven characters", which is not a thing any reader would suspect:
+///
+/// ```text
+/// ["ab", "cd"].contains("ab")                 → true
+/// ["abcdefghij", …].contains("abcdefghij")    → false
+/// assert_eq("abcdefghij", "abcdefghij")       → failed (in the playground)
+/// ```
+///
+/// Equality needs the heap, so it cannot be a `PartialEq` impl at all: it is
+/// `Executor::runtime_values_equal` in the VM and
+/// `lk_stdlib_common::runtime_native::runtime_values_equal` outside it. Asking
+/// for one of those is a decision; `==` was not.
+///
+/// [`RuntimeVal::same_value_or_handle`] is the escape hatch for the places that
+/// genuinely mean "the same nil/bool/int, or literally the same object".
+#[derive(Clone, Copy, Debug)]
 pub enum RuntimeVal {
     Nil,
     Bool(bool),
@@ -23,6 +45,24 @@ pub enum RuntimeVal {
     Float(f64),
     ShortStr(ShortStr),
     Obj(HeapRef),
+}
+
+/// Equality for tests only.
+///
+/// Production code must not have this: `==` on a `RuntimeVal` can only compare
+/// handles, and the whole point of removing the derive is that reaching for it
+/// stops being possible by accident. A test, though, is written against known
+/// values and says what it means — `assert_eq!(returned, RuntimeVal::Int(55))`
+/// is about that integer, not about which handle it arrived on.
+///
+/// Gated on `cfg(test)`, so it exists while `lk-core`'s own tests compile and
+/// nowhere else. A downstream crate that needs it enables the `testing`
+/// feature.
+#[cfg(any(test, feature = "testing"))]
+impl PartialEq for RuntimeVal {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_value_or_handle(other)
+    }
 }
 
 impl Default for RuntimeVal {
@@ -42,6 +82,29 @@ impl RuntimeVal {
             Self::Float(_) => RuntimeValKind::Float,
             Self::ShortStr(_) => RuntimeValKind::ShortStr,
             Self::Obj(_) => RuntimeValKind::Obj,
+        }
+    }
+
+    /// The same scalar, or literally the same heap object.
+    ///
+    /// This is what the derived `PartialEq` used to provide silently. It is
+    /// still the right question in a few places — deduplicating a constant
+    /// pool, telling whether two registers hold the same object — and wrong in
+    /// every place that means "equal". Having to name it is the point: the
+    /// language's `==` is `Executor::runtime_values_equal`, which needs the
+    /// heap and answers by value.
+    #[inline]
+    pub fn same_value_or_handle(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Nil, Self::Nil) => true,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Int(left), Self::Int(right)) => left == right,
+            // Bit equality, so that two `NaN`s from the same source dedup and
+            // `0.0`/`-0.0` stay distinct — this is identity, not arithmetic.
+            (Self::Float(left), Self::Float(right)) => left.to_bits() == right.to_bits(),
+            (Self::ShortStr(left), Self::ShortStr(right)) => left.as_str() == right.as_str(),
+            (Self::Obj(left), Self::Obj(right)) => left == right,
+            _ => false,
         }
     }
 
@@ -247,10 +310,22 @@ impl RuntimeObject {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// A raised error: its message, and the values along the way.
+///
+/// No `PartialEq`: two errors are compared by their *message*, which
+/// `same_message` says, and never by their traces — those are `RuntimeVal`s,
+/// and comparing them without the heap would compare handles.
+#[derive(Clone, Debug)]
 pub struct ErrorVal {
     pub message: Arc<str>,
     pub trace: Vec<RuntimeVal>,
+}
+
+impl ErrorVal {
+    #[inline]
+    pub fn same_message(&self, other: &Self) -> bool {
+        self.message == other.message
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -387,7 +462,13 @@ fn copy_slice_tail<T: Clone>(values: &[T], start: usize) -> Vec<T> {
 impl PartialEq for TypedList {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Mixed(left), Self::Mixed(right)) => left == right,
+            (Self::Mixed(left), Self::Mixed(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right.iter())
+                        .all(|(left, right)| left.same_value_or_handle(right))
+            }
             (Self::Int(left), Self::Int(right)) => left == right,
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
@@ -403,23 +484,35 @@ fn typed_list_entries_equal_no_heap(left: &TypedList, right: &TypedList) -> bool
 
 fn typed_list_item_equal_no_heap(left: &TypedList, left_index: usize, right: &TypedList, right_index: usize) -> bool {
     match (left, right) {
-        (TypedList::Mixed(left), TypedList::Mixed(right)) => left[left_index] == right[right_index],
+        (TypedList::Mixed(left), TypedList::Mixed(right)) => left[left_index].same_value_or_handle(&right[right_index]),
         (TypedList::Int(left), TypedList::Int(right)) => left[left_index] == right[right_index],
         (TypedList::Float(left), TypedList::Float(right)) => left[left_index] == right[right_index],
         (TypedList::Bool(left), TypedList::Bool(right)) => left[left_index] == right[right_index],
         (TypedList::String(left), TypedList::String(right)) => left[left_index] == right[right_index],
-        (TypedList::Int(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Int(left[left_index]),
-        (TypedList::Mixed(left), TypedList::Int(right)) => left[left_index] == RuntimeVal::Int(right[right_index]),
-        (TypedList::Float(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Float(left[left_index]),
-        (TypedList::Mixed(left), TypedList::Float(right)) => left[left_index] == RuntimeVal::Float(right[right_index]),
-        (TypedList::Bool(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Bool(left[left_index]),
-        (TypedList::Mixed(left), TypedList::Bool(right)) => left[left_index] == RuntimeVal::Bool(right[right_index]),
+        (TypedList::Int(left), TypedList::Mixed(right)) => {
+            right[right_index].same_value_or_handle(&RuntimeVal::Int(left[left_index]))
+        }
+        (TypedList::Mixed(left), TypedList::Int(right)) => {
+            left[left_index].same_value_or_handle(&RuntimeVal::Int(right[right_index]))
+        }
+        (TypedList::Float(left), TypedList::Mixed(right)) => {
+            right[right_index].same_value_or_handle(&RuntimeVal::Float(left[left_index]))
+        }
+        (TypedList::Mixed(left), TypedList::Float(right)) => {
+            left[left_index].same_value_or_handle(&RuntimeVal::Float(right[right_index]))
+        }
+        (TypedList::Bool(left), TypedList::Mixed(right)) => {
+            right[right_index].same_value_or_handle(&RuntimeVal::Bool(left[left_index]))
+        }
+        (TypedList::Mixed(left), TypedList::Bool(right)) => {
+            left[left_index].same_value_or_handle(&RuntimeVal::Bool(right[right_index]))
+        }
         (TypedList::String(left), TypedList::Mixed(right)) => ShortStr::new(&left[left_index])
             .map(RuntimeVal::ShortStr)
-            .is_some_and(|value| right[right_index] == value),
+            .is_some_and(|value| right[right_index].same_value_or_handle(&value)),
         (TypedList::Mixed(left), TypedList::String(right)) => ShortStr::new(&right[right_index])
             .map(RuntimeVal::ShortStr)
-            .is_some_and(|value| left[left_index] == value),
+            .is_some_and(|value| left[left_index].same_value_or_handle(&value)),
         _ => false,
     }
 }
@@ -817,8 +910,18 @@ fn string_bool_entries_from_runtime_entries(
 impl PartialEq for TypedMap {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Mixed(left), Self::Mixed(right)) => left == right,
-            (Self::StringMixed(left), Self::StringMixed(right)) => left == right,
+            (Self::Mixed(left), Self::Mixed(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .all(|(key, value)| right.get(key).is_some_and(|other| value.same_value_or_handle(other)))
+            }
+            (Self::StringMixed(left), Self::StringMixed(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .all(|(key, value)| right.get(key).is_some_and(|other| value.same_value_or_handle(other)))
+            }
             (Self::StringInt(left), Self::StringInt(right)) => left == right,
             (Self::StringFloat(left), Self::StringFloat(right)) => left == right,
             (Self::StringBool(left), Self::StringBool(right)) => left == right,
@@ -830,7 +933,7 @@ impl PartialEq for TypedMap {
 fn typed_map_entries_equal(left: &TypedMap, right: &TypedMap) -> bool {
     left.len() == right.len()
         && typed_map_entries_all(left, |key, value| {
-            typed_map_entry_value(right, &key).is_some_and(|right| right == value)
+            typed_map_entry_value(right, &key).is_some_and(|right| right.same_value_or_handle(&value))
         })
 }
 

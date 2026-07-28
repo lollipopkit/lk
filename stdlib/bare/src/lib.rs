@@ -26,7 +26,7 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::runtime_display_value;
+use lk_stdlib_common::runtime_native::{runtime_display_value, runtime_values_equal};
 
 /// Where `print`/`println` go. A plain `fn` pointer rather than a closure so
 /// the slot is `const`-initialisable and needs no allocation before `main`.
@@ -146,7 +146,7 @@ fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
     if values.len() < 2 {
         return Err(anyhow!("assert_ne expects at least 2 arguments"));
     }
-    if values[0] != values[1] {
+    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
     }
     let rendered = display(&values[0], runtime)?;
@@ -203,7 +203,7 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
     if values.len() < 2 {
         return Err(anyhow!("assert_eq expects at least 2 arguments"));
     }
-    if values[0] == values[1] {
+    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
     }
     let actual = display(&values[0], runtime)?;

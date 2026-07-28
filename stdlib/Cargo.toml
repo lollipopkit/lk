@@ -50,6 +50,9 @@ serde_yaml = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+# `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
+# feature in lk-core.
+lk-core = { path = "../core", features = ["testing"] }
 # Test-only, for the host-conformance check in `src/host_parity_test.rs`: the
 # two alternative hosts are asked what they know, rather than being described by
 # a second list that can drift. Neither links into the shipped `stdlib`.

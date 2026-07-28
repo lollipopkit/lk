@@ -384,7 +384,7 @@ impl Executor {
         self.runtime_values_equal(&self.state.stack[lhs], &self.state.stack[rhs])
     }
 
-    fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {
+    pub(in crate::vm::exec) fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {
         Ok(match (lhs, rhs) {
             (RuntimeVal::Nil, RuntimeVal::Nil) => true,
             (RuntimeVal::Bool(lhs), RuntimeVal::Bool(rhs)) => lhs == rhs,
