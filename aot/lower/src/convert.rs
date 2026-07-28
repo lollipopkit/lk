@@ -100,6 +100,20 @@ pub(crate) fn read_index_scalar(
 
 /// [`read_scalar`] that also requires a specific type (the unwrap-aware counterpart
 /// of `Ssa::read_typed`).
+///
+/// A `Dyn` is unboxed through the runtime's tag check rather than rejected —
+/// the same rule, and the same `dyn.as_*` calls, that [`read_index_scalar`]
+/// documents: wherever a type is *required* rather than merely expected, a
+/// boxed value of that type is one, and a box holding something else raises
+/// exactly where the VM raises.
+///
+/// What made this matter: a parameter observes as `Dyn` the moment *any* call
+/// site passes a nullable carrier (see `Sig::observe_param`), and that widens
+/// it for every other call site too. `s.byte_at(i)` began answering a `Maybe` —
+/// honestly, since an index past the end is nil — so `put_char(base, code)`
+/// widened `put_char`'s `ascii` to `Dyn`, and the `ascii == 8` inside it then
+/// had a boxed operand where an `I64` was wanted. The whole bare-metal kernel
+/// stopped lowering, on a function that never touches a string.
 pub(crate) fn read_typed_scalar(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -110,10 +124,22 @@ pub(crate) fn read_typed_scalar(
 ) -> Result<ValueId, Unsupported> {
     let (v, ty) = read_scalar(ssa, insts, reg, block, pc)?;
     if ty == want {
-        Ok(v)
-    } else {
-        Err(Unsupported::TypeMismatch { pc })
+        return Ok(v);
     }
+    let unbox = match (ty, want) {
+        (Ty::Dyn, Ty::I64) => "as_i64",
+        (Ty::Dyn, Ty::F64) => "as_f64",
+        (Ty::Dyn, Ty::Bool) => "as_bool",
+        (Ty::Dyn, Ty::Str) => "as_str",
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("dyn", unbox),
+        args: vec![v],
+    });
+    Ok(dst)
 }
 
 /// Converts a scalar to its display `Str` (the VM's `ToString`/interpolation

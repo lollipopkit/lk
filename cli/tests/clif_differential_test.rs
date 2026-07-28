@@ -533,6 +533,74 @@ fn a_gate_descriptor_packs_and_unpacks() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A `Maybe` reaching one call site widens the parameter for all of them.
+///
+/// `Sig::observe_param` records a nullable argument as `Dyn`, and the join is
+/// per *parameter* — so one call passing `s.byte_at(i)` makes the parameter
+/// `Dyn` for the call that passes `10` as well. Everything inside the callee
+/// then has a boxed operand where it wants a number.
+///
+/// That is correct and it used to be free, because `byte_at` answered an `I64`.
+/// It began answering a `Maybe` — honestly: an index past the end is nil — and
+/// `bare-metal-x86` stopped lowering, on `put_char`, a function that never
+/// touches a string. What fixes it is unboxing where a scalar is *required*,
+/// which is the rule `read_index_scalar` already documented.
+///
+/// Absolute rather than differential: both engines agree on the answer either
+/// way. What differs is whether the native build exists at all.
+#[test]
+fn a_boxed_argument_still_lowers_where_a_number_is_required() {
+    let dir = unique_tmp_dir("boxed_param");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "boxed.lk";
+    // `sink` is called with a `Maybe` and with a plain `Int`, which is what
+    // makes its parameter `Dyn`; the body then does arithmetic, a comparison
+    // and a shift on it — three separate `read_typed_scalar` consumers.
+    let src = "fn sink(b: Int) -> Int {\n\
+               \x20   if (b == 8) {\n\
+               \x20       return 0;\n\
+               \x20   }\n\
+               \x20   return (b + 1) >> 1;\n\
+               }\n\
+               fn walk(text: String) -> Int {\n\
+               \x20   let total = 0;\n\
+               \x20   for i in 0..text.len() {\n\
+               \x20       total = total + sink(text.byte_at(i));\n\
+               \x20   }\n\
+               \x20   return total + sink(10);\n\
+               }\n\
+               println(walk(\"hi\"));\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    let expected = String::from_utf8_lossy(&vm.stdout).into_owned();
+    assert!(
+        !expected.trim().is_empty(),
+        "the VM printed nothing: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "a boxed parameter must still lower: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("boxed"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), expected);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The whole machine-integer matrix, answers written out.
 ///
 /// Six rounds of work went into this family one operator at a time — shift,
