@@ -64,6 +64,25 @@ fn mask(master: Int, slave: Int) {
 // this one open is a device that raises an interrupt the CPU never sees.
 const CASCADE_LINE = 2;
 
+// Two chips, eight lines each, and no seventeenth.
+//
+// Exported because a caller with a line number out of PCI config space needs
+// something to compare it against, and 16 written at the call site is a number
+// that agrees with this file until one of them changes. `bit_of` returns 0x80
+// for anything past the end, so an out-of-range line does not corrupt anything
+// — it quietly masks or unmasks line 7 or 15 instead, which is a device that
+// never fires and another that fires when it should not.
+const LINE_COUNT = 16;
+
+// Whether the chip has this line at all.
+//
+// A predicate rather than the constant, because the caller's question is not
+// "how many are there" but "may I use this number as an index". The number it
+// is checking came out of PCI config space, where 0xFF means "not connected".
+fn line_exists(irq: Int) -> Bool {
+    return irq >= 0 && irq < LINE_COUNT;
+}
+
 // The interrupt mask register reads back, which is what makes it possible to
 // open one line without knowing what else is open.
 //

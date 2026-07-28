@@ -35,7 +35,8 @@ use { start as pit_start } from "drivers/pit";
 use { remap as pic_remap, mask as pic_mask, unmask as pic_unmask,
       mask_line as pic_mask_line, eoi as pic_eoi, in_service as pic_in_service,
       set_level_triggered as pic_set_level,
-      eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave } from "drivers/pic";
+      eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave,
+      line_exists as pic_line_exists } from "drivers/pic";
 use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
       IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
 use { set_entry as gdt_set_entry, set_tss_entry as gdt_set_tss_entry,
@@ -1037,9 +1038,20 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
     // and the line is unmasked last, because a line opened before its gate is
     // filled is an interrupt into a not-present descriptor.
     let irq = edu_irq_line(bdf);
+    // Same check as `edu_interrupt`, and for the same reason: this line came out
+    // of the card's config space, and 0xFF there means "not connected".
+    if (!pic_line_exists(irq)) {
+        uart_text("net: the card reports no usable IRQ line (");
+        uart_put_hex(irq);
+        uart_text("), leaving it without an interrupt\n");
+        return false;
+    }
     shared_write(SHARED_NET_CAUSE, 0);
     shared_write(SHARED_NET_MMIO, mmio);
-    install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_net_isr") });
+    if (!install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_net_isr") })) {
+        uart_text("net: no gate for its vector\n");
+        return false;
+    }
     e1000_enable_receive_interrupt(mmio);
     // Level, not edge. A PCI device holds its line until the driver has dealt
     // with it, and the 8259's default is to look for a transition — so without
@@ -1533,9 +1545,24 @@ fn report_edu(base: Int) {
 // because a line opened before its gate is filled is an interrupt into a
 // not-present descriptor, which is a fault raised from inside an interrupt.
 fn edu_interrupt(mmio: Int, irq: Int) -> Bool {
+    // What the device said its line is, checked before it is used as an index.
+    //
+    // PCI config space answers this in one byte, and 0xFF is the defined value
+    // for "not connected" — a number the 8259 has no line for and the IDT has
+    // no gate for. Believed, it would install a gate 496 bytes past the end of
+    // a 256-entry table, which in this kernel is the GDT.
+    if (!pic_line_exists(irq)) {
+        uart_text("edu: the device reports no usable IRQ line (");
+        uart_put_hex(irq);
+        uart_text(")\n");
+        return false;
+    }
     shared_write(SHARED_EDU_SEEN, 0);
     shared_write(SHARED_EDU_MMIO, mmio);
-    install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_edu_isr") });
+    if (!install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_edu_isr") })) {
+        uart_text("edu: no gate for its vector\n");
+        return false;
+    }
     pic_unmask(irq);
 
     // A value with a bit the device has no other reason to set, so what the
@@ -2827,17 +2854,30 @@ fn set_kernel_stack(top: Int) {
 // The stride is measured rather than named, the same way the exception stubs'
 // is: the assembler's `.align` decides it, and a copy of that number on this
 // side would be a copy nothing checks.
-fn install_device_handler(vector: Int, handler: Int) {
+// Answers whether the vector was installed.
+//
+// Two tables are indexed by it — the IDT and `lkrt`'s handler table — and both
+// end at `VECTOR_COUNT`. The gate write refuses on its own (see
+// `drivers/idt.lk`), and the handler write is refused here for the same reason:
+// the vector for a device interrupt is `VECTOR_IRQ_BASE + line`, and the line is
+// a byte read out of PCI config space.
+fn install_device_handler(vector: Int, handler: Int) -> Bool {
     let stubs = unsafe { symbol_address("lkrt_isr_stubs") };
     let span = unsafe { symbol_address("lkrt_isr_stubs_end") } - stubs;
     if ((span % VECTOR_COUNT) != 0) {
         uart_text("bad isr stride\n");
         halt();
     }
+    if (vector < 0 || vector >= VECTOR_COUNT) {
+        return false;
+    }
     let stride = ((span / VECTOR_COUNT) as Int);
-    idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    if (!idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0)) {
+        return false;
+    }
     let table = unsafe { symbol_address("lkrt_isr_handlers") };
     unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
+    return true;
 }
 
 fn install_interrupt_table() {
