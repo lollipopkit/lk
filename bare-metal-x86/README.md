@@ -76,7 +76,7 @@ fn schedule_from_interrupt(rsp: Int) -> Int {
 }
 ```
 
-What is left in `src/tasks.rs` is 110 lines: the register spill either side of
+What is left in `src/tasks.rs` is 154 lines: the register spill either side of
 that call, and the software interrupt a task uses to ask for it. Those are the
 one thing a language cannot say — *return on a different stack* — and the
 trampoline is where it is said.
@@ -224,8 +224,9 @@ draws as it goes. Same arithmetic, no intermediate list.
 and a native build calls that symbol.
 
 ```lk
-#[extern("kernel_yield")]
-fn task_yield() {
+#[extern("kernel_run")]
+fn kernel_run(address: Int, length: Int) -> Int {
+    return 0 - 1;
 }
 ```
 
@@ -234,11 +235,27 @@ implementation — so a fallback goes there. That also makes this the one
 construct whose two back ends are not checked against each other: the thing
 being called is not in the program.
 
-`kernel_yield` is a software interrupt (`int 0x30`) rather than a plain call.
-The switch needs a complete interrupt frame on the stack, because that is what
-the resume path expects to find; `int` builds one and a `call` does not. The
-vector is past the PIC's remapped range, so nothing but an `int` can raise it
-— there is no device to acknowledge.
+**Yield used to be one of these, and is not any more.** It was
+`#[extern("kernel_yield")]` calling a Rust function containing `int 0x30`,
+because `int` takes its vector as an *immediate* — there is no operand to pass
+one in through, so the number lived twice: once where this file installs the
+gate, once inside that stub, in two languages, with nothing checking they agreed.
+
+The runtime answers that with 256 stubs, each `int n` and a return, so the vector
+becomes an index (`lkrt/src/isr.rs`, which now holds both directions of the same
+obstacle). `task_yield` is one line:
+
+```lk
+fn task_yield() {
+    unsafe { cpu_raise_interrupt(VECTOR_YIELD); };
+}
+```
+
+A kernel that can *handle* an interrupt but not raise one can answer a syscall
+and not define one. The switch needs a complete interrupt frame on the stack,
+because that is what the resume path expects to find; `int` builds one and a
+`call` does not. The vector is past the PIC's remapped range, so nothing but an
+`int` can raise it — there is no device to acknowledge.
 
 There is no privilege boundary here to cross: LK and the kernel are one binary
 at ring 0. What this is, is the direction `#[export]` did not cover — the
@@ -1500,7 +1517,7 @@ live below 2 MiB, so 0x0030_0000 is untouched. That is crude, and deliberately
 so — a kernel with no memory manager yet has exactly this much to work with,
 and pretending otherwise would hide what the program is actually doing.
 
-`check_keyboard.py` types at the machine through QEMU's monitor. `sendkey`
+`check_shell.py` types at the machine through QEMU's monitor. `sendkey`
 puts a real scancode into the emulated controller, so the test covers IRQ1, the
 LK handler, the scancode table and the echo — the one part memory inspection
 cannot show.
@@ -1588,3 +1605,32 @@ kernels do.
 position independent — a bare-metal image is loaded at a fixed address and has
 no dynamic loader — so the link rejects its absolute relocations. Setting the
 relocation model in `.cargo/config.toml` is what makes the two agree.
+
+## What the checks cover
+
+Fifteen scripts, each booting the image under QEMU and driving it through the
+monitor. They are listed here because a check nobody runs is a claim nobody
+holds, and five of these were written after the sections above.
+
+| | what fails if it is wrong |
+| --- | --- |
+| `check_shell.py` | IRQ1 through the scancode table to the echo, a command answered, the scroll, and the page allocator's *addresses* — a counter would print two numbers just as happily |
+| `check_screen.py` | the framebuffer, by reading pixels back |
+| `check_mouse.py` · `check_focus.py` · `check_drag.py` · `check_stack.py` | the PS/2 mouse, and windows that own their pixels, their focus and their order |
+| `check_tasks.py` · `check_spawn.py` | two windows changing while the shell sits idle: a task that was never started and a scheduler that stopped reaching it are the same failure from outside |
+| `check_user.py` | ring 3 spoke through a syscall, was preempted while never yielding, and was refused the kernel page next to its own |
+| `check_disk.py` | a sector read, one written, and the medium checked *after* QEMU exits — a drive acknowledges a write long before it is on the platter |
+| `check_run.py` | a program loaded off that disk and interpreted, on the same machine that compiled the kernel |
+| `check_pci.py` | a device found by walking configuration space, reached through its BAR, made to compute, made to DMA into RAM, and made to interrupt on a gate the driver installed for itself |
+| `check_net.py` | an Intel NIC: its MAC out of the EEPROM, two descriptor rings fed twelve exchanges past their wrap, a well-formed ARP request on the wire (checked from a pcap, not from the guest), the gateway's reply, every page given back, and the card's own interrupt reaching a handler |
+| `check_exit.py` | a task that *ends* — twenty of them through sixteen slots, every slot and every stack page returning — and one that sleeps for the time it asks for with the CPU halted throughout |
+| `check_clock.py` | the CMOS clock, against a base time QEMU was *told*, at a moment where a missing BCD conversion turns November into month 17 |
+
+The two that are not scripts:
+
+* **`CARGO_FLAGS=--features=fault-probe`** makes the kernel touch an address
+  36 bits wide right after installing its interrupt table. A reporter that is
+  never made to report is indistinguishable from one that cannot.
+* **`cargo run --release --bin lk-bare-metal`** in `../bare-metal` boots the
+  Cortex-M demo. It is the only thing that proves the no_std VM *works* rather
+  than merely compiles, and it is on a different architecture.
