@@ -65,6 +65,7 @@ use { task_table_init, task_word, task_set_word, task_field, task_set_field,
 use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
       SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
+use { rtc_read, rtc_year, rtc_month, rtc_day, rtc_hour, rtc_minute, rtc_second } from "drivers/rtc";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
       release_page as page_release, release_run as pages_release_run,
       total as pages_total, PAGE_SIZE, PAGES_STATE_SIZE } from "drivers/pages";
@@ -1234,6 +1235,46 @@ fn alloc_contiguous(bytes: Int) -> Int {
     return base;
 }
 
+// What time it is, as the machine's battery-backed clock has it.
+//
+// Every other clock here counts: the PIT counts down and the kernel counts its
+// interrupts, which gives elapsed time and nothing else. This is the one thing
+// on the machine that kept running while the power was off.
+//
+// Printed with the fields spelled out rather than as the packed number the
+// driver answers, because a reader checking this against a wall clock should not
+// have to divide by a hundred five times.
+fn report_clock(base: Int) {
+    let now = rtc_read();
+    if (now == 0) {
+        // The chip never agreed with itself twice running. That is a real
+        // outcome and it is not the same as "the time is zero".
+        emit_text(base, "clock: unsettled");
+        return;
+    }
+    emit(base, text_bytes("clock ")
+        .chain(decimal(rtc_year(now)))
+        .chain(text_bytes("-"))
+        .chain(two_digits(rtc_month(now)))
+        .chain(text_bytes("-"))
+        .chain(two_digits(rtc_day(now)))
+        .chain(text_bytes(" "))
+        .chain(two_digits(rtc_hour(now)))
+        .chain(text_bytes(":"))
+        .chain(two_digits(rtc_minute(now)))
+        .chain(text_bytes(":"))
+        .chain(two_digits(rtc_second(now))));
+}
+
+// Zero-padded, because a clock that prints 9:5:3 is one a reader has to think
+// about and one a check has to parse loosely.
+fn two_digits(value: Int) -> List<Int> {
+    if (value < 10) {
+        return text_bytes("0").chain(decimal(value));
+    }
+    return decimal(value);
+}
+
 // Every device on the bus, one line each.
 //
 // A kernel that can say what is plugged into the machine is a kernel that found
@@ -1956,6 +1997,10 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with(text_bytes("edu"))) {               // "edu"
         report_edu(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("clock"))) {           // "clock"
+        report_clock(base);
         return 1;
     }
     if (line_starts_with(text_bytes("sleep"))) {           // "sleep"

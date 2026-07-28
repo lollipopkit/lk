@@ -1,0 +1,182 @@
+// The real-time clock, which is the only thing on this machine that knows what
+// time it is.
+//
+// Everything else here counts: the PIT counts down and raises an interrupt, and
+// the kernel counts those. That gives elapsed time and nothing else — a machine
+// that has been up for four seconds cannot say whether it is Tuesday. The RTC
+// is a battery-backed counter that kept running while the power was off, and
+// reading it is the whole of "what time is it" on a PC.
+//
+// It is reached through two ports rather than memory: 0x70 selects a register in
+// CMOS, 0x71 reads or writes it. That indirection is the reason for every hazard
+// below.
+
+const CMOS_SELECT = 0x70;
+const CMOS_DATA = 0x71;
+
+// The registers that hold the time, and the two that describe the format.
+const RTC_SECOND = 0x00;
+const RTC_MINUTE = 0x02;
+const RTC_HOUR = 0x04;
+const RTC_DAY = 0x07;
+const RTC_MONTH = 0x08;
+const RTC_YEAR = 0x09;
+const RTC_STATUS_A = 0x0a;
+const RTC_STATUS_B = 0x0b;
+
+// Status A's top bit is set while the chip is copying its counters into the
+// registers. Reading during that window gives a mixture of before and after —
+// 01:59:59 becoming 01:00:59, which is a clock that runs backwards for one
+// second in every hour and is otherwise perfect.
+const STATUS_A_UPDATING = 0x80;
+
+// Status B says how the values are encoded. Neither is a default: a machine may
+// give binary or BCD, and 12- or 24-hour, and a driver that assumes gets the
+// right answer on the machine it was written on.
+const STATUS_B_BINARY = 0x04;
+const STATUS_B_24_HOUR = 0x02;
+
+// In 12-hour mode the hour register's top bit means PM. It survives the BCD
+// conversion because it is not a digit, which is why it has to be taken off
+// before converting and put back after.
+const HOUR_PM = 0x80;
+
+// The interrupt-select bit, which this driver's non-interrupt reads must leave
+// alone: `select` also *masks NMI* through its top bit, and a driver that wrote
+// a bare register number would be turning non-maskable interrupts back on as a
+// side effect of asking the time.
+const NMI_DISABLE = 0x80;
+
+fn cmos_read(register: Int) -> Int {
+    // The NMI bit is preserved rather than cleared, for the reason above.
+    unsafe { port_out_u8(CMOS_SELECT, (register | NMI_DISABLE) as u8); };
+    let value = unsafe { port_in_u8(CMOS_DATA) };
+    return value as Int;
+}
+
+// Whether the chip is mid-update.
+fn rtc_updating() -> Bool {
+    return (cmos_read(RTC_STATUS_A) & STATUS_A_UPDATING) != 0;
+}
+
+// Binary-coded decimal: each nibble is a decimal digit, so 0x59 means 59.
+fn from_bcd(value: Int) -> Int {
+    return ((value / 16) as Int) * 10 + (value & 0x0f);
+}
+
+// The six fields, packed into one number the caller can pull apart.
+//
+// One number rather than six reads, because the *point* is that they were read
+// together: six separate calls could straddle an update and produce a time that
+// never happened. Packed as YYYYMMDDhhmmss, which is a number that compares and
+// prints in the order a person reads it.
+const FIELD_SCALE = 100;
+
+fn rtc_pack(year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int) -> Int {
+    return ((((year * FIELD_SCALE + month) * FIELD_SCALE + day) * FIELD_SCALE + hour)
+        * FIELD_SCALE + minute) * FIELD_SCALE + second;
+}
+
+// Reads the clock, or 0 if it will not settle.
+//
+// Read twice and compare, which is the standard answer and the only one that
+// works. Waiting for the update flag to clear is not enough on its own: the flag
+// says an update is *in progress*, and one can begin between the check and the
+// reads. Two identical reads mean no update happened between them, because an
+// update always changes at least the seconds.
+//
+// Bounded, because a chip that never agrees with itself is a broken chip and a
+// driver that waits for it forever is a hung machine.
+fn rtc_read() -> Int {
+    let previous = 0 - 1;
+    for _attempt in 0..1000 {
+        // Wait out any update already running, then take a whole reading.
+        for _settle in 0..100000 {
+            if (!rtc_updating()) {
+                break;
+            }
+        }
+        let reading = rtc_read_once();
+        if (reading == previous && reading != 0) {
+            return reading;
+        }
+        previous = reading;
+    }
+    return 0;
+}
+
+// One pass over the registers, converted to the format status B describes.
+//
+// The format is read *after* the values, and that ordering does not matter for
+// correctness — status B does not change — but reading it first would put two
+// more port cycles between the check for an update and the values, which is the
+// window this whole function is about.
+fn rtc_read_once() -> Int {
+    let second = cmos_read(RTC_SECOND);
+    let minute = cmos_read(RTC_MINUTE);
+    let hour = cmos_read(RTC_HOUR);
+    let day = cmos_read(RTC_DAY);
+    let month = cmos_read(RTC_MONTH);
+    let year = cmos_read(RTC_YEAR);
+    let status_b = cmos_read(RTC_STATUS_B);
+
+    // The PM flag comes off before the conversion and goes back on after: it is
+    // not a digit, and a BCD conversion of 0x92 (PM, 12) would answer 92.
+    let pm = (hour & HOUR_PM) != 0;
+    hour = hour & (0xff - HOUR_PM);
+
+    if ((status_b & STATUS_B_BINARY) == 0) {
+        second = from_bcd(second);
+        minute = from_bcd(minute);
+        hour = from_bcd(hour);
+        day = from_bcd(day);
+        month = from_bcd(month);
+        year = from_bcd(year);
+    }
+
+    if ((status_b & STATUS_B_24_HOUR) == 0) {
+        // 12 AM is hour 0 and 12 PM is hour 12; every other PM hour is plus
+        // twelve. Written as two cases because the wrap at noon and midnight is
+        // where a single formula gets it wrong.
+        if (pm) {
+            if (hour != 12) {
+                hour = hour + 12;
+            }
+        } else {
+            if (hour == 12) {
+                hour = 0;
+            }
+        }
+    }
+
+    // The year register holds two digits. The century register exists but is
+    // not reliable across machines, so this does what every PC firmware does:
+    // assumes the current century. A kernel that outlives 2099 has other
+    // problems.
+    return rtc_pack(2000 + year, month, day, hour, minute, second);
+}
+
+// The pieces back out of a packed reading.
+fn rtc_second(packed: Int) -> Int {
+    return packed % FIELD_SCALE;
+}
+
+fn rtc_minute(packed: Int) -> Int {
+    return ((packed / FIELD_SCALE) as Int) % FIELD_SCALE;
+}
+
+fn rtc_hour(packed: Int) -> Int {
+    return ((packed / (FIELD_SCALE * FIELD_SCALE)) as Int) % FIELD_SCALE;
+}
+
+fn rtc_day(packed: Int) -> Int {
+    return ((packed / (FIELD_SCALE * FIELD_SCALE * FIELD_SCALE)) as Int) % FIELD_SCALE;
+}
+
+fn rtc_month(packed: Int) -> Int {
+    return ((packed / (FIELD_SCALE * FIELD_SCALE * FIELD_SCALE * FIELD_SCALE)) as Int) % FIELD_SCALE;
+}
+
+fn rtc_year(packed: Int) -> Int {
+    return ((packed / (FIELD_SCALE * FIELD_SCALE * FIELD_SCALE * FIELD_SCALE * FIELD_SCALE)) as Int) % 10000;
+}
