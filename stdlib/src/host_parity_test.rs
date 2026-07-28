@@ -132,3 +132,90 @@ fn every_host_has_every_global_a_program_can_write() {
         );
     }
 }
+
+/// The two boards outside the workspace, and the features they ask this crate
+/// for.
+///
+/// `bare-metal/` and `bare-metal-x86/` are `exclude`d from the workspace — they
+/// build only for `thumbv7em-none-eabi` and `x86_64-unknown-none` — so
+/// `cargo test --workspace` never touches them and neither does CI. Each names
+/// a subset of `stdlib/bare`'s features in its own manifest, which makes the
+/// list a thing written down three times.
+///
+/// Removing a module is therefore three edits, and missing one is a build that
+/// fails only when somebody builds that target by hand. That is not a
+/// hypothetical: the `slice` module was removed and both boards kept asking for
+/// its feature. The x86 kernel was found a day later; the Cortex-M demo — the
+/// only thing that shows the no_std VM *running*, on a second architecture —
+/// was found the day after that, by looking.
+///
+/// This test cannot build those targets. What it can do is read their manifests
+/// and check that every feature they name still exists here, which is exactly
+/// the failure both of them had.
+#[test]
+fn the_out_of_workspace_boards_ask_for_features_that_exist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = std::fs::read_to_string(root.join("bare/Cargo.toml")).expect("read stdlib/bare manifest");
+    let available = feature_names(&ours);
+    assert!(
+        available.contains(&"math".to_string()),
+        "the feature parse found nothing; it is reading the wrong file or the wrong shape"
+    );
+
+    for board in ["bare-metal", "bare-metal-x86"] {
+        let manifest = root.join("..").join(board).join("Cargo.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap_or_else(|e| panic!("read {}: {e}", manifest.display()));
+        let asked = requested_features(&text);
+        assert!(
+            !asked.is_empty(),
+            "{board} names no features for `lk-stdlib-bare`; if that dependency went away, this \
+             test should go with it"
+        );
+        let gone: Vec<&String> = asked.iter().filter(|name| !available.contains(name)).collect();
+        assert!(
+            gone.is_empty(),
+            "{board}/Cargo.toml asks `lk-stdlib-bare` for {gone:?}, which it no longer has. That \
+             board is outside the workspace, so nothing else here builds it — the error it gets is \
+             `failed to select a version for lk-stdlib-bare`, and only when someone builds that \
+             target by hand"
+        );
+    }
+}
+
+/// The keys of `stdlib/bare`'s `[features]` table.
+fn feature_names(manifest: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_features = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        if !in_features || line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once('=') {
+            names.push(name.trim().to_string());
+        }
+    }
+    names
+}
+
+/// The feature names a board's `lk-stdlib-bare` dependency asks for.
+fn requested_features(manifest: &str) -> Vec<String> {
+    let Some(line) = manifest.lines().find(|line| line.trim_start().starts_with("lk-stdlib-bare")) else {
+        return Vec::new();
+    };
+    let Some(list) = line.split_once("features").and_then(|(_, rest)| rest.split_once('[')) else {
+        return Vec::new();
+    };
+    let Some((inside, _)) = list.1.split_once(']') else {
+        return Vec::new();
+    };
+    inside
+        .split(',')
+        .map(|piece| piece.trim().trim_matches('"').to_string())
+        .filter(|piece| !piece.is_empty())
+        .collect()
+}
