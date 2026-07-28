@@ -274,6 +274,11 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(string_char_len(value)),
+                // Bytes counts bytes — that is the whole point of asking for
+                // them. `s.len()` counts characters, `s.bytes().len()` counts
+                // bytes, and the difference is now something the reader chose
+                // rather than something the implementation decided for them.
+                HeapValue::Bytes(value) => Ok(value.len()),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),

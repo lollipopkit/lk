@@ -789,21 +789,27 @@ fn dispatch_string_builtin_method(
             let repeated: String = s.repeat(*n as usize);
             Ok(Some(make_string_val(&repeated, heap)))
         }
+        "bytes" => {
+            if !positional.is_empty() {
+                bail!("string.bytes() expects no arguments, got {}", positional.len());
+            }
+            // The way out. Positions in a string are characters, so anything
+            // that genuinely needs bytes — a protocol frame, a buffer length —
+            // asks for them, and gets a `Bytes` the `bytes` module operates on.
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(s.as_bytes()))),
+            )))
+        }
         "chars" => {
             if !positional.is_empty() {
                 bail!("string.chars() expects no arguments, got {}", positional.len());
             }
-            let chars: Vec<RuntimeVal> = s
-                .chars()
-                .map(|c| {
-                    let mut buf = [0u8; 4];
-                    let encoded = c.encode_utf8(&mut buf);
-                    let s = String::from(encoded);
-                    RuntimeVal::ShortStr(ShortStr::new(&s).unwrap_or_else(|| ShortStr::new("?").unwrap()))
-                })
-                .collect();
+            // `TypedList::String`, the same variant `string.chars` builds. As
+            // `Mixed` the identical list printed differently — `[a,b]` here
+            // against `["a","b"]` there — because rendering asks the variant.
+            let chars: Vec<Arc<str>> = s.chars().map(|c| Arc::<str>::from(c.to_string())).collect();
             Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(chars))),
+                heap.alloc(HeapValue::List(TypedList::String(chars))),
             )))
         }
         "replace" => {

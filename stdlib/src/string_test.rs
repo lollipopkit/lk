@@ -213,6 +213,34 @@ mod tests {
     }
 
     #[test]
+    fn test_bytes_is_the_explicit_way_to_byte_positions() -> Result<()> {
+        // Characters are the default; bytes are asked for. `s.len()` and
+        // `s.bytes().len()` disagree on purpose, and which one you get is now
+        // the reader's choice rather than a property of which spelling of the
+        // operation they happened to reach for.
+        let source = r#"
+            use bytes;
+            let s = "héllo";
+            return [
+                s.len() == 5,
+                s.bytes().len() == 6,
+                bytes.eq(s.bytes(), bytes.from_string(s)),
+                bytes.to_string_utf8(s.bytes()) == s,
+                s.chars() == ["h", "é", "l", "l", "o"],
+            ];
+        "#;
+        let result = execute_string(source)?;
+        let TypedList::Bool(values) = runtime_list(result.first_return(), result.state.heap()) else {
+            panic!("expected a list of booleans");
+        };
+        assert!(
+            values.iter().all(|holds| *holds),
+            "byte/character split broke: {values:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_string_join_rejects_non_string_items() {
         let source = "use string; return string.join([\"ok\", 123], \",\");";
         let err = execute_string(source).expect_err("non-string list elements should error");
