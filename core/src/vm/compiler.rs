@@ -214,6 +214,17 @@ impl Compiler {
             // mattered beyond tidiness — `(1u64 << 63) >> 63` could not be told
             // to shift logically, because by the time the `>>` was lowered its
             // operand had no proven width left to consult.
+            //
+            // The *type checker* deliberately does not do this, and that
+            // asymmetry is load-bearing. Teaching it the same rule makes
+            // `let top = one << 63; top < one;` type-check — and it is then
+            // compiled wrong: comparison and division on the `i64` carrier are
+            // signed, so a `u64` with bit 63 set compares as negative and
+            // divides as negative. Today the checker calls that expression a
+            // width mismatch and refuses it, which is not helpful but is not
+            // *wrong*. Closing this properly means unsigned compare, divide and
+            // modulo — opcodes, in both backends — and the checker's half is the
+            // last piece of that, not the first.
             Expr::Call(name, args)
                 if matches!(name.as_str(), "__lk_shl" | "__lk_shr" | "__lk_shr_u") && args.len() == 2 =>
             {
