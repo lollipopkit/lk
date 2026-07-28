@@ -510,7 +510,7 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut core::ffi::c_v
     crate::state::arena_handle_owning_strings(elements, owned)
 }
 
-/// `string.byte_at(s, i)` — one byte, as a number, or -1 past the end.
+/// `string.byte_at(s, i)` — one byte, as a number, or absent past the end.
 ///
 /// The one string read that allocates nothing. `char_at` below answers a
 /// *string* of one character, which means an allocation, which means it cannot
@@ -520,19 +520,27 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut core::ffi::c_v
 ///
 /// Bytes rather than characters, and deliberately: a byte index is O(1) where a
 /// character index is a scan, and code that pushes a message to a device is
-/// working in bytes anyway. -1 rather than a raise for out of range, because the
-/// caller is a loop bounded by `len` and a raise would be a cost paid on every
-/// iteration of the common case.
+/// working in bytes anyway. Absent rather than a raise for out of range,
+/// because the caller is a loop bounded by `len` and a raise would be a cost
+/// paid on every iteration of the common case.
+///
+/// This used to answer `-1`, and so did the VM — a sentinel where the language
+/// says nil everywhere else it means absent, and where `string.byte_at` (the
+/// same operation, module-spelled) already answered nil.
 ///
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_byte_at(s: *const c_char, index: i64) -> i64 {
+pub unsafe extern "C" fn lkrt_str_byte_at(s: *const c_char, index: i64) -> crate::lklist::LkMaybeI64 {
+    use crate::lklist::LkMaybeI64;
     let text = view(s).as_bytes();
     if index < 0 || index >= text.len() as i64 {
-        return -1;
+        return LkMaybeI64 { value: 0, present: 0 };
     }
-    text[index as usize] as i64
+    LkMaybeI64 {
+        value: text[index as usize] as i64,
+        present: 1,
+    }
 }
 
 /// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,

@@ -698,11 +698,14 @@ fn dispatch_string_builtin_method(
                 other => bail!("string.byte_at() index must be an Int, got {:?}", other.kind()),
             };
             let bytes = s.as_bytes();
-            // -1 past either end, matching the native path: the caller is a loop
-            // bounded by `len`, and a raise would be a cost paid on every
-            // iteration of the case that is not a mistake.
+            // Nil past either end. This answered `-1` while `string.byte_at`
+            // answered nil — the same operation with two answers — and `-1` is
+            // not what the method declares either (`Int?`). It is a sentinel in
+            // a language that says nil everywhere else it means absent:
+            // `find`, `get`, `first`, `last`, `pop`, and the module form of
+            // this very function.
             if index < 0 || index >= bytes.len() as i64 {
-                return Ok(Some(RuntimeVal::Int(-1)));
+                return Ok(Some(RuntimeVal::Nil));
             }
             Ok(Some(RuntimeVal::Int(bytes[index as usize] as i64)))
         }

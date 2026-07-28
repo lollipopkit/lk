@@ -9,7 +9,7 @@ mod tests {
         module::ModuleRegistry,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
-        val::RuntimeVal,
+        val::{HeapValue, RuntimeVal, TypedList},
         vm::{ProgramResult, VmContext},
     };
 
@@ -151,5 +151,71 @@ mod tests {
                 "`{source}` raised the wrong thing: {text}"
             );
         }
+    }
+
+    /// Every string operation that has both a method and a module spelling,
+    /// asserted equal on the same inputs.
+    ///
+    /// The module form is not a second implementation but it is a second
+    /// *declaration*, and the two had drifted five ways before this test
+    /// existed — `len` counted bytes on one side and characters on the other,
+    /// `find` answered -1 versus nil, `chars` built a differently-typed list,
+    /// `substring`'s third parameter was documented as `end` while it is a
+    /// length, and `byte_at` was called `byte` here and answered -1 there.
+    /// Every one of them was found by comparing, not by reading.
+    #[test]
+    fn the_string_module_is_a_spelling_of_the_string_methods() -> Result<()> {
+        let source = r#"
+            use string;
+            // Empty, ASCII, multi-byte, padded, and one with separators — the
+            // shapes that told the two forms apart.
+            let inputs = ["", "a", "abc", "héllo wörld", "  pad  ", "aXbXc"];
+            let mismatch = [];
+            for s in inputs {
+                if (s.len() != string.len(s)) { mismatch.push("len"); }
+                if (s.is_empty() != string.is_empty(s)) { mismatch.push("is_empty"); }
+                if (s.lower() != string.lower(s)) { mismatch.push("lower"); }
+                if (s.upper() != string.upper(s)) { mismatch.push("upper"); }
+                if (s.trim() != string.trim(s)) { mismatch.push("trim"); }
+                if (s.reverse() != string.reverse(s)) { mismatch.push("reverse"); }
+                if (s.chars() != string.chars(s)) { mismatch.push("chars"); }
+                if (s.split("X") != string.split(s, "X")) { mismatch.push("split"); }
+                if (s.contains("b") != string.contains(s, "b")) { mismatch.push("contains"); }
+                if (s.starts_with("a") != string.starts_with(s, "a")) { mismatch.push("starts_with"); }
+                if (s.ends_with("c") != string.ends_with(s, "c")) { mismatch.push("ends_with"); }
+                if (s.find("b") != string.find(s, "b")) { mismatch.push("find"); }
+                if (s.find("zz") != string.find(s, "zz")) { mismatch.push("find-miss"); }
+                if (s.repeat(2) != string.repeat(s, 2)) { mismatch.push("repeat"); }
+                if (s.substring(1, 2) != string.substring(s, 1, 2)) { mismatch.push("substring"); }
+                if (s.replace("X", "-") != string.replace(s, "X", "-")) { mismatch.push("replace"); }
+                if (s.byte_at(0) != string.byte_at(s, 0)) { mismatch.push("byte_at"); }
+                if (s.byte_at(99) != string.byte_at(s, 99)) { mismatch.push("byte_at-oob"); }
+            }
+            return mismatch;
+        "#;
+        let result = run(source)?;
+        let RuntimeVal::Obj(handle) = result.first_return() else {
+            panic!("expected the mismatch list");
+        };
+        let names: Vec<String> = match result.state.heap().get(*handle) {
+            Some(HeapValue::List(TypedList::String(values))) => values.iter().map(|v| v.to_string()).collect(),
+            Some(HeapValue::List(TypedList::Mixed(values))) if values.is_empty() => Vec::new(),
+            other => panic!("expected a string list, got {other:?}"),
+        };
+        assert!(names.is_empty(), "the two spellings disagree on: {}", names.join(", "));
+        Ok(())
+    }
+
+    /// Absence is nil, including at the byte level.
+    ///
+    /// `s.byte_at(oob)` answered `-1` — a sentinel, in a language that says nil
+    /// everywhere else it means absent (`find`, `get`, `first`, `last`, `pop`),
+    /// and against the `Int?` the method itself declares.
+    #[test]
+    fn an_out_of_range_byte_is_nil_not_a_sentinel() -> Result<()> {
+        let result = run(r#"use string;
+            return "abc".byte_at(9) == nil && string.byte_at("abc", 9) == nil && "abc".byte_at(0) == 97;"#)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
     }
 }

@@ -151,7 +151,12 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String, start: Int, end: Int), returns = String)]
+    // `length`, not `end`: the third argument is a count of characters, which
+    // is what the body has always done (`util::text::substring(.., start,
+    // length)`) and what the method form declares. The name said `end`, so
+    // hover and completion told the reader to write `substring(s, 2, 5)` for
+    // the substring the language spells `substring(s, 2, 3)`.
+    #[stdlib_export(params(text: String, start: Int, length: Int), returns = String)]
     fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
@@ -214,7 +219,10 @@ impl StringModule {
         Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
     }
 
-    #[stdlib_export(name = "char", params(text: String, index: Int), returns = String?)]
+    // Exported under the name it is written with. It used to be `string.char`
+    // while the method form is `s.byte_at(i)`'s sibling — one operation with
+    // two names, which no test could compare and no reader could pair up.
+    #[stdlib_export(params(text: String, index: Int), returns = String?)]
     fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
@@ -224,7 +232,7 @@ impl StringModule {
         }))
     }
 
-    #[stdlib_export(name = "byte", params(text: String, index: Int), returns = Int?)]
+    #[stdlib_export(params(text: String, index: Int), returns = Int?)]
     fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;

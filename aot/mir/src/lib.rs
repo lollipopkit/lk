@@ -353,6 +353,13 @@ pub enum Inst {
         handle: ValueId,
         index: ValueId,
     },
+    /// `dst = lkrt_str_byte_at(s, index)` — one byte of a string as a
+    /// [`Ty::MaybeI64`]: absent past either end, the same nil the VM answers.
+    StrByteAtMaybe {
+        dst: ValueId,
+        handle: ValueId,
+        index: ValueId,
+    },
     /// `dst = lkrt_lkslice_i64_get_pair(handle, index)` — the [`Ty::SliceI64`]
     /// analogue of [`Inst::ListGetMaybe`], and a dedicated instruction for the
     /// same reason: the `{i64, i64}` return is outside the scalar ABI.
@@ -932,6 +939,9 @@ fn render_inst(inst: &Inst) -> String {
         Inst::SliceGetMaybe { dst, handle, index } => {
             format!("{} = slice.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
+        Inst::StrByteAtMaybe { dst, handle, index } => {
+            format!("{} = str.byte_at_maybe {}, {}", v(*dst), v(*handle), v(*index))
+        }
         Inst::UnwrapMaybeI64 { dst, src } => format!("{} = maybe.i64.unwrap {}", v(*dst), v(*src)),
         Inst::ListGetMaybeF64 { dst, handle, index } => {
             format!("{} = list.f64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
@@ -1015,6 +1025,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybePresent { dst, .. }
         | Inst::ListGetMaybe { dst, .. }
         | Inst::SliceGetMaybe { dst, .. }
+        | Inst::StrByteAtMaybe { dst, .. }
         | Inst::UnwrapMaybeI64 { dst, .. }
         | Inst::ListGetMaybeF64 { dst, .. }
         | Inst::UnwrapMaybeF64 { dst, .. }
@@ -1062,6 +1073,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         }
         Inst::ListGetMaybe { handle, index, .. }
         | Inst::SliceGetMaybe { handle, index, .. }
+        | Inst::StrByteAtMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => {
             vec![*handle, *index]

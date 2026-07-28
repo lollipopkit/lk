@@ -89,8 +89,8 @@ mod tests {
             "join",
             "reverse",
             "repeat",
-            "char",
-            "byte",
+            "char_at",
+            "byte_at",
             "chars",
             "is_empty",
         ] {

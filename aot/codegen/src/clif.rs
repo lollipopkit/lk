@@ -1143,6 +1143,9 @@ impl Lower {
             Inst::SliceGetMaybe { dst, handle, index } => {
                 return self.pair_call(b, mctx, "lkrt_lkslice_i64_get_pair", *dst, &[*handle, *index]);
             }
+            Inst::StrByteAtMaybe { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_str_byte_at", *dst, &[*handle, *index]);
+            }
             Inst::ListGetMaybeStr { dst, handle, index } => {
                 return self.pair_call(b, mctx, "lkrt_lklist_str_get_pair", *dst, &[*handle, *index]);
             }

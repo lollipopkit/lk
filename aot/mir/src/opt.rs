@@ -610,6 +610,7 @@ fn is_removable(inst: &Inst) -> bool {
         // element is `present = 0`), so a dead read is genuinely dead.
         | Inst::ListGetMaybe { .. }
         | Inst::SliceGetMaybe { .. }
+        | Inst::StrByteAtMaybe { .. }
         | Inst::ListGetMaybeF64 { .. }
         | Inst::ListGetMaybeStr { .. }
         | Inst::MapGetMaybe { .. }
@@ -669,6 +670,7 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         Inst::TraitDispatch { self_arg, .. } => vec![self_arg],
         Inst::ListGetMaybe { handle, index, .. }
         | Inst::SliceGetMaybe { handle, index, .. }
+        | Inst::StrByteAtMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => vec![handle, index],
         Inst::MapGetMaybe { handle, key, .. }

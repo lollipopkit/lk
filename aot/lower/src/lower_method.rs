@@ -881,12 +881,12 @@ pub(crate) fn lower_method_dispatch(
         // because it builds a string.
         (Ty::Str, "byte_at", [(index, Ty::I64)]) => {
             let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("str", "byte_at"),
-                args: vec![receiver, *index],
+            insts.push(Inst::StrByteAtMaybe {
+                dst,
+                handle: receiver,
+                index: *index,
             });
-            (dst, Ty::I64)
+            (dst, Ty::MaybeI64)
         }
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
