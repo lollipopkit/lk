@@ -26,7 +26,7 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::{runtime_display_value, runtime_values_equal};
+use lk_stdlib_common::runtime_native::runtime_display_value;
 
 /// Where `print`/`println` go. A plain `fn` pointer rather than a closure so
 /// the slot is `const`-initialisable and needs no allocation before `main`.
@@ -142,15 +142,7 @@ fn recv(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<Runti
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    if values.len() < 2 {
-        return Err(anyhow!("assert_ne expects at least 2 arguments"));
-    }
-    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let rendered = display(&values[0], runtime)?;
-    Err(anyhow!("assertion failed: expected something other than {rendered}"))
+    lk_stdlib_common::language::assert_ne(args, runtime)
 }
 
 pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
@@ -176,43 +168,19 @@ fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 }
 
 fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let message = if args.is_empty() {
-        "panic".to_string()
-    } else {
-        format_variadic(args.as_slice(), runtime)?
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::panic(args, runtime)
 }
 
+// `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an
+// assertion is arithmetic on values, and only `print` needs to know where
+// output goes. They were written out three times and had drifted three ways;
+// see `lk_stdlib_common::language`.
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some(condition) = values.first() else {
-        return Err(anyhow!("assert expects at least 1 argument"));
-    };
-    if truthy(condition) {
-        return Ok(RuntimeVal::Nil);
-    }
-    match values.get(1) {
-        Some(message) => Err(anyhow!("assertion failed: {}", display(message, runtime)?)),
-        None => Err(anyhow!("assertion failed")),
-    }
+    lk_stdlib_common::language::assert(args, runtime)
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    if values.len() < 2 {
-        return Err(anyhow!("assert_eq expects at least 2 arguments"));
-    }
-    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let actual = display(&values[0], runtime)?;
-    let expected = display(&values[1], runtime)?;
-    Err(anyhow!("assertion failed: expected {expected}, got {actual}"))
-}
-
-fn truthy(value: &RuntimeVal) -> bool {
-    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+    lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
 fn display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {

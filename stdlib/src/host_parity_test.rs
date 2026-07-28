@@ -265,3 +265,124 @@ fn requested_features(manifest: &str) -> Vec<String> {
         .filter(|piece| !piece.is_empty())
         .collect()
 }
+
+/// The same program, run on every host, must answer the same thing.
+///
+/// The tests above check *names*: every host knows every module and every
+/// global. That is necessary and it is not enough — `assert_eq` was present on
+/// all three hosts and did the wrong thing on two of them, because each host
+/// had written its own:
+///
+/// ```text
+/// assert_eq("abcdefghij", "abcdefghij")   passed on desktop, failed on web and bare
+/// ```
+///
+/// A name list cannot see that. Running the program can, so this does: the
+/// corpus below is answers, not spellings.
+#[cfg(test)]
+mod behaviour {
+    use lk_core::module::ModuleRegistry;
+    use lk_core::stmt::stmt_parser::StmtParser;
+    use lk_core::token::Tokenizer;
+    use lk_core::vm::{ModuleResolver, ProgramExec, VmContext};
+    use std::sync::Arc;
+
+    /// What a host answered: the returned value rendered, or the error text.
+    fn outcome(register: impl FnOnce(&mut ModuleRegistry), source: &str) -> String {
+        let tokens = match Tokenizer::tokenize(source) {
+            Ok(tokens) => tokens,
+            Err(error) => return format!("parse error: {error}"),
+        };
+        let program = match StmtParser::new(&tokens).parse_program() {
+            Ok(program) => program,
+            Err(error) => return format!("parse error: {error}"),
+        };
+        let mut registry = ModuleRegistry::new();
+        register(&mut registry);
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut env = VmContext::new().with_resolver(resolver);
+        match program.execute_with_ctx(&mut env) {
+            Ok(result) => format!("ok: {:?}", result.first_return().kind()),
+            // The text, not the type: an error a program can `catch` is a
+            // value it can read, so two hosts disagreeing about the words is
+            // two hosts disagreeing.
+            Err(error) => format!("error: {error:#}"),
+        }
+    }
+
+    fn desktop(source: &str) -> String {
+        outcome(
+            |registry| {
+                crate::register_stdlib_core_globals(registry);
+                crate::register_stdlib_modules(registry).expect("desktop modules");
+            },
+            source,
+        )
+    }
+
+    fn web(source: &str) -> String {
+        outcome(
+            |registry| {
+                lk_stdlib_web::register_web_stdlib(registry).expect("web host");
+            },
+            source,
+        )
+    }
+
+    fn bare(source: &str) -> String {
+        outcome(
+            |registry| {
+                lk_stdlib_bare::register_bare_stdlib(registry).expect("bare host");
+            },
+            source,
+        )
+    }
+
+    /// Programs whose answer must not depend on which host runs them.
+    ///
+    /// Deliberately about the *globals* — the surface every host reimplements
+    /// rather than shares, and therefore the surface where they can differ
+    /// without anything noticing.
+    const CORPUS: &[(&str, &str)] = &[
+        // The bug that prompted this: equality across the seven-byte boundary.
+        ("assert_eq short", r#"assert_eq("ab", "ab"); return 1;"#),
+        ("assert_eq long", r#"assert_eq("abcdefghij", "abcdefghij"); return 1;"#),
+        ("assert_eq list", "assert_eq([1, 2], [1, 2]); return 1;"),
+        ("assert_eq map", r#"assert_eq({"a": 1}, {"a": 1}); return 1;"#),
+        ("assert_eq int", "assert_eq(1, 1); return 1;"),
+        // …and the failing side, whose *message* a program can catch.
+        ("assert_eq fails", r#"assert_eq("a", "b"); return 1;"#),
+        ("assert_ne holds", r#"assert_ne("abcdefghij", "abcdefghik"); return 1;"#),
+        ("assert_ne fails", r#"assert_ne("abcdefghij", "abcdefghij"); return 1;"#),
+        // Truthiness: only nil and false are falsy.
+        ("assert nil", "assert(nil); return 1;"),
+        ("assert zero", "assert(0); return 1;"),
+        ("assert empty string", r#"assert(""); return 1;"#),
+        ("assert empty list", "assert([]); return 1;"),
+        ("panic", r#"panic("boom"); return 1;"#),
+        // `error`/`catch` — the pair that was missing from both alternative
+        // hosts once already.
+        (
+            "catch a raise",
+            r#"try { panic("boom"); } catch e { return e; } return 0;"#,
+        ),
+    ];
+
+    #[test]
+    fn every_host_answers_the_same() {
+        let mut differences: Vec<String> = Vec::new();
+        for (name, source) in CORPUS {
+            let expected = desktop(source);
+            for (host, actual) in [("web", web(source)), ("bare", bare(source))] {
+                if actual != expected {
+                    differences.push(format!("{name} — desktop: {expected}\n              {host}: {actual}"));
+                }
+            }
+        }
+        assert!(
+            differences.is_empty(),
+            "hosts disagree about what these programs do:\n  {}",
+            differences.join("\n  ")
+        );
+    }
+}

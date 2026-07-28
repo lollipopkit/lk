@@ -35,25 +35,33 @@ mod tests {
         Ok(())
     }
 
+    /// `panic` stops the program, and `catch` does not intervene.
+    ///
+    /// It used to call Rust's `panic!` and this test caught the unwind. That
+    /// worked on a desktop and nowhere else — an unrecoverable trap in wasm, no
+    /// unwinder at all on bare metal — so the other two hosts each wrote their
+    /// own `panic` and each made it an ordinary catchable error, which is the
+    /// opposite of what `panic` means. It is one `LkPanic` now, refused by the
+    /// unwinder, and the test asks about that rather than about Rust's stack.
     #[test]
-    fn test_global_panic_panics_with_backtrace() -> Result<()> {
-        let source = "panic(\"boom\");";
-        let tokens = Tokenizer::tokenize(source)?;
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program()?;
+    fn test_global_panic_stops_the_program_and_cannot_be_caught() -> Result<()> {
+        let error = execute_with_stdlib_globals("panic(\"boom\");").expect_err("panic must stop the program");
+        assert!(format!("{error:#}").contains("boom"), "{error:#}");
 
-        let mut registry = module::ModuleRegistry::new();
-        crate::register_stdlib_modules(&mut registry)?;
-        crate::register_stdlib_globals(&mut registry);
+        // The distinguishing property: a `try` around it does not swallow it.
+        let error =
+            execute_with_stdlib_globals("try { panic(\"boom\"); } catch e { return \"caught\"; } return \"ran\";")
+                .expect_err("a panic must cross a catch");
+        assert!(format!("{error:#}").contains("boom"), "{error:#}");
 
-        let resolver = Arc::new(vm::ModuleResolver::with_registry(registry));
-        let mut env = vm::VmContext::new().with_resolver(resolver);
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = program.execute_with_ctx(&mut env);
-        }));
-
-        assert!(result.is_err(), "expected panic, but code did not panic");
+        // …while `error(v)` — the recoverable one — is caught, which is the
+        // distinction the two are for.
+        let caught = execute_with_stdlib_globals("try { error(\"boom\"); } catch e { return e; } return \"ran\";")
+            .expect("error() is recoverable");
+        assert_eq!(
+            crate::runtime_native::runtime_display_value(caught.first_return(), caught.state.heap())?,
+            "boom"
+        );
         Ok(())
     }
 
@@ -126,10 +134,10 @@ mod tests {
                 "assert_eq(1, 2, \"math broke\");",
                 "assertion failed: expected 2, got 1 - math broke",
             ),
-            ("assert_ne(1, 1);", "assertion failed: values should not be equal"),
+            ("assert_ne(1, 1);", "assertion failed: expected something other than 1"),
             (
                 "assert_ne(1, 1, \"duplicate\");",
-                "assertion failed: values should not be equal - duplicate",
+                "assertion failed: expected something other than 1 - duplicate",
             ),
         ] {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

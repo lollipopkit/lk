@@ -6,7 +6,7 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::{runtime_display_value, runtime_values_equal};
+use lk_stdlib_common::runtime_native::runtime_display_value;
 
 thread_local! {
     static STDOUT: RefCell<String> = const { RefCell::new(String::new()) };
@@ -134,56 +134,23 @@ fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 }
 
 fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let message = if args.is_empty() {
-        "panic".to_string()
-    } else {
-        join_runtime_display(args.as_slice(), runtime)?
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::panic(args, runtime)
 }
 
+// `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an
+// assertion is arithmetic on values, and only `print` needs to know where
+// output goes. They were written out three times and had drifted three ways;
+// see `lk_stdlib_common::language`.
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 1, 2, "assert")?;
-    let values = args.as_slice();
-    if assert_truthy(&values[0]) {
-        return Ok(RuntimeVal::Nil);
-    }
-    let message = if let Some(message) = values.get(1) {
-        format!("assertion failed: {}", runtime_display(message, runtime)?)
-    } else {
-        "assertion failed".to_string()
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert(args, runtime)
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_eq")?;
-    let values = args.as_slice();
-    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let actual = runtime_display(&values[0], runtime)?;
-    let expected = runtime_display(&values[1], runtime)?;
-    let mut message = format!("assertion failed: expected {expected}, got {actual}");
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_ne")?;
-    let values = args.as_slice();
-    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let mut message = "assertion failed: values should not be equal".to_string();
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert_ne(args, runtime)
 }
 
 fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
@@ -244,24 +211,6 @@ fn runtime_string_maybe(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
         },
         _ => None,
     })
-}
-
-fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
-    if args.has_named() {
-        return Err(anyhow!("{name}() does not accept named arguments"));
-    }
-    let len = args.len();
-    if (min..=max).contains(&len) {
-        Ok(())
-    } else if min == max {
-        Err(anyhow!("{name}() expects exactly {min} arguments"))
-    } else {
-        Err(anyhow!("{name}() expects {min} or {max} arguments"))
-    }
-}
-
-fn assert_truthy(value: &RuntimeVal) -> bool {
-    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
 }
 
 #[derive(Debug)]

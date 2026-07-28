@@ -58,10 +58,7 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{
-        CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TaskValue,
-        Type, TypedList, TypedMap,
-    },
+    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, Type, TypedList},
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
         copy_runtime_value_same_module,
@@ -73,7 +70,6 @@ pub use lk_stdlib_common::metadata::{
     register_stdlib_global_metadata, register_stdlib_module_metadata, registered_stdlib_export_metadata,
     registered_stdlib_global_metadata, registered_stdlib_module_metadata,
 };
-use lk_stdlib_common::runtime_native::runtime_values_equal;
 use std::sync::{Arc, OnceLock};
 
 use runtime_native::runtime_display_value;
@@ -453,16 +449,19 @@ fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
     Ok(RuntimeVal::Nil)
 }
 
+/// `panic(msg...)` — stop, and do not let `catch` intervene.
+///
+/// A `LkPanic`, not Rust's `panic!`. The old implementation unwound the *host*,
+/// which works on a desktop, is an unrecoverable trap in wasm, and has no
+/// unwinder at all on bare metal — so the two alternative hosts each wrote
+/// their own, and each made `panic` an ordinary catchable error, which is the
+/// opposite of what it means. One raise type, refused by the unwinder, means
+/// the same program stops the same way everywhere.
+///
+/// The Rust backtrace went with it: it named frames of the interpreter, not of
+/// the program, which is the wrong stack to show whoever wrote the `panic`.
 fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut msg = if args.is_empty() {
-        "panic".to_string()
-    } else {
-        join_runtime_display(args.as_slice(), runtime)?
-    };
-    let bt = std::backtrace::Backtrace::force_capture();
-    msg.push_str("\nBacktrace:\n");
-    msg.push_str(&format!("{}", bt));
-    panic!("{}", msg);
+    lk_stdlib_common::language::panic(args, runtime)
 }
 
 /// `error(value...)` — raise a recoverable error. Unlike `panic`, it propagates
@@ -483,66 +482,20 @@ fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     lk_stdlib_common::language::try_call(args, runtime)
 }
 
+// `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an
+// assertion is arithmetic on values, and only `print` needs to know where
+// output goes. They were written out three times and had drifted three ways;
+// see `lk_stdlib_common::language`.
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 1, 2, "assert")?;
-    let values = args.as_slice();
-    if assert_truthy(&values[0]) {
-        return Ok(RuntimeVal::Nil);
-    }
-    let message = if let Some(message) = values.get(1) {
-        format!("assertion failed: {}", runtime_display(message, runtime)?)
-    } else {
-        "assertion failed".to_string()
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert(args, runtime)
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_eq")?;
-    let values = args.as_slice();
-    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let actual = runtime_display(&values[0], runtime)?;
-    let expected = runtime_display(&values[1], runtime)?;
-    let mut message = format!("assertion failed: expected {expected}, got {actual}");
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_ne")?;
-    let values = args.as_slice();
-    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let mut message = "assertion failed: values should not be equal".to_string();
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
-}
-
-fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
-    if args.has_named() {
-        return Err(anyhow!("{name}() does not accept named arguments"));
-    }
-    let len = args.len();
-    if (min..=max).contains(&len) {
-        Ok(())
-    } else if min == max {
-        Err(anyhow!("{name}() expects exactly {min} arguments"))
-    } else {
-        Err(anyhow!("{name}() expects {min} or {max} arguments"))
-    }
-}
-
-fn assert_truthy(value: &RuntimeVal) -> bool {
-    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+    lk_stdlib_common::language::assert_ne(args, runtime)
 }
 
 /// `spawn(f) -> Task` — run `f` as a goroutine: true parallelism on the

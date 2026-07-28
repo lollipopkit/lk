@@ -136,3 +136,106 @@ fn joined_display(values: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Res
     }
     Ok(out)
 }
+
+/// `assert`/`assert_eq`/`assert_ne`/`panic` — the same on every host.
+///
+/// These were written out three times, once per host, and the copies had
+/// drifted in three ways at once: `assert_eq` compared *handles* on web and
+/// bare (so it failed on any string past seven bytes), `panic` was a Rust
+/// `panic!` on the desktop and a catchable error on the other two, and
+/// `assert_ne`'s failure message differed. None of that is a platform
+/// difference — an assertion is arithmetic on values, and only `print` needs to
+/// know where output goes.
+///
+/// The message text matters as much as the outcome: a program can `catch` a
+/// failed assertion and read it.
+pub fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 1, 2, "assert")?;
+    let values = args.as_slice();
+    if truthy(&values[0]) {
+        return Ok(RuntimeVal::Nil);
+    }
+    let message = match values.get(1) {
+        Some(message) => alloc::format!("assertion failed: {}", display(message, runtime)?),
+        None => alloc::string::String::from("assertion failed"),
+    };
+    Err(anyhow!("{message}"))
+}
+
+pub fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 2, 3, "assert_eq")?;
+    let values = args.as_slice();
+    if crate::runtime_native::runtime_values_equal(&values[0], &values[1], runtime.heap())? {
+        return Ok(RuntimeVal::Nil);
+    }
+    let actual = display(&values[0], runtime)?;
+    let expected = display(&values[1], runtime)?;
+    let mut message = alloc::format!("assertion failed: expected {expected}, got {actual}");
+    append_note(&mut message, values.get(2), runtime)?;
+    Err(anyhow!("{message}"))
+}
+
+pub fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 2, 3, "assert_ne")?;
+    let values = args.as_slice();
+    if !crate::runtime_native::runtime_values_equal(&values[0], &values[1], runtime.heap())? {
+        return Ok(RuntimeVal::Nil);
+    }
+    // Names the value, which "values should not be equal" did not — and which
+    // is the whole reason to read a failed assertion.
+    let rendered = display(&values[0], runtime)?;
+    let mut message = alloc::format!("assertion failed: expected something other than {rendered}");
+    append_note(&mut message, values.get(2), runtime)?;
+    Err(anyhow!("{message}"))
+}
+
+/// `panic(msg...)` — stop, and do not let `catch` intervene.
+///
+/// A [`lk_core::vm::LkPanic`], never Rust's `panic!`: unwinding the *host*
+/// works on a desktop, is an unrecoverable trap in wasm, and has no unwinder at
+/// all on bare metal.
+pub fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let message = if args.is_empty() {
+        alloc::string::String::from("panic")
+    } else {
+        joined_display(args.as_slice(), runtime)?
+    };
+    Err(anyhow!(lk_core::vm::LkPanic {
+        message: alloc::sync::Arc::<str>::from(message.as_str()),
+    }))
+}
+
+/// Only nil and false are falsy — the VM's rule (`truthy_unchecked`).
+fn truthy(value: &RuntimeVal) -> bool {
+    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+}
+
+fn display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<alloc::string::String> {
+    crate::runtime_native::runtime_display_value(value, runtime.heap())
+}
+
+fn append_note(
+    message: &mut alloc::string::String,
+    note: Option<&RuntimeVal>,
+    runtime: &mut NativeRuntime<'_>,
+) -> Result<()> {
+    if let Some(note) = note {
+        message.push_str(" - ");
+        message.push_str(&display(note, runtime)?);
+    }
+    Ok(())
+}
+
+fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
+    if args.has_named() {
+        return Err(anyhow!("{name}() does not accept named arguments"));
+    }
+    let len = args.len();
+    if (min..=max).contains(&len) {
+        Ok(())
+    } else if min == max {
+        Err(anyhow!("{name}() expects exactly {min} arguments"))
+    } else {
+        Err(anyhow!("{name}() expects {min} or {max} arguments"))
+    }
+}

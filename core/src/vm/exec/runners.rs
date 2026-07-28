@@ -327,6 +327,13 @@ impl Executor {
         base_frame_depth: usize,
     ) -> Result<u32> {
         let mut errored_function = errored_function;
+        // A panic is not catchable, on any host. Checked before the handler
+        // stack rather than inside the classification below, so that both the
+        // same-frame case here and the unwinding loop underneath get it from
+        // one place.
+        if error.downcast_ref::<super::handler::LkPanic>().is_some() {
+            return Err(error);
+        }
         // First: a handler installed in the frame that actually faulted. Nothing
         // is popped in that case, so the loop below would never see it — this is
         // the `try { 1 / 0 } catch e` shape, where the error is a plain `bail!`

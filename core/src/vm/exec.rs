@@ -65,8 +65,8 @@ use super::{
 use super::{Compiler, GlobalSlot};
 use call::push_traceback_frame;
 use frame::{CallFrame, FrameOutcome};
-pub use handler::LkRaisedValue;
 use handler::{ErrorHandler, LanguageRaise};
+pub use handler::{LkPanic, LkRaisedValue};
 use profile::{RuntimeProfileFrame, index_metric_kind};
 use return_values::ReturnValues;
 use support::*;
