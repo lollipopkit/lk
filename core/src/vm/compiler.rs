@@ -380,6 +380,40 @@ impl Compiler {
             .copied()
     }
 
+    /// A string concatenation's operands, with a carrier-filling one rendered.
+    ///
+    /// The third display site, and the one the first two made easy to miss.
+    /// `println(top)` and `"${top}"` were fixed by choosing the rendering where
+    /// the width still exists; `"addr " + top` renders in the *`+`*, which sees
+    /// two runtime values and an `i64` carrier, so it printed the negative
+    /// number the other two had stopped printing.
+    ///
+    /// Only when the other side is statically a string: `a + b` on two numbers
+    /// is arithmetic, and the result of that is displayed by whoever displays
+    /// it — this is about the operator that *is* the rendering.
+    pub(in crate::vm::compiler) fn rendered_concat_operands(
+        &self,
+        lhs: &Expr,
+        op: &BinOp,
+        rhs: &Expr,
+    ) -> Option<(Expr, Expr)> {
+        if !matches!(op, BinOp::Add) {
+            return None;
+        }
+        let is_string = |expr: &Expr| expr_static_value_kind(expr) == PerfValueKind::String;
+        if is_string(lhs)
+            && let Some(rendered) = self.unsigned_rendering_if_carrier_filling(rhs)
+        {
+            return Some((lhs.clone(), rendered));
+        }
+        if is_string(rhs)
+            && let Some(rendered) = self.unsigned_rendering_if_carrier_filling(lhs)
+        {
+            return Some((rendered, rhs.clone()));
+        }
+        None
+    }
+
     /// `__lk_u64_str(expr)` when `expr` is a `u64`/`usize`, otherwise `None`.
     ///
     /// The narrow question the two display sites — a rendering call's arguments
@@ -856,6 +890,11 @@ impl Compiler {
     }
 
     pub(super) fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
+        // `"addr " + top` renders the `u64` unsigned — see
+        // `rendered_concat_operands`.
+        if let Some((lhs, rhs)) = self.rendered_concat_operands(lhs, op, rhs) {
+            return self.lower_bin(&lhs, op, &rhs);
+        }
         // `u64` compares and divides unsigned.
         //
         // A value with bit 63 set *is* a negative `i64` carrier, so the ordinary

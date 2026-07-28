@@ -60,6 +60,12 @@ impl Compiler {
                 Ok(true)
             }
             Expr::Bin(lhs, op, rhs) => {
+                // The same concat rendering `lower_bin` does — a string sum
+                // reaches this path when it is lowered into a register.
+                if let Some((lhs, rhs)) = self.rendered_concat_operands(lhs, op, rhs) {
+                    let rewritten = Expr::Bin(Box::new(lhs), op.clone(), Box::new(rhs));
+                    return self.try_lower_expr_to_register(dst, &rewritten);
+                }
                 // `u64` compares and divides unsigned — the same rewrite
                 // `lower_bin` does, because a comparison that feeds a value (as
                 // in `println(a < b)`) arrives here instead. Two lowering paths
