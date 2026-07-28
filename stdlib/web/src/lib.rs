@@ -12,6 +12,34 @@ thread_local! {
     static STDOUT: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
+/// The concurrency globals, present and refusing by name.
+///
+/// `chan` is already an unsupported *module* here, so `use chan` says so.
+/// `spawn(f)` said "undefined function `spawn`" — the same absence, reported as
+/// if the program had a typo. The playground runs on one thread, so these cannot
+/// work; what they can do is say which of the two problems the reader has.
+fn unavailable(name: &str) -> Result<RuntimeVal> {
+    Err(anyhow!(
+        "`{name}` is not available in the browser: the playground is single-threaded"
+    ))
+}
+
+fn spawn(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("spawn")
+}
+
+fn chan(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("chan")
+}
+
+fn send(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("send")
+}
+
+fn recv(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("recv")
+}
+
 const UNSUPPORTED_MODULES: &[&str] = &[
     "chan", "datetime", "env", "fs", "http", "io", "net", "os", "process", "random", "stream", "task", "time", "uuid",
 ];
@@ -65,6 +93,11 @@ pub fn register_web_stdlib_globals(registry: &mut ModuleRegistry) {
             // may leave `fs` out and a program is told so, but a program that
             // raises on this host was told "undefined function" instead.
             full_state "error" => lk_stdlib_common::language::error, NativeEntry::VARIADIC,
+            // Present and refusing, rather than absent — see `unavailable`.
+            full_state "spawn" => spawn, 1,
+            full_state "chan" => chan, NativeEntry::VARIADIC,
+            full_state "send" => send, 2,
+            full_state "recv" => recv, 1,
         ],
     );
 }

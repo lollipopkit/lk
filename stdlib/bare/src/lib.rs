@@ -105,16 +105,40 @@ pub fn register_bare_stdlib_globals(registry: &mut ModuleRegistry) {
             // failed at run time — after the program had been parsed and
             // accepted — with a stage code that says only "it raised".
             full_state "error" => lk_stdlib_common::language::error, NativeEntry::VARIADIC,
-            // `error`, which is what a `catch` catches.
-            //
-            // Not a module: a host may leave `fs` out and a program importing it
-            // is told so, by name. This is a global the language's own error
-            // handling is written in terms of, and without it every
-            // `try { error(…) } catch` that `bare-metal-x86`'s interpreter ran
-            // failed at run time — after the program had been parsed and
-            // accepted — with a stage code that says only "it raised".
+            // Present and refusing, rather than absent — see `unavailable`.
+            full_state "spawn" => spawn, 1,
+            full_state "chan" => chan, NativeEntry::VARIADIC,
+            full_state "send" => send, 2,
+            full_state "recv" => recv, 1,
         ],
     );
+}
+
+/// The concurrency globals, present and refusing by name.
+///
+/// `chan` is already in `UNSUPPORTED_MODULES`, so `use chan` answers "not
+/// available on bare metal". `spawn(f)` answered "undefined function `spawn`" —
+/// the same absence, reported as if the program had a typo. There is one task on
+/// this host and no way to make a second, so these cannot work; what they can do
+/// is say which of the two problems the reader has.
+fn unavailable(name: &str) -> Result<RuntimeVal> {
+    Err(anyhow!("`{name}` is not available on bare metal: there is one task"))
+}
+
+fn spawn(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("spawn")
+}
+
+fn chan(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("chan")
+}
+
+fn send(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("send")
+}
+
+fn recv(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("recv")
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

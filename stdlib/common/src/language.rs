@@ -1,21 +1,22 @@
-//! The primitives the *language* needs, whatever the host is.
+//! The globals the *language* is written in terms of, whatever the host is.
 //!
-//! Everything else in the standard library is a module a program asks for. These
-//! two are not: `try`/`catch` is syntax, and the parser desugars it into a call
-//! to `try$call` — a name `$` makes untypeable, so no program can reach it and
-//! no program can avoid it either. `error(…)` is the other half, the thing a
-//! `catch` catches.
+//! Everything else in the standard library is a module a program asks for by
+//! name, and a host that cannot back one says so — `use fs` on bare metal
+//! answers "not available on bare metal". `error` is not that: it is the global
+//! `catch` catches, and a host without it turns every raising program into
+//! "undefined function" at run time, after the parser and the type checker have
+//! both approved it. `bare-metal-x86`'s interpreter answered exactly that, and
+//! the browser playground did too — both build their global list by hand, and
+//! both lists were written before `error` was.
 //!
-//! They live here because a host that leaves them out does not lose a module; it
-//! loses a *form*. The parser still accepts `try { … } catch e { … }`, the type
-//! checker still approves it, and the program fails at run time with "undefined
-//! function" — which is how `bare-metal-x86`'s interpreter answered every
-//! program that used it, and how the browser playground answered too. Both were
-//! registering the globals by hand, from a list written before `try`/`catch`
-//! existed.
+//! `try$call` is here for a different reason: nothing calls it. `try`/`catch`
+//! compiles to `TryBegin`/`TryEnd` opcodes now, and the desugar-to-a-call it is
+//! named after is history. The umbrella host still registers it, so the
+//! implementation lives here rather than in two places — but a host that leaves
+//! it out loses nothing, which is why the two bare hosts do not register it.
 //!
-//! Nothing in either function needs an OS: they call through the VM's own
-//! machinery and allocate from its heap, both of which a bare host has.
+//! Nothing here needs an OS: these call through the VM's own machinery and
+//! allocate from its heap, both of which a bare host has.
 
 use alloc::sync::Arc;
 use alloc::vec;
