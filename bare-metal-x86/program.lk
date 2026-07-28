@@ -3438,7 +3438,9 @@ fn isr_net(vector: Int) {
     if (mmio != 0) {
         let cause = e1000_interrupt_cause(mmio);
         if (cause != 0) {
-            shared_write(SHARED_NET_CAUSE, cause);
+            // Out of the register's width and into a shared word, which is
+            // where the driver's types stop and the kernel's `Int` begins.
+            shared_write(SHARED_NET_CAUSE, cause as Int);
             shared_bump(SHARED_NET_IRQS);
             task_wake_channel(TASK_TABLE_BASE,
                               task_word(TASK_TABLE_BASE + TASK_USED_OFFSET),

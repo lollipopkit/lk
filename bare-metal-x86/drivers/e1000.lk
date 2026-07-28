@@ -45,6 +45,10 @@ const E1000_DEVICE = 0x100e;
 
 // ------------------------------------------------------------------ registers
 
+// The offsets stay `Int`: an offset is added to an address, and an address is
+// not a register value. What follows them — the *contents* of those registers —
+// says `u32`, because that is what the hardware defines and because a constant
+// that has to be cast at every use is a constant that will be cast wrongly once.
 const REG_CTRL = 0x0000;
 const REG_STATUS = 0x0008;
 const REG_EERD = 0x0014;
@@ -77,9 +81,9 @@ const REG_TIDV = 0x3820;
 // and the ring overflowed. The last two are not needed to receive, but a driver
 // that unmasks only the good news finds out about the ring being full by never
 // being told anything again.
-const ICR_RXT0 = 0x00000080;
-const ICR_RXDMT0 = 0x00000010;
-const ICR_RXO = 0x00000040;
+const ICR_RXT0: u32 = 0x00000080;
+const ICR_RXDMT0: u32 = 0x00000010;
+const ICR_RXO: u32 = 0x00000040;
 const REG_RCTL = 0x0100;
 const REG_TCTL = 0x0400;
 const REG_TIPG = 0x0410;
@@ -107,46 +111,46 @@ const MTA_ENTRIES = 128;
 // bytes and then two, with the valid bit on top.
 const REG_RAL = 0x5400;
 const REG_RAH = 0x5404;
-const RAH_VALID = 0x80000000;
+const RAH_VALID: u32 = 0x80000000;
 
 // CTRL: bring the link up, and let the card negotiate speed for itself.
-const CTRL_SLU = 0x00000040;
-const CTRL_ASDE = 0x00000020;
+const CTRL_SLU: u32 = 0x00000040;
+const CTRL_ASDE: u32 = 0x00000020;
 // STATUS: the link is up. Asked for, not assumed — the card accepts frames on a
 // down link and drops them, which is a driver that works in every way except
 // that nothing arrives.
-const STATUS_LINK_UP = 0x00000002;
+const STATUS_LINK_UP: u32 = 0x00000002;
 
 // EERD: an EEPROM read is a register write and a poll. The address goes in the
 // high half of the low word, the data comes back in the high word.
-const EERD_START = 0x00000001;
-const EERD_DONE = 0x00000010;
+const EERD_START: u32 = 0x00000001;
+const EERD_DONE: u32 = 0x00000010;
 
 // TCTL: enable, pad short packets, and the two timing constants the datasheet
 // gives for this part. `PSP` matters more than it looks — Ethernet has a 60-byte
 // minimum and an ARP frame is 42, so without it the card transmits a runt that
 // every switch on the path discards.
-const TCTL_EN = 0x00000002;
-const TCTL_PSP = 0x00000008;
-const TCTL_CT = 0x000000f0;     // collision threshold 15, at bit 4
-const TCTL_COLD = 0x00040000;   // collision distance 64, at bit 12
+const TCTL_EN: u32 = 0x00000002;
+const TCTL_PSP: u32 = 0x00000008;
+const TCTL_CT: u32 = 0x000000f0;     // collision threshold 15, at bit 4
+const TCTL_COLD: u32 = 0x00040000;   // collision distance 64, at bit 12
 // Inter-packet gap, as the datasheet's copper values: 10, 8, 6.
-const TIPG_VALUE = 0x0060200a;
+const TIPG_VALUE: u32 = 0x0060200a;
 
 // RCTL: enable, accept broadcast, and strip the CRC so a received length is the
 // frame's own length. Unicast and multicast promiscuous as well, because this
 // kernel has no address filter to configure and a driver that silently dropped
 // what it was not expecting would be indistinguishable from one that received
 // nothing.
-const RCTL_EN = 0x00000002;
-const RCTL_UPE = 0x00000008;
-const RCTL_MPE = 0x00000010;
-const RCTL_BAM = 0x00008000;
-const RCTL_SECRC = 0x04000000;
+const RCTL_EN: u32 = 0x00000002;
+const RCTL_UPE: u32 = 0x00000008;
+const RCTL_MPE: u32 = 0x00000010;
+const RCTL_BAM: u32 = 0x00008000;
+const RCTL_SECRC: u32 = 0x04000000;
 // Buffer size 2048, which is bits 17:16 = 00. Named as zero on purpose: a
 // constant that is zero still has to appear in the value written, or the next
 // person adds a size and cannot find where the old one was.
-const RCTL_BSIZE_2048 = 0x00000000;
+const RCTL_BSIZE_2048: u32 = 0x00000000;
 
 // ---------------------------------------------------------------- descriptors
 
@@ -208,13 +212,19 @@ fn state_set(state: Int, offset: Int, value: Int) {
 // Registers are 32 bits and volatile, for the same reason the educational
 // device's are: a read is a request to the card, not a load of something already
 // known, and a poll the compiler hoisted is a wait that never ends.
-fn reg_read(mmio: Int, offset: Int) -> Int {
-    let value = unsafe { volatile_read_u32((mmio + offset) as *mut u32) };
-    return value as Int;
+// A register is 32 bits wide, and now says so.
+//
+// The address stays an `Int` — it is an address, and arithmetic on it is
+// ordinary — while the *value* is a `u32`, which is what the hardware defines
+// it as. That is the split worth making: a register value that has picked up a
+// 33rd bit is a bug the width catches, and a driver that reads one into an
+// `Int` has agreed to find out later.
+fn reg_read(mmio: Int, offset: Int) -> u32 {
+    return unsafe { volatile_read_u32((mmio + offset) as *mut u32) };
 }
 
-fn reg_write(mmio: Int, offset: Int, value: Int) {
-    unsafe { volatile_write_u32((mmio + offset) as *mut u32, value as u32); };
+fn reg_write(mmio: Int, offset: Int, value: u32) {
+    unsafe { volatile_write_u32((mmio + offset) as *mut u32, value); };
 }
 
 // Descriptor fields. In RAM rather than MMIO, but volatile all the same: the
@@ -271,7 +281,7 @@ fn e1000_open(bdf: Int) -> Int {
 // some variants of this part have no EEPROM at all and the driver then has to
 // find the address elsewhere.
 fn eeprom_read(mmio: Int, word: Int) -> Int {
-    reg_write(mmio, REG_EERD, EERD_START + word * 0x100);
+    reg_write(mmio, REG_EERD, EERD_START | ((word * 0x100) as u32));
     for _attempt in 0..100000 {
         let value = reg_read(mmio, REG_EERD);
         if ((value & EERD_DONE) != 0) {
@@ -344,10 +354,10 @@ fn e1000_set_mac(mmio: Int, mac: Int) {
     let low = desc_u8(mac) + desc_u8(mac + 1) * 0x100
         + desc_u8(mac + 2) * 0x10000 + desc_u8(mac + 3) * 0x1000000;
     let high = desc_u8(mac + 4) + desc_u8(mac + 5) * 0x100;
-    reg_write(mmio, REG_RAL, low);
+    reg_write(mmio, REG_RAL, low as u32);
     // The valid bit, without which the filter ignores the entry and the card
     // receives nothing addressed to it — visible only as silence.
-    reg_write(mmio, REG_RAH, high | RAH_VALID);
+    reg_write(mmio, REG_RAH, (high as u32) | RAH_VALID);
 }
 
 fn setup_transmit(state: Int, mmio: Int, ring: Int) {
@@ -356,9 +366,11 @@ fn setup_transmit(state: Int, mmio: Int, ring: Int) {
         desc_set_u64(descriptor, 0);
         desc_set_u64(descriptor + 8, 0);
     }
-    reg_write(mmio, REG_TDBAL, ring & 0xffffffff);
-    reg_write(mmio, REG_TDBAH, ((ring / 0x100000000) as Int) & 0xffffffff);
-    reg_write(mmio, REG_TDLEN, TX_COUNT * DESC_SIZE);
+    // The low half of a physical address. `as u32` *is* the truncation —
+    // the mask was standing in for it.
+    reg_write(mmio, REG_TDBAL, ring as u32);
+    reg_write(mmio, REG_TDBAH, ((ring / 0x100000000) as Int) as u32);
+    reg_write(mmio, REG_TDLEN, (TX_COUNT * DESC_SIZE) as u32);
     // Head and tail both zero: the ring is empty, and the card advances head as
     // it consumes what the driver puts between them.
     reg_write(mmio, REG_TDH, 0);
@@ -373,16 +385,18 @@ fn setup_receive(state: Int, mmio: Int, ring: Int, buffers: Int) {
         desc_set_u64(descriptor, buffers + index * RX_BUFFER_SIZE);
         desc_set_u64(descriptor + 8, 0);
     }
-    reg_write(mmio, REG_RDBAL, ring & 0xffffffff);
-    reg_write(mmio, REG_RDBAH, ((ring / 0x100000000) as Int) & 0xffffffff);
-    reg_write(mmio, REG_RDLEN, RX_COUNT * DESC_SIZE);
+    // The low half of a physical address. `as u32` *is* the truncation —
+    // the mask was standing in for it.
+    reg_write(mmio, REG_RDBAL, ring as u32);
+    reg_write(mmio, REG_RDBAH, ((ring / 0x100000000) as Int) as u32);
+    reg_write(mmio, REG_RDLEN, (RX_COUNT * DESC_SIZE) as u32);
     reg_write(mmio, REG_RDH, 0);
     // The tail is the last descriptor the *driver* has given the card, so an
     // empty-looking ring is in fact a full one: every descriptor from head to
     // tail is the card's to fill. Setting it to `RX_COUNT - 1` hands over all
     // but one, which is the most a ring of this shape can hold — head meeting
     // tail is how "full" is spelled, so one slot always stays back.
-    reg_write(mmio, REG_RDT, RX_COUNT - 1);
+    reg_write(mmio, REG_RDT, (RX_COUNT - 1) as u32);
     reg_write(mmio, REG_RCTL, RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM
         | RCTL_SECRC | RCTL_BSIZE_2048);
 }
@@ -420,7 +434,7 @@ fn e1000_enable_receive_interrupt(mmio: Int) {
 //
 // A driver that is done listening has to mask *and* clear: a cause left set is a
 // line left asserted, and the next thing to unmask that IRQ inherits it.
-fn e1000_disable_interrupts(mmio: Int) -> Int {
+fn e1000_disable_interrupts(mmio: Int) -> u32 {
     reg_write(mmio, REG_IMC, 0xffffffff);
     return reg_read(mmio, REG_ICR);
 }
@@ -431,7 +445,7 @@ fn e1000_disable_interrupts(mmio: Int) -> Int {
 // asking twice gets the answer once. A handler that reads it into a variable and
 // then reads it again to check a second bit has already thrown the second bit
 // away.
-fn e1000_interrupt_cause(mmio: Int) -> Int {
+fn e1000_interrupt_cause(mmio: Int) -> u32 {
     return reg_read(mmio, REG_ICR);
 }
 
@@ -470,7 +484,7 @@ fn e1000_transmit(state: Int, frame: Int, length: Int) -> Bool {
 
     let next = (tail + 1) % TX_COUNT;
     state_set(state, STATE_TX_TAIL, next);
-    reg_write(mmio, REG_TDT, next);
+    reg_write(mmio, REG_TDT, next as u32);
 
     for _attempt in 0..1000000 {
         if ((desc_u8(descriptor + TX_STATUS_OFFSET) & TX_STATUS_DD) != 0) {
@@ -517,7 +531,7 @@ fn e1000_receive(state: Int, out: Int, capacity: Int) -> Int {
     // a frame that never arrived.
     desc_set_u8(descriptor + RX_STATUS_OFFSET, 0);
     state_set(state, STATE_RX_HEAD, (head + 1) % RX_COUNT);
-    reg_write(mmio, REG_RDT, head);
+    reg_write(mmio, REG_RDT, head as u32);
 
     return taken;
 }
