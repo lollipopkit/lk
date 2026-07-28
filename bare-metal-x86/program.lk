@@ -56,7 +56,7 @@ use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { heap_init, heap_alloc, heap_release,
       used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
-use { task_table_init, task_word, task_set_word, task_field, task_set_field,
+use { task_table_init, task_table_size, task_word, task_set_word, task_field, task_set_field,
       task_prepare_frame, task_find_free, task_state, task_set_state,
       TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
       TASK_CR3_OFFSET, TASK_STACK_OFFSET,
@@ -3584,6 +3584,31 @@ fault_probe();
 // timer handler reads the table, and a table of zeros names task 0 forever,
 // which looks like a working machine with one task rather than an
 // uninitialised table.
+// The fixed-address chain has to stop below the staging area.
+//
+// Everything from `SHARED_BASE` up is a chain of sums — shared words, then the
+// IDT, the GDT, the TSS, the task table — and the next thing at a fixed address
+// is `SOURCE_BASE`, half a megabyte higher, where a file read off the disk
+// lands. Nothing related the two. Adding a shared word or raising
+// `TASK_CAPACITY` would walk the far end of the chain into that buffer, and the
+// symptom would be a program that loads wrong rather than a machine that stops.
+//
+// The linker script makes the same kind of statement about the image, and can:
+// its numbers are link-time. These are computed here, so this is where the
+// check has to be. It is the first line before anything writes at the far end.
+//
+// Halting rather than degrading, unlike the heap above. A heap that reports
+// "nothing fits" is a machine with no heap; a task table on top of the staging
+// area is a machine that corrupts what it reads and says nothing.
+let fixed_end = TASK_TABLE_BASE + task_table_size(TASK_CAPACITY);
+if (fixed_end > SOURCE_BASE) {
+    uart_text("layout: fixed-address chain ends at ");
+    uart_put_hex(fixed_end);
+    uart_text(", past the staging area at ");
+    uart_put_hex(SOURCE_BASE);
+    uart_text("\n");
+    halt();
+}
 task_table_init(TASK_TABLE_BASE, TASK_CAPACITY);
 install_descriptor_table();
 // Then the chip that raises them, and the flag that lets them through. In that
