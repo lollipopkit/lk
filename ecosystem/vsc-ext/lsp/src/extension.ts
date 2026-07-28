@@ -99,39 +99,6 @@ async function openLkLocation(target: any) {
   await vscode.window.showTextDocument(uri, { selection });
 }
 
-// Simple LRU cache for perf-sensitive middleware
-class LRU<K, V> {
-  private map = new Map<K, V>();
-  constructor(public capacity: number) {}
-  get(key: K): V | undefined {
-    if (!this.map.has(key)) return undefined;
-    const val = this.map.get(key)!;
-    this.map.delete(key);
-    this.map.set(key, val);
-    return val;
-  }
-  set(key: K, value: V) {
-    if (this.map.has(key)) this.map.delete(key);
-    this.map.set(key, value);
-    if (this.map.size > this.capacity) {
-      const iter = this.map.keys().next();
-      if (!iter.done) {
-        this.map.delete(iter.value as K);
-      }
-    }
-  }
-  has(key: K): boolean { return this.map.has(key); }
-  clear() { this.map.clear(); }
-  setCapacity(n: number) {
-    this.capacity = Math.max(1, Math.floor(n || 1));
-    while (this.map.size > this.capacity) {
-      const iter = this.map.keys().next();
-      if (iter.done) break;
-      this.map.delete(iter.value as K);
-    }
-  }
-}
-
 // Runtime settings snapshot (kept in sync with workspace configuration)
 const runtime = {
   semanticTokensEnabled: true,
@@ -388,12 +355,12 @@ export function activate(context: vscode.ExtensionContext) {
   // Keyed in-flight promises to dedupe identical requests
   const dedupeTokenRange = new Map<string, Promise<any>>();
   const dedupeInlay = new Map<string, Promise<any>>();
-  // Caches (LRU)
-  const rangeTokenCacheLimit = Math.max(1, Number(config.get<number>('performance.rangeTokenCacheLimit', 64)) || 64);
-  const inlayHintCacheLimit = Math.max(1, Number(config.get<number>('performance.inlayHintCacheLimit', 64)) || 64);
-  let enableCaching = config.get<boolean>('performance.enableCaching', true);
-  const tokensCache = new LRU<string, vscode.SemanticTokens | null | undefined>(rangeTokenCacheLimit);
-  const inlayCache = new LRU<string, (vscode.InlayHint[] | null | undefined)>(inlayHintCacheLimit);
+  // No result cache here: the server keeps one per document, and a second
+  // copy keyed on this document's version cannot see a *dependency* change —
+  // editing an imported file leaves this version untouched, so a cached hint
+  // would keep showing a type read out of the old file. The server tells us
+  // when that happens (`workspace/inlayHint/refresh`), and that signal is
+  // exactly what a cache down here would swallow.
   let skipStaleResults = config.get<boolean>('performance.skipStaleResults', true);
   const settings = { semanticTokensEnabled, throttleMs };
   
@@ -443,15 +410,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
         lastTokenReqAt.set(key, now);
       }
-      // Cache key for full tokens (by version)
-      const cacheKey = `${key}#v${reqVersion}#FULL`;
-      if (enableCaching) {
-        const cached = tokensCache.get(cacheKey);
-        if (cached !== undefined) {
-          endChecking();
-          return cached as any;
-        }
-      }
       tokenInFlight.add(key);
       const result = withTiming('middleware.semanticTokens(full)', () => next(document, token));
       if (result && typeof (result as any).then === 'function') {
@@ -459,13 +417,11 @@ export function activate(context: vscode.ExtensionContext) {
           .then(res => {
             if (token?.isCancellationRequested) return null as any;
             if (skipStaleResults && document.version !== reqVersion) return null as any;
-            if (enableCaching) tokensCache.set(cacheKey, res as any);
             return res;
           })
           .finally(() => { tokenInFlight.delete(key); endChecking(); });
       } else {
         try {
-          if (enableCaching) tokensCache.set(cacheKey, result as any);
           return result as any;
         } finally {
           tokenInFlight.delete(key);
@@ -504,13 +460,6 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const rKey = `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
       const cacheKey = `${key}#v${reqVersion}#R#${rKey}`;
-      if (enableCaching) {
-        const cached = tokensCache.get(cacheKey);
-        if (cached !== undefined) {
-          endChecking();
-          return cached as any;
-        }
-      }
       if (dedupeTokenRange.has(cacheKey)) {
         return dedupeTokenRange.get(cacheKey)! as any;
       }
@@ -519,7 +468,6 @@ export function activate(context: vscode.ExtensionContext) {
       const wrapped = p.then(res => {
         if (token?.isCancellationRequested) return null as any;
         if (skipStaleResults && document.version !== reqVersion) return null as any;
-        if (enableCaching) tokensCache.set(cacheKey, res as any);
         return res;
       }).finally(() => { tokenInFlight.delete(key); dedupeTokenRange.delete(cacheKey); endChecking(); });
       dedupeTokenRange.set(cacheKey, wrapped);
@@ -536,12 +484,6 @@ export function activate(context: vscode.ExtensionContext) {
       const rKey = `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
       const settingsKey = `${Number(runtime.inlayHintsShowParameters)}:${Number(runtime.inlayHintsShowTypes)}`;
       const cacheKey = `${key}#v${reqVersion}#I#${rKey}#${settingsKey}`;
-      if (enableCaching) {
-        const cached = inlayCache.get(cacheKey);
-        if (cached !== undefined) {
-          return cached as any;
-        }
-      }
       if (dedupeInlay.has(cacheKey)) {
         return dedupeInlay.get(cacheKey)! as any;
       }
@@ -563,18 +505,14 @@ export function activate(context: vscode.ExtensionContext) {
           .then(v => {
             if (token?.isCancellationRequested) return null;
             if (skipStaleResults && document.version !== reqVersion) return null;
-            const filtered = filter(v);
-            if (enableCaching) inlayCache.set(cacheKey, filtered as any);
-            return filtered;
+            return filter(v);
           })
           .finally(() => { dedupeInlay.delete(cacheKey); endChecking(); });
         dedupeInlay.set(cacheKey, p as any);
         return p as any;
       } else {
         try {
-          const filtered = filter(res as any);
-          if (enableCaching) inlayCache.set(cacheKey, filtered as any);
-          return filtered;
+          return filter(res as any);
         } finally {
           endChecking();
         }
@@ -611,13 +549,9 @@ export function activate(context: vscode.ExtensionContext) {
     // Perf tracing settings
     perfTraceSteps = cfg.get<boolean>('performance.traceSteps', false);
     perfThresholdMs = Math.max(0, Number(cfg.get<number>('performance.traceThresholdMs', 0)) || 0);
-    // Cache and stale handling settings
-    enableCaching = cfg.get<boolean>('performance.enableCaching', true);
+    // Stale-response handling. There is no result cache to configure: the
+    // server owns that.
     skipStaleResults = cfg.get<boolean>('performance.skipStaleResults', true);
-    const newTokenCap = Math.max(1, Number(cfg.get<number>('performance.rangeTokenCacheLimit', 64)) || 64);
-    const newInlayCap = Math.max(1, Number(cfg.get<number>('performance.inlayHintCacheLimit', 64)) || 64);
-    tokensCache.setCapacity(newTokenCap);
-    inlayCache.setCapacity(newInlayCap);
     runtime.checkingDelayMs = Math.max(0, Number(cfg.get<number>('ui.checkingDelayMs', 120)) || 120);
     // Soft nudge so users see status change quickly
     nudgeChecking();

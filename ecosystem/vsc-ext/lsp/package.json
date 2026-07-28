@@ -217,28 +217,11 @@
           "minimum": 1,
           "description": "Max concurrent heavy computations on the server (semantic tokens, inlay hints). Lower to reduce CPU spikes when scrolling."
         },
-        "lk.lsp.performance.rangeTokenCacheLimit": {
-          "type": "number",
-          "default": 64,
-          "minimum": 1,
-          "description": "Per-document capacity for semantic tokens range cache (version+range)."
-        },
-        "lk.lsp.performance.inlayHintCacheLimit": {
-          "type": "number",
-          "default": 64,
-          "minimum": 1,
-          "description": "Per-document capacity for inlay hints cache (version+range+settings)."
-        },
         "lk.lsp.performance.inlayScanMarginLines": {
           "type": "number",
           "default": 3,
           "minimum": 0,
           "description": "Additional lines to scan above/below the visible range when computing parameter inlay hints (captures multi-line calls)."
-        },
-        "lk.lsp.performance.enableCaching": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable extension-side caching for semantic tokens (range) and inlay hints keyed by document version and range to reduce redundant requests."
         },
         "lk.lsp.performance.skipStaleResults": {
           "type": "boolean",

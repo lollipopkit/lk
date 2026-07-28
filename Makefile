@@ -6,7 +6,7 @@ VSC_EXT_DIR := ecosystem/vsc-ext
 VSC_EXTENSIONS := lsp
 ZED_EXT_DIR := ecosystem/zed-ext
 
-.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext zed-ext-check install
+.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext zed-ext-check zed-ext-release-check install
 
 vsix: $(VSC_EXTENSIONS:%=vsix-%)
 
@@ -68,6 +68,24 @@ debug-lsp-ext:
 
 zed-ext-check:
 	cargo check --manifest-path $(ZED_EXT_DIR)/Cargo.toml --target wasm32-wasip1
+
+# Run before publishing the Zed extension. `extension.toml` pins the grammar to
+# a commit, and it ships with a placeholder — Zed clones that commit to build
+# the grammar, so publishing with the placeholder in place produces an
+# extension whose syntax highlighting cannot be built. A comment asking someone
+# to remember is not a check; this is.
+zed-ext-release-check: zed-ext-check
+	@commit=$$(grep -E '^commit = ' $(ZED_EXT_DIR)/extension.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	if ! printf '%s' "$$commit" | grep -qE '^[0-9a-f]{40}$$'; then \
+		echo "zed extension.toml: grammar commit is '$$commit', not a 40-char SHA."; \
+		echo "Set it to the commit that contains ecosystem/tree-sitter-lk before publishing."; \
+		exit 1; \
+	fi; \
+	if ! git cat-file -e "$$commit^{commit}" 2>/dev/null; then \
+		echo "zed extension.toml: grammar commit $$commit is not in this repository."; \
+		exit 1; \
+	fi; \
+	echo "zed extension.toml: grammar pinned to $$commit"
 
 install:
 	cargo install --path cli --force

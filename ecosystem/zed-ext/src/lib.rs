@@ -51,7 +51,7 @@ fn find_lk_lsp(worktree: &zed::Worktree) -> Result<String> {
     let executable = if cfg!(windows) { "lk-lsp.exe" } else { "lk-lsp" };
 
     for path in repo_candidate_paths(worktree, executable) {
-        if is_executable_file(&path) {
+        if is_regular_file(&path) {
             return Ok(path.display().to_string());
         }
     }
@@ -65,6 +65,16 @@ fn find_lk_lsp(worktree: &zed::Worktree) -> Result<String> {
     ))
 }
 
+/// Where to look for the server, in order.
+///
+/// A build inside the worktree wins over an installed one on purpose: the
+/// people opening this repository in Zed are the ones changing the server, and
+/// they expect the binary they just built. `debug` before `release` for the
+/// same reason — `cargo build` is what an edit-test loop runs.
+///
+/// The cost is that someone who only *uses* LK, but happens to have a stale
+/// `target/debug/lk-lsp` lying around, gets that instead of what they
+/// installed. `lsp.lk-lsp.binary.path` in Zed settings overrides all of this.
 fn repo_candidate_paths(worktree: &zed::Worktree, executable: &str) -> Vec<PathBuf> {
     let root = PathBuf::from(worktree.root_path());
     let mut paths = Vec::new();
@@ -83,7 +93,14 @@ fn repo_candidate_paths(worktree: &zed::Worktree, executable: &str) -> Vec<PathB
     paths
 }
 
-fn is_executable_file(path: &Path) -> bool {
+/// Whether `path` is a regular file — *not* whether it can be executed.
+///
+/// The extension is compiled to `wasm32-wasip1`, where `target_family` is
+/// `wasm` rather than `unix`, so `PermissionsExt` and the executable bit are
+/// out of reach. A non-executable file with the right name is therefore
+/// selected here and fails when Zed tries to spawn it; the previous name for
+/// this function claimed a check it never made.
+fn is_regular_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 

@@ -250,13 +250,27 @@ impl LanguageServer for LkLanguageServer {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut cleared_any = false;
         for change in params.changes {
             if let Ok(path) = change.uri.to_file_path() {
                 let affected = self.workspace_cache.invalidate_changed_path_dependents(&path);
                 for (affected_uri, version) in clear_cached_document_artifacts(&self.documents, &affected) {
+                    cleared_any = true;
                     self.schedule_diagnostics_and_warmup(affected_uri, version, 0).await;
                 }
             }
+        }
+
+        if cleared_any {
+            // Diagnostics are pushed, so re-scheduling them above is enough.
+            // Inlay hints and semantic tokens are *pulled*: dropping the cached
+            // ones only decides what the next request computes, and nothing has
+            // told the editor to make one. A dependency's edit does not change
+            // this document's version either, so the editor has no reason of its
+            // own to ask again — the hints would sit there showing types read
+            // out of a file that has since changed.
+            let _ = self.client.inlay_hint_refresh().await;
+            let _ = self.client.semantic_tokens_refresh().await;
         }
     }
 
