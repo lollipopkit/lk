@@ -2,6 +2,7 @@ use super::StmtParser;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
+    ast::Parser as ExprParser,
     expr::Expr,
     stmt::{ForPattern, Stmt},
     token::Token,
@@ -59,6 +60,7 @@ impl<'a> StmtParser<'a> {
 
     /// 解析 if 语句
     pub fn parse_if_stmt(&mut self) -> Result<Stmt> {
+        let keyword_pos = self.pos;
         self.expect_token(Token::If)?;
 
         // Check if this is an "if let" statement
@@ -92,7 +94,21 @@ impl<'a> StmtParser<'a> {
                 else_stmt,
             })
         } else {
-            // Regular if statement
+            // Regular `if`.
+            //
+            // When its branches are `{ … }`, this is the *expression* form —
+            // the same construct, with the value discarded. Parsing it here
+            // rather than as `Stmt::If` over statement-blocks is what makes
+            // `if c { if d { 1 } else { 2 } } else { 3 }` work: a statement
+            // block demands a `;` after every statement, so a branch whose
+            // last line is the value it produces would not parse.
+            //
+            // The braceless forms (`if (c) return 1;`) have no block and no
+            // value, and keep the statement path below.
+            if let Some(stmt) = self.try_parse_if_expression_stmt(keyword_pos)? {
+                return Ok(stmt);
+            }
+
             let condition = if !self.eof() && self.tokens[self.pos] == Token::LParen {
                 // Standard form: if (cond) stmt
                 self.pos += 1; // consume '('
@@ -120,6 +136,66 @@ impl<'a> StmtParser<'a> {
                 else_stmt,
             })
         }
+    }
+
+    /// Does the `if` at `keyword_pos` take a `{ … }` branch?
+    ///
+    /// Decided by scanning rather than by inspecting the parsed expression,
+    /// because the parser folds constants on the way out: `if false { 1 }
+    /// else { 2 }` comes back as the surviving *block*, with no conditional
+    /// left to recognise.
+    fn if_branch_is_braced(&self, keyword_pos: usize) -> bool {
+        let mut depth = 0i32;
+        let mut index = keyword_pos + 1;
+        while index < self.len {
+            match &self.tokens[index] {
+                Token::LParen | Token::LBracket => depth += 1,
+                Token::RParen | Token::RBracket => depth -= 1,
+                Token::LBrace if depth == 0 => return true,
+                // A statement ends the search: `if (c) return 1;` has no block.
+                Token::Semicolon if depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// Parse a *trailing* `if … { … }` as an expression statement, or answer
+    /// `None` when this `if` is not the braced form or is not the last item.
+    ///
+    /// `keyword_pos` indexes the `if` token itself, since the expression parser
+    /// has to see it. The sub-parser runs over a token slice and reports how
+    /// much it consumed, so a `None` here costs nothing: the caller is exactly
+    /// where it was.
+    fn try_parse_if_expression_stmt(&mut self, keyword_pos: usize) -> Result<Option<Stmt>> {
+        if !self.if_branch_is_braced(keyword_pos) {
+            return Ok(None);
+        }
+        let tokens = &self.tokens[keyword_pos..];
+        let spans = self.token_spans.map(|spans| &spans[keyword_pos..]);
+        let mut parser = if let Some(spans) = spans {
+            ExprParser::new_with_spans(tokens, spans)
+        } else {
+            ExprParser::new(tokens)
+        };
+        let Ok((expr, consumed)) = parser.parse_prefix() else {
+            return Ok(None);
+        };
+        // Only when this `if` is the *last* thing here: that is a block's tail,
+        // where the value is what the block evaluates to. Anywhere else the
+        // `if` is a statement and has to stay one — its branches may `return`,
+        // `break` or `continue`, and those lower as control flow out of the
+        // enclosing function or loop, not as a value the conditional yields.
+        let mut end = keyword_pos + consumed;
+        if end < self.len && self.tokens[end] == Token::Semicolon {
+            end += 1;
+        }
+        if end != self.len {
+            return Ok(None);
+        }
+        self.pos = end;
+        Ok(Some(Stmt::Expr(Box::new(expr))))
     }
 
     /// 解析 while 语句

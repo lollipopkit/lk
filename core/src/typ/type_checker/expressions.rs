@@ -128,6 +128,25 @@ impl TypeChecker {
         Ok(target.clone())
     }
 
+    /// The one rule for what may stand as a condition.
+    ///
+    /// LK's rule is *truthiness*: every value is a condition, and only `nil`
+    /// and `false` are falsy. That is what the executor implements
+    /// (`truthy_unchecked`), what `dyn.truthy` implements for native code, and
+    /// what `examples/syntax/null_coalescing.lk` demonstrates with `if (0)`.
+    ///
+    /// There used to be a second rule: `? :` demanded exactly `Bool` and
+    /// rejected even an unresolved type variable, so
+    /// `fn g(x) { return x ? "y" : "n"; }` was a type error while
+    /// `fn g(x) { if x { … } }` was fine. With `if` now an expression, keeping
+    /// both would mean the same syntax typed differently depending on whether
+    /// its value was used. The condition is still *checked* — an ill-typed
+    /// expression is still an error — it is just not required to be `Bool`.
+    pub(crate) fn check_condition(&mut self, condition: &Expr) -> Result<()> {
+        self.check_expr(condition)?;
+        Ok(())
+    }
+
     /// Checks an `unsafe` block's contents.
     ///
     /// `Expr::Block` on its own type-checks to `Any` without looking inside —
@@ -158,7 +177,7 @@ impl TypeChecker {
     /// before. Those shapes (`unsafe { let x = …; }`) have no value the
     /// executor promises, and inventing one here would be a claim rather than a
     /// description.
-    fn check_unsafe_body(&mut self, inner: &Expr) -> Result<Type> {
+    pub(crate) fn check_block_value(&mut self, inner: &Expr) -> Result<Type> {
         let Expr::Block(statements) = inner else {
             return self.check_expr(inner);
         };
@@ -432,7 +451,7 @@ impl TypeChecker {
             // unchecked operations permitted inside it.
             Expr::Unsafe(inner) => {
                 self.enter_unsafe();
-                let result = self.check_unsafe_body(inner);
+                let result = self.check_block_value(inner);
                 self.exit_unsafe();
                 result
             }
@@ -500,18 +519,12 @@ impl TypeChecker {
             Expr::NullishCoalescing(expr, default) => self.check_nullish_coalescing(expr, default),
             Expr::OptionalAccess(expr, field) => self.check_optional_chaining(expr, field),
             Expr::Conditional(cond, then_expr, else_expr) => {
-                // condition must be Bool
-                let cond_ty = self.check_expr(cond)?;
-                if cond_ty != Type::Bool {
-                    return Err(Self::type_err(
-                        "Ternary condition must be Bool",
-                        Some(Type::Bool),
-                        Some(cond_ty),
-                        Some(*cond.clone()),
-                    ));
-                }
-                let then_ty = self.check_expr(then_expr)?;
-                let else_ty = self.check_expr(else_expr)?;
+                self.check_condition(cond)?;
+                // The arms are blocks when this came from `if … { … } else
+                // { … }`, and plain expressions when it came from `? :`. Both
+                // are values; `check_block_value` answers for either.
+                let then_ty = self.check_block_value(then_expr)?;
+                let else_ty = self.check_block_value(else_expr)?;
                 // unify then/else types; return the unified type (prefer then_ty)
                 self.inference_engine.add_constraint(then_ty.clone(), else_ty.clone());
                 Ok(then_ty)

@@ -420,6 +420,85 @@ mod tests {
         assert_eq!(items[5], RuntimeVal::Int(i64::MIN));
     }
 
+    /// `if` produces a value, the way `match` always has.
+    ///
+    /// `let a = match c { … };` parsed and `let a = if c { … } else { … };` did
+    /// not, so the only way to *choose* a value was the C-style ternary — the
+    /// operator a language whose `if` is an expression does not need. Both now
+    /// lower to the same node, so they cannot drift apart.
+    #[test]
+    fn if_is_an_expression_that_yields_its_branch() {
+        let source = "let x = 5;\n\
+                      let size = if x > 3 { \"big\" } else if x > 1 { \"mid\" } else { \"small\" };\n\
+                      let doubled = if true { let t = x; t * 2 } else { 0 };\n\
+                      let missing = if false { 1 };\n\
+                      let pick = |v| if v > 0 { 1 } else { -1 };\n\
+                      // Truthiness, not `Bool`: `0` is truthy, only nil and false are not.\n\
+                      let zero_is_truthy = if 0 { \"yes\" } else { \"no\" };\n\
+                      return [size, doubled, missing, pick(-9), zero_is_truthy];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        let text = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+                RuntimeVal::Obj(h) => match outcome.state.heap().get(*h) {
+                    Some(HeapValue::String(s)) => s.to_string(),
+                    other => panic!("expected a string, got {other:?}"),
+                },
+                other => panic!("expected a string, got {other:?}"),
+            }
+        };
+        assert_eq!(text(&items[0]), "big");
+        assert_eq!(items[1], RuntimeVal::Int(10));
+        // No `else` means no value: `nil`, not a parse error.
+        assert_eq!(items[2], RuntimeVal::Nil);
+        assert_eq!(items[3], RuntimeVal::Int(-1));
+        assert_eq!(text(&items[4]), "yes");
+    }
+
+    /// An `if` *statement* keeps working, and an `else` that belongs to one is
+    /// still its own.
+    ///
+    /// The statement parser slices an expression up to the next top-level
+    /// `else`, which was correct while `else` could only close a statement.
+    /// Now it has to hand the `else` to an unmatched `if` inside the slice
+    /// instead — and only a genuinely dangling one ends the expression.
+    #[test]
+    fn an_if_statement_still_owns_its_own_else() {
+        let source = "let seen = [];\n\
+                      if 1 > 2 { seen = seen.concat([\"then\"]); } else { seen = seen.concat([\"else\"]); }\n\
+                      let nested = if true { if false { 1 } else { 2 } } else { 3 };\n\
+                      return [seen, nested];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        let RuntimeVal::Obj(branch) = items[0] else {
+            panic!("expected the branch list");
+        };
+        let Some(HeapValue::List(branch)) = outcome.state.heap().get(branch) else {
+            panic!("expected the branch list");
+        };
+        assert_eq!(branch.len(), 1, "exactly one branch should have run");
+        assert_eq!(items[1], RuntimeVal::Int(2));
+    }
+
     #[test]
     fn negating_a_non_number_is_a_type_error() {
         let tokens = crate::token::Tokenizer::tokenize("-\"text\"").expect("tokenize");

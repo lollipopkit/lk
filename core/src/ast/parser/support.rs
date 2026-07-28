@@ -468,6 +468,7 @@ impl<'a> Parser<'a> {
                 | Token::Pipe
                 | Token::Fn
                 | Token::Match
+                | Token::If
                 | Token::Unsafe
         )
     }

@@ -41,6 +41,12 @@ impl<'a> StmtParser<'a> {
         let start_pos = self.pos;
         let mut depth = 0;
         let mut end_pos = start_pos;
+        // `if` is an expression, so a top-level `else` can belong to the
+        // expression being sliced rather than to an enclosing `if` *statement*.
+        // Count the unmatched `if`s seen so far and hand the `else` to the
+        // nearest one; only a genuinely dangling `else` ends the slice, which
+        // is what this used to assume unconditionally.
+        let mut unmatched_ifs = 0usize;
 
         while end_pos < self.len {
             let token = &self.tokens[end_pos];
@@ -74,8 +80,16 @@ impl<'a> StmtParser<'a> {
                 Token::Semicolon if depth == 0 => {
                     break;
                 }
+                Token::If if depth == 0 => {
+                    unmatched_ifs += 1;
+                    end_pos += 1;
+                }
                 Token::Else if depth == 0 => {
-                    break;
+                    if unmatched_ifs == 0 {
+                        break;
+                    }
+                    unmatched_ifs -= 1;
+                    end_pos += 1;
                 }
                 _ => {
                     end_pos += 1;

@@ -12,6 +12,8 @@ mod literals;
 mod patterns;
 mod support;
 
+use support::BlockTail;
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
@@ -1045,6 +1047,7 @@ impl<'a> Parser<'a> {
             Token::Select => self.parse_select(),
             Token::Unsafe => self.parse_unsafe_block(),
             Token::Match => self.parse_match(),
+            Token::If => self.parse_if_expr(),
             Token::LParen => self.parse_paren(),
             Token::Fn => self.parse_fn_closure(),
             Token::Pipe => self.parse_closure(),
@@ -1153,15 +1156,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse match expression: match value { pattern => expr, ... }
-    fn parse_match(&mut self) -> Result<Expr> {
-        if self.tokens[self.pos] != Token::Match {
-            let msg = format!("Expecting 'match', found {:?}", self.tokens[self.pos]);
-            return Err(anyhow!(self.err(&msg)));
-        }
-        self.pos += 1;
-
-        // Parse the value to match against, stopping before the opening '{'
-        // to avoid consuming it as a struct literal in postfix parsing.
+    /// The expression between a keyword and its `{ … }` — a `match` scrutinee
+    /// or an `if` condition.
+    ///
+    /// Parsed from a token slice that stops at the first *top-level* `{`,
+    /// because postfix parsing would otherwise read `match x {` as the struct
+    /// literal `x { … }`. Leaves `self.pos` on that brace; the caller consumes
+    /// it. The cost is that a struct literal cannot be written bare in this
+    /// position — `if Point { x: 1 } == p` needs parentheses — which is the
+    /// same trade Rust makes, for the same reason.
+    fn parse_header_expr_before_brace(&mut self, keyword: &str) -> Result<Box<Expr>> {
         let start_pos = self.pos;
         let mut i = self.pos;
         let mut paren: i32 = 0;
@@ -1188,15 +1192,14 @@ impl<'a> Parser<'a> {
                     }
                     i += 1;
                 }
-                Token::LBrace if paren == 0 && bracket == 0 => {
-                    break; // stop before '{' that begins match arms
-                }
+                Token::LBrace if paren == 0 && bracket == 0 => break,
                 _ => i += 1,
             }
         }
 
         if i == start_pos {
-            return Err(anyhow!(self.err("Expected value before '{' in match expression")));
+            let msg = alloc::format!("Expected an expression before '{{' in {keyword}");
+            return Err(anyhow!(self.err(&msg)));
         }
 
         let value_tokens = &self.tokens[start_pos..i];
@@ -1210,8 +1213,51 @@ impl<'a> Parser<'a> {
         self.pos = i;
 
         if self.eof() || self.tokens[self.pos] != Token::LBrace {
-            return Err(anyhow!(self.err("Expecting '{' after match value")));
+            let msg = alloc::format!("Expecting '{{' after the {keyword} expression");
+            return Err(anyhow!(self.err(&msg)));
         }
+        Ok(value)
+    }
+
+    /// `if cond { … } else { … }` in *expression* position.
+    ///
+    /// `match` has always been an expression here; `if` was not, so
+    /// `let a = match c { … };` worked and `let a = if c { … } else { … };`
+    /// was a syntax error, with the C-style ternary as the only way to choose
+    /// a value — the very operator a language whose `if` is an expression does
+    /// not need. Both now lower through the same node: `Expr::Conditional`
+    /// over two `Expr::Block`s, each evaluating to its last expression.
+    ///
+    /// A missing `else` yields `nil`, as does a branch whose block ends in a
+    /// statement rather than an expression.
+    fn parse_if_expr(&mut self) -> Result<Expr> {
+        self.pos += 1; // 'if'
+        let condition = self.parse_header_expr_before_brace("if")?;
+        let then_block = self.parse_brace_block(BlockTail::Value)?;
+        let else_expr = if !self.eof() && self.tokens[self.pos] == Token::Else {
+            self.pos += 1;
+            if self.eof() {
+                return Err(anyhow!(self.err("Expected a block or 'if' after 'else'")));
+            }
+            match self.tokens[self.pos] {
+                Token::If => self.deeper(Self::parse_if_expr)?,
+                Token::LBrace => self.parse_brace_block(BlockTail::Value)?,
+                _ => return Err(anyhow!(self.err("Expected a block or 'if' after 'else'"))),
+            }
+        } else {
+            Expr::Literal(LiteralVal::Nil)
+        };
+        Ok(Expr::Conditional(condition, Box::new(then_block), Box::new(else_expr)))
+    }
+
+    fn parse_match(&mut self) -> Result<Expr> {
+        if self.tokens[self.pos] != Token::Match {
+            let msg = format!("Expecting 'match', found {:?}", self.tokens[self.pos]);
+            return Err(anyhow!(self.err(&msg)));
+        }
+        self.pos += 1;
+
+        let value = self.parse_header_expr_before_brace("match")?;
         self.pos += 1;
 
         let mut arms = Vec::new();

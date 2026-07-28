@@ -627,7 +627,7 @@ impl Stmt {
                 then_stmt,
                 else_stmt,
             } => {
-                condition.type_check(type_checker)?;
+                type_checker.check_condition(condition)?;
 
                 // then 分支
                 type_checker.push_scope();

@@ -734,7 +734,13 @@ fn test_expression_document_is_type_checked_once() {
     let mut analyzer = create_analyzer();
     // A document that parses as a single expression never reaches the statement
     // path, so its type check lives in the expression branch of `analyze`.
-    let result = analyzer.analyze("1 ? 2 : 3");
+    //
+    // The sample used to be `1 ? 2 : 3`, which was an error only because the
+    // ternary demanded a `Bool` condition where the `if` statement accepted any
+    // truthy value. That divergence is gone — LK's rule is truthiness — so the
+    // sample is now an expression that is ill-typed for a reason unrelated to
+    // conditions.
+    let result = analyzer.analyze("\"a\" - 1");
 
     assert_eq!(
         result.diagnostics.len(),
