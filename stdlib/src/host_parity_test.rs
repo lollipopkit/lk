@@ -182,6 +182,49 @@ fn the_out_of_workspace_boards_ask_for_features_that_exist() {
     }
 }
 
+/// And the fourth copy of the same list: CI's own.
+///
+/// `.github/workflows/check.yml` builds each computation-only module *alone* on
+/// `thumbv7em-none-eabi`, because a crate that only builds when a sibling
+/// happens to enable `std` for it is not actually no_std. The loop names them,
+/// which makes this the fourth place the set is written down — after
+/// `stdlib/bare`'s features and the two boards' manifests.
+///
+/// It went stale the same way the boards did: `slice` was removed and the loop
+/// kept building `lk-stdlib-slice`. Nothing noticed, because this branch had
+/// never been pushed — CI does cover these targets, and would have said so on
+/// the first run.
+#[test]
+fn ci_builds_exactly_the_modules_that_exist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = root.join("../.github/workflows/check.yml");
+    let text = std::fs::read_to_string(&workflow).unwrap_or_else(|e| panic!("read {}: {e}", workflow.display()));
+    let line = text
+        .lines()
+        .find(|line| line.contains("for m in") && line.contains("cargo build"))
+        .or_else(|| text.lines().find(|line| line.trim_start().starts_with("for m in")))
+        .expect("the per-module thumbv7em loop; if it was rewritten, so should this test be");
+    let named: Vec<String> = line
+        .split_once("for m in")
+        .expect("checked")
+        .1
+        .split(';')
+        .next()
+        .expect("checked")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(!named.is_empty(), "the loop names no modules");
+
+    let ours = std::fs::read_to_string(root.join("bare/Cargo.toml")).expect("read stdlib/bare manifest");
+    let available = feature_names(&ours);
+    let gone: Vec<&String> = named.iter().filter(|name| !available.contains(name)).collect();
+    assert!(
+        gone.is_empty(),
+        "check.yml builds `lk-stdlib-{{{gone:?}}}` on thumbv7em, and no such crate exists any          more. CI fails on the first push with a message about the crate rather than about the          list it came from"
+    );
+}
+
 /// The keys of `stdlib/bare`'s `[features]` table.
 fn feature_names(manifest: &str) -> Vec<String> {
     let mut names = Vec::new();
@@ -204,7 +247,10 @@ fn feature_names(manifest: &str) -> Vec<String> {
 
 /// The feature names a board's `lk-stdlib-bare` dependency asks for.
 fn requested_features(manifest: &str) -> Vec<String> {
-    let Some(line) = manifest.lines().find(|line| line.trim_start().starts_with("lk-stdlib-bare")) else {
+    let Some(line) = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("lk-stdlib-bare"))
+    else {
         return Vec::new();
     };
     let Some(list) = line.split_once("features").and_then(|(_, rest)| rest.split_once('[')) else {
