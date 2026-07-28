@@ -50,6 +50,18 @@ impl Compiler {
         if self.next_reg > self.peak_reg {
             self.peak_reg = self.next_reg;
         }
+        // The same for the performance facts, which are the other table keyed by
+        // register — and the one that decides which *opcode* is emitted, so a
+        // fact that outlives its value picks an instruction for a type the
+        // register no longer holds.
+        //
+        // The invariant was already being maintained here, by hand: `call.rs`
+        // clears the destination at a dozen call sites because a call result's
+        // type is unknown. Doing it where the register changes hands makes it
+        // hold by construction instead of by remembering. Measured on the
+        // example corpus before the change: 28 reads of a fact belonging to a
+        // register's previous occupant, one of them claiming `List`.
+        self.function.performance.clear_register(reg);
         // A width fact belongs to the value in the register, and handing the
         // register to a new value ends it.
         //
