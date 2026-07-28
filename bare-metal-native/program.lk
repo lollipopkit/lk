@@ -46,10 +46,14 @@ fn uart_putc(byte: Int) {
     // Spin while the transmit FIFO is full. This read has to happen on every
     // iteration — it is the canonical access a non-volatile load would let the
     // compiler hoist, hanging the loop.
-    let full = 1;
+    // `u32`, because that is what the register answers in and what the mask is
+    // applied at. Written as `let full = 1;` this was an `Int` that the loop
+    // then assigned a `u32` to — which the checker refuses, correctly: machine
+    // integers do not mix, and the width of a status flag is the register's.
+    let full: u32 = 1;
     while (full != 0) {
         let flags = unsafe { volatile_read_u32((UART0_BASE + REG_FR) as *mut u32) };
-        full = flags & FR_TX_FULL;
+        full = flags & (FR_TX_FULL as u32);
     }
     unsafe { volatile_write_u32((UART0_BASE + REG_DR) as *mut u32, byte as u32); };
 }
