@@ -1725,8 +1725,7 @@ fn print_file(base: Int, name: List<Int>) {
             emit(base, disk_error(ATA_ERROR_BIT));
             return;
         }
-        let line = [0];
-        line = [];
+        let line = [];
         let i = 0;
         while (i < SECTOR_SIZE && printed + i < size) {
             let byte = shared_read_byte(SHARED_SECTOR + i);

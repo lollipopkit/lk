@@ -364,6 +364,48 @@ fn test_for_statement_type_checking() {
 /// reads when a width is wrong.
 ///
 /// What is *not* refused, and used to be: an integer literal beside a machine
+/// An empty list learns its element type from a *container* argument too.
+///
+/// `xs.push(y)` has parameter `'T` — a bare variable — so the argument was used
+/// to bind it. `xs.chain(ys)` has parameter `List<'T>`, which is not a variable,
+/// so it was *checked* instead: passing a `List<Int>` reported "expected
+/// List<'T0>, got List<Int>" rather than binding `'T0` to `Int`.
+///
+/// What that cost is a workaround in real code. `bare-metal-x86/program.lk`
+/// wrote `let line = [0]; line = [];` — build a list with a placeholder element
+/// so the element type is known, then throw the element away — because
+/// `let line = []; line = line.chain(…)` did not type-check.
+#[test]
+fn an_empty_list_learns_its_element_type_from_a_container_argument() {
+    for source in [
+        // The shape the kernel had to work around.
+        "let a = [];
+a = a.chain([1]);
+",
+        // The one that always worked, so a change here cannot have broken it.
+        "let a = [];
+a.push(1);
+",
+        // Learned from the far side, and then used: the binding has to reach
+        // the reads, not merely silence the argument check.
+        "let a = [];
+a = a.chain([1]);
+let b: Int = a.len();
+",
+        // Nested one deeper.
+        "let a = [];
+a = a.chain([[1]]);
+",
+    ] {
+        let program = crate::syntax::parse_program_source(source, Default::default())
+            .unwrap_or_else(|e| panic!("should parse: {source}: {e}"));
+        let mut checker = TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .unwrap_or_else(|e| panic!("should type-check: {source:?}: {e}"));
+    }
+}
+
 /// integer takes its width. `reg + 1` is what driver code is made of. Relaxing
 /// the checker alone was a miscompile for one round — the compiler went on
 /// materialising the literal as an ordinary `Int`, so `255u8 + 1` answered 256
