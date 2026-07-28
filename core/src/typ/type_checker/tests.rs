@@ -353,3 +353,56 @@ fn test_for_statement_type_checking() {
             .contains("For loop iterable must be List, String, Map, or Set")
     );
 }
+
+/// The three ways a machine integer refuses to mix, and why each is a rule
+/// rather than an oversight.
+///
+/// A `u32` register write has to be exactly 32 bits wide and has to wrap rather
+/// than promote — promoting to `Int` would silently give the operation 64-bit
+/// semantics, which is the opposite of what asking for a width was for. So the
+/// checker refuses three things, and the messages are what a driver author
+/// reads when a width is wrong.
+///
+/// The middle one is a *gap* rather than a decision, and it is pinned here so
+/// that whoever closes it sees this test rather than discovering the rule by
+/// accident. `reg + 1` is what driver code is made of, and it does not compile;
+/// `let x: u8 = 5` does, because a literal is retyped there. Relaxing the
+/// checker alone is a miscompile — the compiler goes on materialising the
+/// literal as an ordinary `Int`, so `255u8 + 1` answers 256 with the type still
+/// claiming `u8`. The fix belongs in the compiler, and the note at the rule in
+/// `expressions.rs` says so.
+#[test]
+fn machine_integers_refuse_to_mix() {
+    for (source, expected) in [
+        // A variable of another numeric type: a width mistake.
+        (
+            "let a: u8 = 5;\nlet n = 3;\nlet c = a + n;\n",
+            "machine integers do not mix",
+        ),
+        // A literal, which is the gap.
+        ("let a: u8 = 5;\nlet c = a + 1;\n", "machine integers do not mix"),
+        // Two machine integers of different widths.
+        (
+            "let a: u8 = 5;\nlet b: u16 = 3;\nlet c = a + b;\n",
+            "machine integer operands must have the same type",
+        ),
+        // A literal that does not fit the width it was given.
+        ("let a: u8 = 300;\n", "out of range"),
+    ] {
+        // Parsed and *type-checked*, which is the path `lk FILE` takes.
+        // `execute_source` skips the checker and simply runs, so a program that
+        // should be refused executes and the test passes for the wrong reason —
+        // this one did, answering 8 for `u8 + Int`.
+        let program = crate::syntax::parse_program_source(source, Default::default())
+            .unwrap_or_else(|e| panic!("should parse: {source}: {e}"));
+        let mut checker = TypeChecker::new();
+        let error = program
+            .type_check(&mut checker)
+            .expect_err(&alloc::format!("should be refused: {source}"))
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} for {source:?}, got {error}"
+        );
+    }
+}

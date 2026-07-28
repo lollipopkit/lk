@@ -376,6 +376,56 @@ fn global_container_differential() {
     );
 }
 
+/// Machine integers, which is what a driver's arithmetic is made of.
+///
+/// There was no differential coverage for these at all, which is a gap worth
+/// closing on its own: a `u32` register write has to be exactly 32 bits and has
+/// to *wrap* rather than promote, and both backends have to agree about that or
+/// a driver computes a different value depending on how it was built.
+///
+/// The wrapping cases are the point. `255u8 + 1u8` is `0`, not `256` — the width
+/// decides, not the arithmetic — and the same for `u16` at 65535 and for a `u32`
+/// at the top of its range. A build that promoted to `Int` somewhere would pass
+/// every non-wrapping case here and fail these.
+#[test]
+fn machine_int_differential() {
+    run_differential(
+        "machine_int",
+        &[
+            new(
+                "bitwise_or",
+                "let a: u8 = 0x0f;\nlet b: u8 = 0xf0;\nreturn (a | b) as Int;\n",
+            ),
+            new(
+                "bitwise_and",
+                "let a: u16 = 0xff0f;\nlet b: u16 = 0x0ff0;\nreturn (a & b) as Int;\n",
+            ),
+            new("shift_right", "let a: u16 = 0x1234;\nlet b: u16 = 8;\nreturn ((a >> b) & 0xff) as Int;\n"),
+            new("shift_left", "let a: u8 = 0x0f;\nlet b: u8 = 1;\nreturn (a << b) as Int;\n"),
+            // The width decides, not the arithmetic.
+            new("u8_wraps", "let a: u8 = 255;\nlet b: u8 = 1;\nreturn (a + b) as Int;\n"),
+            new("u16_wraps", "let a: u16 = 65535;\nlet b: u16 = 1;\nreturn (a + b) as Int;\n"),
+            new(
+                "u32_wraps",
+                "let a: u32 = 4294967295;\nlet b: u32 = 2;\nreturn (a + b) as Int;\n",
+            ),
+            // Subtraction under zero wraps the same way, which is how a driver
+            // computing a ring index one short of the base finds out.
+            new("u8_wraps_down", "let a: u8 = 0;\nlet b: u8 = 1;\nreturn (a - b) as Int;\n"),
+            // Multiplication past the width, which is where a promotion to
+            // `Int` would be least visible: the low bits are still right.
+            new("u8_multiplies", "let a: u8 = 200;\nlet b: u8 = 3;\nreturn (a * b) as Int;\n"),
+            // And through a function, so the width survives a call boundary —
+            // the shape every driver helper has.
+            new(
+                "width_survives_a_call",
+                "fn combine(hi: u16, lo: u16) -> u16 { return (hi << 8) | lo; }\n                 let a: u16 = 0x12;\nlet b: u16 = 0x34;\nreturn combine(a, b) as Int;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `s.byte_at(i)` — the one string read that allocates nothing.
 ///
 /// It exists for freestanding code: `char_at` next to it answers a *string* of
