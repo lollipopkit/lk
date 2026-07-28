@@ -7,8 +7,24 @@ impl TypeChecker {
     pub(super) fn check_template_string(&mut self, parts: &[TemplateStringPart]) -> Result<Type> {
         for part in parts {
             if let TemplateStringPart::Expr(expr) = part {
-                let expr_type = self.check_expr(expr)?;
-                self.coerce_to_string(&expr_type);
+                // Checked, and its type deliberately *not* used.
+                //
+                // Interpolation renders whatever it is given, so an operand
+                // whose type is still an unresolved variable must not be pinned
+                // to `String` by appearing here. It used to be, and the effect
+                // reached a long way: in
+                //
+                //     fn h(p0) { m["k${p0}"] = 1; return p0; }
+                //
+                // the map's key type made the whole interpolation a `String`,
+                // the constraint travelled back through it onto `p0`, and the
+                // function was inferred to *return* a String — so an `Int`
+                // caller was rejected for a program that is fine. A fuzz run on
+                // a fresh seed produced it at case 651.
+                //
+                // String `+` still constrains, and that is a different question:
+                // `+` is overloaded, so which one it is has to be decided.
+                let _ = self.check_expr(expr)?;
             }
         }
         Ok(Type::String)

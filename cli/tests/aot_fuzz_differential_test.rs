@@ -751,7 +751,14 @@ impl Generator {
                     format!("{list}.push(p0); ")
                 }
                 (_, Some(map)) if self.rng.chance(50) => {
-                    format!("{map}[\"k\" + p0] = p0; ")
+                    // The key interpolates rather than concatenates. `"k" + p0`
+                    // retypes an unannotated `p0` as a String — string
+                    // concatenation is what `+` means once one side is one — and
+                    // the helper then *returns* a String while everything
+                    // generated around it expects an Int. That is a program the
+                    // type checker rightly refuses, and it took a 1500-case run
+                    // on a fresh seed to produce one.
+                    format!("{map}[\"k${{p0}}\"] = p0; ")
                 }
                 _ => String::new(),
             };
