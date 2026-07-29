@@ -1250,7 +1250,25 @@ fn runtime_value_text<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<
 /// ```
 ///
 /// Same seven-byte boundary as the equality and search bugs, in the ordering.
+///
+/// Containers were the other half of that hole and are handled below: two
+/// *lists* compare element by element, and every other pair of heap values by
+/// their kind. Before that they were both `Obj`, one rank, therefore equal —
+/// so sorting a list of lists also did nothing at all:
+///
+/// ```text
+/// [[1,"b"], [1,"a"], [0,"c"]].sort()   → unchanged
+/// ```
 fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> core::cmp::Ordering {
+    compare_runtime_values_at(left, right, heap, 0)
+}
+
+fn compare_runtime_values_at(
+    left: &RuntimeVal,
+    right: &RuntimeVal,
+    heap: &HeapStore,
+    depth: u32,
+) -> core::cmp::Ordering {
     match (left, right) {
         (RuntimeVal::Nil, RuntimeVal::Nil) => core::cmp::Ordering::Equal,
         (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left.cmp(right),
@@ -1267,8 +1285,107 @@ fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStor
         _ => match (runtime_value_text(left, heap), runtime_value_text(right, heap)) {
             // Two strings, wherever each of them lives.
             (Some(left), Some(right)) => left.cmp(right),
-            _ => runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right)),
+            _ => compare_heap_values(left, right, heap, depth),
         },
+    }
+}
+
+/// Two values of which at least one is a heap object.
+///
+/// Lists (and windows over them, which are lists by every other measure)
+/// compare lexicographically — element by element, and a prefix sorts before
+/// what extends it, which is what `==` already treats them as. Everything else
+/// compares by *kind*: a map has no order against another map, but grouping
+/// them deterministically is still better than calling them equal.
+fn compare_heap_values(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore, depth: u32) -> core::cmp::Ordering {
+    let (RuntimeVal::Obj(left_handle), RuntimeVal::Obj(right_handle)) = (left, right) else {
+        return runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right));
+    };
+    let (Some(left_value), Some(right_value)) = (heap.get(*left_handle), heap.get(*right_handle)) else {
+        return runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right));
+    };
+    // Past the bound the values are cyclic or pathological. `sort_by` wants an
+    // `Ordering`, not a `Result` — and raising half way through a sort would
+    // leave the list rearranged anyway — so this is the one place the depth
+    // limit answers rather than reports. See `crate::val::MAX_VALUE_DEPTH`.
+    if depth < crate::val::MAX_VALUE_DEPTH
+        && let (Some(left_items), Some(right_items)) = (list_view(left_value, heap), list_view(right_value, heap))
+    {
+        return compare_list_views(&left_items, &right_items, heap, depth + 1);
+    }
+    heap_kind_rank(left_value).cmp(&heap_kind_rank(right_value))
+}
+
+/// A list, or the window a slice reads through — both are sequences here.
+fn list_view(value: &HeapValue, heap: &HeapStore) -> Option<TypedList> {
+    match value {
+        HeapValue::List(list) => Some(list.clone()),
+        HeapValue::Slice(slice) => {
+            let RuntimeVal::Obj(source) = slice.source else {
+                return Some(TypedList::Mixed(Vec::new()));
+            };
+            let Some(HeapValue::List(list)) = heap.get(source) else {
+                return Some(TypedList::Mixed(Vec::new()));
+            };
+            Some(list.window(slice.start, slice.live_len(heap)))
+        }
+        _ => None,
+    }
+}
+
+fn compare_list_views(left: &TypedList, right: &TypedList, heap: &HeapStore, depth: u32) -> core::cmp::Ordering {
+    for index in 0..left.len().min(right.len()) {
+        let ordering = match (list_item_text(left, index), list_item_text(right, index)) {
+            (Some(left), Some(right)) => left.cmp(right),
+            _ => compare_runtime_values_at(
+                &list_item_value(left, index),
+                &list_item_value(right, index),
+                heap,
+                depth,
+            ),
+        };
+        if ordering != core::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+/// A `TypedList::String` element is an `Arc<str>`, which no `RuntimeVal`
+/// carries past seven bytes — the same reason equality reads it as text.
+fn list_item_text(list: &TypedList, index: usize) -> Option<&str> {
+    match list {
+        TypedList::String(values) => values.get(index).map(|text| text.as_ref()),
+        _ => None,
+    }
+}
+
+fn list_item_value(list: &TypedList, index: usize) -> RuntimeVal {
+    match list {
+        TypedList::Mixed(values) => values.get(index).copied().unwrap_or(RuntimeVal::Nil),
+        TypedList::Int(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Int),
+        TypedList::Float(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Float),
+        TypedList::Bool(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Bool),
+        TypedList::String(values) => values
+            .get(index)
+            .and_then(|text| ShortStr::new(text).map(RuntimeVal::ShortStr))
+            .unwrap_or(RuntimeVal::Nil),
+    }
+}
+
+/// Heap kinds in a fixed order, so a list and a map sort into groups instead of
+/// comparing equal. Arbitrary, but stated once and stable.
+fn heap_kind_rank(value: &HeapValue) -> u8 {
+    match value {
+        HeapValue::String(_) => 0,
+        HeapValue::Bytes(_) => 1,
+        HeapValue::List(_) | HeapValue::Slice(_) => 2,
+        HeapValue::Map(_) => 3,
+        HeapValue::Set(_) => 4,
+        HeapValue::Object(_) => 5,
+        HeapValue::Callable(_) => 6,
+        HeapValue::ErrorVal(_) => 7,
+        _ => 8,
     }
 }
 

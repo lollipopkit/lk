@@ -487,3 +487,26 @@ fn a_method_receiver_survives_an_argument_that_captures_it() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[[3,4],[1,2],2,2]");
 }
+
+/// Containers were the other half of the "both `Obj`, one rank, therefore
+/// equal" hole that made sorting long strings a no-op: sorting a list of lists
+/// left it exactly as it was.
+#[test]
+fn sorting_orders_lists_element_by_element() {
+    let result = execute_source(
+        r#"
+        let pairs = [[1, "b"], [1, "a"], [0, "c"]];
+        let lengths = [[1, 2, 3], [1, 2], [1]];
+        let long = [["zzzzzzzzzz"], ["aaaaaaaaaa"]];
+        let mixed: List<Any> = [{"a": 1}, [1], "s"];
+        return [pairs.sort(), lengths.sort(), long.sort(), mixed.sort()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display,
+        "[[[0,\"c\"],[1,\"a\"],[1,\"b\"]],[[1],[1,2],[1,2,3]],[[\"aaaaaaaaaa\"],[\"zzzzzzzzzz\"]],[\"s\",[1],{\"a\":1}]]"
+    );
+}
