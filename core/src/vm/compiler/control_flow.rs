@@ -171,8 +171,14 @@ impl Compiler {
         if let (Some(value_reg), Some(tail)) = (value_reg, tail)
             && !self.emitted_return
         {
-            let src = self.lower_expr(tail)?;
-            self.emit_move(value_reg, src, "try value")?;
+            // Straight into the value register, not through a scratch one.
+            // A scratch register inside a protected region is a register the
+            // native back end sees the body write, and registers are recycled
+            // once the region ends — so the scratch collides with a *later*
+            // region's body-local and the whole function stops lowering. This
+            // is also what a hand-written `try { r = …; }` does, and it is why
+            // that shape lowered when this one did not.
+            self.lower_expr_to_register(value_reg, tail, "try value")?;
         }
         self.local_rebind_suppression -= 1;
         let returns = self.emitted_return;
