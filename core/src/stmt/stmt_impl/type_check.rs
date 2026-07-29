@@ -2,11 +2,11 @@ use super::{ForPattern, Program, Stmt};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    expr::Pattern,
+    expr::{Expr, Pattern},
     token::ParseError,
     typ::{
         FunctionSig, NamedParamSig, PendingStrictFunction, PendingStrictParam, StructDef, TraitDef,
-        TypeAlias as AliasDef, TypeChecker,
+        TypeAlias as AliasDef, TypeChecker, union_of,
     },
     val::{FunctionNamedParamType, Type},
 };
@@ -156,7 +156,30 @@ impl Stmt {
                     type_checker.check_type_annotation(annotation, "this binding")?;
                 }
                 // 检查表达式的类型
-                let expr_type = value.type_check(type_checker)?;
+                //
+                // A function-type annotation flows *into* a lambda instead of
+                // being compared against it afterwards. Checked in isolation a
+                // lambda types as `('T0) -> Any`, which does not unify with the
+                // annotation written for it — so a lambda could not be
+                // annotated at all, while a named `fn` assigned to the same
+                // binding was accepted. Same narrow bidirectionality as the
+                // machine-int literal rule below, for the same reason: the
+                // alternative is a feature nobody can use.
+                let expr_type = match (type_annotation, value.as_ref()) {
+                    (
+                        Some(Type::Function {
+                            params: expected_params,
+                            ..
+                        }),
+                        Expr::Closure {
+                            params: names,
+                            body,
+                        },
+                    ) if expected_params.len() == names.len() => {
+                        type_checker.check_closure(names, body, expected_params)?
+                    }
+                    _ => value.type_check(type_checker)?,
+                };
                 // Reached: statements below this one may read it. Done after
                 // the value, so `const A = A + 1;` still reports the read.
                 for name in pattern_names(pattern) {
@@ -1260,25 +1283,6 @@ fn map_value_type(value_ty: &Type) -> Type {
         Type::Optional(inner) => map_value_type(inner),
         Type::Union(members) => union_of(members.iter().map(map_value_type)),
         _ => Type::Any,
-    }
-}
-
-/// Collapses distributed alternatives: identical types stay themselves, `Any`
-/// anywhere swallows the rest (nothing is known), otherwise a union.
-fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
-    let mut out: Vec<Type> = Vec::new();
-    for ty in types {
-        if ty == Type::Any {
-            return Type::Any;
-        }
-        if !out.contains(&ty) {
-            out.push(ty);
-        }
-    }
-    match out.len() {
-        0 => Type::Any,
-        1 => out.pop().expect("checked len"),
-        _ => Type::Union(out),
     }
 }
 

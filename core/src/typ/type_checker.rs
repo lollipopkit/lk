@@ -891,3 +891,26 @@ fn edit_distance(left: &str, right: &str) -> usize {
     }
     previous[right.len()]
 }
+
+/// Collapses distributed alternatives: identical types stay themselves, `Any`
+/// anywhere swallows the rest (nothing is known), otherwise a union.
+///
+/// Lives here rather than beside one of its callers because there are now two
+/// of them in different modules — pattern distribution and a closure's return
+/// type — and "collapse a set of alternatives" is one rule, not two.
+pub(crate) fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
+    let mut out: Vec<Type> = Vec::new();
+    for ty in types {
+        if ty == Type::Any {
+            return Type::Any;
+        }
+        if !out.contains(&ty) {
+            out.push(ty);
+        }
+    }
+    match out.len() {
+        0 => Type::Any,
+        1 => out.pop().expect("checked len"),
+        _ => Type::Union(out),
+    }
+}

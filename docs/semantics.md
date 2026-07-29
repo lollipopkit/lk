@@ -704,6 +704,54 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 块是要过类型检查的(2026-07-30 裁决)
+
+`Expr::Block` 以前直接返回 `Any`,**不往里看** —— 理由是块大多来自 desugar,
+在拼出来之前已经查过了。这个理由对 desugar 成立,但闭包体也是块,于是:
+
+```lk
+let f = |x| { let s: String = 1; return x; };   // 以前:接受
+let s: String = 1;                              // 同一条语句在顶层:报错
+```
+
+也就是**块体 lambda 里的所有语句从来没过类型检查**,一整类代码对检查器不可见。
+现在 `Expr::Block` 和别的表达式一样查自己的语句,值是尾表达式的类型
+(`check_statements_value`),并且**自带一层作用域** —— 块是作用域这条规矩在
+别处已经立过了(见"块不是作用域"那条)。
+
+`unsafe { … }` 曾是唯一往里看的地方(`check_block_value`),因为最需要 scrutiny
+的构造反而一点都拿不到。它现在只是那条通路的入口。
+
+## 闭包的类型(2026-07-30 裁决)
+
+**块体闭包的 `return` 就是闭包的返回类型。** 收集 `return` 的那个 frame 以前
+被 pop 掉就丢了,于是这类闭包一律是 `… -> Any`,而 `Any` 满足任何注解:
+
+```lk
+let f = |x| { return x + 1; };
+let s: String = f(1);            // 以前:接受,运行时打印 2
+```
+
+命名 `fn` 一直是把收集到的 return join 起来的 —— 这不是新规矩,是闭包补上了
+同一条。体自身的类型只在"它说了点什么"时才 join 进来:以 `return` 语句结尾的
+块没有尾表达式,类型是 `Any`,放进去会把 union 吞掉。
+
+**函数类型注解会流进 lambda。** 孤立推断的 lambda 是 `('T0) -> Any`,和为它写
+的注解不 unify,所以 lambda 根本没法被注解 —— 而同一个绑定换成命名 `fn` 就通:
+
+```lk
+let f: (Int) -> Int = |x| { return x + 1; };   // 以前:类型不匹配
+fn inc(x: Int) -> Int { return x + 1; }
+let f: (Int) -> Int = inc;                      // 一直是通的
+```
+
+现在 `let` 的函数类型注解把形参类型压进 `check_closure`(调用点早就这么做了,
+`calls.rs`),和 machine-int 字面量那条一样是**窄的**双向检查,理由也一样:
+另一条路是一个没人能用的特性。
+
+函数类型的拼法是 `(Int) -> Int`,**不带 `fn`**;`fn(Int) -> Int` 不是合法类型
+(类型位置的 token 收集器根本不收 `fn`)。返回位置同理:`fn mk() -> () -> Int`。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

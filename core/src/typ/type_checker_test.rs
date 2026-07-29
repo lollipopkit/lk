@@ -267,4 +267,48 @@ mod tests {
         assert!(check_program("let n: Int? = [1, 2].index_of(2);").is_ok());
         assert!(check_program("let n = [1, 2].index_of(2);").is_ok());
     }
+
+    /// A function-type annotation flows **into** a lambda.
+    ///
+    /// Checked in isolation a lambda types as `('T0) -> Any`, which does not
+    /// unify with the annotation written for it — so a lambda could not be
+    /// annotated at all, while a named `fn` assigned to the same binding was
+    /// accepted.
+    #[test]
+    fn a_lambda_can_be_annotated_with_a_function_type() {
+        assert!(check_program("let f: (Int) -> Int = |x| { return x + 1; };").is_ok());
+        assert!(check_program("let g: (Int, Int) -> Int = |a, b| a * b;").is_ok());
+        assert!(check_program("let h: (String) -> Int = |s| { return s.len(); };").is_ok());
+        assert!(check_program("let n: () -> String = || { return \"hi\"; };").is_ok());
+        // A named function was always accepted; it must stay so.
+        assert!(check_program("fn inc(x: Int) -> Int { return x + 1; }\nlet f: (Int) -> Int = inc;").is_ok());
+        // The annotation still has to be satisfied.
+        assert!(check_program("let bad: (Int) -> String = |x| { return x + 1; };").is_err());
+        assert!(check_program("let bad: (Int, Int) -> Int = |x| { return x; };").is_err());
+    }
+
+    /// A block-bodied closure's `return` is what the closure returns.
+    ///
+    /// The frame collecting them was popped and discarded, so every such
+    /// closure typed `… -> Any` — and `Any` satisfies anything.
+    #[test]
+    fn a_closure_returns_what_its_body_returns() {
+        assert!(check_program("let f = |x| { return x + 1; };\nlet s: String = f(1);").is_err());
+        assert!(check_program("let f = |x| { return x + 1; };\nlet n: Int = f(1);").is_ok());
+    }
+
+    /// Statements inside a block are type-checked.
+    ///
+    /// `Expr::Block` used to answer `Any` without looking inside, on the grounds
+    /// that blocks mostly come from desugars checked before they are built. But
+    /// a closure body is a block too, so a whole class of code was invisible:
+    /// this exact `let` is rejected at top level and was accepted here.
+    #[test]
+    fn a_block_body_is_type_checked() {
+        assert!(check_program("let s: String = 1;").is_err());
+        assert!(check_program("let f = |x| { let s: String = 1; return x; };").is_err());
+        assert!(check_program("let f = |x| { let s: String = \"ok\"; return x; };").is_ok());
+        // A block is a scope: the inner binding is not visible afterwards.
+        assert!(check_program("let f = || { let inner = 1; return inner; };\nlet n: Int = f();").is_ok());
+    }
 }

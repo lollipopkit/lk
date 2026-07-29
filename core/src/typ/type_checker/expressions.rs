@@ -149,11 +149,13 @@ impl TypeChecker {
 
     /// Checks an `unsafe` block's contents.
     ///
-    /// `Expr::Block` on its own type-checks to `Any` without looking inside —
-    /// blocks are mostly produced by desugars, which are checked before they
-    /// are built. That is fine for those, but it would make `unsafe { … }` a
-    /// hole in the type system: precisely the construct that needs *more*
-    /// scrutiny would get none. So the statements are checked here.
+    /// Once the only place a block's contents were looked at: `Expr::Block`
+    /// itself type-checked to `Any` without looking inside, on the grounds that
+    /// blocks mostly come from desugars checked before they are built. That
+    /// made `unsafe { … }` a hole in the type system — precisely the construct
+    /// that needs *more* scrutiny getting none — and, it turned out, closure
+    /// bodies too. `Expr::Block` now checks itself, and this stays as the entry
+    /// point that also accepts a non-block `unsafe` operand.
     ///
     /// The block's *type* is its last statement's, when that statement is an
     /// expression — which is not a new rule but the type catching up with one.
@@ -953,7 +955,24 @@ impl TypeChecker {
 
                 self.unify_branch_values(body_ty, handler_ty)
             }
-            Expr::Block(_) => Ok(Type::Any),
+            // A block is checked like any other expression, and evaluates to
+            // its tail (`check_statements_value`).
+            //
+            // Skipping the contents — which is what this did, on the grounds
+            // that blocks mostly come from desugars already checked before they
+            // were built — meant a **closure's** body was never checked at all,
+            // because that is a block too. `let f = |x| { let s: String = 1;
+            // return x; };` was accepted; the same `let` at top level is not.
+            // A whole class of code, invisible to the checker.
+            //
+            // Its own scope, for the reason a block is one everywhere else: an
+            // inner `let` must not be visible after the block.
+            Expr::Block(statements) => {
+                self.push_scope();
+                let ty = self.check_statements_value(statements);
+                self.pop_scope();
+                ty
+            }
         }
     }
 
@@ -1768,7 +1787,17 @@ impl TypeChecker {
     /// element type only arrives afterwards as a constraint, too late to have
     /// checked anything. Anything not supplied stays a fresh variable, which is
     /// every closure that is not an argument to a method that knows better.
-    pub(super) fn check_closure(&mut self, params: &[String], body: &Expr, expected_params: &[Type]) -> Result<Type> {
+    /// Types a closure, with `expected_params` pushed **into** it when the
+    /// context knows them.
+    ///
+    /// `pub(crate)` because two contexts supply them: a call whose callee's
+    /// parameter is a function type, and a `let` with a function-type
+    /// annotation (`crate::stmt::stmt_impl::type_check`). Without the second,
+    /// `let f: (Int) -> Int = |x| { return x + 1; };` was rejected — the
+    /// lambda was typed in isolation as `('T0) -> Any` and that does not unify
+    /// with the very annotation written for it, so a lambda could not be
+    /// annotated at all while a named `fn` assigned to the same binding fine.
+    pub(crate) fn check_closure(&mut self, params: &[String], body: &Expr, expected_params: &[Type]) -> Result<Type> {
         let param_types: Vec<Type> = params
             .iter()
             .enumerate()
@@ -1797,9 +1826,27 @@ impl TypeChecker {
         let pending = self.suspend_pending_top_level();
         let ret_type = self.check_expr(body);
         self.restore_pending_top_level(pending);
-        let _ = self.pop_return_frame();
+        let collected_returns = self.pop_return_frame();
         self.pop_scope();
-        let ret_type = ret_type?;
+        let body_type = ret_type?;
+        // A `return` inside the body is what the closure returns. Discarding
+        // the frame (which is what this did) left every block-bodied closure
+        // typed `… -> Any`, and `Any` satisfies any annotation: `let s: String
+        // = (|x| { return x + 1; })(1);` type-checked. A named `fn` has always
+        // joined its collected returns — this is the same rule, not a new one.
+        //
+        // The body's own type joins in only when it says something: a block
+        // ending in a `return` statement types `Any` (there is no tail
+        // expression), and letting that in would swallow the union.
+        let ret_type = if collected_returns.is_empty() {
+            body_type
+        } else {
+            let mut alternatives = collected_returns;
+            if body_type != Type::Any {
+                alternatives.push(body_type);
+            }
+            crate::typ::union_of(alternatives)
+        };
         Ok(Type::Function {
             params: param_types,
             named_params: Vec::new(),
