@@ -431,6 +431,16 @@ impl Methods for Point { fn norm2(self) -> Int { … } }
 
 `ImplDecl.trait_name` 因此变成 `Option`,`MODULE_ARTIFACT_VERSION` 16。
 
+**内置容器的 impl 目标不能写元素类型**(同日补)。运行时按**擦除元素类型**
+之后分发(`heap_dispatch_type` 把每个列表都报成 `List<Any>` —— 一个
+`TypedList::Mixed` 也报不出别的),所以 `List<Int>` 和 `List<String>` 到的是
+同一个分发口。写 `impl T for List<Int>` 直接报错并说改成 `List`。
+
+而检查器此前按接收者的**静态**类型做键,于是 `impl T for List` 注册在
+`List<Any>` 下、对 `[1,2]` 的调用查 `List<Int>` —— 方法存在却找不到,还在运行
+时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
+参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

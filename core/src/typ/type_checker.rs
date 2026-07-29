@@ -341,8 +341,31 @@ impl TypeChecker {
         core::mem::replace(&mut self.impl_self_type, ty)
     }
 
+    /// The key a method is registered and looked up under.
+    ///
+    /// A builtin container's element type is **erased** here, because the
+    /// runtime erases it too: `heap_dispatch_type` reports every list as
+    /// `List<Any>`, a `TypedList::Mixed` having nothing else to report. Keying
+    /// on the static type instead meant `impl T for List` registered under
+    /// `List<Any>` while a call on `[1, 2]` looked up `List<Int>` — so the
+    /// method existed and could not be found, and the checker rejected the call
+    /// before the runtime (which would have found it) ever ran. `String` and
+    /// `Map` worked only because neither takes that path.
     fn method_sig_key(&self, receiver: &Type, name: &str) -> (String, String) {
-        (self.resolve_aliases(receiver).display(), name.to_string())
+        (
+            Self::dispatch_type(&self.resolve_aliases(receiver)).display(),
+            name.to_string(),
+        )
+    }
+
+    /// The type a receiver dispatches on — see [`Self::method_sig_key`].
+    pub(crate) fn dispatch_type(resolved: &Type) -> Type {
+        match resolved {
+            Type::List(_) => Type::List(Box::new(Type::Any)),
+            Type::Map(_, _) => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
+            Type::Set(_) => Type::Set(Box::new(Type::Any)),
+            other => other.clone(),
+        }
     }
 
     pub fn add_method_sig(&mut self, receiver: &Type, name: &str, sig: Type) {

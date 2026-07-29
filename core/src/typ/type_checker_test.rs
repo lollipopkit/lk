@@ -211,4 +211,37 @@ mod tests {
             .is_ok()
         );
     }
+
+    /// A builtin container dispatches with its element type erased — a
+    /// `TypedList::Mixed` has nothing else to report — so `List<Int>` and
+    /// `List<String>` reach the same entry. Naming one is refused rather than
+    /// registered under a key nothing looks up, which is what used to happen:
+    /// the call then failed with "List has no method", true and unhelpful.
+    #[test]
+    fn an_impl_target_cannot_name_an_element_type() {
+        assert!(check_program("impl List { fn second(self) -> Any { return self.get(1); } }").is_ok());
+        assert!(check_program("impl Map { fn size(self) -> Int { return self.len(); } }").is_ok());
+
+        let error = check_program("impl List<Int> { fn total(self) -> Int { return 0; } }")
+            .expect_err("`List<Int>` is not a dispatchable target");
+        assert!(
+            format!("{error:#}").contains("cannot name an element type"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    /// The other half: a method registered on `List` is found on a list of any
+    /// element type. It was registered under `List<Any>` and looked up under
+    /// `List<Int>`, so it existed and could not be found.
+    #[test]
+    fn a_method_on_a_builtin_container_is_found_whatever_its_elements_are() {
+        assert!(
+            check_program(
+                "impl List { fn second(self) -> Any { return self.get(1); } }\n\
+                 let a = [1, 2].second();\n\
+                 let b = [\"x\", \"y\"].second();"
+            )
+            .is_ok()
+        );
+    }
 }

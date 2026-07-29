@@ -119,6 +119,27 @@ impl Stmt {
                 // Nonexistent { … }` registered methods on a type nothing
                 // declares, so they could never be reached and nothing said so.
                 type_checker.check_type_annotation(target_type, "the impl target")?;
+                // A builtin container dispatches with its element type erased —
+                // a `TypedList::Mixed` has nothing else to report — so
+                // `impl T for List<Int>` names something the runtime cannot
+                // tell from `List<String>`. It used to register under a key
+                // nothing looks up, and the call failed later with "List has no
+                // method", which is true and unhelpful.
+                let resolved_target = type_checker.resolve_aliases(target_type);
+                let erased = crate::typ::TypeChecker::dispatch_type(&resolved_target);
+                if erased != resolved_target {
+                    let bare = match erased {
+                        crate::val::Type::List(_) => "List",
+                        crate::val::Type::Map(_, _) => "Map",
+                        crate::val::Type::Set(_) => "Set",
+                        _ => "the bare type",
+                    };
+                    return Err(anyhow::anyhow!(
+                        "Type Error: an impl target cannot name an element type: `{}` is not \
+                         distinguishable from another element type at run time — write `{bare}`",
+                        resolved_target.display()
+                    ));
+                }
                 let prev = type_checker.set_impl_self_type(Some(type_checker.resolve_aliases(target_type)));
                 let result: Result<()> = methods.iter().try_for_each(|method| method.type_check(type_checker));
                 type_checker.set_impl_self_type(prev);

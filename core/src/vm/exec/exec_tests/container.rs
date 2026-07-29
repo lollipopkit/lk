@@ -632,3 +632,25 @@ fn a_trait_impl_rejects_a_method_the_trait_never_declared() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[1,7]");
 }
+
+/// A builtin container dispatches with its element type erased — a
+/// `TypedList::Mixed` has nothing else to report — so the *checker* has to key
+/// on the same thing. It keyed on the static type instead, and
+/// `impl T for List` registered under `List<Any>` while a call on `[1, 2]`
+/// looked up `List<Int>`: the method existed and could not be found. `String`
+/// and `Map` worked only because neither takes that path.
+#[test]
+fn a_method_on_a_builtin_container_is_found_whatever_its_elements_are() {
+    let result = execute_source(
+        r#"
+        impl List { fn second(self) -> Any { return self.get(1); } }
+        impl Map { fn size(self) -> Int { return self.len(); } }
+        impl Set { fn size(self) -> Int { return self.len(); } }
+        return [[1, 2].second(), ["a", "b"].second(), {"k": 1}.size(), Set([1, 2]).size()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,\"b\",1,2]");
+}
