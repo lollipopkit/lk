@@ -1075,23 +1075,10 @@ impl Executor {
         }
     }
 
+    /// The key a value is used under — see [`RuntimeMapKey::from_value`], which
+    /// is the one conversion.
     pub(super) fn runtime_map_key_from_value(&self, value: &RuntimeVal) -> Result<RuntimeMapKey> {
-        match value {
-            RuntimeVal::Nil => Ok(RuntimeMapKey::Nil),
-            RuntimeVal::Bool(value) => Ok(RuntimeMapKey::Bool(*value)),
-            RuntimeVal::Int(value) => Ok(RuntimeMapKey::Int(*value)),
-            RuntimeVal::ShortStr(value) => Ok(RuntimeMapKey::ShortStr(*value)),
-            RuntimeVal::Obj(handle) => match self
-                .state
-                .heap
-                .get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            {
-                HeapValue::String(value) => Ok(RuntimeMapKey::String(value.clone())),
-                other => bail!("object cannot be used as map key: {:?}", heap_kind(other)),
-            },
-            RuntimeVal::Float(_) => bail!("Float cannot be used as RuntimeMapKey"),
-        }
+        RuntimeMapKey::from_value(value, &self.state.heap)
     }
 
     fn runtime_value_to_key_string(&self, value: &RuntimeVal) -> Result<Option<Arc<str>>> {

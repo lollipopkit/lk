@@ -191,6 +191,52 @@ native 另有一份 `unique_eq`(数值 to_bits、>7 字节字符串永不相等�
 
 `==`、`in`、`unique()` 三者现已同规则,常量折叠亦然。
 
+## 值遍历深度(2026-07-29 裁决)
+
+比较和渲染都按值的**形状**递归,深度就是数据的嵌套深度。一个循环就能造出
+超过 Rust 栈的链:
+
+```lk
+let node: Any = [1];
+for i in 0..200000 { node = [node]; }
+```
+
+裁决:**脚本不能让进程 abort**。超过 `MAX_VALUE_DEPTH`(512)时,比较和
+渲染 raise 普通的可捕获错误(Python / Lua 同款)。512 对数据足够宽松 ——
+JSON 嵌套是个位数,手写树是几十层。
+
+GC **没有**这个上限,也不能有:回收不允许失败。`HeapStore::collect` 用显式
+工作表标记,深度不上 Rust 栈。
+
+## 结构体 display 字段序(2026-07-29 裁决)
+
+`println(p)` 的字段**按字段名排序**,不是 hash 迭代序 —— 后者没有读者能从
+源码预测,换个 hasher 就会静默重排。字段值是容器里的数据,**加引号**,和
+列表元素、map 值一致:`P { name: "a, b" }` 打印成 `P{name:"a, b"}`,此前是
+`P{name:a, b}`(读起来像两个字段)。
+
+声明顺序比字段名序更好,但 `RuntimeObject` 只带 `DeclaredType` 的名字和
+作用域,拿不到字段表 —— 已在 `display.rs` 留 TODO。
+
+## map 键与 set 成员(2026-07-29 裁决)
+
+**`Set` 是 map 的键集,回答同一个问题**:只有 nil / Bool / Int / String 能
+做键。Float 不行(`0.0` 与 `-0.0` 相等但哈希不同,NaN 不等于自己),容器
+也不行(可变的东西做键,改了它就找不回那条记录)。
+
+此前这里是**两套转换**且分歧就在这一点上:`m[k] = v` 走执行器那份,拒绝
+列表;`s.add(...)` / `Set([...])` 走容器方法那份,接受为 `Obj(handle)`,
+按**句柄**比较。于是 set 悄悄留下了它永远找不回的成员:
+
+```text
+let s = Set([]);
+s.add([1, 2]);  s.has([1, 2])   → false
+s.add([1, 2]);  s.len()         → 2
+println(s)                      → Set([<object:80>,<object:82>])
+```
+
+现在只有一份(`RuntimeMapKey::from_value`),两条路都拒绝,错误文本相同。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

@@ -1149,6 +1149,44 @@ pub enum RuntimeMapKey {
 }
 
 impl RuntimeMapKey {
+    /// The key a value is used under — the only conversion.
+    ///
+    /// There were two, and they disagreed about the case that matters. The
+    /// executor's (`m[k] = v`) rejected a list; the container methods' accepted
+    /// one as `Obj(handle)`, comparing by *handle*. So a set quietly kept
+    /// members it could never find again:
+    ///
+    /// ```text
+    /// let s = Set([]);
+    /// s.add([1, 2]); s.has([1, 2])   → false
+    /// s.add([1, 2]); s.len()         → 2
+    /// println(s)                     → Set([<object:80>,<object:82>])
+    /// ```
+    ///
+    /// A `Set` is a map's key set, so it answers the question the same way: a
+    /// value whose identity is its handle is not a key. Keying on a mutable
+    /// container by *value* is not the alternative — mutating the key would
+    /// lose the entry — which is why maps rejected it in the first place.
+    pub fn from_value(value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Self> {
+        match value {
+            RuntimeVal::Nil => Ok(Self::Nil),
+            RuntimeVal::Bool(value) => Ok(Self::Bool(*value)),
+            RuntimeVal::Int(value) => Ok(Self::Int(*value)),
+            // `0.0` and `-0.0` are equal but hash differently, and `NaN` is not
+            // equal to itself: neither can index anything.
+            RuntimeVal::Float(_) => Err(anyhow::anyhow!("Float cannot be a map key or set member")),
+            RuntimeVal::ShortStr(value) => Ok(Self::ShortStr(*value)),
+            RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::String(value)) => Ok(Self::String(Arc::clone(value))),
+                Some(other) => Err(anyhow::anyhow!(
+                    "{} cannot be a map key or set member: only nil, Bool, Int and String can",
+                    other.type_name()
+                )),
+                None => Err(anyhow::anyhow!("heap object {} out of bounds", handle.index())),
+            },
+        }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::ShortStr(value) => Some(value.as_str()),

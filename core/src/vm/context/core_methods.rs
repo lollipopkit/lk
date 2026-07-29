@@ -659,19 +659,10 @@ fn runtime_set_from_value(value: &RuntimeVal, heap: &mut HeapStore) -> anyhow::R
     }
 }
 
+/// The key a value is used under, with the caller's name on the front — see
+/// [`RuntimeMapKey::from_value`], which is the one conversion.
 fn runtime_map_key_from_value(value: &RuntimeVal, heap: &HeapStore, context: &str) -> anyhow::Result<RuntimeMapKey> {
-    match value {
-        RuntimeVal::Nil => Ok(RuntimeMapKey::Nil),
-        RuntimeVal::Bool(value) => Ok(RuntimeMapKey::Bool(*value)),
-        RuntimeVal::Int(value) => Ok(RuntimeMapKey::Int(*value)),
-        RuntimeVal::Float(_) => bail!("{context}: Float cannot be used as a key"),
-        RuntimeVal::ShortStr(s) => Ok(RuntimeMapKey::ShortStr(*s)),
-        RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::String(s)) => Ok(RuntimeMapKey::String(Arc::clone(s))),
-            Some(_) => Ok(RuntimeMapKey::Obj(*handle)),
-            None => bail!("{context}: heap object out of bounds"),
-        },
-    }
+    RuntimeMapKey::from_value(value, heap).map_err(|error| anyhow!("{context}: {error}"))
 }
 
 fn runtime_map_key_to_value(value: RuntimeMapKey, heap: &mut HeapStore) -> RuntimeVal {

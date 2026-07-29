@@ -941,7 +941,10 @@ fn execute_source_rejects_float_set_values() {
         "#,
     )
     .expect_err("float set value should fail");
-    assert!(err.to_string().contains("Float cannot be used as a key"));
+    assert!(
+        err.to_string().contains("Float cannot be a map key or set member"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1119,4 +1122,22 @@ fn execute_program_imports_typeof_as_runtime_native() {
     let result = execute_program_with_ctx(&program, &mut ctx).expect("execute");
 
     assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Object"));
+}
+
+/// A `Set` is a map's key set, so it rejects what a map rejects. It used to
+/// take a list as a member and compare it by *handle*, so the member could
+/// never be found again and two equal lists both went in.
+#[test]
+fn execute_source_rejects_container_set_members_like_map_keys() {
+    for source in [
+        "let s = Set(); s.add([1, 2]); return s;",
+        "let s = Set([[1, 2]]); return s;",
+        "let m = {}; m.set([1, 2], 3); return m;",
+    ] {
+        let err = execute_source(source).expect_err("a list is not a key");
+        assert!(
+            err.to_string().contains("List cannot be a map key or set member"),
+            "{source} → {err}"
+        );
+    }
 }
