@@ -405,6 +405,26 @@ List/Slice < Map < Set < Object < Callable < Error < 其他):map 和 map 之间
 `chan.new(capacity[, type])`,和全局 `chan(…)` 共用一份实现 —— 导入之后用
 模块拼写,不导入就用全局。
 
+## `impl Type { … }`(2026-07-29 补)
+
+方法可以直接挂在类型上,不必先有 trait。此前 `impl Type { … }` 是语法错误
+("Expected 'for' in impl statement"),而语言也没有 UFCS(`fn f(s: S)` 不能
+写成 `s.f()`)—— 于是给结构体加一个方法的唯一办法是声明一个**什么也不说的
+trait** 再实现它:
+
+```lk
+trait Methods { }
+impl Methods for Point { fn norm2(self) -> Int { … } }
+```
+
+机制本来就齐:分发按**目标类型**索引,不按 trait,所以缺的只是这个拼写。
+
+固有 impl 和 trait impl 可以并存于同一类型:trait 说这个类型**承诺**什么,
+固有块放它自己的东西。trait impl 的一致性检查不变(缺方法、签名不符、arity
+不符都照报);固有 impl 没有承诺,所以不检查。
+
+`ImplDecl.trait_name` 因此变成 `Option`,`MODULE_ARTIFACT_VERSION` 16。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

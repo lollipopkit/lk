@@ -140,7 +140,10 @@ impl Display for Stmt {
                 target_type,
                 methods,
             } => {
-                write!(f, "impl {} for {} {{", trait_name, target_type.display())?;
+                match trait_name {
+                    Some(trait_name) => write!(f, "impl {} for {} {{", trait_name, target_type.display())?,
+                    None => write!(f, "impl {} {{", target_type.display())?,
+                }
                 for m in methods {
                     if let Stmt::Function {
                         name,

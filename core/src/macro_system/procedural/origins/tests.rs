@@ -235,7 +235,7 @@ fn generated_statement_shape_origins_are_recorded() {
         )],
     };
     let impl_stmt = Stmt::Impl {
-        trait_name: "Reader".to_string(),
+        trait_name: Some("Reader".to_string()),
         target_type: Type::Named("File".to_string()),
         methods: vec![Stmt::Function {
             name: "read".to_string(),
@@ -304,7 +304,7 @@ fn generated_top_level_declaration_shape_origins_are_recorded() {
             },
         }),
         Box::new(Stmt::Impl {
-            trait_name: "Show".to_string(),
+            trait_name: Some("Show".to_string()),
             target_type: Type::Named("User".to_string()),
             methods: vec![Stmt::Function {
                 name: "show".to_string(),

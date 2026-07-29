@@ -556,3 +556,45 @@ fn an_index_assignment_target_survives_a_value_that_captures_it() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[2,2]");
 }
+
+/// `impl Type { … }` was a syntax error, and there is no UFCS — so a struct
+/// could only get a method by declaring a trait that said nothing and
+/// implementing *that*. The machinery was already there: dispatch keys on the
+/// target type, not on the trait.
+#[test]
+fn an_inherent_impl_gives_a_type_its_own_methods() {
+    let result = execute_source(
+        r#"
+        struct Point { x: Int, y: Int }
+        impl Point {
+            fn norm2(self) -> Int { return self.x * self.x + self.y * self.y; }
+            fn scaled(self, by: Int) -> Point { return Point { x: self.x * by, y: self.y * by }; }
+        }
+        trait Area { fn area(self) -> Int; }
+        impl Area for Point { fn area(self) -> Int { return self.x * self.y; } }
+
+        let p = Point { x: 3, y: 4 };
+        return [p.norm2(), p.scaled(2).x, p.area()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[25,6,12]");
+}
+
+/// An inherent impl carries no trait, so nothing is *promised* — but a trait
+/// impl still has to keep its promise.
+#[test]
+fn a_trait_impl_still_has_to_implement_the_trait() {
+    let error = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point { }
+        return 1;
+        "#,
+    )
+    .expect_err("an unimplemented trait method");
+    assert!(error.to_string().contains("not implemented"), "{error}");
+}

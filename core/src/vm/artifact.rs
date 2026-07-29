@@ -52,7 +52,12 @@ use super::{
 // decodes to empty, and empty means "fall back to sorting by name" — so a v14
 // artifact would print its structs in a different order than the source it was
 // built from. Cosmetic, but a golden-output comparison is not.
-pub const MODULE_ARTIFACT_VERSION: u32 = 15;
+// Version 16: `ImplDecl.trait_name` is optional — an inherent `impl Type { … }`
+// names no trait. A v15 artifact encodes it as a bare string, which a v16
+// consumer cannot read as an `Option`; a v15 consumer cannot read the `null` a
+// v16 producer writes. Neither direction degrades quietly, but the version says
+// so first.
+pub const MODULE_ARTIFACT_VERSION: u32 = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -492,7 +497,7 @@ return 1;\n";
         assert_eq!(info.traits.len(), 1, "the trait declaration is recorded");
         assert_eq!(info.traits[0].name, "Show");
         assert_eq!(info.impls.len(), 1, "the impl block is recorded");
-        assert_eq!(info.impls[0].trait_name, "Show");
+        assert_eq!(info.impls[0].trait_name.as_deref(), Some("Show"));
         assert_eq!(info.impls[0].type_name, "Point");
         assert_eq!(info.impls[0].methods.len(), 1);
         assert_eq!(info.impls[0].methods[0].name, "show");
@@ -515,7 +520,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 15);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 16);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

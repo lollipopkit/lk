@@ -113,11 +113,18 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
             target_type,
             methods,
         } => {
-            let mut origins = vec![AstGeneratedMemberOrigin {
-                label: format!("type_ref {trait_name}"),
-                span: span.clone(),
-            }];
-            push_generated_statement_origin("stmt impl_trait", span.clone(), &mut origins);
+            // An inherent `impl Type { … }` names no trait, so there is no
+            // trait reference to record.
+            let mut origins = match trait_name {
+                Some(trait_name) => vec![AstGeneratedMemberOrigin {
+                    label: format!("type_ref {trait_name}"),
+                    span: span.clone(),
+                }],
+                None => Vec::new(),
+            };
+            if trait_name.is_some() {
+                push_generated_statement_origin("stmt impl_trait", span.clone(), &mut origins);
+            }
             push_generated_statement_origin("stmt impl_target", span.clone(), &mut origins);
             collect_generated_type_origins(target_type, span.clone(), &mut origins);
             origins.extend(methods.iter().flat_map(|method| {
@@ -439,11 +446,13 @@ fn collect_generated_expr_origins_from_stmt(
             target_type,
             methods,
         } => {
-            origins.push(AstGeneratedMemberOrigin {
-                label: format!("type_ref {trait_name}"),
-                span: span.clone(),
-            });
-            push_generated_statement_origin("stmt impl_trait", span.clone(), origins);
+            if let Some(trait_name) = trait_name {
+                origins.push(AstGeneratedMemberOrigin {
+                    label: format!("type_ref {trait_name}"),
+                    span: span.clone(),
+                });
+                push_generated_statement_origin("stmt impl_trait", span.clone(), origins);
+            }
             push_generated_statement_origin("stmt impl_target", span.clone(), origins);
             collect_generated_type_origins(target_type, span.clone(), origins);
             for method in methods {
@@ -1201,7 +1210,10 @@ pub(super) fn stmt_label(stmt: &Stmt) -> String {
             trait_name,
             target_type,
             ..
-        } => format!("impl {trait_name} for {}", target_type.display()),
+        } => match trait_name {
+            Some(trait_name) => format!("impl {trait_name} for {}", target_type.display()),
+            None => format!("impl {}", target_type.display()),
+        },
         Stmt::TypeAlias { name, .. } => format!("type {name}"),
         Stmt::Attributed { item, .. } => stmt_label(item),
         Stmt::Block { .. } => "block".to_string(),

@@ -183,7 +183,9 @@ pub enum Stmt {
     },
     /// impl Trait for Type { fn method(...) { body } }
     Impl {
-        trait_name: String,
+        /// `None` for an inherent `impl Type { … }` — methods that belong to
+        /// the type itself rather than to a trait it satisfies.
+        trait_name: Option<String>,
         target_type: Type,
         /// Methods implemented in this block (as function statements)
         methods: Vec<Stmt>,

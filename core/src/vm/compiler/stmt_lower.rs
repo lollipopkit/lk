@@ -94,7 +94,7 @@ impl Compiler {
                 trait_name,
                 target_type,
                 methods,
-            } => self.lower_impl_decl(trait_name, target_type, methods)?,
+            } => self.lower_impl_decl(trait_name.as_deref(), target_type, methods)?,
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
             Stmt::Block { statements } => {
                 let watermark = self.next_reg;

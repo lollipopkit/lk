@@ -44,7 +44,12 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn lower_impl_decl(&mut self, trait_name: &str, target_type: &Type, methods: &[Stmt]) -> Result<()> {
+    pub(super) fn lower_impl_decl(
+        &mut self,
+        trait_name: Option<&str>,
+        target_type: &Type,
+        methods: &[Stmt],
+    ) -> Result<()> {
         let target_type_text = target_type.display();
         let mut decl_methods = Vec::with_capacity(methods.len());
         for method in methods {
@@ -75,7 +80,7 @@ impl Compiler {
             });
         }
         self.type_info.impls.push(crate::vm::ImplDecl {
-            trait_name: trait_name.to_string(),
+            trait_name: trait_name.map(str::to_string),
             type_name: target_type_text,
             methods: decl_methods,
         });

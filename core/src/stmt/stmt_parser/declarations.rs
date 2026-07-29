@@ -178,27 +178,42 @@ impl<'a> StmtParser<'a> {
         Ok(Stmt::Trait { name, methods })
     }
 
-    /// 解析 impl 语句：impl Trait for Type { fn method(...) { ... } }
+    /// `impl Trait for Type { … }`, or `impl Type { … }` for methods that
+    /// belong to the type itself.
+    ///
+    /// The inherent form used to be a syntax error ("Expected 'for' in impl
+    /// statement"), and there is no UFCS either — so the only way to give a
+    /// struct a method was to declare an *empty* trait and implement that:
+    ///
+    /// ```lk
+    /// trait Methods { }
+    /// impl Methods for Point { fn norm(self) -> Int { … } }
+    /// ```
+    ///
+    /// Everything else was already in place; the machinery registers methods
+    /// per type and dispatches on the type, not on the trait. Only this
+    /// spelling was missing.
     pub fn parse_impl_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Impl)?;
 
-        // trait 名称
-        let trait_name = if let Token::Id(id) = &self.tokens[self.pos] {
-            let n = id.clone();
+        let first_name = if let Token::Id(id) = &self.tokens[self.pos] {
+            let name = id.clone();
             self.pos += 1;
-            n
+            name
         } else {
-            return Err(anyhow!(self.err("Expected trait name after 'impl'")));
+            return Err(anyhow!(self.err("Expected a trait or type name after 'impl'")));
         };
 
-        // 'for'
-        if self.eof() || self.tokens[self.pos] != Token::For {
-            return Err(anyhow!(self.err("Expected 'for' in impl statement")));
-        }
-        self.pos += 1;
-
-        // 目标类型（直到 '{'）
-        let target_type = self.parse_inline_type_until_block_start()?;
+        // `impl Trait for Type` names two things; `impl Type` names one.
+        let (trait_name, target_type) = if !self.eof() && self.tokens[self.pos] == Token::For {
+            self.pos += 1;
+            (Some(first_name), self.parse_inline_type_until_block_start()?)
+        } else {
+            // The name already read *is* the target type, and it may carry
+            // generic arguments — so it is re-parsed from where it started.
+            self.pos -= 1;
+            (None, self.parse_inline_type_until_block_start()?)
+        };
 
         self.expect_token(Token::LBrace)?;
 

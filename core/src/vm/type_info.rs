@@ -240,7 +240,11 @@ pub struct ImplMethod {
 /// One `impl Trait for Type` block.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImplDecl {
-    pub trait_name: String,
+    /// `None` for an inherent `impl Type { … }`: the methods belong to the
+    /// type, not to a trait it satisfies. Dispatch never needed the trait — it
+    /// keys on the target type — which is why an *empty* trait plus an impl of
+    /// it was the workaround before the syntax existed.
+    pub trait_name: Option<String>,
     /// Target type as display text (the key both back ends dispatch on).
     pub type_name: String,
     pub methods: Vec<ImplMethod>,

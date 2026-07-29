@@ -523,11 +523,18 @@ impl VmContext {
         scope: &crate::vm::TypeScope,
         declaring: &crate::vm::TypeScope,
         type_name: &str,
-        trait_name: &str,
+        trait_name: Option<&str>,
     ) -> Result<()> {
         if !scope.is_builtin() {
             return Ok(());
         }
+        // An inherent impl claims nothing: the conflict this guards against is
+        // "one trait implemented twice for a builtin type", and there is no
+        // trait here. Two inherent impls of the same method on a builtin would
+        // collide in the dispatch table instead, where every type does.
+        let Some(trait_name) = trait_name else {
+            return Ok(());
+        };
         let key = (type_name.to_string(), trait_name.to_string());
         match self.builtin_impl_owner.get(&key) {
             Some(owner) if owner != declaring => Err(anyhow!(
@@ -558,7 +565,7 @@ impl VmContext {
         }
         for decl in &module.type_info.impls {
             let scope = impl_target_scope(&decl.type_name, &module.type_scope);
-            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, decl.trait_name.as_deref())?;
             let by_method = self
                 .methods
                 .entry(scope)
@@ -600,7 +607,7 @@ impl VmContext {
         // loop afterwards left a rejected module half-registered.
         for decl in &type_info.impls {
             let scope = impl_target_scope(&decl.type_name, &module.type_scope);
-            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, decl.trait_name.as_deref())?;
         }
         // Checker registration only happens when there *is* a checker; the
         // dispatch table below is unconditional. Returning early without one
@@ -632,8 +639,14 @@ impl VmContext {
                     .iter()
                     .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
                     .collect();
+                // Only a *trait* impl is registered with the checker: there is
+                // nothing to conform to otherwise, and dispatch keys on the
+                // target type either way (the table above).
+                let Some(trait_name) = decl.trait_name.clone() else {
+                    continue;
+                };
                 let impl_def = TraitImpl {
-                    trait_name: decl.trait_name.clone(),
+                    trait_name,
                     target_type,
                     methods,
                 };
@@ -1427,7 +1440,7 @@ mod tests {
                     methods: vec![(method.to_string(), "Function".to_string())],
                 }],
                 impls: vec![crate::vm::ImplDecl {
-                    trait_name: "Area".to_string(),
+                    trait_name: Some("Area".to_string()),
                     type_name: type_name.to_string(),
                     methods: vec![crate::vm::ImplMethod {
                         name: method.to_string(),
