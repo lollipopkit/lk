@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::stmt::{ImportSource, ImportStmt, Program, Stmt};
 use crate::syntax::{ParseOptions, parse_program_source};
 use crate::typ::{FunctionSig, NamedParamSig, TypeChecker};
+use crate::typ::{StructDef, TraitDef};
 use crate::val::{FunctionNamedParamType, Type};
 
 /// Registers a signature for every function `program` imports from a file.
@@ -42,6 +43,7 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                 let Some(dep) = load(base_dir, path) else {
                     continue;
                 };
+                seed_declared_types(&dep, checker);
                 for item in items {
                     let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
                     if let Some((signature, function_type)) = signature_of(&dep, &item.name) {
@@ -139,12 +141,44 @@ fn load(base_dir: &Path, import_path: &str) -> Option<Program> {
 
 /// Registers every stated function signature in `dep` under `namespace`.
 fn seed_namespace(namespace: &str, dep: &Program, checker: &mut TypeChecker) {
+    seed_declared_types(dep, checker);
     for stmt in &dep.statements {
         let Stmt::Function { name, .. } = item_of(stmt) else {
             continue;
         };
         if let Some((_, function_type)) = signature_of(dep, name) {
             checker.add_imported_member(namespace, name.clone(), function_type);
+        }
+    }
+}
+
+/// Register the `struct`s and `trait`s an imported module declares.
+///
+/// A type crosses a module boundary by its bare name — `use * as L from
+/// "./leaf"; fn passthru(v: Int) -> Deep` names `Deep`, not `L.Deep` — so the
+/// importing file's checker has to know it. Only functions were seeded, which
+/// went unnoticed while an unknown name silently became `Type::Named`: the
+/// annotation type-checked against nothing and the program ran anyway.
+fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
+    for stmt in &dep.statements {
+        match item_of(stmt) {
+            Stmt::Struct { name, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, ty)| (field.clone(), ty.clone().unwrap_or(Type::Any)))
+                    .collect();
+                checker.registry_mut().register_struct(StructDef {
+                    name: name.clone(),
+                    fields,
+                });
+            }
+            Stmt::Trait { name, methods } => {
+                checker.registry_mut().register_trait(TraitDef {
+                    name: name.clone(),
+                    methods: methods.iter().cloned().collect(),
+                });
+            }
+            _ => {}
         }
     }
 }

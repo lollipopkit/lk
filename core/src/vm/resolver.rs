@@ -253,6 +253,7 @@ impl ModuleResolver {
         base_dir: Option<PathBuf>,
         type_scope: crate::vm::TypeScope,
     ) -> Result<RuntimeExport> {
+        let seed_dir = base_dir.clone();
         let program = parse_program_source(
             src,
             ParseOptions {
@@ -263,7 +264,10 @@ impl ModuleResolver {
         .map_err(|e| anyhow!(e.to_string()))?;
         let resolver = Arc::new(self.clone());
         let mut ctx = VmContext::new().with_resolver(resolver).with_type_scope(type_scope);
-        let result = program.execute_with_ctx(&mut ctx)?;
+        // The loaded module's own directory, so *its* imports are seeded too:
+        // a type crossing one more module boundary is still a type this file
+        // names.
+        let result = program.execute_with_ctx_from(&mut ctx, seed_dir.as_deref())?;
         Ok(result.into_exports())
     }
 

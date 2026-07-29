@@ -3,7 +3,7 @@ mod builtin_method_sig;
 /// without a filesystem has no file imports to resolve.
 #[cfg(feature = "std")]
 mod imports;
-mod stdlib_sig;
+pub(crate) mod stdlib_sig;
 mod type_checker;
 mod type_system;
 

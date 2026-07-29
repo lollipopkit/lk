@@ -190,6 +190,15 @@ const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
     ("Fn", AliasTarget::Anything),
 ];
 
+/// Does the standard library document `name` as a runtime handle?
+///
+/// These have no `Type` variant, so they reach the checker as `Type::Named`
+/// and a user may legitimately write one in an annotation — which is why the
+/// unknown-name check has to ask.
+pub fn is_documented_handle_type(name: &str) -> bool {
+    DOCUMENTED_ALIASES.iter().any(|(declared, _)| *declared == name)
+}
+
 #[derive(Clone, Copy)]
 enum AliasTarget {
     SliceOfAny,

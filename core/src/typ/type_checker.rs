@@ -396,6 +396,50 @@ impl TypeChecker {
         self.unsafe_depth = self.unsafe_depth.saturating_sub(1);
     }
 
+    /// Reject a type annotation naming a type nothing declares.
+    ///
+    /// `Type::Named` is the parser's answer for any identifier in type
+    /// position, so a typo used to become a type: `let x: Strng = "a";`
+    /// reported "expected Strng, but expression has type String" — an error
+    /// about the *value*, pointing away from the misspelling. Worse in a
+    /// signature: `fn f(v: Nonexistent)` made the function uncallable and
+    /// blamed every caller ("Argument 1 has the wrong type").
+    ///
+    /// Known names are the declared ones — structs, traits, aliases — plus the
+    /// runtime handles the standard library documents, which have no `Type`
+    /// variant of their own.
+    pub fn check_type_annotation(&self, ty: &Type, context: &str) -> Result<()> {
+        match ty {
+            Type::Named(name) => {
+                if self.registry.resolve_type(name).is_some()
+                    || crate::typ::stdlib_sig::is_documented_handle_type(name)
+                    // A generic parameter (`T`) is a name in scope for the
+                    // declaration that introduced it, not a missing type.
+                    || name.len() == 1 && name.starts_with(|c: char| c.is_ascii_uppercase())
+                {
+                    return Ok(());
+                }
+                Err(Self::type_err(
+                    &alloc::format!("Unknown type '{name}' in {context}"),
+                    None,
+                    None,
+                    None,
+                ))
+            }
+            Type::List(inner) | Type::Optional(inner) | Type::Set(inner) | Type::Boxed(inner) => {
+                self.check_type_annotation(inner, context)
+            }
+            Type::Map(key, value) => {
+                self.check_type_annotation(key, context)?;
+                self.check_type_annotation(value, context)
+            }
+            Type::Union(variants) | Type::Tuple(variants) => {
+                variants.iter().try_for_each(|v| self.check_type_annotation(v, context))
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn resolve_aliases(&self, ty: &Type) -> Type {
         let mut visiting = HashSet::new();
         self.resolve_aliases_internal(ty, &mut visiting)

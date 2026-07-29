@@ -119,6 +119,9 @@ impl Stmt {
                 span,
                 is_const,
             } => {
+                if let Some(annotation) = type_annotation {
+                    type_checker.check_type_annotation(annotation, "this binding")?;
+                }
                 // 检查表达式的类型
                 let expr_type = value.type_check(type_checker)?;
                 // Reached: statements below this one may read it. Done after
@@ -338,6 +341,9 @@ impl Stmt {
                 let impl_self_ty = type_checker.current_impl_self_type().cloned();
                 for (i, param) in params.iter().enumerate() {
                     let annotated = param_types.get(i).cloned().flatten();
+                    if let Some(ref ann) = annotated {
+                        type_checker.check_type_annotation(ann, &alloc::format!("parameter '{param}'"))?;
+                    }
                     let mut origin_flag = annotated.is_some();
                     let mut ty = if let Some(ref ann) = annotated {
                         ann.clone()
@@ -414,6 +420,9 @@ impl Stmt {
                     });
                 }
 
+                if let Some(ret) = return_type {
+                    type_checker.check_type_annotation(ret, &alloc::format!("the return type of '{name}'"))?;
+                }
                 let (return_placeholder, return_was_annotated) = if let Some(ret) = return_type.clone() {
                     (ret, true)
                 } else {

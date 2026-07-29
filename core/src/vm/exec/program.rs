@@ -1,3 +1,4 @@
+use crate::compat::path::Path;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use alloc::sync::Arc;
@@ -25,6 +26,9 @@ pub trait ProgramExec {
     fn execute(&self) -> Result<ProgramResult>;
     /// Type-checks and runs the program in `ctx`.
     fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult>;
+    /// As [`Self::execute_with_ctx`], with the directory the program was loaded
+    /// from so its own imports can be seeded into the checker.
+    fn execute_with_ctx_from(&self, ctx: &mut VmContext, base_dir: Option<&Path>) -> Result<ProgramResult>;
 }
 
 impl ProgramExec for Program {
@@ -34,7 +38,27 @@ impl ProgramExec for Program {
     }
 
     fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult> {
+        self.execute_with_ctx_from(ctx, None)
+    }
+
+    /// As [`ProgramExec::execute_with_ctx`], with the directory this program
+    /// was loaded from so its own imports can be seeded.
+    ///
+    /// Without the directory the checker cannot open the files this program
+    /// imports, so a name that crosses a module boundary — a `struct` returned
+    /// by a function in another file — is unknown to it. That was invisible
+    /// while an unknown name silently became `Type::Named`: the annotation
+    /// checked against nothing. The entry file has always been seeded (the CLI
+    /// does it); a module *loaded as an import* had not been, so it was the one
+    /// place where cross-file calls went unchecked entirely.
+    fn execute_with_ctx_from(&self, ctx: &mut VmContext, base_dir: Option<&Path>) -> Result<ProgramResult> {
         let mut type_checker = crate::typ::TypeChecker::new();
+        #[cfg(feature = "std")]
+        if let Some(base_dir) = base_dir {
+            crate::typ::seed_imported_signatures(self, base_dir, &mut type_checker);
+        }
+        #[cfg(not(feature = "std"))]
+        let _ = base_dir;
         self.type_check(&mut type_checker)?;
         execute_program_with_ctx(self, ctx)
     }
@@ -463,6 +487,56 @@ mod tests {
         assert_eq!(items[2], RuntimeVal::Nil);
         assert_eq!(items[3], RuntimeVal::Int(-1));
         assert_eq!(text(&items[4]), "yes");
+    }
+
+    /// A misspelled type name is reported where it is written.
+    ///
+    /// `Type::Named` is the parser's answer for any identifier in type
+    /// position, so a typo became a type nothing declares — and the complaint
+    /// landed on the *value*: `let x: Strng = "a";` said "expected Strng, but
+    /// expression has type String", pointing away from the misspelling. A
+    /// signature was worse: `fn f(v: Nonexistent)` made the function
+    /// uncallable and blamed every caller.
+    #[test]
+    fn an_unknown_type_name_is_reported_at_the_annotation() {
+        fn check_error(source: &str) -> String {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .expect_err("an undeclared type name is an error")
+                .to_string()
+        }
+
+        for (source, expected) in [
+            ("let x: Strng = \"a\";\n", "Unknown type 'Strng'"),
+            ("fn f(v: Nonexistent) { return 1; }\n", "Unknown type 'Nonexistent'"),
+            ("fn f() -> Bogus { return 1; }\n", "Unknown type 'Bogus'"),
+            ("let x: List<Nope> = [1];\n", "Unknown type 'Nope'"),
+        ] {
+            let message = check_error(source);
+            assert!(
+                message.contains(expected),
+                "{source} should name the type, said: {message}"
+            );
+        }
+
+        // Declared names, builtins and documented runtime handles all pass.
+        for source in [
+            "let x: Int = 1;\n",
+            "struct P { a: Int }\nlet p: P = P { a: 1 };\n",
+            "trait T { fn f(self) -> Int; }\nfn g(v: T) -> Int { return 1; }\n",
+            "let x: List<String> = [];\n",
+            "let x: Map<String, Int> = {};\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
     }
 
     /// The declared arity is the arity — one source, not two.
