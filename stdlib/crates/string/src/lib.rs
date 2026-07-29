@@ -306,13 +306,25 @@ impl StringModule {
         Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String, chars: String), returns = String?)]
+    /// Removes every leading and trailing character that is in `chars`.
+    ///
+    /// The parameter has always been named `chars` — a *set* — but the body
+    /// stripped the whole string as a prefix, and only if that failed as a
+    /// suffix, once:
+    ///
+    /// ```text
+    /// strip("--a--", "-")   → "-a--"
+    /// ```
+    ///
+    /// One end, one occurrence, and `nil` when neither matched. `strip_prefix`
+    /// and `strip_suffix` next door are the once-each operations; this one is
+    /// what its name and its parameter both said it was, and it always has an
+    /// answer.
+    #[stdlib_export(params(text: String, chars: String), returns = String)]
     fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, pattern) = two_strings(args, runtime, "strip()")?;
-        Ok(value
-            .strip_prefix(pattern.as_ref())
-            .or_else(|| value.strip_suffix(pattern.as_ref()))
-            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+        let (value, chars) = two_strings(args, runtime, "strip()")?;
+        let stripped = value.trim_matches(|c| chars.contains(c));
+        Ok(runtime_string_value(stripped, runtime.heap_mut()))
     }
 
     #[stdlib_export(params(text: String, prefix: String), returns = String?)]
@@ -358,12 +370,7 @@ impl StringModule {
         } else {
             " ".to_string()
         };
-        if width <= value.len() {
-            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
-        }
-        let needed = width - value.len();
-        let pad = fill.repeat(needed / fill.len() + 1);
-        let padded = format!("{}{}", &pad[pad.len() - needed..], value.as_ref());
+        let padded = pad_to_width(value.as_ref(), width, &fill, PadSide::Left);
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
@@ -384,12 +391,7 @@ impl StringModule {
         } else {
             " ".to_string()
         };
-        if width <= value.len() {
-            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
-        }
-        let needed = width - value.len();
-        let pad = fill.repeat(needed / fill.len() + 1);
-        let padded = format!("{}{}", value.as_ref(), &pad[..needed]);
+        let padded = pad_to_width(value.as_ref(), width, &fill, PadSide::Right);
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
@@ -516,5 +518,42 @@ fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Resul
             Ok(out)
         }
         _ => Err(anyhow!("join() list must contain only strings")),
+    }
+}
+
+enum PadSide {
+    Left,
+    Right,
+}
+
+/// `value` widened to `width` **characters** with `fill`, repeated from its
+/// start and cut to length.
+///
+/// Characters, because that is the unit everything else in the language counts
+/// — `s.len()`, `s[i]`, `s.slice(a, b)`. Both pad functions measured in *bytes*
+/// and then sliced the repeated fill by byte offset, so a multi-byte fill cut
+/// inside a character and **panicked the process**:
+///
+/// ```text
+/// pad_left("a", 5, "中")
+/// → panicked: byte index 2 is not a char boundary; it is inside '中'
+/// ```
+///
+/// A Rust panic is not something a script can catch, which puts this in the
+/// same family as any other way a program could take the process down.
+fn pad_to_width(value: &str, width: usize, fill: &str, side: PadSide) -> String {
+    let current = value.chars().count();
+    if width <= current {
+        return value.to_string();
+    }
+    let needed = width - current;
+    // `cycle().take(n)` needs no slicing, so there is no boundary to get wrong.
+    // A multi-character fill therefore reads from its start on both sides;
+    // `pad_left` used to align it to the right edge instead, which differed
+    // only when the fill did not divide the gap.
+    let pad: String = fill.chars().cycle().take(needed).collect();
+    match side {
+        PadSide::Left => format!("{pad}{value}"),
+        PadSide::Right => format!("{value}{pad}"),
     }
 }

@@ -308,4 +308,60 @@ mod tests {
         assert_eq!(result, RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// Both pad functions measured the width in *bytes* and then sliced the
+    /// repeated fill by byte offset, so a multi-byte fill cut inside a
+    /// character and **panicked the process** — which a script cannot catch.
+    /// Characters is also the unit everything else counts: `s.len()`, `s[i]`,
+    /// `s.slice(a, b)`.
+    #[test]
+    fn pad_counts_characters_and_survives_a_multibyte_fill() -> Result<()> {
+        let out = execute_string(
+            r#"
+            use string;
+            return [
+                string.pad_left("a", 5, "中"),
+                string.pad_right("a", 5, "中"),
+                string.pad_left("中文", 4, "-"),
+                string.pad_left("a", 5, "xy"),
+                string.pad_left("abcdef", 3, "-"),
+            ];
+            "#,
+        )?;
+        let TypedList::String(values) = runtime_list(out.first_return(), out.state.heap()) else {
+            panic!("expected a list of strings");
+        };
+        assert_eq!(
+            values.iter().map(|value| value.as_ref()).collect::<Vec<_>>(),
+            ["中中中中a", "a中中中中", "--中文", "xyxya", "abcdef"]
+        );
+        Ok(())
+    }
+
+    /// `strip`'s parameter has always been named `chars` — a *set* — but the
+    /// body stripped the whole string as a prefix, and only if that failed as a
+    /// suffix, once: `strip("--a--", "-")` answered `"-a--"`. `strip_prefix`
+    /// and `strip_suffix` next door are the once-each operations.
+    #[test]
+    fn strip_removes_every_leading_and_trailing_character_in_the_set() -> Result<()> {
+        let out = execute_string(
+            r#"
+            use string;
+            return [
+                string.strip("--a--", "-"),
+                string.strip("xxaybyxx", "xy"),
+                string.strip("abc", "-"),
+                string.strip("---", "-"),
+            ];
+            "#,
+        )?;
+        let TypedList::String(values) = runtime_list(out.first_return(), out.state.heap()) else {
+            panic!("expected a list of strings");
+        };
+        assert_eq!(
+            values.iter().map(|value| value.as_ref()).collect::<Vec<_>>(),
+            ["a", "ayb", "abc", ""]
+        );
+        Ok(())
+    }
 }
