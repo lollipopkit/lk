@@ -35,9 +35,15 @@ fn compiler_lowers_struct_literal_and_field_access() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
+/// Declarations that contribute no instructions of their own still compile.
+///
+/// Runs through the module path: a `struct` also declares its hidden
+/// constructor (`stmt::struct_ctors`), and a program that declares a function
+/// cannot be executed as a bare `Function` — `LoadFunction` publishes it, which
+/// needs a module.
 #[test]
 fn compiler_accepts_type_only_declarations_as_noop() {
-    let function = compile_source(
+    let result = crate::vm::execute_source(
         r#"
         struct Point { x: Int, y: Int }
         type Count = Int;
@@ -46,9 +52,7 @@ fn compiler_accepts_type_only_declarations_as_noop() {
         return point.x + point.y;
         "#,
     )
-    .expect("compile source");
-
-    let result = execute(&function).expect("execute");
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }

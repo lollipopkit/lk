@@ -99,6 +99,10 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     // out — here, for the same reason `defer` is erased here: after macros
     // (which may write a trait or an impl) and before anything that dispatches.
     crate::stmt::trait_defaults::apply_trait_defaults(&mut program.statements);
+    // A constructor beside every `struct`, so the module that owns a type is
+    // the one that builds it — see `stmt::struct_ctors` for why that is the
+    // whole trick.
+    crate::stmt::struct_ctors::add_struct_constructors(&mut program.statements);
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,

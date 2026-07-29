@@ -887,4 +887,41 @@ mod tests {
         assert_eq!(result?, RuntimeVal::Int(21));
         Ok(())
     }
+
+    /// An imported type can be constructed: `module.Type { … }`.
+    ///
+    /// A module exports *values*, and a `struct` declaration is not one, so a
+    /// module that declared a type could not let its users make one — every
+    /// such module hand-wrote a `make`. It cannot simply be allowed either: a
+    /// type's identity carries its defining module (`TypeScope`), and a `Pt`
+    /// built in the importer is not the `Pt` that `impl … for Pt` was
+    /// registered against.
+    ///
+    /// So the *defining* module builds it: `stmt::struct_ctors` puts a
+    /// named-parameter constructor beside every `struct`, and the literal is
+    /// parse-time sugar for a call to it. This pins all three things that made
+    /// it worth doing: the fields, the trait method, and the declaration-order
+    /// display.
+    #[test]
+    fn an_imported_type_can_be_constructed_by_the_module_that_owns_it() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join("types.lk"),
+            "struct Pt { x: Int, y: Int }\n             trait Norm { fn norm(self) -> Int; }\n             impl Norm for Pt { fn norm(self) -> Int { return self.x + self.y; } }\n",
+        )?;
+        let program = crate::syntax::parse_program_source(
+            "use \"types\";\nlet p = types.Pt { x: 3, y: 4 };\nreturn [p.x, p.norm(), \"${p}\"];\n",
+            crate::syntax::ParseOptions {
+                base_dir: Some(temp.path().to_path_buf()),
+                ..crate::syntax::ParseOptions::default()
+            },
+        )
+        .expect("program should parse");
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(temp.path().to_path_buf());
+        let mut ctx = crate::vm::VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
+        let result = crate::vm::ProgramExec::execute_with_ctx(&program, &mut ctx)?;
+        assert_eq!(result.display_first_return(), r#"[3,7,"Pt{x:3,y:4}"]"#);
+        Ok(())
+    }
 }

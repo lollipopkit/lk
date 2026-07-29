@@ -813,15 +813,8 @@ impl<'a> Parser<'a> {
                     expr = self.parse_struct_literal_after_name(name.clone())?;
                 } else if self.prefix_mode {
                     break;
-                } else if matches!(&expr, Expr::Access(_, _)) {
-                    // `module.Type { … }`. The old message suggested writing
-                    // `Type { ... }` — which is what the reader wrote, only
-                    // qualified — and said nothing about the actual rule.
-                    return Err(anyhow!(self.err(
-                        "a struct literal names an unqualified type, so `module.Type { … }` is not a form. \
-                         An imported type cannot be constructed directly: call a constructor the defining \
-                         module exports (`module.make(…)`)"
-                    )));
+                } else if let Some(literal) = self.parse_qualified_struct_literal(&expr)? {
+                    expr = literal;
                 } else {
                     // If not a simple Var before '{', treat as error to avoid ambiguity with blocks
                     return Err(anyhow!(self.err(
@@ -1001,6 +994,53 @@ impl<'a> Parser<'a> {
                 fields: parts.fields,
             })
         }
+    }
+
+    /// `module.Type { field: value, … }` — the constructor call it desugars to.
+    ///
+    /// The object has to be built *by the module that declares the type*: a
+    /// type's identity carries its defining module (`vm::TypeScope`), and one
+    /// built here would not be the type `impl … for Type` was registered
+    /// against. So this becomes `module.Type$new(field: value, …)`, the
+    /// constructor `stmt::struct_ctors` puts beside every `struct` — an
+    /// ordinary cross-module call, which runs *there*.
+    ///
+    /// Named arguments, so the call site needs to know nothing about the
+    /// declaration: the same `field: value` pairs the literal is written with,
+    /// and a missing or misspelled one is the constructor's own arity error.
+    ///
+    /// `None` when the receiver is not a qualified name (`m.f() { … }`, a map
+    /// field followed by a block) — the caller then reports its own error.
+    fn parse_qualified_struct_literal(&mut self, expr: &Expr) -> Result<Option<Expr>> {
+        let Expr::Access(module, field) = expr else {
+            return Ok(None);
+        };
+        let Expr::Var(_) = module.as_ref() else {
+            return Ok(None);
+        };
+        let Expr::Literal(name) = field.as_ref() else {
+            return Ok(None);
+        };
+        let Some(type_name) = name.as_str() else {
+            return Ok(None);
+        };
+        // A type, by the same spelling rule the rest of the language uses.
+        if !type_name.starts_with(char::is_uppercase) {
+            return Ok(None);
+        }
+        let parts = self.parse_struct_fields()?;
+        if parts.update_base.is_some() {
+            return Err(anyhow!(self.err(
+                "`..base` update syntax needs the type's own module: build the value there and update it here"
+            )));
+        }
+        let callee = Expr::Access(
+            module.clone(),
+            Box::new(Expr::Literal(LiteralVal::from_str(
+                &crate::stmt::struct_ctors::constructor_name(type_name),
+            ))),
+        );
+        Ok(Some(Expr::CallNamed(Box::new(callee), Vec::new(), parts.fields)))
     }
 
     fn parse_struct_fields(&mut self) -> Result<StructLiteralParts> {

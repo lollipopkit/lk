@@ -195,7 +195,7 @@ impl Compiler {
 
     pub fn compile_source(source: &str) -> Result<Function> {
         let program = parse_program_source(source, ParseOptions::default())?;
-        Self::compile_program(&program)
+        Ok(Self::compile_module(&program)?.functions.swap_remove(0))
     }
 
     pub fn compile_source_module(source: &str) -> Result<Module> {

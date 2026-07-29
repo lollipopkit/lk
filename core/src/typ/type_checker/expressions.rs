@@ -607,6 +607,12 @@ impl TypeChecker {
                 self.check_function_call(func_expr, args)
             }
             Expr::CallNamed(callee, pos_args, named_args) => {
+                // The struct-name this callee constructs, when it is the hidden
+                // constructor `module.Type { … }` desugars to. The desugar is
+                // meant to be invisible, so its errors have to speak *fields*
+                // — "Missing required named argument: y" described the shape the
+                // parser produced, not the one the reader wrote.
+                let constructed_struct = constructed_struct_name(callee);
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
                     && let Some(sd) = self.registry.get_struct(name)
@@ -749,7 +755,7 @@ impl TypeChecker {
                         }
                         if !sig_lookup.contains_key(key) {
                             return Err(Self::type_err(
-                                &format!("Unknown named argument: {}", n),
+                                &unknown_named_message(constructed_struct.as_deref(), n),
                                 None,
                                 None,
                                 None,
@@ -761,7 +767,7 @@ impl TypeChecker {
                         let is_optional = matches!(decl.ty, Type::Optional(_));
                         if !is_optional && !decl.has_default && !seen.contains(decl.name.as_str()) {
                             return Err(Self::type_err(
-                                &format!("Missing required named argument: {}", decl.name),
+                                &missing_named_message(constructed_struct.as_deref(), &decl.name),
                                 None,
                                 None,
                                 None,
@@ -818,7 +824,7 @@ impl TypeChecker {
                                 let key = n.as_str();
                                 if !decl_map.contains_key(key) {
                                     return Err(Self::type_err(
-                                        &format!("Unknown named argument: {}", n),
+                                        &unknown_named_message(constructed_struct.as_deref(), n),
                                         None,
                                         None,
                                         None,
@@ -832,7 +838,7 @@ impl TypeChecker {
                                 let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
                                 if !is_optional && !provided.contains(decl.name.as_str()) {
                                     return Err(Self::type_err(
-                                        &format!("Missing required named argument: {}", decl.name),
+                                        &missing_named_message(constructed_struct.as_deref(), &decl.name),
                                         None,
                                         None,
                                         None,
@@ -2350,4 +2356,36 @@ fn matches_every_value(arms: &[crate::expr::MatchArm], value_type: &Type) -> boo
         return covers(true) && covers(false);
     }
     false
+}
+
+/// The struct a callee constructs, when the callee is the hidden constructor
+/// `module.Type { … }` desugars to (`stmt::struct_ctors`).
+///
+/// The desugar is meant to be invisible, so this is what lets its diagnostics
+/// speak the source's words: fields of a struct, not named arguments of a
+/// function nobody wrote.
+fn constructed_struct_name(callee: &Expr) -> Option<String> {
+    let Expr::Access(_, field) = callee else {
+        return None;
+    };
+    let Expr::Literal(name) = field.as_ref() else {
+        return None;
+    };
+    name.as_str()?
+        .strip_suffix("$new")
+        .map(alloc::string::ToString::to_string)
+}
+
+fn missing_named_message(constructed: Option<&str>, name: &str) -> String {
+    match constructed {
+        Some(ty) => format!("Missing required field '{name}' for struct '{ty}'"),
+        None => format!("Missing required named argument: {name}"),
+    }
+}
+
+fn unknown_named_message(constructed: Option<&str>, name: &str) -> String {
+    match constructed {
+        Some(ty) => format!("Unknown field '{name}' for struct '{ty}'"),
+        None => format!("Unknown named argument: {name}"),
+    }
 }

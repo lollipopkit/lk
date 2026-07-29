@@ -221,26 +221,50 @@ x            // 曾经是 2
 | `for i in 0..3 { let f=\|x\| x+i; println(f(10)); }` | `10` `11` `12` | **for 循环变量**捕获为每站点快照 cell(fused 循环 opcode 驱动原始寄存器,不可重绑);快照是 copy 而非 move(曾把计数器 move 成 Nil) |
 | 循环内 `g = \|x\| x+i` 逃逸循环后调用 | 共享 cell 终值 | native 侧跨迭代闭包 ref 逃逸响亮拒绝(ref 一致性在 loop header 处终止) |
 
-## 导入的类型不能直接构造(2026-07-30 记)
+## 导入的类型可以构造(2026-07-30 裁决)
 
-一个模块导出的是**值**。`struct` / `trait` 声明不是值,所以:
+`module.Type { field: value, … }` 成立。字段、trait 方法、按声明序的 display
+全都对。
 
-- `module.Type { … }` 不是一种写法 —— 结构体字面量取的是**不带限定**的类型名。
-- `use { Pt } from "types";` 也拿不到 `Pt`。
+难点在于:类型的身份带着定义它的模块(`vm::TypeScope`) —— 两个模块里同名的
+`Pt` **不是**同一个类型,`impl` 也按这个身份注册。而 `NewObject` 只带类型
+**名**,`declared_type` 用的是"当前执行模块"的 scope。在导入方直接构造出来的
+`Pt` 会是另一个类型,`p.norm()` 找不到方法(实测如此)。
 
-导入模块里的类型仍然完全可用:它的**方法**分发得到、`println` 显示得对,只是
-实例得由定义方模块交出来(导出一个构造函数,`Type::new` 的位置)。
+裁决:**让定义方模块来建这个对象**。每个 `struct S { a, b }` 旁边自动多一个
 
-**为什么不是顺手能补的**:类型的身份带着定义它的模块(`vm::TypeScope`) ——
-两个模块里同名的 `Pt` 不是同一个类型,`impl` 也是按这个身份注册的。而
-`NewObject` 只带类型**名**,`declared_type` 用的是"当前执行模块"的 scope。跨
-模块字面量要正确,得让 opcode 带上定义方 scope(新 opcode + artifact 版本
-+ 执行器 + AOT 降低),外加把定义方的字段序也带过去(否则 display 退化)。
-是一个独立项目,不是一处修改。
+```lk
+fn S$new({a: A, b: B}) -> S { return S { a: a, b: b }; }
+```
 
-在那之前,两句报错至少说清了规则,而不是各自暗示别的东西("did you mean a
-struct literal like `Type { ... }`?" —— 那正是读者写的,只是带了限定;以及
-"Export 'Pt' not found in runtime module" —— 说的是运行时表)。
+而 `m.S { a: 1, b: 2 }` 是 parse 时糖,降到 `m.S$new(a: 1, b: 2)` —— 一次普通
+的跨模块调用,在**那边**执行。于是 scope、声明的字段序、trait 分发全部自然
+正确:没有新 opcode,没有 artifact 版本变化,AOT 降低也不用学任何新东西。
+
+参数是**具名**的,所以调用点不需要知道声明:传的就是字面量里那些
+`field: value`,漏一个或拼错是构造函数自己的 arity 报错。`$` 不可词法化,
+所以这个名字撞不上任何程序能写出来的东西 —— `try$call` / `select$block`
+用的是同一招。
+
+**脱糖不能漏出来**:那两句报错走的是具名参数的措辞("Missing required named
+argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 这个 callee,
+说的是 `Missing required field 'y' for struct 'Pt'` —— 和本地字面量逐字一样。
+
+`use { Pt } from "types";` 仍然拿不到类型:模块导出的是**值**,声明不是值。
+那句报错也说清了这条,并指向构造函数。
+
+代价是每个声明 struct 的模块也声明了一个函数 —— 于是"把程序当**单个
+`Function`** 执行"这条路(`compile_source` + `execute`,测试用的便利路径)对
+这类程序不再可用。它本来连 `fn` 都装不下,所以 `compile_source` 改走模块路径,
+反而更能干。基准 geomean 1.001x → 1.008x,无系统性回退。
+
+**尚未原生降低**:`CallNamed` 整条 opcode 都还没有 AOT 降低,所以用了跨模块
+字面量的程序会回落到 VM(答案正确,只是慢)。这也是这条特性暂时没有进
+`examples/` 的原因 —— coverage 门禁要求每个 example 全原生降低,而往
+`AOT_COVERAGE_ALLOW` 里加一条会破坏"那张表是空的"这个来之不易的性质。补上
+`CallNamed` 的降低会同时解锁语言里**所有**具名调用:callee 静态已知、每个
+实参名都是常量,所以排列在编译期就能算出来(`FunctionData::param_names` 给的
+就是槽序)。
 
 ## 模块与 IO
 

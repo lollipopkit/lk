@@ -864,21 +864,3 @@ fn a_template_interpolation_balances_its_braces() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, r#"["R{v:3}","{\"a\":1}","{\"k\":2}","3"]"#);
 }
-
-/// `module.Type { … }` is not a form, and the error says why.
-///
-/// It used to answer "did you mean a struct literal like `Type { ... }`?" —
-/// which is what the reader wrote, only qualified. The rule it should have
-/// named is that a struct literal takes an *unqualified* type: an imported type
-/// cannot be constructed directly, because a type's identity carries its
-/// defining module (`vm::TypeScope`) and `NewObject` names only the type.
-#[test]
-fn a_qualified_struct_literal_says_what_the_rule_is() {
-    let error = execute_source("let q = m.Pt { x: 1 };\n").expect_err("not a form");
-    let text = format!("{error:#}");
-    assert!(
-        text.contains("unqualified type"),
-        "the error should name the rule: {text}"
-    );
-    assert!(text.contains("constructor"), "and say what to do instead: {text}");
-}
