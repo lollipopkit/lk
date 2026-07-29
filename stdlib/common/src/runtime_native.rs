@@ -121,38 +121,6 @@ pub fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
     }
 }
 
-/// A window prints as the part of the list it windows — `[1,4,1]`, not
-/// `<Slice>`. It used to fall through to the opaque-handle arm, which is the
-/// right answer for a `Stream` or a `Resource` and the wrong one here: a window
-/// has elements, and every other way of looking at it (`len`, indexing,
-/// `to_list`) already shows them.
-
-#[cfg(test)]
-mod tests {
-    use alloc::sync::Arc;
-    use lk_core::util::fast_map::fast_hash_map_from_iter;
-
-    use super::*;
-    use lk_core::val::TypedMap;
-
-    #[test]
-    fn runtime_display_formats_typed_containers_without_val_containers() {
-        let mut heap = HeapStore::new();
-        let nested = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
-        let map = RuntimeVal::Obj(
-            heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([
-                (Arc::<str>::from("items"), nested),
-                (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
-            ])))),
-        );
-
-        let output = runtime_display_value(&map, &heap).expect("display");
-
-        assert!(output.contains("\"items\":[1,2]"));
-        assert!(output.contains("\"ok\":true"));
-    }
-}
-
 /// Value equality, shared by everything that needs it.
 ///
 /// There were four copies of this question in the tree. The one in
@@ -377,4 +345,30 @@ fn typed_list_string_item_equal(
 /// `language::display`: it calls user code, which a renderer cannot.
 pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
     lk_core::vm::runtime_display_value(value, heap)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use lk_core::util::fast_map::fast_hash_map_from_iter;
+
+    use super::*;
+    use lk_core::val::TypedMap;
+
+    #[test]
+    fn runtime_display_formats_typed_containers_without_val_containers() {
+        let mut heap = HeapStore::new();
+        let nested = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
+        let map = RuntimeVal::Obj(
+            heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([
+                (Arc::<str>::from("items"), nested),
+                (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
+            ])))),
+        );
+
+        let output = runtime_display_value(&map, &heap).expect("display");
+
+        assert!(output.contains("\"items\":[1,2]"));
+        assert!(output.contains("\"ok\":true"));
+    }
 }

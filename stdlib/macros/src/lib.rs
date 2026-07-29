@@ -757,8 +757,12 @@ impl ParamList {
             return quote!();
         }
         let count = signature.params.len();
-        let arms = signature.params.iter().enumerate().filter_map(|(index, param)| {
-            named.contains(&param.name.as_str()).then(|| {
+        let arms = signature
+            .params
+            .iter()
+            .enumerate()
+            .filter(|&(_index, param)| named.contains(&param.name.as_str()))
+            .map(|(index, param)| {
                 let name = param.name.as_str();
                 quote!(#name => {
                     if __lk_slots[#index].is_some() {
@@ -766,8 +770,7 @@ impl ParamList {
                     }
                     __lk_slots[#index] = ::core::option::Option::Some(*__lk_named_value);
                 })
-            })
-        });
+            });
         // Defaults are declared as source text (`min?: Int = 0`), and the ones
         // that can fill a gap are the literals — which is all any of them are.
         let fills = signature.params.iter().map(|param| {

@@ -1339,6 +1339,10 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         .collect();
     let mut next = base;
     // Directly-called functions first, across every dep, then everything else.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "the bound is the dep module's function count, not `remaps`' length"
+    )]
     for directly_called in [true, false] {
         for (which, entry) in pending.iter().enumerate() {
             for index in 0..entry.dep.module.functions.len() {

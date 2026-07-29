@@ -934,7 +934,7 @@ pub unsafe extern "C" fn lkrt_lklist_f64_contains_i64(handle: *mut c_void, needl
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &*(handle as *mut Vec<f64>) };
-    i64::from(values.iter().any(|value| *value == needle as f64))
+    i64::from(values.contains(&(needle as f64)))
 }
 
 /// Linear membership test for a string list — by *content*, matching the

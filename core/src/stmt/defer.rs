@@ -157,6 +157,7 @@ fn defer_placement_error(span: Option<&crate::token::Span>) -> String {
 /// statements written above it, in reverse; so does the end of the body. Reverse
 /// because releases nest: the second thing taken is the first thing given back,
 /// and a lock released before the thing it protects is a window.
+#[allow(clippy::vec_box, reason = "the AST stores a block's statements as `Vec<Box<Stmt>>`")]
 fn rewrite_sequence(body: &mut Vec<Box<Stmt>>) -> Result<(), String> {
     if !body.iter().any(|stmt| matches!(stmt.as_ref(), Stmt::Defer { .. })) {
         return Ok(());
@@ -257,6 +258,7 @@ fn with_releases(stmt: Stmt, pending: &[Box<Stmt>]) -> Stmt {
     }
 }
 
+#[allow(clippy::vec_box, reason = "the AST stores a block's statements as `Vec<Box<Stmt>>`")]
 fn map_releases(stmts: Vec<Box<Stmt>>, pending: &[Box<Stmt>]) -> Vec<Box<Stmt>> {
     stmts
         .into_iter()

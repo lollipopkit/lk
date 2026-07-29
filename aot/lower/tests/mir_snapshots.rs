@@ -29,7 +29,6 @@ fn assert_snapshot(source: &str, expected: &str) {
     );
 }
 
-#[test]
 /// `/` yields a `Float`, so two `Int`s widen and divide as `f64`.
 ///
 /// This snapshot used to hold `int.div … -> i64`, pinning the one place that

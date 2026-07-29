@@ -1,16 +1,6 @@
-mod analyzer;
-mod server;
-
-#[cfg(test)]
-mod bench_test;
-#[cfg(test)]
-mod editor_grammar_test;
-#[cfg(test)]
-mod inlay_hint_test;
-
-pub use server::compute_inlay_hints;
+//! The `lk-lsp` binary: a shell over the crate's own library (see `lib.rs`).
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    server::run().await
+    lk_lsp::server::run().await
 }

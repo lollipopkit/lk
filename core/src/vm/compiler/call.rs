@@ -62,6 +62,7 @@ impl Compiler {
     ///
     /// `None` when nothing changed, so the common call pays one width lookup per
     /// argument and no allocation.
+    #[allow(clippy::vec_box, reason = "the AST stores call arguments as `Vec<Box<Expr>>`")]
     fn render_arguments_unsigned(&self, name: &str, args: &[Box<Expr>]) -> Option<Vec<Box<Expr>>> {
         if !Self::renders_its_arguments(name) {
             return None;

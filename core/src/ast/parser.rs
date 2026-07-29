@@ -90,8 +90,12 @@ pub fn is_desugar_local(name: &str) -> bool {
 
 /// Build the desugared AST for `a?.m(args)`.
 ///
+/// `Vec<Box<Expr>>` is the AST's own argument type, not a boxing choice made
+/// here — see `Expr::CallExpr`.
+///
 /// `{ let t = a; t == nil ? nil : t.m(args) }` — the receiver is evaluated
 /// once, and the call does not happen at all when it is nil.
+#[allow(clippy::vec_box, reason = "the AST stores arguments as `Vec<Box<Expr>>`")]
 fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<Expr>>) -> Expr {
     use crate::stmt::Stmt;
 
@@ -790,10 +794,7 @@ impl<'a> Parser<'a> {
                 // `!` is. The checker and the compiler then see ordinary
                 // constructs, and the result is `T?` because one branch is nil
                 // — the rule every other maybe-missing branch follows.
-                let optional_receiver = match (&expr, saw_named) {
-                    (Expr::OptionalAccess(_, _), false) => true,
-                    _ => false,
-                };
+                let optional_receiver = matches!((&expr, saw_named), (Expr::OptionalAccess(_, _), false));
                 if optional_receiver {
                     let Expr::OptionalAccess(receiver, field) = expr else {
                         unreachable!("checked just above");

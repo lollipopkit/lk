@@ -71,8 +71,7 @@ impl Compiler {
                 // in `println(a < b)`) arrives here instead. Two lowering paths
                 // for one shape is why the first version of this fixed division
                 // and left the comparison signed.
-                if let Some(result) = self.lower_unsigned_bin_into(dst, lhs, op, rhs)? {
-                    let _ = result;
+                if self.lower_unsigned_bin_into(dst, lhs, op, rhs)?.is_some() {
                     return Ok(true);
                 }
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);

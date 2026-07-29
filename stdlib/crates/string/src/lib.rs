@@ -538,7 +538,7 @@ fn float_to_int(value: f64) -> Result<i64> {
     // there is 2048), so the cast below is exact for everything that passes.
     const MIN: f64 = -9_223_372_036_854_775_808.0; // -2^63
     const LIMIT: f64 = 9_223_372_036_854_775_808.0; // 2^63
-    if !(value >= MIN && value < LIMIT) {
+    if !(MIN..LIMIT).contains(&value) {
         bail!("to_int() cannot convert {value} to an Int: it is outside the Int range");
     }
     // Truncates toward zero, which is what `to_int(3.99)` means.

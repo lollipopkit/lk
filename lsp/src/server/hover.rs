@@ -51,6 +51,10 @@ pub(crate) struct LkDocIndex {
     pub(crate) decls: Vec<LkDecl>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every one is a distinct slice of the analysis the caller already has"
+)]
 pub(crate) fn document_hover(
     content: &str,
     uri: &Url,

@@ -1111,42 +1111,6 @@ impl LanguageServer for LkLanguageServer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completion_triggers_do_not_include_block_open_brace() {
-        let capabilities = server_capabilities_from(&InitializeParams::default());
-        let Some(CompletionOptions {
-            trigger_characters: Some(triggers),
-            ..
-        }) = capabilities.completion_provider
-        else {
-            panic!("expected completion provider trigger characters");
-        };
-
-        assert!(!triggers.iter().any(|trigger| trigger == "{"));
-        assert!(triggers.iter().any(|trigger| trigger == "."));
-        assert!(triggers.iter().any(|trigger| trigger == "\""));
-    }
-
-    #[test]
-    fn server_capabilities_use_push_diagnostics_only() {
-        let params = InitializeParams::default();
-        let capabilities = server_capabilities_from(&params);
-
-        assert!(
-            capabilities.diagnostic_provider.is_none(),
-            "LK pushes diagnostics with textDocument/publishDiagnostics; pull diagnostics duplicate VS Code output"
-        );
-        assert!(
-            capabilities.inlay_hint_provider.is_some(),
-            "removing pull diagnostics must not disable inlay hints"
-        );
-    }
-}
-
 /// Signature help for a built-in method name, one entry per receiver that has
 /// it — `len` belongs to five of them, and which one the user meant is not
 /// knowable from the name alone.
@@ -1215,4 +1179,40 @@ fn stdlib_export_signatures(name: &str) -> Vec<SignatureInformation> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_triggers_do_not_include_block_open_brace() {
+        let capabilities = server_capabilities_from(&InitializeParams::default());
+        let Some(CompletionOptions {
+            trigger_characters: Some(triggers),
+            ..
+        }) = capabilities.completion_provider
+        else {
+            panic!("expected completion provider trigger characters");
+        };
+
+        assert!(!triggers.iter().any(|trigger| trigger == "{"));
+        assert!(triggers.iter().any(|trigger| trigger == "."));
+        assert!(triggers.iter().any(|trigger| trigger == "\""));
+    }
+
+    #[test]
+    fn server_capabilities_use_push_diagnostics_only() {
+        let params = InitializeParams::default();
+        let capabilities = server_capabilities_from(&params);
+
+        assert!(
+            capabilities.diagnostic_provider.is_none(),
+            "LK pushes diagnostics with textDocument/publishDiagnostics; pull diagnostics duplicate VS Code output"
+        );
+        assert!(
+            capabilities.inlay_hint_provider.is_some(),
+            "removing pull diagnostics must not disable inlay hints"
+        );
+    }
 }

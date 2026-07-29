@@ -94,7 +94,7 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     // After macros because a macro may expand to one; before everything else
     // because nothing downstream should know it existed. It is a rewrite of the
     // program's *shape*, not a runtime mechanism — see `stmt::defer`.
-    crate::stmt::defer::desugar_defers(&mut program.statements).map_err(|message| ParseError::new(message))?;
+    crate::stmt::defer::desugar_defers(&mut program.statements).map_err(ParseError::new)?;
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,

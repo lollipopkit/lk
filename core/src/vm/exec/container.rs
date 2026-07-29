@@ -437,7 +437,7 @@ impl Executor {
             },
             TypedList::Float(values) => match needle {
                 RuntimeVal::Float(needle) => values.contains(needle),
-                RuntimeVal::Int(needle) => values.iter().any(|value| *value == *needle as f64),
+                RuntimeVal::Int(needle) => values.contains(&(*needle as f64)),
                 _ => false,
             },
             TypedList::Bool(values) => matches!(needle, RuntimeVal::Bool(needle) if values.contains(needle)),
@@ -488,6 +488,10 @@ impl Executor {
         .unwrap_or(RuntimeVal::Nil)
     }
 
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "`to_iter` names the opcode it implements, and it drives the executor"
+    )]
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
         match *self.read(register)? {
             RuntimeVal::ShortStr(value) => {

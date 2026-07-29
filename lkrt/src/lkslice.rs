@@ -202,7 +202,7 @@ mod tests {
 
     /// Build an `i64` list handle the way generated code does.
     fn list(values: &[i64]) -> *mut c_void {
-        let handle = unsafe { crate::lklist::lkrt_lklist_i64_new() };
+        let handle = crate::lklist::lkrt_lklist_i64_new();
         for &value in values {
             unsafe { crate::lklist::lkrt_lklist_i64_push(handle, value) };
         }

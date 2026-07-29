@@ -111,7 +111,7 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore, depth: u32) -
             let declared = value.ty.fields.as_ref();
             let mut fields: Vec<_> = value.fields.iter().collect();
             if declared.is_empty() {
-                fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+                fields.sort_by_key(|(left, _)| *left);
             } else {
                 let position = |name: &alloc::sync::Arc<str>| {
                     declared.iter().position(|field| field == name).unwrap_or(usize::MAX)
@@ -227,6 +227,11 @@ fn runtime_display_list(values: &TypedList, heap: &HeapStore, depth: u32) -> Res
     out.push(']');
     Ok(out)
 }
+/// A window prints as the part of the list it windows — `[1,4,1]`, not
+/// `<Slice>`. It used to fall through to the opaque-handle arm, which is the
+/// right answer for a `Stream` or a `Resource` and the wrong one here: a window
+/// has elements, and every other way of looking at it (`len`, indexing,
+/// `to_list`) already shows them.
 fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore, depth: u32) -> Result<String> {
     let RuntimeVal::Obj(source) = slice.source else {
         return Ok("[]".to_string());

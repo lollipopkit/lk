@@ -549,7 +549,7 @@ fn test_type_inlay_hints_let_and_define() {
         let x = 1;
         y := 1.0;
     "#;
-    let mut hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
     assert!(!hints.is_empty(), "expected type hints for let/define, got none");
     assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
 }

@@ -181,15 +181,6 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
     lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
-/// `println("{} of {}", a, b)`-style formatting: a leading string argument acts
-/// as a template whose `{}` holes consume the rest, and anything left over is
-/// appended space-separated. Without a leading string, all arguments are simply
-/// joined by spaces.
-
-/// A string argument may be inline (`ShortStr`) or on the heap — only short
-/// ones are inline, so matching just `ShortStr` silently fails to treat any
-/// realistic format string as a template.
-
 #[derive(Debug)]
 struct UnsupportedBareModule {
     name: &'static str,

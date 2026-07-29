@@ -163,7 +163,7 @@ mod inlay_hint_tests {
             y := 1.0;
         "#;
         let mut analyzer = LkAnalyzer::new();
-        let mut hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+        let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
         assert!(!hints.is_empty(), "expected type hints for let/define, got none");
         assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
         let labels: Vec<String> = hints

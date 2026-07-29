@@ -387,7 +387,7 @@ impl<'a> Tokenizer<'a> {
         // Surrogates and anything past U+10FFFF are not characters; rejecting
         // them here is the difference between a clear message and a string that
         // silently is not what it says.
-        char::from_u32(code).ok_or_else(|| anyhow!(self.err(&alloc::format!("`\\u{{{digits}}}` is not a character"))))
+        char::from_u32(code).ok_or_else(|| anyhow!(self.err(alloc::format!("`\\u{{{digits}}}` is not a character"))))
     }
 
     fn parse_str(&mut self) -> Result<()> {

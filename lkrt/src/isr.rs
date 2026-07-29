@@ -216,6 +216,10 @@ pub unsafe extern "C" fn lkrt_cpu_raise_interrupt(vector: i64) {
 /// nothing would be worse than either — it is the answer that lets a program
 /// look like it worked, and it would put the two backends into disagreement,
 /// since the interpreter refuses.
+///
+/// # Safety
+/// Nothing: this build raises before doing anything. The signature is `unsafe`
+/// only to match the bare-metal x86-64 one, which really does execute `int`.
 #[cfg(not(all(not(feature = "std"), target_arch = "x86_64")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_cpu_raise_interrupt(_vector: i64) {
