@@ -20,19 +20,22 @@ pub(super) fn dispatch_slice_builtin_method(
         return Ok(None);
     };
     let slice = slice.clone();
+    // Not `slice.len`: the source can have shrunk since the window was taken,
+    // and every method here has to agree about how long it is *now*.
+    let len = slice.live_len(heap);
 
     match method {
         "len" => {
             if !positional.is_empty() {
                 bail!("slice.len() expects no arguments, got {}", positional.len());
             }
-            Ok(Some(RuntimeVal::Int(slice.len as i64)))
+            Ok(Some(RuntimeVal::Int(len as i64)))
         }
         "is_empty" => {
             if !positional.is_empty() {
                 bail!("slice.is_empty() expects no arguments, got {}", positional.len());
             }
-            Ok(Some(RuntimeVal::Bool(slice.len == 0)))
+            Ok(Some(RuntimeVal::Bool(len == 0)))
         }
         "get" => {
             if positional.len() != 1 {
@@ -43,8 +46,8 @@ pub(super) fn dispatch_slice_builtin_method(
             };
             // Same rule as `list.get` and as `w[i]`: negative counts from the
             // window's end (see the note in `list_dispatch.rs`).
-            let index = if *index < 0 { slice.len as i64 + *index } else { *index };
-            if index < 0 || index as usize >= slice.len {
+            let index = if *index < 0 { len as i64 + *index } else { *index };
+            if index < 0 || index as usize >= len {
                 return Ok(Some(RuntimeVal::Nil));
             }
             Ok(Some(slice_item(&slice, index as usize, heap)))
@@ -64,11 +67,11 @@ pub(super) fn dispatch_slice_builtin_method(
             let start = (*start).max(0) as usize;
             let end = match positional.get(1) {
                 Some(RuntimeVal::Int(end)) => (*end).max(0) as usize,
-                Some(RuntimeVal::Nil) | None => slice.len,
+                Some(RuntimeVal::Nil) | None => len,
                 Some(_) => bail!("slice.slice() end must be Int"),
             };
-            let start = start.min(slice.len);
-            let end = end.clamp(start, slice.len);
+            let start = start.min(len);
+            let end = end.clamp(start, len);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: slice.source,
@@ -90,17 +93,17 @@ pub(super) fn dispatch_slice_builtin_method(
             if *count < 0 {
                 bail!("slice.{method}() count must be non-negative, got {count}");
             }
-            let count = (*count as usize).min(slice.len);
-            let (start, len) = if method == "take" {
+            let count = (*count as usize).min(len);
+            let (start, window_len) = if method == "take" {
                 (slice.start, count)
             } else {
-                (slice.start + count, slice.len - count)
+                (slice.start + count, len - count)
             };
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: slice.source,
                     start,
-                    len,
+                    len: window_len,
                 },
             ))))))
         }
@@ -108,7 +111,7 @@ pub(super) fn dispatch_slice_builtin_method(
             if !positional.is_empty() {
                 bail!("slice.first() expects no arguments, got {}", positional.len());
             }
-            if slice.len == 0 {
+            if len == 0 {
                 return Ok(Some(RuntimeVal::Nil));
             }
             Ok(Some(slice_item(&slice, 0, heap)))
@@ -117,10 +120,10 @@ pub(super) fn dispatch_slice_builtin_method(
             if !positional.is_empty() {
                 bail!("slice.last() expects no arguments, got {}", positional.len());
             }
-            if slice.len == 0 {
+            if len == 0 {
                 return Ok(Some(RuntimeVal::Nil));
             }
-            Ok(Some(slice_item(&slice, slice.len - 1, heap)))
+            Ok(Some(slice_item(&slice, len - 1, heap)))
         }
         "contains" | "index_of" => {
             if positional.len() != 1 {
@@ -128,7 +131,7 @@ pub(super) fn dispatch_slice_builtin_method(
             }
             let needle = positional[0];
             let mut found = None;
-            for index in 0..slice.len {
+            for index in 0..len {
                 let item = slice_item(&slice, index, heap);
                 if crate::val::runtime_values_equal(&item, &needle, heap)? {
                     found = Some(index);
@@ -145,7 +148,7 @@ pub(super) fn dispatch_slice_builtin_method(
             if !positional.is_empty() {
                 bail!("slice.to_list() expects no arguments, got {}", positional.len());
             }
-            let items: Vec<RuntimeVal> = (0..slice.len).map(|index| slice_item(&slice, index, heap)).collect();
+            let items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
             let items = TypedList::from_runtime_values(&items, heap);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
         }

@@ -220,7 +220,8 @@ fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore, depth: u32) -> Re
     let Some(HeapValue::List(values)) = heap.get(source) else {
         return Ok("[]".to_string());
     };
-    let window = values.window(slice.start, slice.len);
+    // `live_len`: the source can have shrunk since the window was taken.
+    let window = values.window(slice.start, slice.live_len(heap));
     runtime_display_list(&window, heap, depth)
 }
 fn runtime_display_map(values: &TypedMap, heap: &HeapStore, depth: u32) -> Result<String> {

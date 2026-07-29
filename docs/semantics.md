@@ -251,6 +251,31 @@ println(s)                      → Set([<object:80>,<object:82>])
 差分语料:`differential_equality_and_unique` 的 `str_lt_long` /
 `str_ge_long` / `str_le_equal` / `str_gt_prefix`。
 
+## 源缩短之后的窗口(2026-07-29 裁决)
+
+窗口(`xs.slice(a, b)`)不复制,所以源可以在它脚下变短。裁决:**窗口按源
+此刻还够得着的部分算长度**(`SliceValue::live_len`),越界读仍然给 nil ——
+和语言其他地方一样,不报错。
+
+此前每个读者各答各的。一个长度为 3 的窗口,源 `pop()` 掉最后一个之后:
+
+```text
+s.len()     → 3        s.to_list()  → [1,2,nil]
+println(s)  → [1,2]    s.last()     → nil
+s == [1,2]  → false    s.get(2)     → nil
+```
+
+一个问题六个答案。
+
+## `List.clear()`(2026-07-29 补齐)
+
+`clear()` 三个容器都有,原地清空、答容器本身(可链)。此前 map 和 set 有,
+list 没有 —— 而 `docs/stdlib.md` 的方法表里写着它。签名表里还有一条测试
+断言 list **不**该有,类型检查器里又有个特例分支给 list 的 `clear` 返回
+`Nil`(而表里 map/set 是 `Self`)。三处各说各的。
+
+三个 `clear` 都还不能原生降低,行为一致,不算新洞。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

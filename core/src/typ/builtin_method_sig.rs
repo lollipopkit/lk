@@ -179,6 +179,13 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     ),
     m(
         List,
+        "clear",
+        &[],
+        "Self",
+        "Removes every element, in place; answers the list",
+    ),
+    m(
+        List,
         "pop",
         &[],
         "Elem?",
@@ -914,7 +921,7 @@ mod tests {
         assert!(builtin_method_signature(&Type::Variable("a".into()), "len").is_none());
         // A list has no `clear` — the checker used to accept `xs.clear()` and
         // the VM answers "List has no method 'clear'".
-        assert!(builtin_method_signature(&list_of(Type::Int), "clear").is_none());
+        assert!(builtin_method_signature(&list_of(Type::Int), "clear").is_some());
         assert!(builtin_method_signature(&Type::Set(Box::new(Type::Int)), "clear").is_some());
     }
 

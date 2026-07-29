@@ -10,7 +10,7 @@ use crate::val::{
 };
 
 use super::profile::{record_dynamic_index_key_metric, record_index_key_metric};
-use super::{Executor, push_list_value, set_list_value};
+use super::{Executor, set_list_value};
 use crate::vm::{
     IndexInlineCache,
     analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric},
@@ -288,8 +288,10 @@ impl Executor {
                 // bytes, and the difference is now something the reader chose
                 // rather than something the implementation decided for them.
                 HeapValue::Bytes(value) => Ok(value.len()),
-                // A window's length is the window's, not the source's.
-                HeapValue::Slice(slice) => Ok(slice.len),
+                // A window's length is the window's, not the source's — and it
+                // is what the window can still reach, so a source that shrank
+                // shortens it rather than leaving it pointing past the end.
+                HeapValue::Slice(slice) => Ok(slice.live_len(&self.state.heap)),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),
@@ -620,7 +622,7 @@ impl Executor {
             let Some(HeapValue::List(list)) = self.state.heap.get_mut(handle) else {
                 bail!("ListPush target object is not a list");
             };
-            push_list_value(list, value, string_value)?;
+            list.push(value, string_value)?;
         }
 
         self.state.heap.bump_shape_generation(handle);

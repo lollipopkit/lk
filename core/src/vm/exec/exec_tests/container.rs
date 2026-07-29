@@ -380,3 +380,40 @@ fn execute_map_rest_preserves_typed_string_int_backing() {
     assert_eq!(values.len(), 1);
     assert_eq!(values.get("b"), Some(&2));
 }
+
+/// A window does not copy, so the source can shrink under it. Every reader used
+/// to answer "how long is this window" differently: `len()` said 3 while
+/// `println` showed two elements, `to_list()` produced `[1,2,nil]`, and `==`
+/// against those two elements was false.
+#[test]
+fn a_window_whose_source_shrank_gives_one_answer_everywhere() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2, 3];
+        let window = xs.slice(0, 3);
+        xs.pop();
+        return [window.len(), window.to_list(), window.last(), window == [1, 2], window.first()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,[1,2],2,true,1]");
+}
+
+/// `clear()` is in the container method table for maps, sets *and* lists, but
+/// a list did not have it.
+#[test]
+fn list_clear_empties_in_place_and_answers_the_list() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2, 3];
+        let answered = xs.clear();
+        return [xs, answered, xs.push(7)];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[7],[7],[7]]");
+}

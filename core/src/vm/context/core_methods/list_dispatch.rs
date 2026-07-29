@@ -165,14 +165,31 @@ pub(super) fn dispatch_list_builtin_method(
             }
             Ok(Some(value))
         }
+        // In place, answering the list itself — the same as `xs.push(v)` from
+        // LK. This used to copy the whole list into a new one and hand that
+        // back, so whether pushing changed the list depended on which side
+        // called the method.
         "push" => {
             if positional.len() != 1 {
                 bail!("list.push() expects 1 argument (value), got {}", positional.len());
             }
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            items.push(positional[0]);
-            let items = TypedList::from_runtime_values(&items, heap);
-            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
+            // Read the text out before the mutable borrow: a `TypedList::String`
+            // holds `Arc<str>`, which no `RuntimeVal` carries past seven bytes.
+            let string_value = runtime_value_text(&positional[0], heap).map(Arc::<str>::from);
+            let Some(HeapValue::List(list)) = heap.get_mut(handle) else {
+                return Ok(None);
+            };
+            list.push(positional[0], string_value)?;
+            Ok(Some(*receiver))
+        }
+        "clear" => {
+            if !positional.is_empty() {
+                bail!("list.clear() expects no arguments, got {}", positional.len());
+            }
+            if let Some(HeapValue::List(list)) = heap.get_mut(handle) {
+                list.clear();
+            }
+            Ok(Some(*receiver))
         }
         "slice" => {
             // A window, not a copy. This used to materialize `items[a..b]` into

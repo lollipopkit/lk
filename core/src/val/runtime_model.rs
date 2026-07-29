@@ -469,6 +469,79 @@ impl TypedList {
         self.len() == 0
     }
 
+    /// Append `value`, widening the representation only when it has to.
+    ///
+    /// `string_value` is the value's text when it is a string — a
+    /// `TypedList::String` holds `Arc<str>`, which a `RuntimeVal` cannot carry
+    /// past seven bytes, so the caller reads it out of the heap *before* taking
+    /// the mutable borrow.
+    ///
+    /// This lived in the executor, so `vm::context`'s list methods — the path a
+    /// native/host caller takes — could not reach it and copied the whole list
+    /// through `from_runtime_values` instead. Same operation, two answers to
+    /// "does pushing change this list".
+    pub fn push(&mut self, value: RuntimeVal, string_value: Option<Arc<str>>) -> anyhow::Result<()> {
+        let list = self;
+        match list {
+            TypedList::Mixed(values) if values.is_empty() => match (value, string_value) {
+                (RuntimeVal::Int(value), _) => *list = TypedList::Int(vec![value]),
+                (RuntimeVal::Float(value), _) => *list = TypedList::Float(vec![value]),
+                (RuntimeVal::Bool(value), _) => *list = TypedList::Bool(vec![value]),
+                (RuntimeVal::ShortStr(_) | RuntimeVal::Obj(_), Some(string_value)) => {
+                    *list = TypedList::String(vec![string_value]);
+                }
+                (value, _) => values.push(value),
+            },
+            TypedList::Mixed(values) => values.push(value),
+            TypedList::Int(values) => match value {
+                RuntimeVal::Int(value) => values.push(value),
+                value => {
+                    let mut mixed = copy_numeric_list(values, RuntimeVal::Int);
+                    mixed.push(value);
+                    *list = TypedList::Mixed(mixed);
+                }
+            },
+            TypedList::Float(values) => match value {
+                RuntimeVal::Float(value) => values.push(value),
+                value => {
+                    let mut mixed = copy_numeric_list(values, RuntimeVal::Float);
+                    mixed.push(value);
+                    *list = TypedList::Mixed(mixed);
+                }
+            },
+            TypedList::Bool(values) => match value {
+                RuntimeVal::Bool(value) => values.push(value),
+                value => {
+                    let mut mixed = copy_numeric_list(values, RuntimeVal::Bool);
+                    mixed.push(value);
+                    *list = TypedList::Mixed(mixed);
+                }
+            },
+            TypedList::String(values) => match string_value {
+                Some(value) => values.push(value),
+                None => {
+                    anyhow::bail!("internal error: typed string list push must be materialized before mutable borrow")
+                }
+            },
+        }
+        Ok(())
+    }
+
+    /// Drop every element, keeping the representation.
+    ///
+    /// `Map` and `Set` have had this; a list did not, though the method table in
+    /// `docs/stdlib.md` listed it — "one operation, one name, across every
+    /// container" with one container missing.
+    pub fn clear(&mut self) {
+        match self {
+            Self::Mixed(values) => values.clear(),
+            Self::Int(values) => values.clear(),
+            Self::Float(values) => values.clear(),
+            Self::Bool(values) => values.clear(),
+            Self::String(values) => values.clear(),
+        }
+    }
+
     /// Drop everything from `at` on, keeping the representation.
     ///
     /// What `pop` and `remove_at` need: a list is mutable in LK (`xs[0] = 9`
@@ -1373,7 +1446,36 @@ pub struct StreamCursorValue {
 pub struct SliceValue {
     pub source: RuntimeVal,
     pub start: usize,
+    /// How long the window was when it was taken. Read [`SliceValue::live_len`]
+    /// instead — the source can shrink underneath it.
     pub len: usize,
+}
+
+impl SliceValue {
+    /// How long the window is *now*, clamped to what the source still holds.
+    ///
+    /// A window does not copy, so `xs.pop()` can leave it pointing past the end
+    /// — and every reader used to answer that differently. For a window of 3
+    /// over a list that lost its last element:
+    ///
+    /// ```text
+    /// s.len()       → 3          s.to_list()   → [1,2,nil]
+    /// println(s)    → [1,2]      s.last()      → nil
+    /// s == [1,2]    → false      s.get(2)      → nil
+    /// ```
+    ///
+    /// Six answers to one question. Clamping is the one the rest of the
+    /// language already gives — reading past the end is `nil`, not an error —
+    /// and it makes `len()` agree with what the window will actually hand out.
+    pub fn live_len(&self, heap: &HeapStore) -> usize {
+        let RuntimeVal::Obj(handle) = self.source else {
+            return 0;
+        };
+        let Some(HeapValue::List(list)) = heap.get(handle) else {
+            return 0;
+        };
+        self.len.min(list.len().saturating_sub(self.start))
+    }
 }
 
 #[derive(Clone)]
@@ -1452,4 +1554,10 @@ mod layout {
             core::mem::size_of::<super::HeapValue>()
         );
     }
+}
+
+fn copy_numeric_list<T: Copy>(values: &[T], wrap: impl Fn(T) -> RuntimeVal) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + 1);
+    mixed.extend(values.iter().copied().map(wrap));
+    mixed
 }

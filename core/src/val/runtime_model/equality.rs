@@ -115,20 +115,24 @@ impl<'a> Comparison<'a> {
             (HeapValue::List(left), HeapValue::List(right)) => self.lists(left, right, depth)?,
             // A window compares by its elements, like everything else that has
             // elements — including against the list it windows.
+            // `live_len`, not `len`: the source can have shrunk since the
+            // window was taken, and a window that outran its source used to
+            // compare unequal to *everything* while printing its shortened
+            // contents.
             (HeapValue::Slice(left), HeapValue::Slice(right)) => self.slice_ranges(
                 left.source,
                 left.start,
-                left.len,
+                left.live_len(self.heap),
                 right.source,
                 right.start,
-                right.len,
+                right.live_len(self.heap),
                 depth,
             )?,
             (HeapValue::Slice(left), HeapValue::List(right)) => {
-                self.slice_and_list(left.source, left.start, left.len, right, depth)?
+                self.slice_and_list(left.source, left.start, left.live_len(self.heap), right, depth)?
             }
             (HeapValue::List(left), HeapValue::Slice(right)) => {
-                self.slice_and_list(right.source, right.start, right.len, left, depth)?
+                self.slice_and_list(right.source, right.start, right.live_len(self.heap), left, depth)?
             }
             (HeapValue::Map(left), HeapValue::Map(right)) => self.maps(left, right, depth)?,
             (HeapValue::Set(left), HeapValue::Set(right)) => sets_equal(left, right),

@@ -337,7 +337,8 @@ impl Executor {
         let Some(HeapValue::Slice(slice)) = self.state.heap.get(handle) else {
             return RuntimeVal::Nil;
         };
-        let (source, start, len) = (slice.source, slice.start, slice.len);
+        // `live_len`: the source can have shrunk since the window was taken.
+        let (source, start, len) = (slice.source, slice.start, slice.live_len(&self.state.heap));
         let index = if index < 0 { len as i64 + index } else { index };
         if index < 0 || index as usize >= len {
             return RuntimeVal::Nil;
