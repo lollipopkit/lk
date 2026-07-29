@@ -1334,13 +1334,24 @@ fn try_catch_differential() {
                 "value_region_after_a_call",
                 "fn compute() -> Int { return 10; }\nfn probe(c: Bool) -> Int {\n  let q = compute();\n  let r = try { if c { error(\"boom\"); } 7 } catch e { -1 };\n  return q + r;\n}\nprintln(probe(false));\nprintln(probe(true));\nreturn 0;\n",
             ),
-            // A `Float` parameter still falls back — the trampoline marshals
-            // through integer registers, so a float needs a bit-cast on both
-            // sides. Adding it to the word list compiled and then *segfaulted*;
-            // this pins the answer either way.
+            // A `Float` parameter. The trampoline's signature is all
+            // `long long`, so a float arrives in an *integer* register and the
+            // body reads it back out of those bits (`Inst::BitsToFloat`).
+            // Declaring the parameter `F64` instead — which is what "a float is
+            // eight bytes, so it crosses" gets you — compiled and *segfaulted*.
+            //
+            // The arithmetic is what pins the bit-cast's direction: a wrong one
+            // still runs and answers something. `1.5 * 2.0 + 0.5` is `3.5`, not
+            // a denormal.
             new(
-                "body_with_float_param_in_scope",
-                "fn probe(f: Float) -> Int {\n  let r = try { if f > 1.0 { error(\"boom\"); } 7 } catch e { -1 };\n  return r;\n}\nprintln(probe(0.5));\nprintln(probe(2.0));\nreturn 0;\n",
+                "body_reads_float_param",
+                "fn probe(f: Float, g: Float) -> Float {\n  let r = try { if f > 100.0 { error(\"boom\"); } f * g + 0.5 } catch e { -1.5 };\n  return r;\n}\nprintln(probe(1.5, 2.0));\nprintln(probe(0.25, 8.0));\nprintln(probe(1000.0, 1.0));\nprintln(probe(-3.5, 2.0));\nreturn 0;\n",
+            ),
+            // The same with a mixed parameter list, so the float is not the only
+            // input crossing.
+            new(
+                "body_reads_mixed_params",
+                "fn probe(f: Float, s: String, xs: List<Int>) -> Int {\n  let r = try { if f > 1.0 { error(\"boom\"); } xs.len() } catch e { -1 };\n  return r + s.len();\n}\nprintln(probe(0.5, \"ab\", [1, 2, 3]));\nprintln(probe(2.0, \"ab\", [1, 2, 3]));\nreturn 0;\n",
             ),
             // A container the body only *reads*. It travels in as a parameter,
             // which needs the trampoline's argument buffer to carry a handle —

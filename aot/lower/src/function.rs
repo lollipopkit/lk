@@ -70,19 +70,18 @@ fn crosses_as_word(ty: Ty) -> bool {
     matches!(
         ty,
         Ty::I64
-            // A `Bool` is 0/1 — a machine word, and leaving it out is what made
+            // A `Bool` is 0/1 and an `F64` is eight bytes — both are machine
+            // words. Leaving `Bool` out is what made
             // `fn probe(c: Bool) { let r = try { … } catch e { … }; }` reject
-            // while the same function with an `Int` parameter lowered. The body
-            // was handed the flag as `I64` and rejected on reading it, so a
-            // `try` inside any function taking a bool dropped its module to the
-            // VM.
+            // while the same function with an `Int` parameter lowered.
             //
-            // `F64` is *not* here even though it is eight bytes wide: the
-            // trampoline marshals through integer registers, so a float has to
-            // be bit-cast on both sides rather than simply passed. Adding it
-            // without that compiled and then **segfaulted** — the honest
-            // failure is the body rejecting, which is what `I64` produces.
+            // `F64` needs one more step, because the trampoline's signature is
+            // all `long long`: the body declares the parameter `I64` and reads
+            // the float back out of those bits (`Inst::BitsToFloat`). Declaring
+            // it `F64` instead made Cranelift read a *float* register — that
+            // compiled and segfaulted.
             | Ty::Bool
+            | Ty::F64
             | Ty::Str
             | Ty::ListI64
             | Ty::ListF64
@@ -375,6 +374,7 @@ pub(crate) fn lower_function(
     let is_try_body = sig.try_bodies.values().any(|&b| b == func_index);
     let mut rebound: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let try_params: Vec<u8> = sig.try_body_params.get(&func_index).cloned().unwrap_or_default();
+    let mut try_param_bitcasts: Vec<(u8, ValueId)> = Vec::new();
     for &reg in &try_params {
         let ty = sig
             .try_body_param_tys
@@ -382,8 +382,18 @@ pub(crate) fn lower_function(
             .copied()
             .unwrap_or(Ty::I64);
         let pv = ssa.new_val();
-        ssa.current_def[0][reg as usize] = Some((pv, ty));
-        fn_params.push((pv, ty));
+        // An `F64` input is declared `I64` and read back out of those bits at
+        // entry: the trampoline calls this body through a `(long long, …)`
+        // signature (`lkrt/src/try_trampoline.c`), so every input arrives in an
+        // integer register. Declaring the parameter `F64` made Cranelift read a
+        // *float* register instead — it compiled and segfaulted.
+        if ty == Ty::F64 {
+            fn_params.push((pv, Ty::I64));
+            try_param_bitcasts.push((reg, pv));
+        } else {
+            ssa.current_def[0][reg as usize] = Some((pv, ty));
+            fn_params.push((pv, ty));
+        }
     }
     // The cells this body writes through, in the same order the caller passes
     // them. They are handles, not values: the register keeps its own value in
@@ -452,6 +462,15 @@ pub(crate) fn lower_function(
             ssa.single_fallthrough_target[bi] = Some(end);
         }
         let mut insts = Vec::new();
+        // A float input arrives as bits (see the parameter binding above): read
+        // it back as a float before the body's first instruction.
+        if bi == 0 {
+            for &(reg, bits) in &try_param_bitcasts {
+                let f = ssa.new_val();
+                insts.push(Inst::BitsToFloat { dst: f, src: bits });
+                ssa.current_def[0][reg as usize] = Some((f, Ty::F64));
+            }
+        }
         // The entry describes every declared struct to the runtime before any
         // user code runs: its type id, name, and field names in declaration
         // order. `display` needs them where the *mark* is — at runtime — because

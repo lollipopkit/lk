@@ -1049,6 +1049,14 @@ impl Lower {
                 };
                 self.set1(*dst, v);
             }
+            Inst::BitsToFloat { dst, src } => {
+                // The same bits, read as a float. `bitcast` rather than a
+                // conversion: the value came out of an integer register because
+                // the `try` trampoline's signature is all `long long`.
+                let s = self.v(*src)?;
+                let v = b.ins().bitcast(types::F64, MemFlagsData::new(), s);
+                self.set1(*dst, v);
+            }
             Inst::IntToFloat { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().fcvt_from_sint(types::F64, s);

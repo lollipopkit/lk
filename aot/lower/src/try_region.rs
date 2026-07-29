@@ -52,11 +52,14 @@
 //!    `Int` parameter lowered. That is what the note on file as "the `try`
 //!    expression's value cannot lower" actually was.
 //!
-//!    **`F64` is still out**, and not by omission: the trampoline marshals
-//!    through integer registers, so a float needs a bit-cast on both sides
-//!    rather than a pass-through. Adding it to the list compiled and then
-//!    *segfaulted*; the honest failure is the body rejecting on read, which is
-//!    what `I64` produces.
+//!    **`F64` needed one more step.** The trampoline's signature is all
+//!    `long long` (`lkrt/src/try_trampoline.c`), so a float arrives in an
+//!    *integer* register. Adding `F64` to the list and declaring the body's
+//!    parameter `F64` made Cranelift read a float register instead: it compiled
+//!    and **segfaulted**. The body now declares the parameter `I64` and reads
+//!    the float back out of those bits (`Inst::BitsToFloat`) before its first
+//!    instruction. The differential case does arithmetic on it, because a
+//!    bit-cast in the wrong direction still runs and answers *something*.
 //!
 //! 3. **What a body rebound is reported by the body.** Reading the `a` field as
 //!    "the register this instruction writes" is not true of every opcode —

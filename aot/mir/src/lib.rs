@@ -185,6 +185,15 @@ pub enum Inst {
         lhs: ValueId,
         rhs: ValueId,
     },
+    /// `dst = bitcast(src)` — the same eight bytes read as an `F64`.
+    ///
+    /// Not a conversion: `1` becomes `5e-324`, not `1.0`. The one use is the
+    /// `try`-region trampoline, which calls a body through a
+    /// `(long long, …)` signature (`lkrt/src/try_trampoline.c`) — so every
+    /// input arrives in an integer register, and a float one has to be read
+    /// back out of those bits. Passing it *as* a float without this is what
+    /// segfaulted.
+    BitsToFloat { dst: ValueId, src: ValueId },
     /// `dst = sitofp(src)` — widen an `I64` value to `F64`.
     IntToFloat { dst: ValueId, src: ValueId },
     /// `dst = fptosi(src)` — an `F64` truncated toward zero into `I64`.
@@ -863,6 +872,7 @@ fn render_inst(inst: &Inst) -> String {
                 v(*rhs)
             )
         }
+        Inst::BitsToFloat { dst, src } => format!("{} = bitcast.f64 {}", v(*dst), v(*src)),
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
         Inst::FloatToInt { dst, src } => format!("{} = fptosi {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
@@ -1025,6 +1035,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::IntBin { dst, .. }
         | Inst::FloatBin { dst, .. }
         | Inst::Cmp { dst, .. }
+        | Inst::BitsToFloat { dst, .. }
         | Inst::IntToFloat { dst, .. }
         | Inst::FloatToInt { dst, .. }
         | Inst::ZextBool { dst, .. }
@@ -1068,7 +1079,8 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::BoolAnd { lhs, rhs, .. } => {
             vec![*lhs, *rhs]
         }
-        Inst::IntToFloat { src, .. }
+        Inst::BitsToFloat { src, .. }
+        | Inst::IntToFloat { src, .. }
         | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
