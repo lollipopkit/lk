@@ -19,8 +19,6 @@
 //!
 //! Comparison is depth-bounded — see [`super::MAX_VALUE_DEPTH`] for why.
 
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
