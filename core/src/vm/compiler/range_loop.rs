@@ -74,6 +74,20 @@ impl Compiler {
         body: &Stmt,
     ) -> Result<()> {
         let zero = self.lower_val(&LiteralVal::Int(0))?;
+
+        // The step is only known now, and a zero one makes `is_positive` below
+        // false — which would send the loop down the descending branch and let
+        // `for i in 0..3..s` quietly do nothing. Refuse it once, on entry, with
+        // the same words `NewRange` and `iter.range` use.
+        let step_is_nonzero = self.alloc_reg();
+        self.emit(Instr::abc(
+            Opcode::CmpNeInt,
+            checked_u8("for step nonzero dst", step_is_nonzero)?,
+            checked_u8("for step", step)?,
+            checked_u8("for zero", zero)?,
+        ));
+        self.emit_assert(step_is_nonzero, "Range step cannot be zero")?;
+
         let loop_start = self.function.code.len();
         let is_positive = self.alloc_reg();
         self.emit(Instr::abc(

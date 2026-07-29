@@ -35,6 +35,10 @@ pub(super) enum NumericFlavor {
 pub(super) enum RangeStepSign {
     Positive,
     Negative,
+    /// A step that is literally `0` — a loop that cannot advance. Kept apart
+    /// from `Dynamic` so it is refused while compiling instead of being lowered
+    /// into a comparison that happens to be false on the first turn.
+    Zero,
     Dynamic,
 }
 
@@ -295,7 +299,8 @@ pub(super) fn range_step_sign(step: Option<&Expr>) -> RangeStepSign {
     match const_int_expr_value(step) {
         Some(value) if value > 0 => RangeStepSign::Positive,
         Some(value) if value < 0 => RangeStepSign::Negative,
-        _ => RangeStepSign::Dynamic,
+        Some(_) => RangeStepSign::Zero,
+        None => RangeStepSign::Dynamic,
     }
 }
 

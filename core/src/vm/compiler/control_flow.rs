@@ -448,6 +448,13 @@ impl Compiler {
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope_for_exprs(&[], body)?;
         let step_sign = range_step_sign(step);
+        // A zero step never advances the index, so the loop is either infinite
+        // or empty depending on which comparison you write. `NewRange` and
+        // `iter.range` both refuse it; a `for` header is the same absurdity and
+        // gets the same answer, just earlier because the step is right there.
+        if matches!(step_sign, RangeStepSign::Zero) {
+            bail!("Range step cannot be zero");
+        }
         let index = self.alloc_reg();
         match start {
             Some(start) => self.lower_expr_to_register(index, start, "for range initial index")?,
@@ -468,6 +475,7 @@ impl Compiler {
             RangeStepSign::Positive => self.lower_for_range_static_loop(index, end, step, inclusive, true, body)?,
             RangeStepSign::Negative => self.lower_for_range_static_loop(index, end, step, inclusive, false, body)?,
             RangeStepSign::Dynamic => self.lower_for_range_dynamic_loop(index, end, step, inclusive, body)?,
+            RangeStepSign::Zero => unreachable!("a zero step is refused above"),
         }
 
         self.restore_for_pattern(previous_binding);

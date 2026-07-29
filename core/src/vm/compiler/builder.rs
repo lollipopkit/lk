@@ -388,8 +388,13 @@ impl Compiler {
     }
 
     pub(super) fn emit_pattern_assert(&mut self, condition: u16) -> Result<()> {
+        self.emit_assert(condition, "Pattern does not match value")
+    }
+
+    /// Raise `message` unless `condition` holds.
+    pub(super) fn emit_assert(&mut self, condition: u16, message: &str) -> Result<()> {
         let skip_raise = self.emit_test_placeholder(condition)?;
-        self.emit_raise("Pattern does not match value")?;
+        self.emit_raise(message)?;
         let end = self.function.code.len();
         self.patch_test_true_jump(skip_raise, end)
     }
