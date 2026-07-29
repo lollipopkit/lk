@@ -337,10 +337,18 @@ impl Executor {
         let Some(HeapValue::Slice(slice)) = self.state.heap.get(handle) else {
             return RuntimeVal::Nil;
         };
-        // `live_len`: the source can have shrunk since the window was taken.
-        let (source, start, len) = (slice.source, slice.start, slice.live_len(&self.state.heap));
-        let index = if index < 0 { len as i64 + index } else { index };
-        if index < 0 || index as usize >= len {
+        let (source, start, recorded_len) = (slice.source, slice.start, slice.len);
+        // A negative index counts back from the window's end, and where that
+        // end *is* depends on whether the source shrank — so only this case
+        // pays for the extra look at the source. A non-negative index does not
+        // need to know: past the source, the element read below answers nil on
+        // its own, which is the same answer clamping would give.
+        let index = if index < 0 {
+            slice.live_len(&self.state.heap) as i64 + index
+        } else {
+            index
+        };
+        if index < 0 || index as usize >= recorded_len {
             return RuntimeVal::Nil;
         }
         let RuntimeVal::Obj(source) = source else {
