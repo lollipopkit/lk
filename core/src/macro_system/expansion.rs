@@ -250,12 +250,43 @@ fn capture_expr_fragment(
     pos: usize,
     next_literal: Option<&Token>,
 ) -> Option<(usize, Vec<SourceToken>)> {
+    // A macro call is an expression, and composing macros is most of what
+    // macros are for — `twice!(twice!(1))`. Expansion is token-level, so at
+    // this point the inner call is still `Id ! ( … )`, which the expression
+    // parser does not know; it answered "expected `expr` fragment". Captured
+    // as tokens it is expanded on a later round, like any other output.
+    if let Some(consumed) = macro_invocation_prefix_len(input, pos) {
+        return capture_parser_prefix(input, pos, consumed, next_literal);
+    }
     let tokens = source_tokens_to_tokens(&input[pos..]);
     let mut parser = ExprParser::new(&tokens);
     let Ok((_, consumed)) = parser.parse_prefix() else {
         return None;
     };
     capture_parser_prefix(input, pos, consumed, next_literal)
+}
+
+/// The token length of a macro invocation starting at `pos`, if there is one.
+///
+/// The shape is the language's own rule for telling a macro call from a force
+/// unwrap: `name!` immediately followed by `(`, `[` or `{` (see
+/// `docs/semantics.md`). The delimiter group is balanced, so the whole call is
+/// taken as one fragment.
+fn macro_invocation_prefix_len(input: &[SourceToken], pos: usize) -> Option<usize> {
+    if !matches!(input.get(pos).map(|t| &t.token), Some(Token::Id(_))) {
+        return None;
+    }
+    if !matches!(input.get(pos + 1).map(|t| &t.token), Some(Token::Not)) {
+        return None;
+    }
+    if !matches!(
+        input.get(pos + 2).map(|t| &t.token),
+        Some(Token::LParen | Token::LBracket | Token::LBrace)
+    ) {
+        return None;
+    }
+    let (_, close) = super::find_group(input, pos + 2).ok()?;
+    Some(close + 1 - pos)
 }
 
 fn capture_stmt_fragment(

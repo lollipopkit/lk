@@ -972,6 +972,26 @@ mod tests {
         assert_eq!(result.display_first_return(), "5");
     }
 
+    /// A macro call is an expression, so it may be an `expr` fragment.
+    ///
+    /// Composing macros is most of what macros are for, and this did not work:
+    /// expansion is token-level, so at capture time the inner call is still
+    /// `Id ! ( … )` — a shape the expression parser does not know — and the
+    /// matcher answered "expected `expr` fragment `$e`". Captured as tokens it
+    /// expands on a later round, like any other macro output.
+    #[test]
+    fn an_expr_fragment_may_be_a_macro_call() {
+        let result = execute_source(
+            r#"
+            macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+            macro_rules! deep { ($e:expr) => { twice!(twice!($e)) }; }
+            return [twice!(twice!(1)), deep!(1), twice!(3)];
+            "#,
+        )
+        .expect("macro program should execute");
+        assert_eq!(result.display_first_return(), "[4,4,6]");
+    }
+
     #[test]
     fn expands_block_fragment() {
         let result = execute_source(
