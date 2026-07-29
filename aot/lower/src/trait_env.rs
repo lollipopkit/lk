@@ -16,6 +16,36 @@ pub(crate) struct TraitEnv {
     pub(crate) methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
 }
 
+/// Method names the lowering may call **without** a `CallMethodK` naming them.
+///
+/// `show` is reached from a display site (`"${value}"`), not from a method call
+/// — see `lower_method::apply_show`. Anything added there has to be added here
+/// too, or its impl stops being a lowering root and the module fails MIR
+/// validation with a dangling callee. One list, named at both ends.
+pub(crate) const IMPLICIT_METHOD_HOOKS: &[&str] = &["show"];
+
+/// Every method name some `CallMethodK` in the module names.
+///
+/// `CallMethodK` is the only method-call opcode and it takes its name from the
+/// constant pool, so this set is exact — there is no dynamic-name form to be
+/// conservative about.
+pub(crate) fn called_method_names(module: &lk_core::vm::ModuleData) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for func in &module.functions {
+        for raw in &func.code {
+            let Ok(instr) = lk_core::vm::Instr::try_from_raw(*raw) else {
+                break;
+            };
+            if instr.opcode() == lk_core::vm::Opcode::CallMethodK
+                && let Some(name) = func.consts.strings.get(instr.b() as usize)
+            {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 impl TraitEnv {
     /// The type whose `impl` block defines function `fidx`, if any.
     ///

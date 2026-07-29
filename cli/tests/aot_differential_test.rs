@@ -892,6 +892,16 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // An impl method nobody calls is no longer a lowering root — and
+            // `show` is the one method reached *without* a call naming it
+            // (a display site does). Dropping it from the roots leaves a
+            // dangling callee and the module fails MIR validation, so this
+            // pins both halves at once: an uncalled `unused` alongside a
+            // `show` that only `"${…}"` reaches.
+            new(
+                "trait_show_hook_and_uncalled",
+                "trait Show { fn show(self) -> String; }\nstruct R { w: Int }\nimpl Show for R { fn show(self) -> String { return \"R!\"; } }\ntrait Extra { fn unused(self, s: String) -> Int; }\nimpl Extra for R { fn unused(self, s: String) -> Int { return s.len(); } }\nlet r = R { w: 3 };\nprintln(\"${r}\");\nreturn 0;\n",
+            ),
             // Two implementors, one of them never calling a method it defines.
             // Every impl method is a lowering root, so an *uncalled* one used to
             // be lowered with the `I64` parameter default and fail reading a

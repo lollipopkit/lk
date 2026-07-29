@@ -296,7 +296,10 @@ pub(crate) fn apply_display_show(
 ) -> Result<(ValueId, Ty), Unsupported> {
     if ty == Ty::MapStrDyn
         && let Some(type_name) = ssa.struct_types.get(&v).cloned()
-        && let Some(&fidx) = sig.traits.impls.get(&(type_name, "show".to_string()))
+        && let Some(&fidx) = sig
+            .traits
+            .impls
+            .get(&(type_name, crate::trait_env::IMPLICIT_METHOD_HOOKS[0].to_string()))
     {
         return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, vec![(v, ty)], pc);
     }

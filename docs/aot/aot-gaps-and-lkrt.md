@@ -240,6 +240,21 @@ str where a i64 is required` —— 而 `B::base` 在那个程序里**从来没�
 `param_ty` 现在对 impl 方法的参数 0 给 `MapStrDyn`:`self` 是结构体实例,
 调用点说什么都不改变这件事,**包括一个调用点都没有的时候**。
 
+同一个洞还有另一半:`self` 之外的参数。`fn add(self, x: String)` 没人调用时
+`x` 同样默认成 `I64` —— 而声明里就写着 `String`,`FunctionData` 却没有把参数
+类型带下来。与其把声明一路传下去,更正确的修法是**根本不给它降低**:impl
+方法之所以是 root,是因为 trait 分发经注册表到达它们、调用扫描看不见;而一个
+**没有任何调用点提到其名字**的方法,分发也到不了。`CallMethodK` 是唯一的方法
+调用 opcode 且方法名取自常量池,所以"哪些方法名会被调用"是可以精确算出来的
+(`called_method_names`)。
+
+**例外必须显式列出。** `show` 由显示点(`"${value}"`)到达,没有任何
+`CallMethodK` 提它 —— 把它从 root 里剪掉会留下悬空 callee,模块直接 MIR
+验证失败(`examples/syntax/macros.lk` 当场变红)。所以有一份
+`IMPLICIT_METHOD_HOOKS`,`lower_method::apply_show` 的查表和 root 计算**用的
+是同一个常量**,而不是两处各写一个 `"show"`。以后再加隐式钩子,只有一个地方
+要改。
+
 这条也是上面那条能生效的前提:诊断此前指不到人。impl 方法从来没有
 `debug_name`,所有关于它们的 AOT 报错都是光秃秃的 `an operand at pc 1 …`;
 现在它们叫 `Type::method`(`compile_impl_method_function_indexed`)。**是这个

@@ -124,7 +124,23 @@ pub fn lower_bundled(
     // (their `LoadFunction` sites are skipped), invisible to the CallDirect/
     // MakeClosure scan: root them like bundled imports.
     let traits = trait_env_prescan(module);
-    bundle_roots.extend(traits.impls.values().map(|&fidx| fidx as usize));
+    // Impl methods are roots because trait dispatch reaches them through the
+    // registration table, invisible to the call scan — but only the ones whose
+    // *name* some call site actually uses. A method nobody names is not
+    // reachable by dispatch either, and rooting it meant lowering a body with
+    // no call site to type its parameters: they fell back to `I64`, the body
+    // read a field, and the whole module dropped to Tier 0 because of a method
+    // nobody calls. `CallMethodK` takes its name from the constant pool, so
+    // this set is exact.
+    let mut called_methods = called_method_names(module);
+    called_methods.extend(IMPLICIT_METHOD_HOOKS.iter().map(|name| (*name).to_string()));
+    bundle_roots.extend(
+        traits
+            .impls
+            .iter()
+            .filter(|((_, method), _)| called_methods.contains(method))
+            .map(|(_, &fidx)| fidx as usize),
+    );
     let mut reachable = reachable_functions(module, &bundle_roots);
 
     let global_count = module.globals.len();
