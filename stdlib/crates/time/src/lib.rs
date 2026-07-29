@@ -73,7 +73,12 @@ fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
 }
 
 fn epoch_millis() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    // A clock set before 1970 answers `Err`, and unwrapping it aborted the
+    // process — every `time.*` call, on a machine whose clock is merely wrong.
+    // Zero is the epoch, which is what a pre-epoch clock is closest to.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {

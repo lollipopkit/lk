@@ -296,6 +296,25 @@ mod tests {
     /// to itself forever, and one no filesystem agrees with (`/..` is `/`).
     /// And a `..` popped whatever was last, including another `..`, so
     /// `../..` — two levels up — answered the empty string.
+    /// `i64::abs` panics on `Int::MIN` — there is no positive one — so
+    /// `math.abs` on that single value took the process down, which a script
+    /// cannot catch. Wrapping is the language's own rule for Int overflow, and
+    /// this *is* an Int overflow.
+    #[test]
+    fn test_math_abs_of_the_smallest_int_wraps_instead_of_aborting() -> Result<()> {
+        let out = run(r#"
+            use math;
+            let smallest = -9223372036854775807 - 1;
+            return [math.abs(smallest), math.abs(-5), math.abs(5)];
+            "#)?;
+        let list = runtime_list(out.first_return(), out.state.heap());
+        let TypedList::Int(values) = list else {
+            panic!("expected a list of ints, got {list:?}");
+        };
+        assert_eq!(values, &[i64::MIN, 5, 5]);
+        Ok(())
+    }
+
     #[test]
     fn test_path_normalize_cancels_only_named_components() -> Result<()> {
         let out = run(r#"

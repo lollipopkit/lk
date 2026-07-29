@@ -94,7 +94,11 @@ impl MathModule {
     #[stdlib_export(params(value: Int | Float), returns = Int | Float)]
     fn abs(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         match args.as_slice()[0] {
-            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.abs())),
+            // Wrapping, because that is the language's rule for Int overflow
+            // (`docs/semantics.md`) and `abs(Int::MIN)` is exactly that: there
+            // is no positive `Int::MIN`. `i64::abs` panicked instead, so
+            // `math.abs` on one value took the process down.
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.wrapping_abs())),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.abs())),
             _ => bail!("abs() argument must be a number"),
         }
