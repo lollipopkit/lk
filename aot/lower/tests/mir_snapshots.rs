@@ -30,17 +30,27 @@ fn assert_snapshot(source: &str, expected: &str) {
 }
 
 #[test]
+/// `/` yields a `Float`, so two `Int`s widen and divide as `f64`.
+///
+/// This snapshot used to hold `int.div … -> i64`, pinning the one place that
+/// disagreed with the rest of the language: the checker, the constant folder
+/// and the `dyn.*` helpers all said `/` produces a `Float`, and only the typed
+/// lowering (and the VM's typed fast path) divided as integers. A native
+/// `7 / 2` answered `3` where the VM answered `3.5`.
+#[test]
 fn straightline_division() {
     assert_snapshot(
         "let x = 20;\nlet y = 4;\nreturn x / y;\n",
         r#"
 mir module (abi v1)
-fn f0() -> i64 entry {
+fn f0() -> f64 entry {
 bb0():
   v0 = const.i64 20
   v1 = const.i64 4
-  v2 = int.div v0, v1
-  ret v2
+  v2 = sitofp v0
+  v3 = sitofp v1
+  v4 = float.div v2, v3
+  ret v4
 }
 "#,
     );

@@ -121,22 +121,22 @@ pub extern "C" fn lkrt_i64_mod_checked(lhs: i64, rhs: i64) -> i64 {
     lhs.wrapping_rem(rhs)
 }
 
-/// `lhs / rhs` for floats, aborting on a zero divisor to match the VM (which
-/// errors on float division by zero rather than producing infinity).
+/// `lhs / rhs` for floats — IEEE, so a zero divisor gives an infinity or a
+/// NaN rather than raising.
+///
+/// The name keeps `_checked` because it is the ABI symbol both backends were
+/// built against; there is nothing left to check. It used to raise, to match a
+/// VM that raised — and both were wrong about `Float`, which *is* `f64`.
+// TODO: rename to `lkrt_f64_div` once an ABI version bump is due anyway.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_div_checked(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        crate::panic::raise_str("Division by zero");
-    }
     lhs / rhs
 }
 
-/// `lhs % rhs` for floats, aborting on a zero divisor to match the VM.
+/// `lhs % rhs` for floats — IEEE, so a zero divisor gives a NaN.
+// TODO: rename to `lkrt_f64_mod` alongside `lkrt_f64_div_checked`.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_mod_checked(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        crate::panic::raise_str("Division by zero");
-    }
     lhs % rhs
 }
 

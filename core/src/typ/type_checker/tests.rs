@@ -72,16 +72,30 @@ fn test_numeric_auto_promotion() {
     assert_eq!(result_type, Type::Float);
 }
 
+/// `/` yields a `Float`, whatever it divides.
+///
+/// The checker always said this; the executors did not, and the constant
+/// folder said it only when the literals did *not* divide evenly. All four
+/// paths agree now, which is what this test is for.
 #[test]
 fn test_division_promotes_float() {
     let mut checker = TypeChecker::new();
-    let div_expr = Expr::Bin(
-        Box::new(Expr::Literal(LiteralVal::Int(3))),
-        BinOp::Div,
-        Box::new(Expr::Literal(LiteralVal::Int(2))),
-    );
-    let result_type = checker.check_expr(&div_expr).unwrap();
-    assert_eq!(result_type, Type::Float);
+    for (lhs, rhs) in [
+        (LiteralVal::Int(3), LiteralVal::Int(2)),
+        (LiteralVal::Int(20), LiteralVal::Int(4)),
+        (LiteralVal::Int(3), LiteralVal::Float(2.0)),
+    ] {
+        let div_expr = Expr::Bin(
+            Box::new(Expr::Literal(lhs.clone())),
+            BinOp::Div,
+            Box::new(Expr::Literal(rhs.clone())),
+        );
+        assert_eq!(
+            checker.check_expr(&div_expr).unwrap(),
+            Type::Float,
+            "{lhs:?} / {rhs:?} should be a Float"
+        );
+    }
 }
 
 #[test]

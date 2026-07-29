@@ -378,16 +378,6 @@ impl Executor {
             .map_err(|err| anyhow!("register {} expected Int or Float: {err}", register))
     }
 
-    #[inline(always)]
-    pub(super) fn read_number_unchecked(&self, register: u8) -> f64 {
-        let index = self.stack_index_unchecked(register);
-        match &self.state.stack[index] {
-            RuntimeVal::Int(value) => *value as f64,
-            RuntimeVal::Float(value) => *value,
-            _ => panic!("register {} expected Int or Float", register),
-        }
-    }
-
     pub(super) fn number_value(&self, value: &RuntimeVal) -> Result<f64> {
         match value {
             RuntimeVal::Int(value) => Ok(*value as f64),

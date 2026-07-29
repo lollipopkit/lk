@@ -31,7 +31,10 @@ mod tests {
         expect_expr("1 + 2", "3");
         expect_expr("1 - 2", "-1");
         expect_expr("2 * 3", "6");
+        // `/` yields a Float, so this is 1.5 rather than 1 — and `20 / 4` is
+        // `5.0`, which prints as `5` because a whole Float drops its fraction.
         expect_expr("3 / 2", "1.5");
+        expect_expr("20 / 4", "5");
     }
 
     #[test]

@@ -13,12 +13,20 @@
 | 程序 | 期望 stdout | 期望退出 | 说明 |
 |------|-------------|----------|------|
 | `return 7 % 3;` | `1` | 成功 | `%` 是 Int→Int(截断取余,同 Rust `%`) |
-| `return 20 / 4;` | `5` | 成功 | `/` 对 Int/Int **返回 Float**(类型层面);Float 值为整数时显示省略小数部分 |
+| `return 20 / 4;` | `5` | 成功 | `/` 对 Int/Int **返回 Float**;Float 值为整数时显示省略小数部分 |
+| `return 7 / 2;` | `3.5` | 成功 | 同上 —— 值也是 Float,不只是类型 |
+| `return 1 / 0;` | `inf` | 成功 | `/` 是浮点除法,除零按 IEEE 给 inf/NaN;`%` 对 Int 除零仍 raise |
 | `return 1.0 / 7.0;` | `0.14285714285714285` | 成功 | Float 显示 = Rust `f64` 的 `Display`(VM-exact,native 侧经 `lkrt_f64_to_str` 逐字节对齐) |
 | `return 5 + 7.5;` | `12.5` | 成功 | Int/Float 混合算术提升为 Float |
 
 注:`/` 产 Float 是整数中点必须写成 `math.floor((lo + hi) / 2)` 的原因
-(VM 侧 lower 为 `MidInt`)。
+(VM 侧 lower 为 `MidInt`)。更一般地,`math.floor(a / b)` **就是**整数除法
+——语言里没有别的写法——所以它 lower 为单条 `FloorDivInt`(向下取整,
+`math.floor(-7 / 2)` 是 `-4`;非 Int 操作数按 f64 除后取整)。
+
+这条规则曾经只有类型检查器和常量折叠认,两个执行器都做整数除法,
+于是同一个表达式字面量给 `3.5`、变量给 `3`;折叠还会看值定类型
+(`20 / 4` 折成 Int,`7 / 2` 折成 Float)。四条路径现已一致。
 
 ## 位运算与移位
 

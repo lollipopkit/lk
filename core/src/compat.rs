@@ -133,14 +133,14 @@ pub mod prelude {
 pub(crate) mod float {
     #[cfg(feature = "std")]
     #[inline]
-    pub(crate) fn fract(x: f64) -> f64 {
-        x.fract()
+    pub(crate) fn floor(x: f64) -> f64 {
+        x.floor()
     }
 
     #[cfg(not(feature = "std"))]
     #[inline]
-    pub(crate) fn fract(x: f64) -> f64 {
-        libm::modf(x).0
+    pub(crate) fn floor(x: f64) -> f64 {
+        libm::floor(x)
     }
 
     #[cfg(feature = "std")]

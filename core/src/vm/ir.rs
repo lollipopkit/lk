@@ -333,6 +333,15 @@ pub enum Opcode {
     /// Not `0 - B`: the two differ on floats, where `-0.0` is a value distinct
     /// from `0.0 - 0.0`, and negation is what the writer asked for.
     Neg = 107,
+    /// `A = floor(B / C)` on two `Int`s — the fused form of
+    /// `math.floor(a / b)`.
+    ///
+    /// Exists because `/` yields a `Float`, so this idiom is the only way to
+    /// write integer division and it would otherwise cost a float divide plus
+    /// a native call. Floor, not truncation: `math.floor(-7 / 2)` is `-4`.
+    /// Non-`Int` operands divide as `f64` and floor the result, which is what
+    /// `math.floor` would have answered.
+    FloorDivInt = 108,
 }
 
 impl Opcode {
@@ -450,6 +459,7 @@ impl Opcode {
             105 => Some(Self::CallMethodK),
             106 => Some(Self::CastTo),
             107 => Some(Self::Neg),
+            108 => Some(Self::FloorDivInt),
             _ => None,
         }
     }

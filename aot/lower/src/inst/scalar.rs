@@ -320,6 +320,84 @@ pub(super) fn lower(
                 }
             }
         }
+        // `A = floor(B / C)` on two `Int`s — the fused `math.floor(a / b)`.
+        //
+        // Floor, not truncation, so the truncating quotient is corrected by one
+        // when the operands' signs differ and the division was not exact.
+        // `(a ^ b) < 0` is that sign test.
+        Opcode::FloorDivInt => {
+            let lhs = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+            let rhs = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+            let quotient = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: quotient,
+                op: IntBinOp::Div,
+                lhs,
+                rhs,
+            });
+            let remainder = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: remainder,
+                op: IntBinOp::Mod,
+                lhs,
+                rhs,
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let inexact = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: inexact,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: remainder,
+                rhs: zero,
+            });
+            let signs = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: signs,
+                op: IntBinOp::Xor,
+                lhs,
+                rhs,
+            });
+            let opposite = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: opposite,
+                op: CmpOp::Lt,
+                float: false,
+                lhs: signs,
+                rhs: zero,
+            });
+            let adjust = ssa.new_val();
+            insts.push(Inst::BoolAnd {
+                dst: adjust,
+                lhs: inexact,
+                rhs: opposite,
+            });
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let lowered = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: lowered,
+                op: IntBinOp::Sub,
+                lhs: quotient,
+                rhs: one,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Select {
+                dst,
+                cond: adjust,
+                then_v: lowered,
+                else_v: quotient,
+                ty: Ty::I64,
+            });
+            ssa.write(instr.a(), block, (dst, Ty::I64));
+        }
         Opcode::Neg => {
             // `-x`: `a` = dst, `b` = src. Integers negate as `0 - x` (exact,
             // and it wraps at `i64::MIN` exactly as the VM's `wrapping_neg`
@@ -497,6 +575,25 @@ pub(super) fn lower(
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
             match (lty, rty) {
+                // `/` yields a `Float` even for two `Int`s — the rule the
+                // checker, the constant folder and the `dyn` helpers above all
+                // state, and the one place that used to ignore it. Lowering it
+                // as `IntBin::Div` made a *native* `7 / 2` answer `3` where the
+                // VM answers `3.5`, and `1 / 0` abort where the VM says `inf`.
+                (Ty::I64, Ty::I64) if op == Opcode::DivInt => {
+                    let lhs = ssa.new_val();
+                    insts.push(Inst::IntToFloat { dst: lhs, src: lv });
+                    let rhs = ssa.new_val();
+                    insts.push(Inst::IntToFloat { dst: rhs, src: rv });
+                    let dst = ssa.new_val();
+                    insts.push(Inst::FloatBin {
+                        dst,
+                        op: FloatBinOp::Div,
+                        lhs,
+                        rhs,
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::F64));
+                }
                 (Ty::I64, Ty::I64) => {
                     let dst = ssa.new_val();
                     insts.push(Inst::IntBin {

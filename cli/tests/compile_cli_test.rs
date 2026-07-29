@@ -860,7 +860,11 @@ fn test_try_catch_is_a_statement_not_a_closure() {
     write_file(
         &dir,
         "outer.lk",
-        "let t = 0;\nfor i in 0..100 {\n  try { t += i / 0; } catch e { t += 1; }\n}\nprintln(t);\n",
+        // `% 0` rather than `/ 0`: `/` yields a Float, so dividing by zero is
+        // an infinity now and raises nothing. Integer remainder still has no
+        // answer at zero, which is what this case needs — it is about try's
+        // scoping, not about division.
+        "let t = 0;\nfor i in 0..100 {\n  try { t += i % 0; } catch e { t += 1; }\n}\nprintln(t);\n",
     );
     let out = run_cli(&dir, ["outer.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -905,7 +909,7 @@ fn test_try_catch_is_a_statement_not_a_closure() {
         &dir,
         "shadow.lk",
         "fn f() {\n  let e = 0;\n  let bump = || { e = e + 1; };\n  bump();\n\
-         try { 1 / 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
+         try { 1 % 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
     );
     let out = run_cli(&dir, ["shadow.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -920,7 +924,7 @@ fn test_try_catch_is_a_statement_not_a_closure() {
     write_file(
         &dir,
         "bind.lk",
-        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 / 0; } catch e { println(typeof(e)); }\n",
+        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 % 0; } catch e { println(typeof(e)); }\n",
     );
     let out = run_cli(&dir, ["bind.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

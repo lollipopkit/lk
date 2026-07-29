@@ -385,13 +385,10 @@ pub extern "C" fn lkrt_dyn_mul(a: LkDyn, b: LkDyn) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
-        (Some(x), Some(y)) => {
-            let rhs = y.as_f64();
-            if rhs == 0.0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_f64(x.as_f64() / rhs)
-        }
+        // `/` yields a `Float` for every numeric pair, and `f64` division by
+        // zero is an infinity or a NaN rather than a raise — the same as the
+        // VM, which this file exists to mirror.
+        (Some(x), Some(y)) => from_f64(x.as_f64() / y.as_f64()),
         _ => crate::panic::raise_str("runtime type error"),
     }
 }
@@ -399,19 +396,9 @@ pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_mod(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => {
-            if y == 0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_i64(x.wrapping_rem(y))
-        }
-        (Some(x), Some(y)) => {
-            let rhs = y.as_f64();
-            if rhs == 0.0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_f64(x.as_f64() % rhs)
-        }
+        (Some(Numeric::Int(_)), Some(Numeric::Int(0))) => crate::panic::raise_str("ModInt divisor is zero"),
+        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_rem(y)),
+        (Some(x), Some(y)) => from_f64(x.as_f64() % y.as_f64()),
         _ => crate::panic::raise_str("runtime type error"),
     }
 }
@@ -1161,10 +1148,17 @@ mod tests {
         let mixed = unsafe { lkrt_dyn_add(lkrt_dyn_from_i64(2), lkrt_dyn_from_f64(0.5)) };
         assert_eq!(mixed.tag, DYN_F64);
         assert_eq!(mixed.f64_value(), 2.5);
-        // `/` always yields Float (semantics.md 数值).
+        // `/` yields a Float, even for two Ints — the rule the checker always
+        // stated and that both executors now implement.
         let div = lkrt_dyn_div(lkrt_dyn_from_i64(20), lkrt_dyn_from_i64(4));
         assert_eq!(div.tag, DYN_F64);
         assert_eq!(div.f64_value(), 5.0);
+        let fractional = lkrt_dyn_div(lkrt_dyn_from_i64(7), lkrt_dyn_from_i64(2));
+        assert_eq!(fractional.f64_value(), 3.5);
+        // And `f64` division by zero is an infinity rather than a raise.
+        let infinite = lkrt_dyn_div(lkrt_dyn_from_i64(1), lkrt_dyn_from_i64(0));
+        assert_eq!(infinite.tag, DYN_F64);
+        assert!(infinite.f64_value().is_infinite());
         let cat = unsafe { lkrt_dyn_add(s("foo"), s("bar")) };
         assert_eq!(cat.tag, DYN_STR);
         assert_eq!(text(cat.payload as *mut c_char), "foobar");

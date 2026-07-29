@@ -252,21 +252,14 @@ impl Executor {
     pub(super) fn dynamic_div(&mut self, instr: Instr) -> Result<()> {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
-            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("DivInt divisor is zero"),
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs / rhs),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
-                if *rhs == 0.0 {
-                    bail!("DivInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs as f64 / *rhs)
-            }
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
-                if *rhs == 0 {
-                    bail!("DivInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs / *rhs as f64)
-            }
-            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("DivInt divisor is zero"),
+            // Every combination divides as `f64` — `/` yields a `Float` — so a
+            // zero divisor is an infinity or a NaN, both of which LK already
+            // has (`math.inf`, `math.nan`). This path used to raise for all
+            // four, with a message naming `DivInt` even when neither operand
+            // was one, *and* to divide two `Int`s as integers.
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs as f64),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs / *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs / *rhs),
             (lhs, rhs) => bail!(
                 "{:?} expected Int or Float, got {:?} and {:?}",
@@ -285,21 +278,11 @@ impl Executor {
     pub(super) fn dynamic_mod(&mut self, instr: Instr) -> Result<()> {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
+            // As `dynamic_div`: only `Int % Int` has no answer.
             (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
             (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs % rhs),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
-                if *rhs == 0.0 {
-                    bail!("ModInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs as f64 % *rhs)
-            }
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
-                if *rhs == 0 {
-                    bail!("ModInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs % *rhs as f64)
-            }
-            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("ModInt divisor is zero"),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 % *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs % *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
             (lhs, rhs) => bail!(
                 "{:?} expected Int or Float, got {:?} and {:?}",

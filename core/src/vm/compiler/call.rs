@@ -306,6 +306,13 @@ impl Compiler {
         if self.try_lower_int_midpoint_to_register(dst, &args[0])? {
             return Ok(dst);
         }
+        // `math.floor(a / b)` is the only way to write integer division now
+        // that `/` yields a `Float`, so it gets one instruction. Reached from
+        // here as well as from `lower_into`, because an operand position
+        // (`sub - math.floor(sub / 10)`) never goes through that path.
+        if self.try_lower_int_floor_div_to_register(dst, &args[0])? {
+            return Ok(dst);
+        }
         self.next_reg = watermark;
         let arg = self.lower_readonly_operand(&args[0])?;
         if self.function.performance.value_kind(arg) == PerfValueKind::Int {

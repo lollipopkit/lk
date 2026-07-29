@@ -570,14 +570,17 @@ impl Executor {
                         }
                     }
                 }
+                // `/` is float division whatever the operands are — see
+                // `check_numeric_binary` for why the runtime moved to the
+                // checker's rule rather than the reverse. Two `Int`s divide as
+                // `f64`, so a zero divisor is an infinity, not an error.
                 Opcode::DivInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
                     let rhs = &self.state.stack[rhs_idx];
                     match (lhs, rhs) {
-                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("DivInt divisor is zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            self.state.stack[dst] = RuntimeVal::Int(*l / *r);
+                            self.state.stack[dst] = RuntimeVal::Float(*l as f64 / *r as f64);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
@@ -619,31 +622,43 @@ impl Executor {
                     self.float_binary(instr, |lhs, rhs| lhs * rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                 }
+                // Float division by zero is IEEE's answer, not an error.
+                //
+                // `Float` *is* `f64`, and `1.0 / 0.0` is `inf` there. LK
+                // already admits both results as values — `math.inf` and
+                // `math.nan` are constants, and `math.nan + 1` propagates
+                // silently — so raising here protected nothing; it only made
+                // the natural way to reach them the one spelling that failed.
+                // Integer *remainder* still raises: `1 % 0` has no answer, and
+                // `%` — unlike `/` — keeps the operand type.
                 Opcode::DivFloat => {
-                    let lhs = self.read_number_unchecked(instr.b());
-                    let rhs = self.read_number_unchecked(instr.c());
-                    if rhs == 0.0 {
-                        bail!("DivFloat divisor is zero");
-                    }
-                    self.write_unchecked(instr.a(), RuntimeVal::Float(lhs / rhs));
+                    self.float_binary(instr, |lhs, rhs| lhs / rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
-                    self.pc += 1;
                 }
                 Opcode::ModFloat => {
-                    let lhs = self.read_number_unchecked(instr.b());
-                    let rhs = self.read_number_unchecked(instr.c());
-                    if rhs == 0.0 {
-                        bail!("ModFloat divisor is zero");
-                    }
-                    self.write_unchecked(instr.a(), RuntimeVal::Float(lhs % rhs));
+                    self.float_binary(instr, |lhs, rhs| lhs % rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
-                    self.pc += 1;
                 }
                 Opcode::Not => {
                     self.dispatch_cold(Opcode::Not, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::Neg => {
                     self.dispatch_cold(Opcode::Neg, function, module, instr, ctx, collect_metrics)?;
+                }
+                Opcode::FloorDivInt => {
+                    let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("FloorDivInt divisor is zero"),
+                        (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
+                            self.state.stack[dst] = RuntimeVal::Int(l.div_euclid(*r));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        _ => {
+                            self.dispatch_floor_div_int(instr)?;
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                        }
+                    }
                 }
                 // Casts are a cold path: driver-ish code does them at
                 // boundaries, not in inner loops.

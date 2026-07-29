@@ -401,7 +401,39 @@ mod behaviour {
                let p = P { a: 1 };
                return "${p}";"#,
         ),
+        // Every container renders what is in it. `Bytes` used to answer
+        // `<Bytes 2 bytes>` — a count — so the only way to see a byte buffer
+        // was to convert it, and no test anywhere said what it should look
+        // like, which is why the count survived the round that unified the
+        // renderers.
+        (
+            "bytes render their contents",
+            r#"use bytes;
+               let b = bytes.from_list([104, 105]);
+               return "${b} ${[b]} ${bytes.from_list([])}";"#,
+        ),
     ];
+
+    /// The corpus is only worth its comparison if the programs actually run.
+    ///
+    /// Three hosts that all *fail* the same way agree, vacuously. This pins the
+    /// one answer that a reader would otherwise have to trust — and it is the
+    /// case with no other test in the tree, which is how `<Bytes 2 bytes>`
+    /// survived the round that unified the renderers.
+    #[test]
+    fn the_corpus_programs_produce_the_answers_they_claim() {
+        assert_eq!(
+            desktop(
+                r#"use bytes;
+                   let b = bytes.from_list([104, 105]);
+                   return "${b} ${[b]} ${bytes.from_list([])}";"#
+            ),
+            "ok: Bytes([104,105]) [Bytes([104,105])] Bytes([])",
+            "a byte buffer should render its contents, like every other container"
+        );
+        assert_eq!(desktop("return [1, 2];"), "ok: [1,2]");
+        assert_eq!(desktop(r#"return {"a": 1};"#), r#"ok: {"a":1}"#);
+    }
 
     #[test]
     fn every_host_answers_the_same() {

@@ -769,14 +769,10 @@ fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     }
 
     match (lhs, rhs) {
-        (LiteralVal::Int(a), LiteralVal::Int(b)) => {
-            let result = (*a as f64) / (*b as f64);
-            if crate::compat::float::fract(result) == 0.0 {
-                Some(LiteralVal::Int(result as i64))
-            } else {
-                Some(LiteralVal::Float(result))
-            }
-        }
+        // `Int / Int` is a `Float`, always. This used to keep the quotient as
+        // an `Int` when it came out whole, so the *values* picked the *type*:
+        // `20 / 4` folded to `Int` and `7 / 2` to `Float`.
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(*a as f64 / *b as f64)),
         _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
     }
 }

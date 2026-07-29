@@ -11,6 +11,9 @@
 //! | map | `{"a":1}` | `{a: 1}` |
 //! | bytes | `<Bytes 2 bytes>` | `<value>` |
 //!
+//! (Bytes now renders its contents, `Bytes([104, 105])`, like every other
+//! container — neither of the two old answers said what was in it.)
+//!
 //! The standard library's is the one every test and differential comparison
 //! pins, so it is the one that moved here — where core can use it and the
 //! standard library can call back into it. `show` dispatch stays a layer up in
@@ -74,7 +77,7 @@ pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<Str
 fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<String> {
     match value {
         HeapValue::String(value) => Ok(value.to_string()),
-        HeapValue::Bytes(value) => Ok(format!("<Bytes {} bytes>", value.len())),
+        HeapValue::Bytes(value) => Ok(runtime_display_bytes(value)),
         HeapValue::List(values) => runtime_display_list(values, heap),
         HeapValue::Slice(slice) => runtime_display_slice(slice, heap),
         HeapValue::Map(values) => runtime_display_map(values, heap),
@@ -94,6 +97,24 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         other => Ok(format!("<{}>", other.type_name())),
     }
 }
+/// `Bytes([104, 105])` — the contents, in the shape `Set` already uses.
+///
+/// It used to be `<Bytes 2 bytes>`: a count where every other container shows
+/// what is in it, so the one way to see a byte buffer was to convert it
+/// (`b.to_list()`), and printing one while debugging told you nothing. The
+/// wrapper keeps it distinct from the list `[104, 105]`, which is a different
+/// value.
+fn runtime_display_bytes(value: &[u8]) -> String {
+    let mut out = String::from("Bytes([");
+    let mut first = true;
+    for byte in value {
+        push_display_sep(&mut out, &mut first);
+        let _ = write!(out, "{byte}");
+    }
+    out.push_str("])");
+    out
+}
+
 fn runtime_display_set(values: &RuntimeSet) -> Result<String> {
     let mut out = String::from("Set(");
     out.push('[');

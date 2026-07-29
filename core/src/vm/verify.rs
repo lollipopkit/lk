@@ -195,6 +195,7 @@ impl FunctionVerifier<'_> {
                 | Opcode::SubInt
                 | Opcode::MulInt
                 | Opcode::DivInt
+                | Opcode::FloorDivInt
                 | Opcode::ModInt
                 | Opcode::AddMulInt
                 | Opcode::Add2Int

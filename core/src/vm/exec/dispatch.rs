@@ -181,6 +181,28 @@ impl Executor {
     /// Deliberately not lowered as `0 - B`: floats have two zeros, and
     /// `-(0.0)` is `-0.0` while `0.0 - 0.0` is `0.0`. Negating `Int::MIN`
     /// wraps, the same as every other integer overflow in the VM.
+    /// `A = floor(B / C)` — the fused `math.floor(a / b)`.
+    ///
+    /// Two `Int`s take the integer path, which is *floor* rather than
+    /// truncation: `-7 / 2` floors to `-4` where Rust's `/` gives `-3`.
+    /// Anything else divides as `f64` and floors that, which is exactly what
+    /// the `math.floor` call this replaces would have answered.
+    pub(super) fn dispatch_floor_div_int(&mut self, instr: Instr) -> Result<()> {
+        let (dst, lhs_idx, rhs_idx) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("FloorDivInt divisor is zero"),
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.div_euclid(*rhs)),
+            (lhs, rhs) => {
+                let lhs = self.number_value(lhs)?;
+                let rhs = self.number_value(rhs)?;
+                RuntimeVal::Int(crate::compat::float::floor(lhs / rhs) as i64)
+            }
+        };
+        self.write_stack_index(dst, value);
+        self.pc += 1;
+        Ok(())
+    }
+
     pub(super) fn dispatch_neg(&mut self, instr: Instr) -> Result<()> {
         let index = self.stack_index_unchecked(instr.b());
         let value = match &self.state.stack[index] {
@@ -650,6 +672,9 @@ impl Executor {
             }
             Opcode::Neg => {
                 self.dispatch_neg(instr)?;
+            }
+            Opcode::FloorDivInt => {
+                self.dispatch_floor_div_int(instr)?;
             }
             Opcode::CastTo => {
                 self.dispatch_cast(instr)?;

@@ -893,7 +893,8 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        expect_result_int(&result, 5);
+        // `/` yields a Float, so `/=` does too: `15 / 3` is `5.0`, not `5`.
+        expect_result_float(&result, 5.0);
     }
 
     #[test]
@@ -966,12 +967,12 @@ mod tests {
             x += 5;   // x = 15
             x *= 2;   // x = 30
             x -= 10;  // x = 20
-            x /= 4;   // x = 5
+            x /= 4;   // x = 5.0 — `/` yields a Float
             return x;
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        expect_result_int(&result, 5);
+        expect_result_float(&result, 5.0);
     }
 
     #[test]

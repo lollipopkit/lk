@@ -404,7 +404,13 @@ fn inline_dead_expr_is_supported(expr: &Expr) -> bool {
 
 fn inline_expr_is_supported(expr: &Expr) -> bool {
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::OptionalAccess(inner, _) => inline_expr_is_supported(inner),
+        // `Cast` belongs with the other transparent wrappers. Leaving it out
+        // made any function containing an `as` conversion un-inlinable, which
+        // is not a property of casts — the two traversals below already treat
+        // it exactly this way.
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) | Expr::OptionalAccess(inner, _) => {
+            inline_expr_is_supported(inner)
+        }
         Expr::Literal(_) | Expr::Var(_) => true,
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)

@@ -6,7 +6,7 @@ use super::*;
 /// `v` itself, a `raise`/message raise binds the message string, and **any other
 /// runtime error** also binds its message. That last case is not an extra: the
 /// parse-time desugar ran the body under `pcall`, which catches every `Err`, so
-/// `try { 1 / 0 } catch e` has always been caught even though `DivInt divisor is
+/// `try { 1 % 0 } catch e` has always been caught even though `ModInt divisor is
 /// zero` is a plain `bail!` and not a raise at all.
 enum RaiseKind {
     Message(alloc::sync::Arc<str>),
@@ -336,7 +336,7 @@ impl Executor {
         }
         // First: a handler installed in the frame that actually faulted. Nothing
         // is popped in that case, so the loop below would never see it — this is
-        // the `try { 1 / 0 } catch e` shape, where the error is a plain `bail!`
+        // the `try { 1 % 0 } catch e` shape, where the error is a plain `bail!`
         // from the arithmetic opcode rather than a raise.
         if let Some(index) = self
             .handler_stack

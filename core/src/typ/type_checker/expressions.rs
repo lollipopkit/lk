@@ -1242,6 +1242,23 @@ impl TypeChecker {
         let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "左侧")?;
         let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "右侧")?;
 
+        // `/` yields a `Float`, even for two `Int`s.
+        //
+        // That was always the design — `docs/semantics.md` states it and
+        // explains the consequence (an integer midpoint has to be written
+        // `math.floor((lo + hi) / 2)`), and `examples/syntax/operators.lk`
+        // asserts `15 / 4 > 3.7`. Only the *executor* never implemented it:
+        // both backends divided as integers, and the constant folder split the
+        // difference by keeping an `Int` when the literals happened to divide
+        // evenly. So one expression had three answers:
+        //
+        // ```text
+        // println(7 / 2);                        → 3.5   (folded)
+        // let a = 7; let b = 2; println(a / b);  → 3     (runtime)
+        // ```
+        //
+        // The runtimes moved to this rule rather than the other way around:
+        // this one is what the language says it is, in three places.
         let mut result_class = NumericHierarchy::result(left_class, right_class);
         if matches!(op, BinOp::Div) && result_class == NumericClass::Int {
             result_class = NumericClass::Float;

@@ -234,7 +234,10 @@ fn compiler_inlines_direct_function_with_while_early_return() {
             let lo = 0;
             let hi = limit - 1;
             while (lo <= hi) {
-                let mid = (lo + hi) / 2;
+                // `/` yields a Float, so an integer midpoint has to say so.
+                // (`math.floor` is the idiom; this crate's tests have no
+                // standard library, so the cast stands in for it.)
+                let mid = ((lo + hi) / 2) as Int;
                 let value = mid * 2;
                 if value == target {
                     return mid;
