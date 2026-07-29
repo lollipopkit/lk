@@ -237,11 +237,29 @@ pub(super) fn lower(
                 // a hidden trailing argument.
                 Some(GlobalRef::Closure(fidx, captures)) => {
                     let mut resolved = Vec::with_capacity(captures.len());
-                    for capture in &captures {
+                    // A capture the body *assigns* to travels as a runtime cell
+                    // this call site seeds and reads back afterwards
+                    // (`SigInfer::cell_captures`); one it only reads keeps
+                    // passing as a plain value.
+                    let mut writebacks: Vec<(u32, ValueId)> = Vec::new();
+                    for (k, capture) in captures.iter().enumerate() {
                         let (v, ty) = match capture {
                             ClosureCapture::Cell(cid) => {
                                 let slot = ssa.cell_slot(*cid);
-                                ssa.read_slot(slot, block, pc)?
+                                let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
+                                if sig.cell_captures.contains(&(fidx, k)) {
+                                    let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
+                                    let cell = ssa.new_val();
+                                    insts.push(Inst::Call {
+                                        dst: Some(cell),
+                                        callee: AbiRef::new("rt", "cell_new"),
+                                        args: vec![boxed],
+                                    });
+                                    writebacks.push((*cid, cell));
+                                    (cell, Ty::Cell)
+                                } else {
+                                    (cur, cur_ty)
+                                }
                             }
                             ClosureCapture::Value(v, ty) => (*v, *ty),
                         };
@@ -263,6 +281,18 @@ pub(super) fn lower(
                         block,
                         pc,
                     )?;
+                    // Re-sync the parent's tracked cell content from the cell
+                    // the callee wrote through.
+                    for (cid, cell) in writebacks {
+                        let cur = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(cur),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![cell],
+                        });
+                        let slot = ssa.cell_slot(cid);
+                        ssa.write_slot(slot, block, (cur, Ty::Dyn));
+                    }
                 }
                 // A plain function value, called through the register the
                 // bytecode had to load it into. No captures: a `fn` has none.

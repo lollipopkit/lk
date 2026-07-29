@@ -35,6 +35,9 @@ pub(crate) struct LowerCtx<'a> {
     pub(crate) sig: &'a mut SigInfer,
     /// The function being lowered (constant pools, performance facts).
     pub(crate) func: &'a FunctionData,
+    /// Its index in `funcs` — what a fact recorded *about this function* is
+    /// keyed by (see [`SigInfer::cell_captures`]).
+    pub(crate) func_index: u32,
     /// Every function in the module (call targets, capture counts).
     pub(crate) funcs: &'a [FunctionData],
     /// The module's entry function index.

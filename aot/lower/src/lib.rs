@@ -163,6 +163,7 @@ pub fn lower_bundled(
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
+        cell_captures: std::collections::HashSet::new(),
         ret_structs: std::collections::HashMap::new(),
         imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,

@@ -370,3 +370,31 @@ VM 怎么答 —— 对照的基准永远是 VM,不是"看起来该能行"。
 - **`chan.new` + `send`/`recv`**:`register r2 is read at pc 2 before any
   definition`。
 - **`"hi".bytes()`**:`Call` 不可降低。
+
+## 13. 闭包改自己捕获的变量(2026-07-30)
+
+`let add = |v| { acc = acc + v; };` —— 一个累加闭包,也就是闭包这件事本身最
+常见的用法 —— 让**整个程序**掉回 VM。
+
+捕获走的是隐藏尾参:调用点把 cell 的**当前内容**取出来传进去。对只读的捕获
+这是对的,对写的捕获则是"写没有落点",于是 `StoreCellVal` 那条臂上写着"a
+by-value capture parameter has no write-back path"直接拒绝。
+
+要的载体其实早就有:`Ty::Cell`(`rt.cell_new/get/set`),`try` 体对外层局部量
+赋值就是靠它跨边界的。缺的只是**判据** —— 哪个捕获需要它。
+
+判据没有去字节码上猜寄存器出身(`LoadCapture` 落到哪个寄存器、`Move` 传到
+哪),而是用降低本身已有的收敛回路,和 `dyn_rets`/`try_body_params` 同一个
+办法:体降低到那条赋值,发现捕获是按值来的,就把 `(函数, 捕获下标)` 记进
+`SigInfer::cell_captures` 并请求重试;下一趟调用方看到这条事实,seed 一个
+`rt.cell_new`、按 `Ty::Cell` 传、调用后 `cell_get` 读回父函数的槽。事实来自
+"体真的降低到了那里",不来自猜。
+
+一个坑:`param_obs` 跨趟只增不清,所以第一趟按值观测到的 `I64` 会和 `Cell`
+join 成 `Dyn`,调用点连 cell 指针都塞不进去。因此记事实的同时要把那个参数槽
+**pin** 成 `Ty::Cell`(`SigInfer::require_cell_capture`)。
+
+只读捕获仍按值传 —— 一个只读的捕获被拖进 cell 是白付一次装箱。
+
+**还没通的**:内层 lambda 写外层 lambda 的捕获(捕获链要一级级传下去),见
+todos #87。

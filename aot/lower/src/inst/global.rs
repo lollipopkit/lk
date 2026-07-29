@@ -14,6 +14,8 @@ pub(super) fn lower(
     let sig = &mut *ctx.sig;
     let module_globals = ctx.module_globals;
     let capture_params = ctx.capture_params;
+    let ctx_func_index = ctx.func_index;
+    let ctx_param_count = ctx.func.param_count as usize;
     match instr.opcode() {
         Opcode::LoadCapture => {
             // `a` = dst, `bx` = capture index. Captures are cells: the loaded
@@ -87,8 +89,18 @@ pub(super) fn lower(
                         let (v, ty) = ssa.read(instr.b(), block, pc)?;
                         let slot = ssa.cellparam_slot(k);
                         ssa.write_slot(slot, block, (v, ty));
+                    } else if sig.require_cell_capture(ctx_func_index as usize, ctx_param_count, k) {
+                        // First sight of an assignment to a by-value capture:
+                        // record that this capture has to be a runtime cell and
+                        // ask for a retry, so the caller seeds one. Same
+                        // discovery loop as `dyn_rets`/`try_body_params` — the
+                        // fact comes from the body actually lowering, not from
+                        // guessing which register holds which capture.
+                        return Err(Unsupported::TypeMismatch { pc });
                     } else {
-                        // A by-value capture parameter has no write-back path.
+                        // Already recorded and the parameter still came in by
+                        // value: the caller cannot give this capture a cell
+                        // (e.g. it is not a `MakeClosure` cell at all).
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     }
                 }

@@ -90,6 +90,21 @@ pub(crate) struct SigInfer {
     /// nullable carrier): the next fixpoint pass boxes every return point,
     /// making the function return `Dyn` instead of rejecting the module.
     pub(crate) dyn_rets: std::collections::HashSet<u32>,
+    /// `(function, capture index)` pairs that must travel as a **runtime cell**
+    /// rather than by value, because the body assigns to them.
+    ///
+    /// A closure's captures are hidden trailing arguments holding the cell's
+    /// content at the call site — right for a capture the body reads, and with
+    /// nowhere to put a write. So `|v| { acc = acc + v; }`, which is most of
+    /// what a closure is for, dropped the whole program to the VM.
+    ///
+    /// Discovered the same way `dyn_rets` and `try_body_params` are: the body
+    /// is lowered, the assignment finds a by-value capture, records the pair
+    /// and asks for a retry. The next pass has the caller seed an `rt.cell_new`
+    /// and read it back — the same carrier a `try` body's outer assignment
+    /// already crosses on. Nothing guesses at the bytecode's register
+    /// provenance, and a read-only capture keeps passing as a plain value.
+    pub(crate) cell_captures: std::collections::HashSet<(u32, usize)>,
     /// Per function: the struct its returns are known to construct.
     ///
     /// A type's *name* only ever entered the lowering from a `NewObject`
@@ -222,6 +237,24 @@ impl SigInfer {
             }
             None => obs,
         }
+    }
+
+    /// Records that capture `k` of `callee` has to arrive as a runtime cell,
+    /// and **pins** its parameter slot to [`Ty::Cell`].
+    ///
+    /// The pin is the point: `param_obs` accumulates across fixpoint passes and
+    /// never resets, so the by-value type observed before the body's assignment
+    /// was seen would join with `Cell` to `Dyn` and the call site would then
+    /// fail to coerce the cell pointer at all. Returns whether this is new
+    /// information (the caller retries when it is).
+    pub(crate) fn require_cell_capture(&mut self, callee: usize, param_count: usize, k: usize) -> bool {
+        let fresh = self.cell_captures.insert((callee as u32, k));
+        if let Some(slot) = self.param_obs.get_mut(callee).and_then(|p| p.get_mut(param_count + k)) {
+            let changed = *slot != Some(Ty::Cell);
+            *slot = Some(Ty::Cell);
+            return fresh || changed;
+        }
+        fresh
     }
 
     pub(crate) fn gvar(&self, slot: u16) -> u32 {

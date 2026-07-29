@@ -521,6 +521,7 @@ pub(crate) fn lower_function(
                     globals,
                     sig,
                     func,
+                    func_index,
                     funcs,
                     entry,
                     module_globals,

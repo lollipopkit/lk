@@ -46,4 +46,29 @@ fn process_list(xs) {
 }
 assert(process_list([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) == 371);
 
+// 8. Closures may *assign* to what they captured — the capture is a shared
+// mutable cell, so every call and the enclosing scope see the same variable.
+let hits = 0;
+let bump = |n| { hits = hits + n; return hits; };
+assert(bump(1) == 1);
+assert(bump(2) == 3);
+assert(hits == 3);
+
+// Two closures over one variable share it.
+let count = 0;
+let inc = || { count = count + 1; };
+let dec = || { count = count - 1; };
+for i in 0..5 { inc(); }
+dec();
+assert(count == 4);
+
+// A written capture and a read-only one side by side.
+let base = 10;
+let total = 0;
+let accumulate = |v| { total = total + v + base; };
+accumulate(1);
+accumulate(2);
+assert(total == 23);
+assert(base == 10);
+
 println("closure: all assertions passed");

@@ -1418,6 +1418,56 @@ fn try_catch_differential() {
     );
 }
 
+/// Closures that **assign** to what they captured.
+///
+/// A capture travelled as a hidden trailing argument holding the cell's content
+/// at the call site — right for one the body reads, with nowhere to put a
+/// write. So an accumulating closure, which is most of what closures are for,
+/// dropped the whole program to the VM. Pinned to pure Cranelift: the bug is a
+/// silent fallback, so "both print 7" is not the property under test.
+#[test]
+fn a_closure_may_assign_to_its_capture() {
+    run_differential(
+        "mutable_captures",
+        &[
+            new(
+                "accumulate_int",
+                "let acc = 0;\nlet add = |v| { acc = acc + v; };\nadd(3);\nadd(4);\nprintln(acc);\nreturn 0;\n",
+            ),
+            // The closure both reads and returns the capture it wrote.
+            new(
+                "read_write_and_return",
+                "let hits = 0;\nlet bump = |n| { hits = hits + n; return hits; };\nprintln(bump(1));\nprintln(bump(2));\nprintln(hits);\nreturn 0;\n",
+            ),
+            // Non-integer carriers: a string rebuilt, a bool flipped, a float
+            // scaled. Each boxes through the cell and comes back.
+            new(
+                "string_bool_float_captures",
+                "let log = \"\";\nlet flag = false;\nlet f = 0.5;\nlet step = |s| { log = log + s + \";\"; flag = !flag; f = f * 2.0; };\nstep(\"a\");\nstep(\"b\");\nprintln(log);\nprintln(flag);\nprintln(f);\nreturn 0;\n",
+            ),
+            // One capture written, one only read — the read-only one must keep
+            // passing by value rather than being dragged into a cell.
+            new(
+                "written_and_read_only_captures",
+                "let base = 10;\nlet total = 0;\nlet add = |v| { total = total + v + base; };\nadd(1);\nadd(2);\nprintln(total);\nprintln(base);\nreturn 0;\n",
+            ),
+            // Two closures sharing one cell, and a call inside a loop (the
+            // write-back has to survive the loop-header phi).
+            new(
+                "two_closures_one_cell_in_a_loop",
+                "let n = 0;\nlet inc = || { n = n + 1; };\nlet dec = || { n = n - 1; };\nfor i in 0..5 { inc(); }\ndec();\nprintln(n);\nreturn 0;\n",
+            ),
+            // A rebinding write, not a mutation through the handle: the cell
+            // carries a whole new list.
+            new(
+                "capture_rebound_to_a_new_list",
+                "let xs = [1];\nlet reset = || { xs = [9, 9]; };\nreset();\nprintln(xs);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// The `chan` module's own spelling, pinned to pure Cranelift.
 ///
 /// The surrounding channel cases allow degradation because raises through
