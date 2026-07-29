@@ -204,15 +204,14 @@ pub(super) fn dispatch_list_builtin_method(
                     positional.len()
                 );
             }
-            let start = list_index_arg(&positional[0], "list.slice() start")?;
             let source_len = clone_list(receiver, heap)?.len();
+            let start = super::slice_position(&positional[0], source_len, "list.slice() start")?;
             let end = match positional.get(1) {
-                Some(value) => list_index_arg(value, "list.slice() end")?,
-                None => source_len,
+                Some(RuntimeVal::Nil) | None => source_len,
+                Some(value) => super::slice_position(value, source_len, "list.slice() end")?,
             };
             // Clamped, like every other position in this language.
-            let start = start.min(source_len);
-            let end = end.clamp(start, source_len);
+            let end = end.max(start);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: *receiver,

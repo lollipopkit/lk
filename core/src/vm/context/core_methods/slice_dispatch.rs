@@ -61,17 +61,12 @@ pub(super) fn dispatch_slice_builtin_method(
                     positional.len()
                 );
             }
-            let RuntimeVal::Int(start) = &positional[0] else {
-                bail!("slice.slice() start must be Int");
-            };
-            let start = (*start).max(0) as usize;
+            let start = super::slice_position(&positional[0], len, "slice.slice() start")?;
             let end = match positional.get(1) {
-                Some(RuntimeVal::Int(end)) => (*end).max(0) as usize,
                 Some(RuntimeVal::Nil) | None => len,
-                Some(_) => bail!("slice.slice() end must be Int"),
+                Some(value) => super::slice_position(value, len, "slice.slice() end")?,
             };
-            let start = start.min(len);
-            let end = end.clamp(start, len);
+            let end = end.max(start);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: slice.source,

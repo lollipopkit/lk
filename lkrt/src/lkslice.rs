@@ -62,23 +62,30 @@ unsafe fn window<'a>(handle: *mut c_void) -> Option<&'a LkSliceI64> {
     Some(unsafe { &*(handle as *mut LkSliceI64) })
 }
 
+/// A `slice` bound against a length: negative counts from the end, and the
+/// result is clamped into `0..=len`. The VM's `slice_position` says the same.
+fn resolve_position(index: i64, len: usize) -> usize {
+    let len = len as i64;
+    let resolved = if index < 0 { len + index } else { index };
+    resolved.clamp(0, len) as usize
+}
+
 /// `xs.slice(start, end)` — a window over `xs`, no copy.
 ///
-/// Negative bounds raise, as in the VM (`list_index_arg` rejects them before a
-/// window is ever built); past-the-end bounds clamp, as every position in this
-/// language does.
+/// A negative bound counts from the end (`-1` is the last element, as in
+/// `xs[-1]`) and past-the-end bounds clamp, matching `slice_position` in the VM.
+/// It used to raise on a negative, which is what the VM did *for lists* — while
+/// the VM's string slice clamped to 0 and this crate's string slice already
+/// counted from the end. Four implementations, three conventions.
 ///
 /// # Safety
 /// `handle` must be a live `i64` list handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkslice_i64_new(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    if start < 0 || end < 0 {
-        crate::panic::raise_str("runtime error");
-    }
     // SAFETY: the caller guarantees a live `i64` list handle or null.
     let source_len = unsafe { source_values(handle) }.len();
-    let end = (end as usize).min(source_len);
-    let start = (start as usize).min(end);
+    let end = resolve_position(end, source_len);
+    let start = resolve_position(start, source_len).min(end);
     crate::state::arena_handle(LkSliceI64 {
         source: handle,
         start,
@@ -141,9 +148,6 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_get_pair(handle: *mut c_void, index: i
 /// `handle` must be a live window handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkslice_i64_sub(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    if start < 0 || end < 0 {
-        crate::panic::raise_str("runtime error");
-    }
     // SAFETY: the caller guarantees a live window handle or null.
     let Some(w) = (unsafe { window(handle) }) else {
         return crate::state::arena_handle(LkSliceI64 {
@@ -152,8 +156,8 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_sub(handle: *mut c_void, start: i64, e
             len: 0,
         });
     };
-    let end = (end as usize).min(w.len);
-    let start = (start as usize).min(end);
+    let end = resolve_position(end, w.len);
+    let start = resolve_position(start, w.len).min(end);
     crate::state::arena_handle(LkSliceI64 {
         source: w.source,
         start: w.start + start,

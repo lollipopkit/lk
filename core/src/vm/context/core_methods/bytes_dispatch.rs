@@ -98,13 +98,12 @@ pub(super) fn dispatch_bytes_builtin_method(
                     positional.len()
                 );
             }
-            let start = byte_index_arg(&positional[0], "bytes.slice() start")?;
+            let start = super::slice_position(&positional[0], bytes.len(), "bytes.slice() start")?;
             let end = match positional.get(1) {
                 Some(RuntimeVal::Nil) | None => bytes.len(),
-                Some(value) => byte_index_arg(value, "bytes.slice() end")?,
+                Some(value) => super::slice_position(value, bytes.len(), "bytes.slice() end")?,
             };
-            let start = start.min(bytes.len());
-            let end = end.clamp(start, bytes.len());
+            let end = end.max(start);
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(&bytes[start..end]))),
             )))
@@ -153,14 +152,4 @@ fn byte_at(bytes: &[u8], index: i64) -> RuntimeVal {
     bytes
         .get(index as usize)
         .map_or(RuntimeVal::Nil, |byte| RuntimeVal::Int(*byte as i64))
-}
-
-fn byte_index_arg(value: &RuntimeVal, context: &str) -> anyhow::Result<usize> {
-    let RuntimeVal::Int(index) = value else {
-        bail!("{context} must be Int");
-    };
-    if *index < 0 {
-        bail!("{context} must be non-negative, got {index}");
-    }
-    Ok(*index as usize)
 }

@@ -448,4 +448,53 @@ mod tests {
         assert!(value.is_nan(), "`nan` parses to NaN, got {value}");
         Ok(())
     }
+    /// One convention for a negative position, across every sequence.
+    ///
+    /// `xs[-1]` and `xs.get(-1)` have always counted from the end. `slice` had
+    /// four implementations and three answers: List and Bytes raised, String
+    /// and Slice clamped to 0 and returned a window nobody asked for — and the
+    /// *native* string slice already counted from the end, so
+    /// `"abcde".slice(1, -1)` was `""` interpreted and `"bcd"` compiled.
+    #[test]
+    fn a_negative_slice_bound_counts_from_the_end_on_every_sequence() -> Result<()> {
+        let out = execute_string(
+            r#"
+            use bytes;
+            let s = "abcde";
+            let xs = [1, 2, 3, 4, 5];
+            let b = bytes.from_string("abcde");
+            return [
+                s.slice(-2, 5),
+                s.slice(1, -1),
+                s.slice(-99, 99),
+                s.slice(-1, -3),
+                "${xs.slice(-2, 5).to_list()}",
+                "${xs.slice(1, -1).to_list()}",
+                "${xs.slice(-99, 99).to_list()}",
+                "${xs.slice(-1, -3).to_list()}",
+                "${b.slice(-2, 5)}",
+                "${b.slice(1, -1)}",
+            ];
+            "#,
+        )?;
+        let TypedList::String(values) = runtime_list(out.first_return(), out.state.heap()) else {
+            panic!("expected a list of strings");
+        };
+        assert_eq!(
+            values.iter().map(|value| value.as_ref()).collect::<Vec<_>>(),
+            [
+                "de",
+                "bcd",
+                "abcde",
+                "",
+                "[4,5]",
+                "[2,3,4]",
+                "[1,2,3,4,5]",
+                "[]",
+                "Bytes([100,101])",
+                "Bytes([98,99,100])",
+            ]
+        );
+        Ok(())
+    }
 }

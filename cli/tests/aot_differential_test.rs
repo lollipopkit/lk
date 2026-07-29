@@ -357,6 +357,13 @@ fn differential_lists() {
                 "nil_branch_oob",
                 "let xs = [1];\nif xs[9] == nil { return 1; }\nreturn 0;\n",
             ),
+            // A window's negative bounds count from the end, like `xs[-1]`.
+            // The VM raised on them and the native slice raised too, while the
+            // *string* slice on each side did something different again.
+            new(
+                "slice_negative",
+                "let xs = [1, 2, 3, 4, 5];\nprintln(xs.slice(-2, 5).len());\nprintln(xs.slice(1, -1).len());\nprintln(xs.slice(-99, 99).len());\nprintln(xs.slice(-1, -3).len());\nreturn 0;\n",
+            ),
         ],
     );
 }
@@ -436,6 +443,14 @@ fn differential_strings() {
             new(
                 "to_int_base",
                 "use string;\nprintln(string.to_int(\"ff\", 16) ?? -1);\nprintln(string.to_int(\"-101\", 2) ?? -1);\nprintln(string.to_int(\"9\", 8) ?? -1);\nreturn 0;\n",
+            ),
+            // A negative `slice` bound counts from the end, like `[-1]`. The
+            // four implementations had three answers for it, and the two
+            // *backends* disagreed: `"abcde".slice(1, -1)` was `""` in the VM
+            // and `"bcd"` compiled.
+            new(
+                "slice_negative",
+                "println(\"abcde\".slice(-2, 5));\nprintln(\"abcde\".slice(1, -1));\nprintln(\"abcde\".slice(-99, 99));\nprintln(\"abcde\".slice(-1, -3));\nreturn 0;\n",
             ),
             new(
                 "to_float_ok",

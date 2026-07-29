@@ -832,20 +832,15 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let RuntimeVal::Int(start) = &positional[0] else {
-                bail!("string.slice() start must be Int");
-            };
-            let start = (*start).max(0);
-            let total = crate::util::text::char_len(s) as i64;
+            let total = crate::util::text::char_len(s);
+            let start = slice_position(&positional[0], total, "string.slice() start")?;
             // Omitting `end` means "to the end", as it does on every other
             // sequence.
             let end = match positional.get(1) {
-                Some(RuntimeVal::Int(end)) => *end,
-                Some(_) => bail!("string.slice() end must be Int"),
-                None => total,
+                Some(RuntimeVal::Nil) | None => total,
+                Some(value) => slice_position(value, total, "string.slice() end")?,
             };
-            let length = (end - start).max(0);
-            let text = crate::util::text::substring(s, start as usize, length as usize);
+            let text = crate::util::text::substring(s, start, end.saturating_sub(start));
             Ok(Some(make_string_val(text, heap)))
         }
         "index_of" => {
@@ -960,6 +955,27 @@ fn dispatch_string_builtin_method(
         }
         _ => Ok(None),
     }
+}
+
+/// A `slice` boundary resolved against `len`.
+///
+/// One convention for positions, the language's own: **negative counts from the
+/// end** — `-1` is the last element, exactly as in `xs[-1]` and `xs.get(-1)` —
+/// and the result is clamped into `0..=len`, like every other position here.
+///
+/// The four `slice` implementations had four answers for a negative one. List
+/// and Bytes raised; Slice and String clamped it to `0` and returned a window
+/// nobody asked for; and the *native* string slice already counted from the end,
+/// so `"abcde".slice(1, -1)` was `""` interpreted and `"bcd"` compiled — the
+/// same program, two answers. Counting from the end is what the rest of the
+/// language already means by a negative position, so that is what this says.
+pub(super) fn slice_position(value: &RuntimeVal, len: usize, context: &str) -> anyhow::Result<usize> {
+    let RuntimeVal::Int(index) = value else {
+        bail!("{context} must be Int");
+    };
+    let len = len as i64;
+    let resolved = if *index < 0 { len + *index } else { *index };
+    Ok(resolved.clamp(0, len) as usize)
 }
 
 fn list_index_arg(value: &RuntimeVal, context: &str) -> anyhow::Result<usize> {
