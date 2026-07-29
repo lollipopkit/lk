@@ -44,8 +44,12 @@ exists — they are what a new container type should be checked against:
 |---|---|
 | `push(v)` / `insert(i, v)` | 列表本身 |
 | `pop()` / `remove_at(i)` | 被取出的元素(空列表 `pop()` 给 nil) |
-| `set(i, v)` | nil |
+| `set(i, v)` / `map.set(k, v)` / `clear()` | 容器本身 |
 | `last()` / `first()` / `get(i)` | 只读,不改列表 |
+
+`Set` 的 `add` / `delete` 是**有理由的例外**:集合没有"另一个值"可以
+交回(你交进去的就是那个值),能说的只有"是不是新的 / 在不在",所以
+它们答 Bool。
 
 曾经这里是三套约定:`push`/`set` 原地改,`insert` 复制一份返回新列表,
 `remove_at` 复制一份返回 `[新列表, 旧值]` 二元组(全语言唯一这个形状,

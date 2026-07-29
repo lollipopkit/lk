@@ -414,12 +414,15 @@ impl Compiler {
         }
     }
 
+    /// `xs.set(i, v)` / `m.set(k, v)` — writes in place and answers the
+    /// receiver, so writes chain the way `push` and `insert` do.
+    ///
+    /// It used to answer `nil`, which made "write one element" the one
+    /// mutating method you could not chain — an arbitrary split, since
+    /// `push` beside it has always answered the container.
     fn lower_set_method_call(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<u16> {
         self.emit_set_method_effect(target, key, value)?;
-        let dst = self.alloc_reg();
-        self.emit(Instr::abc(Opcode::LoadNil, checked_u8("method set result", dst)?, 0, 0));
-        self.set_register_kind(dst, PerfValueKind::Nil);
-        Ok(dst)
+        self.lower_mutable_method_receiver(target)
     }
 
     fn lower_len_method_call(&mut self, target: &Expr) -> Result<u16> {

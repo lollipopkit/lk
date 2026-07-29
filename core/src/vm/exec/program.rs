@@ -499,8 +499,11 @@ mod tests {
     /// `xs.push(v)` changed `xs` and `xs.insert(i, v)` did not, which is two
     /// opposite answers to "does adding an element change this list".
     ///
-    /// The rule now: a mutating method changes the receiver, and answers
-    /// either the list (so calls chain) or the element it took out.
+    /// The rule now, across every container: a mutating method changes the
+    /// receiver, and answers either the container (so calls chain) or the
+    /// element it took out. A `Set` is the one exception, and for a reason —
+    /// `add`/`delete` have no separate element to hand back, so they report
+    /// whether the value was new or present.
     #[test]
     fn the_mutating_list_methods_agree() {
         let source = "let xs = [1, 3];\n\
@@ -512,7 +515,14 @@ mod tests {
                       strings.insert(1, \"b\");\n\
                       let widened = [1, 2];\n\
                       widened.insert(1, \"middle\");\n\
-                      return [chained.len(), after_insert, removed, after_remove, strings.len(), widened.len()];\n";
+                      let m = {};\n\
+                      m.set(\"a\", 1).set(\"b\", 2);\n\
+                      let chained_writes = [1, 2];\n\
+                      chained_writes.set(0, 9).set(1, 8);\n\
+                      return [\n\
+                        chained.len(), after_insert, removed, after_remove,\n\
+                        strings.len(), widened.len(), m.len(), chained_writes.get(0),\n\
+                      ];\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
         let outcome = super::execute_program(&program).expect("run");
@@ -534,6 +544,10 @@ mod tests {
         // A value the representation cannot hold widens the list rather than
         // failing — the same degradation `push` has always done.
         assert_eq!(items[5], RuntimeVal::Int(3));
+        // `set` answers the receiver too, on a map and on a list, so writes
+        // chain wherever they are written.
+        assert_eq!(items[6], RuntimeVal::Int(2));
+        assert_eq!(items[7], RuntimeVal::Int(9));
     }
 
     /// `pop` takes the element off; `last` reads it.

@@ -285,15 +285,46 @@ pub(super) fn dispatch_list_builtin_method(
                 );
             }
             let index = list_index_arg(&positional[0], "list.set() index")?;
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            let Some(slot) = items.get_mut(index) else {
-                bail!("list.set() index {} out of bounds (len={})", index, items.len());
+            let value = positional[1];
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
             };
-            let old = core::mem::replace(slot, positional[1]);
-            let items = TypedList::from_runtime_values(&items, heap);
-            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));
-            let pair = TypedList::from_runtime_values(&[updated, old], heap);
-            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair)))))
+            if index >= list.len() {
+                bail!("list.set() index {} out of bounds (len={})", index, list.len());
+            }
+            // In place, answering the receiver — the same thing the compiler's
+            // own lowering does. This arm used to copy the list and return a
+            // `[updated, old]` pair, so the fallback and the fast path
+            // disagreed about both the effect and the answer; only the fact
+            // that the fallback is unreachable for `set` kept it from showing.
+            let written_in_place = match (heap.get_mut(handle), value) {
+                (Some(HeapValue::List(TypedList::Int(values))), RuntimeVal::Int(value)) => {
+                    values[index] = value;
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Float(values))), RuntimeVal::Float(value)) => {
+                    values[index] = value;
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Bool(values))), RuntimeVal::Bool(value)) => {
+                    values[index] = value;
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Mixed(values))), value) => {
+                    values[index] = value;
+                    true
+                }
+                _ => false,
+            };
+            if !written_in_place {
+                let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+                items[index] = value;
+                let items = TypedList::from_runtime_values(&items, heap);
+                if let Some(slot) = heap.get_mut(handle) {
+                    *slot = HeapValue::List(items);
+                }
+            }
+            Ok(Some(*receiver))
         }
         "sort" => {
             if !positional.is_empty() {

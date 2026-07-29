@@ -202,8 +202,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         List,
         "set",
         &[p("index", "Int"), p("value", "Elem")],
-        "Nil",
-        "Writes `value` at `index`",
+        "Self",
+        "Writes `index` in place; answers the list so calls chain",
     ),
     m(List, "sort", &[], "Self", "A sorted copy (the receiver is untouched)"),
     m(List, "reverse", &[], "Self", "A reversed copy"),
@@ -467,8 +467,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         Map,
         "set",
         &[p("key", "Key"), p("value", "Val")],
-        "Nil",
-        "Writes an entry",
+        "Self",
+        "Writes an entry, in place; answers the map so calls chain",
     ),
     m(Map, "has", &[p("key", "Key")], "Bool", "Whether `key` is present"),
     m(
@@ -478,7 +478,13 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Val?",
         "Removes `key`, returning its value",
     ),
-    m(Map, "clear", &[], "Nil", "Removes every entry"),
+    m(
+        Map,
+        "clear",
+        &[],
+        "Self",
+        "Removes every entry, in place; answers the map",
+    ),
     m(Map, "keys", &[], "List<Key>", "The keys, in the map's iteration order"),
     m(
         Map,
@@ -516,7 +522,13 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Bool",
         "Removes a member, reporting whether it was there",
     ),
-    m(Set, "clear", &[], "Nil", "Removes every member"),
+    m(
+        Set,
+        "clear",
+        &[],
+        "Self",
+        "Removes every member, in place; answers the set",
+    ),
     m(Set, "values", &[], "List<Elem>", "The members"),
     // ---- String ----
     //

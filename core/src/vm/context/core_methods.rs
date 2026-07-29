@@ -408,7 +408,11 @@ fn dispatch_map_builtin_method(
             if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
                 map.set(key, value);
             }
-            Ok(Some(RuntimeVal::Nil))
+            // The receiver, so writes chain the way `push`/`insert` do. A
+            // mutating method answers the container unless it has something
+            // better to say — `delete` hands back what it removed, `add`
+            // reports whether the value was new.
+            Ok(Some(*receiver))
         }
         "get" => {
             if positional.is_empty() || positional.len() > 2 {
@@ -455,7 +459,7 @@ fn dispatch_map_builtin_method(
             if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
                 map.clear();
             }
-            Ok(Some(RuntimeVal::Nil))
+            Ok(Some(*receiver))
         }
         "len" => {
             if !positional.is_empty() {
@@ -595,7 +599,7 @@ fn dispatch_set_builtin_method(
             if let Some(HeapValue::Set(values)) = heap.get_mut(handle) {
                 values.clear();
             }
-            Ok(Some(RuntimeVal::Nil))
+            Ok(Some(*receiver))
         }
         "values" => {
             if !positional.is_empty() {

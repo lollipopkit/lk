@@ -400,8 +400,13 @@ fn compiler_drops_set_method_nil_result_for_statement() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
+/// `set` answers the receiver, so a write chains.
+///
+/// It used to answer `nil`, which made writing one element the one mutating
+/// method you could not chain — `push` beside it has always answered the
+/// container. This test pinned the `nil`; it pins the receiver now.
 #[test]
-fn compiler_lowers_set_method_preserving_nil_result() {
+fn compiler_lowers_set_method_answering_the_receiver() {
     let function = compile_source(
         r#"
         let hist = {};
@@ -425,7 +430,15 @@ fn compiler_lowers_set_method_preserving_nil_result() {
     let Some(crate::val::HeapValue::List(crate::val::TypedList::Mixed(values))) = result.state.heap.get(handle) else {
         panic!("expected mixed list return");
     };
-    assert_eq!(values, &[crate::val::RuntimeVal::Nil, crate::val::RuntimeVal::Int(42)]);
+    // `result` is the map itself, so the pair is [the map, the value it holds].
+    let crate::val::RuntimeVal::Obj(answered) = values[0] else {
+        panic!("set should answer the receiver");
+    };
+    assert!(
+        matches!(result.state.heap.get(answered), Some(crate::val::HeapValue::Map(_))),
+        "set should answer the map it wrote to"
+    );
+    assert_eq!(values[1], crate::val::RuntimeVal::Int(42));
 }
 
 #[test]
