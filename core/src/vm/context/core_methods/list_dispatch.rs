@@ -143,6 +143,12 @@ pub(super) fn dispatch_list_builtin_method(
             let reversed = typed_list_reversed(list);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(reversed)))))
         }
+        // `pop` takes the last element *off*. It used to be a byte-for-byte
+        // duplicate of `last` above — same body, same declared type, same doc
+        // sentence — so the language had two names for "peek" and no way at all
+        // to remove the last element (`remove_at` does not mutate either). A
+        // name that every language uses for "remove and return" must not
+        // quietly mean "read".
         "pop" => {
             if !positional.is_empty() {
                 bail!("list.pop() expects no arguments, got {}", positional.len());
@@ -150,11 +156,14 @@ pub(super) fn dispatch_list_builtin_method(
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
-            let len = list.len();
-            Ok(Some(match len.checked_sub(1) {
-                Some(last) => typed_list_element(handle, last, heap),
-                None => RuntimeVal::Nil,
-            }))
+            let Some(last) = list.len().checked_sub(1) else {
+                return Ok(Some(RuntimeVal::Nil));
+            };
+            let value = typed_list_element(handle, last, heap);
+            if let Some(HeapValue::List(list)) = heap.get_mut(handle) {
+                list.truncate(last);
+            }
+            Ok(Some(value))
         }
         "push" => {
             if positional.len() != 1 {

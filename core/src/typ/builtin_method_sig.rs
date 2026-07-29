@@ -177,7 +177,13 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Self",
         "The list with `value` appended",
     ),
-    m(List, "pop", &[], "Elem?", "The last element, or nil when empty"),
+    m(
+        List,
+        "pop",
+        &[],
+        "Elem?",
+        "Removes and returns the last element, or nil when empty",
+    ),
     m(
         List,
         "insert",

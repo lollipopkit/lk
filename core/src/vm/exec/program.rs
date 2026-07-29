@@ -489,6 +489,43 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// `pop` takes the element off; `last` reads it.
+    ///
+    /// They were the same function under two names — same body, same declared
+    /// type, same doc sentence — so the language had two spellings of "peek"
+    /// and no way at all to remove the last element. A name every language
+    /// uses for "remove and return" must not quietly mean "read".
+    #[test]
+    fn pop_removes_and_last_only_looks() {
+        let source = "let ints = [1, 2, 3];\n\
+                      let texts = [\"ab\", \"cdefghijk\"];\n\
+                      let peeked = ints.last();\n\
+                      let after_peek = ints.len();\n\
+                      let popped = ints.pop();\n\
+                      let after_pop = ints.len();\n\
+                      let long = texts.pop();\n\
+                      let empty = [];\n\
+                      return [peeked, after_peek, popped, after_pop, long, texts.len(), empty.pop()];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        assert_eq!(items[0], RuntimeVal::Int(3), "last() reads the final element");
+        assert_eq!(items[1], RuntimeVal::Int(3), "…and leaves the list alone");
+        assert_eq!(items[2], RuntimeVal::Int(3), "pop() returns the same element");
+        assert_eq!(items[3], RuntimeVal::Int(2), "…and takes it off");
+        // A heap string element comes back whole, and the list still shrinks.
+        assert_eq!(items[5], RuntimeVal::Int(1));
+        assert_eq!(items[6], RuntimeVal::Nil, "popping an empty list is nil, not an error");
+    }
+
     /// `?.` calls a method, which is most of what it is for.
     ///
     /// `OptionalAccess` is a *read*, and the compiler lowers it as an index —

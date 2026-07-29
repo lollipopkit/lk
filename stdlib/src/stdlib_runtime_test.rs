@@ -490,11 +490,16 @@ mod tests {
         let source = r#"
             let ints = [10, 20, 30];
             let texts = ["abcdefghij", "k"];
-            return ints.first() == 10 && ints.last() == 30 && ints.get(1) == 20 && ints.pop() == 30
+            let reads = ints.first() == 10 && ints.last() == 30 && ints.get(1) == 20
                 && texts.first() == "abcdefghij" && texts.last() == "k"
-                && texts.get(0) == "abcdefghij" && texts.pop() == "k"
+                && texts.get(0) == "abcdefghij"
                 && [].first() == nil && [].last() == nil && [].pop() == nil
                 && ints.get(9) == nil && ints.get(0 - 1) == 30;
+            // `pop` *removes*; `last` is the read. They were the same function
+            // under two names, so this used to be written as another read.
+            let popped = ints.pop() == 30 && ints.len() == 2 && ints.last() == 20
+                && texts.pop() == "k" && texts.len() == 1;
+            return reads && popped;
         "#;
         let result = run(source)?;
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));

@@ -449,6 +449,44 @@ impl TypedList {
         self.len() == 0
     }
 
+    /// Drop everything from `at` on, keeping the representation.
+    ///
+    /// What `pop` and `remove_at` need: a list is mutable in LK (`xs[0] = 9`
+    /// and `push` both change it in place), so the methods that take an element
+    /// *out* have to change it too. `pop` used to read the last element and
+    /// leave it there.
+    pub fn truncate(&mut self, at: usize) {
+        match self {
+            Self::Mixed(values) => values.truncate(at),
+            Self::Int(values) => values.truncate(at),
+            Self::Float(values) => values.truncate(at),
+            Self::Bool(values) => values.truncate(at),
+            Self::String(values) => values.truncate(at),
+        }
+    }
+
+    /// Remove the element at `index`, keeping the representation and the order
+    /// of the rest.
+    pub fn remove_at(&mut self, index: usize) {
+        match self {
+            Self::Mixed(values) => {
+                values.remove(index);
+            }
+            Self::Int(values) => {
+                values.remove(index);
+            }
+            Self::Float(values) => {
+                values.remove(index);
+            }
+            Self::Bool(values) => {
+                values.remove(index);
+            }
+            Self::String(values) => {
+                values.remove(index);
+            }
+        }
+    }
+
     /// A copy of `[start, start + len)`, clamped to what is actually there.
     ///
     /// This is what materializing a [`SliceValue`] costs — the operation the
