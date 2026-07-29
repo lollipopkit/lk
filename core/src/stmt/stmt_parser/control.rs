@@ -30,9 +30,22 @@ impl<'a> StmtParser<'a> {
         ))))
     }
 
+    /// `try { … } catch e { … }` in statement position — the same node the
+    /// expression parser builds, with its value discarded. `if` and `match` sit
+    /// in statement position the same way; there is nothing here that a second
+    /// AST node would say.
     pub fn parse_try_stmt(&mut self) -> Result<Stmt> {
+        // A `try` that is the last thing here is a block's *tail*, so it is
+        // parsed as the expression it is — same treatment as `if`, and for the
+        // same reason: `try { try { … 1 } catch e { 2 } } catch e { 3 }` needs
+        // the inner one to be a value. Anywhere else it stays a statement,
+        // whose blocks are ordinary statement blocks.
+        let keyword_pos = self.pos;
+        if let Some(stmt) = self.try_parse_tail_expression_stmt(keyword_pos)? {
+            return Ok(stmt);
+        }
         self.expect_token(Token::Try)?;
-        let Stmt::Block { statements: body_stmts } = self.parse_block_stmt()? else {
+        let Stmt::Block { statements: body } = self.parse_block_stmt()? else {
             bail!("`try` body must be a block");
         };
         self.expect_token(Token::Catch)?;
@@ -44,18 +57,15 @@ impl<'a> StmtParser<'a> {
             }
             _ => bail!("expected an identifier after `catch`"),
         };
-        let Stmt::Block {
-            statements: handler_stmts,
-        } = self.parse_block_stmt()?
-        else {
+        let Stmt::Block { statements: handler } = self.parse_block_stmt()? else {
             bail!("`catch` body must be a block");
         };
 
-        Ok(Stmt::Try {
-            body: body_stmts,
+        Ok(Stmt::Expr(Box::new(Expr::Try {
+            body,
             catch_var,
-            handler: handler_stmts,
-        })
+            handler,
+        })))
     }
 
     /// 解析 if 语句
@@ -161,6 +171,40 @@ impl<'a> StmtParser<'a> {
         false
     }
 
+    /// Parse a *trailing* keyword-led expression (`if …`, `try …`) as an
+    /// expression statement, or answer `None` when it is not the last item.
+    ///
+    /// `keyword_pos` indexes the keyword token itself, since the expression
+    /// parser has to see it. The sub-parser runs over a token slice and reports
+    /// how much it consumed, so a `None` costs nothing: the caller is exactly
+    /// where it was.
+    fn try_parse_tail_expression_stmt(&mut self, keyword_pos: usize) -> Result<Option<Stmt>> {
+        let tokens = &self.tokens[keyword_pos..];
+        let spans = self.token_spans.map(|spans| &spans[keyword_pos..]);
+        let mut parser = if let Some(spans) = spans {
+            ExprParser::new_with_spans(tokens, spans)
+        } else {
+            ExprParser::new(tokens)
+        };
+        let Ok((expr, consumed)) = parser.parse_prefix() else {
+            return Ok(None);
+        };
+        // Only when it is the *last* thing here: that is a block's tail, where
+        // the value is what the block evaluates to. Anywhere else it is a
+        // statement and has to stay one — its branches may `return`, `break` or
+        // `continue`, and those lower as control flow out of the enclosing
+        // function or loop, not as a value.
+        let mut end = keyword_pos + consumed;
+        if end < self.len && self.tokens[end] == Token::Semicolon {
+            end += 1;
+        }
+        if end != self.len {
+            return Ok(None);
+        }
+        self.pos = end;
+        Ok(Some(Stmt::Expr(Box::new(expr))))
+    }
+
     /// Parse a *trailing* `if … { … }` as an expression statement, or answer
     /// `None` when this `if` is not the braced form or is not the last item.
     ///
@@ -172,30 +216,7 @@ impl<'a> StmtParser<'a> {
         if !self.if_branch_is_braced(keyword_pos) {
             return Ok(None);
         }
-        let tokens = &self.tokens[keyword_pos..];
-        let spans = self.token_spans.map(|spans| &spans[keyword_pos..]);
-        let mut parser = if let Some(spans) = spans {
-            ExprParser::new_with_spans(tokens, spans)
-        } else {
-            ExprParser::new(tokens)
-        };
-        let Ok((expr, consumed)) = parser.parse_prefix() else {
-            return Ok(None);
-        };
-        // Only when this `if` is the *last* thing here: that is a block's tail,
-        // where the value is what the block evaluates to. Anywhere else the
-        // `if` is a statement and has to stay one — its branches may `return`,
-        // `break` or `continue`, and those lower as control flow out of the
-        // enclosing function or loop, not as a value the conditional yields.
-        let mut end = keyword_pos + consumed;
-        if end < self.len && self.tokens[end] == Token::Semicolon {
-            end += 1;
-        }
-        if end != self.len {
-            return Ok(None);
-        }
-        self.pos = end;
-        Ok(Some(Stmt::Expr(Box::new(expr))))
+        self.try_parse_tail_expression_stmt(keyword_pos)
     }
 
     /// 解析 while 语句

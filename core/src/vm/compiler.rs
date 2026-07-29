@@ -170,6 +170,11 @@ impl Compiler {
             Expr::OptionalAccess(target, key) => self.lower_optional_access(target, key),
             Expr::TemplateString(parts) => self.lower_template_string(parts),
             Expr::Block(statements) => self.lower_block_expr(statements),
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => self.lower_try_expr(body, catch_var, handler),
             Expr::Range {
                 start,
                 end,

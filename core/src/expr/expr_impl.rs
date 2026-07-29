@@ -171,6 +171,26 @@ pub enum Expr {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+    /// `try { body } catch name { handler }` — a protected region, and a value.
+    ///
+    /// One node for both positions. It used to be a statement, so
+    /// `let r = try { … } catch e { … };` was a syntax error while `if` and
+    /// `match` were both expressions. In statement position it is a
+    /// `Stmt::Expr` of this and the value is discarded — which is how `if` and
+    /// `match` sit there too, so it needs no second node.
+    ///
+    /// A real node rather than parse-time sugar, for the reason it stopped
+    /// being sugar in the first place: rewritten as
+    /// `let [ok, e] = try$call(|| { body })`, every later stage saw a closure
+    /// and a destructuring `let` instead of a protected region, and an
+    /// annotated local assigned inside the body came back out as a fresh type
+    /// variable.
+    Try {
+        body: Vec<Box<crate::stmt::Stmt>>,
+        /// The name the handler binds the caught error to.
+        catch_var: String,
+        handler: Vec<Box<crate::stmt::Stmt>>,
+    },
     Literal(LiteralVal),
 }
 impl Expr {
@@ -273,7 +293,7 @@ impl Expr {
             Expr::Closure { params: _, body } => {
                 body.collect_ctx_names(names);
             }
-            Expr::Block(_) => {}
+            Expr::Block(_) | Expr::Try { .. } => {}
             Expr::Match { value, arms } => {
                 value.collect_ctx_names(names);
                 for arm in arms {
@@ -532,6 +552,15 @@ impl Expr {
                 }
             }
             Expr::Block(statements) => Expr::Block(statements),
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => Expr::Try {
+                body,
+                catch_var,
+                handler,
+            },
             Expr::Match { value, arms } => {
                 // Match expressions cannot be fully folded without runtime evaluation
                 // but we can fold the value and arm bodies
@@ -665,6 +694,7 @@ impl Display for Expr {
                 write!(f, "|{}| {}", params_str, body)
             }
             Expr::Block(_) => write!(f, "{{ ... }}"),
+            Expr::Try { catch_var, .. } => write!(f, "try {{ ... }} catch {catch_var} {{ ... }}"),
             Expr::Match { value, arms } => {
                 write!(f, "match {} {{", value)?;
                 for (i, arm) in arms.iter().enumerate() {

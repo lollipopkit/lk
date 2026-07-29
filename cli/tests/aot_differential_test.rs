@@ -162,6 +162,17 @@ fn differential_equality_and_unique() {
             // A miss is nil on every sequence, not -1: -1 is a valid index (the
             // last element), so `xs[xs.index_of(v)]` used to answer that
             // instead of failing.
+            // `try` is an expression, so its value has to survive the region on
+            // both backends — natively that means a cell, and a register seeded
+            // with nil used to have no way back out of one.
+            new(
+                "try_expression_value",
+                "fn d(a: Int, b: Int) -> Float {\n  if (b == 0) { error(\"zero\"); }\n  return a / b;\n}\nlet ok = try { d(10, 2) } catch e { -1.0 };\nlet bad = try { d(1, 0) } catch e { -1.0 };\nreturn [ok, bad];\n",
+            ),
+            new(
+                "try_expression_nil_branch",
+                "let r = try { 1 % 0 } catch e { let unused = 1; };\nreturn r;\n",
+            ),
             new(
                 "index_of_miss_is_nil",
                 "let xs = [1, 2, 3];\nreturn [xs.index_of(9), xs.index_of(2), \"abc\".index_of(\"z\")];\n",

@@ -48,10 +48,6 @@ pub(super) fn stmt_uses_for_binding_value(stmt: &Stmt, name: &str) -> bool {
         Stmt::For { iterable, body, .. } => {
             expr_uses_for_binding_value(iterable, name) || stmt_uses_for_binding_value(body, name)
         }
-        Stmt::Try { body, handler, .. } => body
-            .iter()
-            .chain(handler)
-            .any(|stmt| stmt_uses_for_binding_value(stmt, name)),
         Stmt::Block { statements } => {
             for stmt in statements {
                 if stmt_uses_for_binding_value(stmt, name) {
@@ -120,6 +116,14 @@ fn expr_uses_for_binding_value(expr: &Expr, name: &str) -> bool {
             TemplateStringPart::Expr(expr) => expr_uses_for_binding_value(expr, name),
             TemplateStringPart::Literal(_) => false,
         }),
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                if stmt_uses_for_binding_value(stmt, name) {
+                    return true;
+                }
+            }
+            false
+        }
         Expr::Block(statements) => {
             for stmt in statements {
                 if stmt_uses_for_binding_value(stmt, name) {
@@ -200,22 +204,25 @@ pub(super) fn stmt_shadows_name_deep(stmt: &Stmt, name: &str) -> bool {
             stmt_shadows_name_deep(body, name)
         }
         Stmt::Block { statements } => statements.iter().any(|stmt| stmt_shadows_name_deep(stmt, name)),
-        // The caught name shadows too, and both sides are searched.
-        Stmt::Try {
-            body,
-            catch_var,
-            handler,
-        } => {
-            catch_var == name
-                || body
-                    .iter()
-                    .chain(handler)
-                    .any(|stmt| stmt_shadows_name_deep(stmt, name))
-        }
+        // `try { … } catch e { … }` is an expression, so it arrives wrapped —
+        // and `e` shadows for the length of the handler.
+        Stmt::Expr(expr) => match expr.as_ref() {
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                catch_var == name
+                    || body
+                        .iter()
+                        .chain(handler)
+                        .any(|stmt| stmt_shadows_name_deep(stmt, name))
+            }
+            _ => false,
+        },
         Stmt::Impl { methods, .. } => methods.iter().any(|method| stmt_shadows_name_deep(method, name)),
         Stmt::Function { .. } => false,
         Stmt::Empty
-        | Stmt::Expr(_)
         | Stmt::Return { .. }
         | Stmt::Let { .. }
         | Stmt::Define { .. }

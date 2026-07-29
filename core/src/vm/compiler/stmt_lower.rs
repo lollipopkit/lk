@@ -5,6 +5,24 @@ impl Compiler {
         match stmt {
             Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => self.lower_stmt(item)?,
             Stmt::Empty => {}
+            // A `try` here is used for effect, so it computes no value — the
+            // bytecode is exactly what the statement form always emitted. That
+            // matters beyond size: a value written *inside* the protected
+            // region has to survive it, which the native back end does by
+            // boxing the register into a cell, and a type with no unboxer is a
+            // rejection. Reserving a value nobody reads would have taken
+            // `try { f(); } catch e { … }` off the native path.
+            Stmt::Expr(expr) if matches!(expr.as_ref(), Expr::Try { .. }) => {
+                let Expr::Try {
+                    body,
+                    catch_var,
+                    handler,
+                } = expr.as_ref()
+                else {
+                    unreachable!("matched above");
+                };
+                self.lower_try_stmt(body, catch_var, handler)?;
+            }
             Stmt::Expr(expr) => {
                 let watermark = self.next_reg;
                 if !self.try_lower_rewritten_set_index_expr(expr)?
@@ -68,11 +86,6 @@ impl Compiler {
                 methods,
             } => self.lower_impl_decl(trait_name, target_type, methods)?,
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => self.lower_try(body, catch_var, handler)?,
             Stmt::Block { statements } => {
                 let watermark = self.next_reg;
                 let locals = self.locals.clone();

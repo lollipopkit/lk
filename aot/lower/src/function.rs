@@ -30,6 +30,12 @@ fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
         // cell's contents, and a container reinterpreted that way loses the
         // mutation it travelled to carry (see this module's docs).
         Ty::Dyn => CellReadBack::Identity,
+        // A register that holds nil *going in* says nothing about what the body
+        // will put there, and the body boxes whatever it writes — so the honest
+        // readback type is `Dyn`, not `Nil`. Reading it back as `Nil` would
+        // describe the seed rather than the value, which is why
+        // `let x = nil; try { x = 5; } catch e {}` was rejected outright.
+        Ty::Nil => CellReadBack::Identity,
         Ty::I64 => CellReadBack::Unbox("dyn", "as_i64"),
         // Answers 0/1 in an `i64`, so the caller narrows it back to a `Bool`.
         Ty::Bool => CellReadBack::Unbox("dyn", "as_bool"),
@@ -634,6 +640,9 @@ pub(crate) fn lower_function(
                     // wide value back under the narrow type is what the
                     // Cranelift verifier rejects — "arg has type i64, expected
                     // i8" — so it is narrowed here.
+                    // See `unbox_from_dyn`: a nil seed comes back as whatever
+                    // the body boxed, which is a `Dyn`.
+                    let ty = if ty == Ty::Nil { Ty::Dyn } else { ty };
                     let value = if ty == Ty::Bool {
                         let zero = ssa.new_val();
                         insts.push(Inst::Const {

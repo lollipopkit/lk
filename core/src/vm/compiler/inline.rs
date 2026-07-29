@@ -455,10 +455,6 @@ fn inline_call_expr_uses_runtime_method_helper(callee: &Expr) -> bool {
 pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
     match stmt {
         Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => stmt_contains_call_to(item, target),
-        Stmt::Try { body, handler, .. } => body
-            .iter()
-            .chain(handler)
-            .any(|stmt| stmt_contains_call_to(stmt, target)),
         Stmt::If {
             condition,
             then_stmt,
@@ -550,6 +546,10 @@ fn expr_contains_call_to(expr: &Expr, target: &str) -> bool {
             crate::expr::TemplateStringPart::Expr(expr) => expr_contains_call_to(expr, target),
         }),
         Expr::Block(statements) => statements.iter().any(|stmt| stmt_contains_call_to(stmt, target)),
+        Expr::Try { body, handler, .. } => body
+            .iter()
+            .chain(handler)
+            .any(|stmt| stmt_contains_call_to(stmt, target)),
         Expr::Range { start, end, step, .. } => [start, end, step]
             .into_iter()
             .flatten()
@@ -708,6 +708,11 @@ fn collect_assigned_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_assigned_names(stmt, names);
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_assigned_names(stmt, names);
             }
         }

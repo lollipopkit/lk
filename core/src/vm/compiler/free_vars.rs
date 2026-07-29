@@ -107,6 +107,17 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
             collect_expr_free_vars(body, &mut nested_bound, free);
         }
         Expr::Block(statements) => collect_stmt_free_vars(statements, bound, free),
+        Expr::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
+            collect_stmt_free_vars(body, &mut bound.clone(), free);
+            // The handler's error binding is its own, so it is not free there.
+            let mut handler_bound = bound.clone();
+            handler_bound.insert(catch_var.clone());
+            collect_stmt_free_vars(handler, &mut handler_bound, free);
+        }
         Expr::Match { value, arms } => {
             collect_expr_free_vars(value, bound, free);
             for arm in arms {
@@ -186,16 +197,6 @@ fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>,
                 let mut body_bound = bound.clone();
                 collect_for_pattern_bound_vars(pattern, &mut body_bound);
                 collect_single_stmt_free_vars(body, &mut body_bound, free);
-            }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                collect_stmt_free_vars(body, &mut bound.clone(), free);
-                let mut handler_bound = bound.clone();
-                handler_bound.insert(catch_var.clone());
-                collect_stmt_free_vars(handler, &mut handler_bound, free);
             }
             Stmt::Block { statements } => collect_stmt_free_vars(statements, &mut bound.clone(), free),
             Stmt::Function { name, .. } => {
@@ -407,6 +408,11 @@ pub(super) fn collect_expr_closure_captures(expr: &Expr, out: &mut Vec<String>) 
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_stmt_closure_captures(stmt, out);
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_stmt_closure_captures(stmt, out);
             }
         }

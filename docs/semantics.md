@@ -303,6 +303,40 @@ VM 的语义,补上降低即可。
 `List` / `Slice` / `Bytes` 同此:miss 给 nil。差分语料
 `index_of_miss_is_nil`。
 
+## `try` 是表达式(2026-07-29 裁决)
+
+`try { … } catch e { … }` 有值,和 `if`、`match` 一样:值是 body 末尾的表达式,
+body raise 了就是 handler 末尾的表达式;以语句结尾的那一半没有值,给 nil ——
+与 `if` 的分支同规则。类型是两半的并,一边 nil 一边不是就是 `T?`
+(`unify_branch_values`,`if` 和它共用)。
+
+语句位置**不变**:值被丢弃,`if`/`match` 在语句位置也是这样。而且语句位置
+根本不分配值寄存器 —— 这不只是省一条指令:在保护区域**内部**写的值要靠
+装箱进 cell 才能带出来,预留一个没人读的值会让
+`try { f(); } catch e { … }` 整个掉出原生路径。
+
+AST 里只有一个节点(`Expr::Try`),`Stmt::Try` 删了。语句位置是
+`Stmt::Expr(Expr::Try)`,后续所有访问者本来就会递归进表达式,所以删掉语句
+节点比留着两个**改动更少**。它仍然是真节点而不是 parse 期糖:当年从
+`let [ok, e] = try$call(|| { body })` 改过来,就是因为那样每一层都看见的是
+闭包和解构 `let`,body 里赋值的带标注局部变量出来会变成一个新类型变量。
+
+块尾的 `try` 交给表达式解析器(`try_parse_tail_expression_stmt`),这是 `if`
+早就有的机制,现在两者共用 —— 所以
+`try { try { … } catch e { … } } catch e { … }` 里层也是值。
+
+native 侧:cell 读回原本按**区域入口**的类型定型,而值寄存器进去是 nil
+(`Ty::Nil` 没有 unboxer),于是整个表达式形式被拒。改成入口为 `Nil` 时按
+`Dyn` 读回 —— body 本来就是按自己的类型装箱写进 cell 的,`Dyn` 才是诚实的
+描述。顺带让 `let x = nil; try { x = 5; } catch e {}` 也能原生降低了,它此前
+是直接拒绝的。
+
+差分语料:`try_expression_value`、`try_expression_nil_branch`。
+
+**已知边界**:同一函数里多个 try 区域时,值寄存器在汇合处的 phi 还可能定不
+出类型(一边是 cell 带回的 `Dyn`,一边是 handler 写的具体类型),那种程序
+会退回混合/Tier-0。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

@@ -380,26 +380,6 @@ impl ResolverCore {
                 }
                 self.current_fn().pop_block();
             }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                // Two sibling scopes. The caught name is bound only in the
-                // second one: the body cannot see it, and the handler's binding
-                // must not outlive its block.
-                self.current_fn().push_block();
-                for s in body {
-                    self.resolve_stmt(s, children_out);
-                }
-                self.current_fn().pop_block();
-                self.current_fn().push_block();
-                self.current_fn().define(catch_var.clone(), false);
-                for s in handler {
-                    self.resolve_stmt(s, children_out);
-                }
-                self.current_fn().pop_block();
-            }
             Stmt::Empty => {}
         }
     }
@@ -535,6 +515,26 @@ impl ResolverCore {
             // above. Resolve their statements in a block scope of their own,
             // same as a statement-level block, so a `let` inside a branch does
             // not leak past it.
+            // Two scopes, and the handler's is the one that binds the caught
+            // name — same shape as the compiler's lowering.
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                self.resolve_stmt(
+                    &Stmt::Block {
+                        statements: body.clone(),
+                    },
+                    &mut Vec::new(),
+                );
+                self.current_fn().push_block();
+                self.current_fn().define(catch_var.clone(), /*is_param=*/ false);
+                for stmt in handler {
+                    self.resolve_stmt(stmt, &mut Vec::new());
+                }
+                self.current_fn().pop_block();
+            }
             Expr::Block(statements) => {
                 self.resolve_stmt(
                     &Stmt::Block {

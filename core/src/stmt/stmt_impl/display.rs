@@ -217,21 +217,6 @@ impl Display for Stmt {
                 }
                 write!(f, "}}")
             }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                writeln!(f, "try {{")?;
-                for stmt in body {
-                    writeln!(f, "  {}", stmt)?;
-                }
-                writeln!(f, "}} catch {catch_var} {{")?;
-                for stmt in handler {
-                    writeln!(f, "  {}", stmt)?;
-                }
-                write!(f, "}}")
-            }
             Stmt::Empty => {
                 write!(f, ";")
             }

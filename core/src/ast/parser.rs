@@ -1128,6 +1128,7 @@ impl<'a> Parser<'a> {
             Token::Unsafe => self.parse_unsafe_block(),
             Token::Match => self.parse_match(),
             Token::If => self.parse_if_expr(),
+            Token::Try => self.parse_try_expr(),
             Token::LParen => self.parse_paren(),
             Token::Fn => self.parse_fn_closure(),
             Token::Pipe => self.parse_closure(),
@@ -1297,6 +1298,52 @@ impl<'a> Parser<'a> {
             return Err(anyhow!(self.err(&msg)));
         }
         Ok(value)
+    }
+
+    /// `try { … } catch e { … }`, which is an expression like `if` and `match`.
+    ///
+    /// The value is the body's trailing expression, or the handler's when the
+    /// body raised — the same rule `if` uses for its two branches, including
+    /// "a branch that ends in a statement yields nil". `let r = try { … }
+    /// catch e { … };` used to be a syntax error, so the way to get a value out
+    /// was to declare a `nil` first and assign into it from both halves, or to
+    /// wrap the whole thing in a function and `return` twice.
+    ///
+    /// Statement position parses through here too (`StmtParser::parse_try_stmt`
+    /// wraps the result in `Stmt::Expr`), so there is one node, one type rule
+    /// and one lowering — as with `if`, whose statement form is not a second
+    /// implementation either.
+    fn parse_try_expr(&mut self) -> Result<Expr> {
+        self.pos += 1; // 'try'
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expected '{' after `try`")));
+        }
+        let Expr::Block(body) = self.parse_brace_block(BlockTail::Value)? else {
+            return Err(anyhow!(self.err("`try` body must be a block")));
+        };
+        if self.eof() || self.tokens[self.pos] != Token::Catch {
+            return Err(anyhow!(self.err("Expected `catch` after the `try` block")));
+        }
+        self.pos += 1;
+        let catch_var = match self.tokens.get(self.pos) {
+            Some(Token::Id(name)) => {
+                let name = name.clone();
+                self.pos += 1;
+                name
+            }
+            _ => return Err(anyhow!(self.err("Expected an identifier after `catch`"))),
+        };
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expected '{' after the `catch` binding")));
+        }
+        let Expr::Block(handler) = self.parse_brace_block(BlockTail::Value)? else {
+            return Err(anyhow!(self.err("`catch` body must be a block")));
+        };
+        Ok(Expr::Try {
+            body,
+            catch_var,
+            handler,
+        })
     }
 
     /// `if cond { … } else { … }` in *expression* position.

@@ -470,24 +470,6 @@ fn collect_generated_expr_origins_from_stmt(
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }
-        Stmt::Try {
-            body,
-            catch_var,
-            handler,
-        } => {
-            push_generated_statement_origin("stmt try", span.clone(), origins);
-            for statement in body {
-                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
-            }
-            push_generated_statement_origin("stmt try_catch", span.clone(), origins);
-            // The caught name is a binding this statement introduces, like a
-            // parameter or a `let` — recorded so a macro-generated `catch e`
-            // resolves to its origin.
-            push_generated_reference_origin("binding", catch_var, span.clone(), origins);
-            for statement in handler {
-                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
-            }
-        }
         Stmt::Struct { name, fields } => {
             origins.push(AstGeneratedMemberOrigin {
                 label: format!("struct {name}"),
@@ -864,6 +846,24 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
             push_generated_statement_origin("expr block", span.clone(), origins);
             for statement in statements {
                 push_generated_statement_origin("expr block_stmt", span.clone(), origins);
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+        }
+        Expr::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
+            push_generated_statement_origin("expr try", span.clone(), origins);
+            for statement in body {
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+            push_generated_statement_origin("expr try_catch", span.clone(), origins);
+            // The caught name is a binding this expression introduces, like a
+            // parameter or a `let` — recorded so a macro-generated `catch e`
+            // resolves to its origin.
+            push_generated_reference_origin("binding", catch_var, span.clone(), origins);
+            for statement in handler {
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }

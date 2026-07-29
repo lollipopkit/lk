@@ -60,13 +60,58 @@ impl Compiler {
     /// the way it returned from the closure, silently — and what removes the
     /// cell-capture of outer locals that made a top-level `try` writing an outer
     /// variable fail at runtime.
-    pub(super) fn lower_try(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<()> {
+    /// `try { body } catch e { handler }` used for effect — no value register,
+    /// so the region is exactly what it was before `try` became an expression.
+    pub(super) fn lower_try_stmt(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<()> {
+        self.lower_try_region(body, catch_var, handler, None)
+    }
+
+    /// `try { body } catch e { handler }`, producing a value: each half's tail
+    /// expression lands in one shared register, which is what makes
+    /// `let r = try { … } catch e { … }` work. In statement position the
+    /// register is simply never read. The register is allocated *before* the region opens, so both the
+    /// body's writes and the handler's are visible after it closes — and it is
+    /// the same shape the AOT's `written_registers` scan already looks for, so
+    /// native lowering needs to know nothing new about it.
+    pub(super) fn lower_try_expr(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<u16> {
+        // Only when a half actually ends in an expression. A `try` used as a
+        // statement — both halves ending in `;` — then emits exactly the code
+        // it always did, with no register reserved and nothing written before
+        // the region opens.
+        let needs_value = ends_in_expression(body) || ends_in_expression(handler);
+        let value_reg = if needs_value {
+            let reg = self.alloc_reg();
+            self.emit(Instr::abc(Opcode::LoadNil, checked_u8("try value", reg)?, 0, 0));
+            Some(reg)
+        } else {
+            None
+        };
+        self.lower_try_region(body, catch_var, handler, value_reg)?;
+        match value_reg {
+            Some(reg) => Ok(reg),
+            // Neither half has a value, so the answer is nil — the same rule an
+            // `if` branch that ends in a statement follows.
+            None => {
+                let reg = self.alloc_reg();
+                self.emit(Instr::abc(Opcode::LoadNil, checked_u8("try value", reg)?, 0, 0));
+                Ok(reg)
+            }
+        }
+    }
+
+    fn lower_try_region(
+        &mut self,
+        body: &[Box<Stmt>],
+        catch_var: &str,
+        handler: &[Box<Stmt>],
+        value_reg: Option<u16>,
+    ) -> Result<()> {
         // Allocated before the region opens: the handler reads it after the
         // body's registers have been recycled, so it must sit below them.
         let catch_reg = self.alloc_reg();
         let region = self.emit_try_begin_placeholder(catch_reg)?;
 
-        let body_returns = self.lower_scoped_stmt_sequence(body, catch_reg)?;
+        let body_returns = self.lower_scoped_stmt_sequence_valued(body, catch_reg, value_reg)?;
         self.emit(Instr::ax(Opcode::TryEnd, 0));
         // A body that always returns never reaches the jump over the handler.
         let jmp_end = (!body_returns).then(|| self.emit_jmp_placeholder());
@@ -82,7 +127,7 @@ impl Compiler {
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
         self.insert_fresh_local(catch_var.to_string(), catch_reg);
-        let handler_returns = self.lower_scoped_stmt_sequence(handler, catch_reg)?;
+        let handler_returns = self.lower_scoped_stmt_sequence_valued(handler, catch_reg, value_reg)?;
         self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
 
@@ -98,13 +143,37 @@ impl Compiler {
     /// Lowers `statements` as their own scope, restoring the enclosing bindings
     /// and register floor afterwards. Returns whether the sequence always
     /// returned. `keep_reg` stays allocated across the restore.
-    fn lower_scoped_stmt_sequence(&mut self, statements: &[Box<Stmt>], keep_reg: u16) -> Result<bool> {
+    ///
+    /// When `value_reg` is given, the sequence's trailing
+    /// expression is moved into it — the sequence's *value*, by the same rule a
+    /// block expression uses. A sequence that ends in a statement leaves the
+    /// register alone, so it keeps the nil it was initialized with; that is what
+    /// `if` does for a branch that ends in a statement too.
+    fn lower_scoped_stmt_sequence_valued(
+        &mut self,
+        statements: &[Box<Stmt>],
+        keep_reg: u16,
+        value_reg: Option<u16>,
+    ) -> Result<bool> {
+        let (statements, tail) = match (value_reg, statements.split_last()) {
+            (Some(_), Some((last, leading))) => match last.as_ref() {
+                Stmt::Expr(expr) => (leading, Some(expr.as_ref())),
+                _ => (statements, None),
+            },
+            _ => (statements, None),
+        };
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
         let const_map_locals = self.const_map_locals.clone();
         self.emitted_return = false;
         self.local_rebind_suppression += 1;
         self.lower_stmt_sequence(statements)?;
+        if let (Some(value_reg), Some(tail)) = (value_reg, tail)
+            && !self.emitted_return
+        {
+            let src = self.lower_expr(tail)?;
+            self.emit_move(value_reg, src, "try value")?;
+        }
         self.local_rebind_suppression -= 1;
         let returns = self.emitted_return;
         // Same restore as `Stmt::Block`: an in-region promotion of an *outer*
@@ -551,4 +620,10 @@ impl Compiler {
         loop_patch.continues.push(pc);
         Ok(())
     }
+}
+
+/// Whether a statement sequence ends in an expression — its *value*, by the
+/// same rule a block expression uses.
+fn ends_in_expression(statements: &[Box<Stmt>]) -> bool {
+    matches!(statements.last().map(|stmt| stmt.as_ref()), Some(Stmt::Expr(_)))
 }

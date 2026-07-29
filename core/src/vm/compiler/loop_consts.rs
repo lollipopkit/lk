@@ -187,11 +187,6 @@ fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
             }
         }
         // A try/catch is a two-way branch, so it is walked like `If`.
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_scalar_consts(stmt, keys);
-            }
-        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -300,6 +295,11 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
                 collect_stmt_scalar_consts(stmt, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_scalar_consts(stmt, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             if let Some(start) = start {
                 collect_expr_scalar_consts(start, keys);
@@ -379,16 +379,6 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
         // assignment still invalidates a later fold within it. Cloning per
         // statement would have let every statement fold against pre-branch
         // values.
-        Stmt::Try { body, handler, .. } => {
-            let mut body_locals = locals.clone();
-            for stmt in body {
-                collect_stmt_folded_int_consts(stmt, &mut body_locals, keys);
-            }
-            let mut handler_locals = locals.clone();
-            for stmt in handler {
-                collect_stmt_folded_int_consts(stmt, &mut handler_locals, keys);
-            }
-        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -493,6 +483,12 @@ fn collect_expr_folded_int_consts(expr: &Expr, locals: &HashMap<String, i64>, ke
                 collect_stmt_folded_int_consts(stmt, &mut scoped, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            let mut scoped = locals.clone();
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_folded_int_consts(stmt, &mut scoped, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_folded_int_consts(expr, locals, keys);
@@ -581,11 +577,6 @@ fn collect_stmt_inline_call_scalar_consts(
             collect_stmt_inline_call_scalar_consts(then_stmt, bodies, visiting, keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_inline_call_scalar_consts(else_stmt, bodies, visiting, keys);
-            }
-        }
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
         Stmt::IfLet {
@@ -702,6 +693,11 @@ fn collect_expr_inline_call_scalar_consts(
                 collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
@@ -787,11 +783,6 @@ fn collect_stmt_const_map_get_scalar_consts(
             collect_stmt_const_map_get_scalar_consts(then_stmt, const_maps, keys)?;
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_const_map_get_scalar_consts(else_stmt, const_maps, keys)?;
-            }
-        }
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }
         Stmt::IfLet {
@@ -897,6 +888,11 @@ fn collect_expr_const_map_get_scalar_consts(
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }

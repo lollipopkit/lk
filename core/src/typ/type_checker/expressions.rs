@@ -181,6 +181,13 @@ impl TypeChecker {
         let Expr::Block(statements) = inner else {
             return self.check_expr(inner);
         };
+        self.check_statements_value(statements)
+    }
+
+    /// A statement sequence's type: its last statement's, when that statement
+    /// is an expression. Shared by `Expr::Block` and by both halves of
+    /// `Expr::Try`, which evaluate to their tails the same way.
+    pub(crate) fn check_statements_value(&mut self, statements: &[Box<crate::stmt::Stmt>]) -> Result<Type> {
         let Some((last, leading)) = statements.split_last() else {
             return Ok(Type::Any);
         };
@@ -192,6 +199,25 @@ impl TypeChecker {
         }
         last.type_check(self)?;
         Ok(Type::Any)
+    }
+
+    /// The type of a two-branch value — `if`/`else`, or `try`/`catch`.
+    ///
+    /// One branch `nil` and the other not makes the value *optional*, not a
+    /// contradiction: an `if` with no `else` synthesises a nil branch, and a
+    /// `catch` that only logs has no value either.
+    pub(crate) fn unify_branch_values(&mut self, first: Type, second: Type) -> Result<Type> {
+        let nullable = |value: &Type| Type::Optional(Box::new(value.clone()));
+        let resolved_first = self.resolve_aliases(&first);
+        let resolved_second = self.resolve_aliases(&second);
+        if resolved_first == Type::Nil && resolved_second != Type::Nil {
+            return Ok(nullable(&second));
+        }
+        if resolved_second == Type::Nil && resolved_first != Type::Nil {
+            return Ok(nullable(&first));
+        }
+        self.inference_engine.add_constraint(first.clone(), second);
+        Ok(first)
     }
 
     /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt,
@@ -525,24 +551,10 @@ impl TypeChecker {
                 // are values; `check_block_value` answers for either.
                 let then_ty = self.check_block_value(then_expr)?;
                 let else_ty = self.check_block_value(else_expr)?;
-                // One branch `nil` and the other not: the value is *optional*,
-                // not a contradiction. An `if` with no `else` synthesises a nil
-                // branch, so `let r = if c { "a" };` reported "Cannot unify
-                // String with Nil" — the expression form could not do what the
-                // statement form does. `c ? "a" : nil` reads the same way and
-                // gets the same answer.
-                let nullable = |value: &Type| Type::Optional(Box::new(value.clone()));
-                let resolved_then = self.resolve_aliases(&then_ty);
-                let resolved_else = self.resolve_aliases(&else_ty);
-                if resolved_then == Type::Nil && resolved_else != Type::Nil {
-                    return Ok(nullable(&else_ty));
-                }
-                if resolved_else == Type::Nil && resolved_then != Type::Nil {
-                    return Ok(nullable(&then_ty));
-                }
-                // unify then/else types; return the unified type (prefer then_ty)
-                self.inference_engine.add_constraint(then_ty.clone(), else_ty.clone());
-                Ok(then_ty)
+                // `let r = if c { "a" };` used to report "Cannot unify String
+                // with Nil" — the expression form could not do what the
+                // statement form does. See `unify_branch_values`.
+                self.unify_branch_values(then_ty, else_ty)
             }
             // Functions - handle both Call (string name) and CallExpr (expression)
             Expr::Call(func, args) => {
@@ -912,6 +924,29 @@ impl TypeChecker {
                 }
             }
             Expr::Paren(expr) => self.check_expr(expr),
+            // Straight-line scopes, which is why this is a node rather than a
+            // rewrite into `let [ok, e] = try$call(|| { body })`: through a
+            // closure the checker saw a fresh type variable for every local
+            // assigned inside the body.
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                self.push_scope();
+                let body_ty = self.check_statements_value(body)?;
+                self.pop_scope();
+
+                self.push_scope();
+                // The caught value is the message string for a plain raise and
+                // the raised value itself for `error(v)`, so the binding is as
+                // wide as the top type (see `vm::exec::handler`).
+                self.add_local_type(catch_var.clone(), Type::Any);
+                let handler_ty = self.check_statements_value(handler)?;
+                self.pop_scope();
+
+                self.unify_branch_values(body_ty, handler_ty)
+            }
             Expr::Block(_) => Ok(Type::Any),
         }
     }

@@ -417,3 +417,48 @@ fn list_clear_empties_in_place_and_answers_the_list() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[[7],[7],[7]]");
 }
+
+/// `try` is an expression, like `if` and `match`. It was a statement, so
+/// `let r = try { … } catch e { … };` was a syntax error and the way to get a
+/// value out was to declare a `nil` first and assign into it from both halves.
+#[test]
+fn try_is_an_expression_and_both_halves_carry_its_value() {
+    let result = execute_source(
+        r#"
+        fn risky(n) { return 100 % n; }
+        let ok = try { risky(30) } catch e { -1 };
+        let caught = try { risky(0) } catch e { -1 };
+        let payload = try { risky(0) } catch e { e };
+        // A half that ends in a statement has no value, as in an `if`.
+        let empty = try { risky(0) } catch e { let unused = 1; };
+        // The inner one is the outer's tail, so it is a value too.
+        let nested = try { try { risky(0) } catch e { 2 } } catch e { 3 };
+        return [ok, caught, payload, empty, nested];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[10,-1,\"modulo by zero\",nil,2]");
+}
+
+/// Statement position is unchanged — the value is discarded, as an `if` or a
+/// `match` in statement position is. It compiles to the region it always did,
+/// with no value register: one written *inside* a protected region has to
+/// survive it, and reserving one nobody reads took `try { f(); } catch e { … }`
+/// off the native path.
+#[test]
+fn try_in_statement_position_still_runs_for_effect() {
+    let result = execute_source(
+        r#"
+        let log = [];
+        try { let bad = 1 % 0; log.push("body"); } catch e { log.push("handler"); }
+        try { log.push("fine"); } catch e { log.push("unreachable"); }
+        return log;
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[\"handler\",\"fine\"]");
+}

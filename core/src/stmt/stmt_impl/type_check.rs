@@ -787,34 +787,6 @@ impl Stmt {
 
                 Ok(())
             }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                // Straight-line scopes, which is the point of keeping this a
-                // statement: as `let [ok, e] = try$call(|| { body })` the checker
-                // saw a closure and a destructuring `let`, so an annotated local
-                // assigned inside the body came back out as a fresh type
-                // variable — `let r: Int = 0; try { r = x; } catch e {}` failed
-                // with "expected Int, got 'T2".
-                type_checker.push_scope();
-                for stmt in body {
-                    stmt.type_check(type_checker)?;
-                }
-                type_checker.pop_scope();
-
-                type_checker.push_scope();
-                // The caught value is the message string for a plain raise and
-                // the raised value itself for `error(v)`, so the binding is as
-                // wide as the top type (see `vm::exec::handler`).
-                type_checker.add_local_type(catch_var.clone(), Type::Any);
-                for stmt in handler {
-                    stmt.type_check(type_checker)?;
-                }
-                type_checker.pop_scope();
-                Ok(())
-            }
             Stmt::Import(_) => {
                 // Use 语句暂时不需要类型检查
                 Ok(())
