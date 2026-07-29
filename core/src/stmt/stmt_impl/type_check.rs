@@ -1004,8 +1004,50 @@ impl Program {
         }
     }
 
+    /// Register every `struct`, `trait` and `type` alias before the ordered
+    /// walk.
+    ///
+    /// Function signatures are hoisted (see
+    /// [`Self::predeclare_function_signatures`]) so calling one declared below
+    /// is ordinary. Type declarations were not, which no one noticed while an
+    /// undeclared name silently became `Type::Named` — the annotation checked
+    /// against nothing either way. The moment unknown names became an error,
+    /// `fn f() -> Point { … }` above `struct Point { … }` started failing. A
+    /// declaration's position in the file is not something a type should
+    /// depend on.
+    pub(crate) fn predeclare_type_declarations(&self, type_checker: &mut TypeChecker) {
+        for stmt in &self.statements {
+            match item_of(stmt) {
+                Stmt::Struct { name, fields } => {
+                    let fields = fields
+                        .iter()
+                        .map(|(field, ty)| (field.clone(), ty.clone().unwrap_or(Type::Any)))
+                        .collect();
+                    type_checker.registry_mut().register_struct(StructDef {
+                        name: name.clone(),
+                        fields,
+                    });
+                }
+                Stmt::Trait { name, methods } => {
+                    type_checker.registry_mut().register_trait(TraitDef {
+                        name: name.clone(),
+                        methods: methods.iter().cloned().collect(),
+                    });
+                }
+                Stmt::TypeAlias { name, target } => {
+                    type_checker.registry_mut().register_type_alias(AliasDef {
+                        name: name.clone(),
+                        target_type: target.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
 
@@ -1038,6 +1080,7 @@ impl Program {
     /// with it, nor the types recorded for them (see
     /// `TypeChecker::observe_bindings`).
     pub fn type_check_collecting(&self, type_checker: &mut TypeChecker) -> Vec<anyhow::Error> {
+        self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
 

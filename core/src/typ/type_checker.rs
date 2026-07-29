@@ -411,11 +411,13 @@ impl TypeChecker {
     pub fn check_type_annotation(&self, ty: &Type, context: &str) -> Result<()> {
         match ty {
             Type::Named(name) => {
-                if self.registry.resolve_type(name).is_some()
-                    || crate::typ::stdlib_sig::is_documented_handle_type(name)
-                    // A generic parameter (`T`) is a name in scope for the
-                    // declaration that introduced it, not a missing type.
-                    || name.len() == 1 && name.starts_with(|c: char| c.is_ascii_uppercase())
+                // No escape hatch for a bare `T`: LK has no generic parameter
+                // syntax (`fn f<T>(…)` does not parse), so a single uppercase
+                // letter in type position is an undeclared name like any
+                // other. Exempting it was a guess, and it let exactly the
+                // errors this check exists to replace through — `fn f(v: T)`
+                // still said "Argument 1 has the wrong type (expected T)".
+                if self.registry.resolve_type(name).is_some() || crate::typ::stdlib_sig::is_documented_handle_type(name)
                 {
                     return Ok(());
                 }

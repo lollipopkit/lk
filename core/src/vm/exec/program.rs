@@ -489,6 +489,43 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// A type declaration's position in the file does not matter.
+    ///
+    /// Function signatures were hoisted and type declarations were not, which
+    /// nobody noticed while an undeclared name silently became `Type::Named`:
+    /// the annotation checked against nothing either way. The moment unknown
+    /// names became an error, `fn f() -> Point { … }` written above
+    /// `struct Point { … }` — the ordinary way to put the interesting function
+    /// first — started failing.
+    #[test]
+    fn a_type_declaration_can_come_after_its_use() {
+        for source in [
+            "fn f() -> Point { return Point { a: 1 }; }\nstruct Point { a: Int }\nreturn f().a;\n",
+            "fn f(v: Point) -> Int { return v.a; }\nstruct Point { a: Int }\nreturn f(Point { a: 2 });\n",
+            "fn f(v: Int) -> U { return v; }\ntype U = Int;\nreturn f(1);\n",
+            "let s: Shown = 1;\ntype Shown = Int;\nreturn s;\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        // A name nothing declares is still an error, wherever it appears. LK
+        // has no generic parameters — `fn f<T>(…)` does not parse — so a bare
+        // `T` is an undeclared name like any other.
+        for source in ["fn f(v: T) -> T { return v; }\n", "let x: Nope = 1;\n"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let error = program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .expect_err("an undeclared type name is an error");
+            assert!(error.to_string().contains("Unknown type"), "got: {error}");
+        }
+    }
+
     /// A `type` alias works in every position, including across a module
     /// boundary.
     ///
