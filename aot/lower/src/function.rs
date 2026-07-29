@@ -339,6 +339,18 @@ pub(crate) fn lower_function(
         let pty = sig.param_ty(func_index as usize, r);
         let pv = ssa.new_val();
         ssa.current_def[0][r] = Some((pv, pty));
+        // `self` in `impl T { … }` *is* a `T`. Provenance otherwise comes only
+        // from a `NewObject`, so inside an impl method the receiver had none
+        // and `self.other()` fell out of the devirtualizing path — the whole
+        // "a method built on the type's other methods" shape, which is most of
+        // what methods are for, and the reason a trait default body could not
+        // be lowered at all.
+        if r == 0
+            && pty == Ty::MapStrDyn
+            && let Some(type_name) = sig.traits.impl_owner(func_index)
+        {
+            ssa.struct_types.insert(pv, type_name);
+        }
         fn_params.push((pv, pty));
     }
     // A try body's inputs: registers of the *enclosing* function, bound here as

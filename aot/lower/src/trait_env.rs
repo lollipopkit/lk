@@ -16,6 +16,36 @@ pub(crate) struct TraitEnv {
     pub(crate) methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
 }
 
+impl TraitEnv {
+    /// The type whose `impl` block defines function `fidx`, if any.
+    ///
+    /// The inverse of [`Self::impls`], and what tells the lowering that `self`
+    /// inside an impl method is that type — provenance a parameter cannot get
+    /// from a `NewObject` because it never sees one.
+    ///
+    /// Linear over the table: impl blocks are counted in the dozens, and this
+    /// runs once per lowered function.
+    pub(crate) fn impl_owner(&self, fidx: u32) -> Option<String> {
+        let mut found: Option<&String> = None;
+        for ((type_name, _), &f) in &self.impls {
+            if f != fidx {
+                continue;
+            }
+            match found {
+                // One function registered under two types — the compiler is
+                // free to share a body, and a *default* method copied into two
+                // impls is exactly two identical bodies. Answering either type
+                // would devirtualize `self.other()` to the wrong impl, which is
+                // a wrong answer rather than a refusal. So: no answer.
+                Some(previous) if previous != type_name => return None,
+                Some(_) => {}
+                None => found = Some(type_name),
+            }
+        }
+        found.cloned()
+    }
+}
+
 pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
     let mut env = TraitEnv::default();
     // Declaration order fixes the runtime type ids, so the ordering here is

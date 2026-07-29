@@ -202,3 +202,30 @@ LLVM 会把 `xs.slice(..)`、`xs.sort()` 等**就地**操作 lower 成 `src == d
 导致个别测试断言(`select i1` 来自 `@lk_i64_decimal_len`、`call i32 @strcmp` 来自 map
 helper)其实在测样板而非被测程序。下沉删除这些定义后,应改断被测 lowering 自身产物
 (如 bool 常量返回折叠成静态串经 `@lk_str_fmt` 打印;模板比较分解为 `icmp eq i64`)。
+
+## 9. 已落地:impl 方法里的 `self` 带类型出身(2026-07-30)
+
+**`self` 在 `impl T { … }` 的方法里就是一个 `T`。**
+
+devirtualization 此前只认一个来源的类型出身:`NewObject` 写进
+`ssa.struct_types` 的那份(`lower_call.rs`)。而 impl 方法里的接收者是**参数**,
+它一辈子见不到 `NewObject`,于是 `lower_trait_method_k` 两条路都不匹配 ——
+静态那条要 `struct_types` 有记录,动态那条要接收者是 `Dyn`。落到通用分发,
+报 `an operand at pc 1 is a str where a i64 is required`。
+
+被挡住的是**「一个方法建立在这个类型的其它方法之上」**这个形状,而方法多半
+就是这么写的;trait 的默认方法体更是**只能**这么写(它不能提字段名,不然对
+别的实现者就不成立)。所以在这条修好之前,一个有意义的 trait 默认实现示例
+根本进不了 `examples/`(coverage 门禁要求每个 example 全原生降低)。
+
+做法:`function.rs` 在给参数建 SSA 值时,若参数 0 的类型是 `MapStrDyn` 且这个
+函数是某个 impl 块的方法(`TraitEnv::impl_owner`,`impls` 表的逆),就把该类型
+写进 `struct_types`。
+
+**一个函数登记在两个类型名下时不给答案。** 编译器可以共享函数体,而一份被复制
+进两个 impl 的默认方法恰好就是两段一模一样的体。这时随便答一个会把
+`self.other()` devirt 到**错的** impl —— 那是错答案,不是拒绝。`impl_owner`
+因此在发现歧义时返回 `None`。
+
+**仍然不降低**:同一个方法名有两个以上实现者、且方法体里调 `self` 上的另一个
+方法(`t4` 形状)。与默认实现无关 —— 手写出来一样。

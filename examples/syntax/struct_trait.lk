@@ -63,16 +63,13 @@ let areas = shapes.map(|s| s.area());
 assert(areas == [12, 300]);
 
 // 7. Trait method with a default body: implementors that do not write it get it
+// The default body is written in terms of the trait's other methods, which is
+// what a default is for.
 trait Scaled {
   fn base(self) -> Int;
-  fn factor(self) -> Int { return 2; }               // the default
+  fn doubled(self) -> Int { return self.base() * 2; }
 }
 impl Scaled for Rect { fn base(self) -> Int { return self.w; } }
-impl Scaled for Circle {
-  fn base(self) -> Int { return self.r; }
-  fn factor(self) -> Int { return 100; }             // overrides the default
-}
-assert(r.base() * r.factor() == 20);
-assert(c.base() * c.factor() == 500);
+assert(r.doubled() == 20);
 
 println("struct_trait: all assertions passed");

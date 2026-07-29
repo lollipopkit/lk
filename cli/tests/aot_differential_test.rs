@@ -881,10 +881,22 @@ fn differential_trait_dispatch_contract() {
     // merely skips) into a red test here.
     run_differential(
         "trait_contract",
-        &[new(
-            "trait_static_dynamic_show",
-            "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",
-        )],
+        &[
+            // `self` inside an impl method is that type, so a method built on
+            // the type's *other* methods devirtualizes. Without that
+            // provenance the receiver was an untyped parameter and the whole
+            // shape — which is what a trait default body always is — fell out
+            // of the native subset. `run_differential` requires the lowering,
+            // so this stays honest.
+            new(
+                "trait_method_calls_sibling",
+                "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
+            ),
+            new(
+                "trait_static_dynamic_show",
+                "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",
+            ),
+        ],
     );
 }
 
