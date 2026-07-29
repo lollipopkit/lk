@@ -139,8 +139,21 @@ impl Compiler {
     }
 
     pub(super) fn load_callable_by_name(&mut self, name: &str) -> Result<u16> {
-        self.try_load_callable_by_name(name)?
-            .ok_or_else(|| anyhow!("Compiler undefined callable `{name}`"))
+        if let Some(loaded) = self.try_load_callable_by_name(name)? {
+            return Ok(loaded);
+        }
+        // The one case with a rule behind it rather than a typo: the name being
+        // called *is* the binding currently being initialized, so a lambda is
+        // trying to call itself. `let fact = |n| … fact(n - 1) …;` reported
+        // "undefined callable `fact`" — a sentence about an operand, for a rule
+        // about scope, with nothing to do about it.
+        if self.initializing_binding.as_deref() == Some(name) {
+            bail!(
+                "`{name}` is not in scope inside its own initializer, so this closure cannot call itself; \
+                 write a recursive function as a top-level `fn {name}(…)`"
+            );
+        }
+        bail!("Compiler undefined callable `{name}`")
     }
 
     pub(super) fn try_load_callable_by_name(&mut self, name: &str) -> Result<Option<u16>> {

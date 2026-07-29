@@ -998,3 +998,27 @@ fn compiler_lowers_map_literal_and_string_access() {
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
+
+/// A binding is not in scope inside its own initializer, so a lambda cannot
+/// call itself — and the report used to be "Compiler undefined callable
+/// `fact`": a sentence about an operand, for a rule about scope, with nothing
+/// the reader could do about it. Recursion goes through a top-level `fn`, and
+/// the message says so.
+#[test]
+fn a_lambda_calling_itself_is_told_the_rule() {
+    let error = compile_source("let fact = |n| { if (n <= 1) { return 1; } return n * fact(n - 1); };")
+        .expect_err("a self-call cannot resolve");
+    let text = alloc::format!("{error:#}");
+    assert!(text.contains("not in scope inside its own initializer"), "{text}");
+    assert!(text.contains("top-level `fn fact("), "{text}");
+
+    // A name that is simply not there still reads as what it is.
+    let typo = compile_source("let f = |x| { return nope(x); };").expect_err("no such callable");
+    let typo_text = alloc::format!("{typo:#}");
+    assert!(typo_text.contains("undefined callable `nope`"), "{typo_text}");
+
+    // An *outer* binding of the same name is a different function, and calling
+    // it is fine.
+    compile_source("fn fact(n: Int) -> Int { return n; }\nlet fact = |n| { return fact(n) + 1; };")
+        .expect("calling the outer `fact` is not a self-call");
+}

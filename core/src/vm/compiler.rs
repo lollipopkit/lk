@@ -134,6 +134,14 @@ pub struct Compiler {
     single_char_string_locals: HashMap<String, u16>,
     const_map_locals: HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
     local_rebind_suppression: u16,
+    /// The `let` binding whose initializer is being lowered, if any.
+    ///
+    /// Only a diagnostic: a binding is not in scope inside its own initializer,
+    /// so `let fact = |n| … fact(n - 1) …;` cannot resolve `fact` — and the
+    /// report was "Compiler undefined callable `fact`", a sentence about an
+    /// operand for a rule about scope. Knowing which binding is being
+    /// initialized is what lets the message state the rule.
+    initializing_binding: Option<String>,
     top_level: bool,
     /// The one register every top-level `fn` declaration publishes through.
     ///
@@ -818,6 +826,10 @@ impl Compiler {
         compiler.struct_field_machine_widths = self.struct_field_machine_widths.clone();
         compiler.global_machine_widths = self.global_machine_widths.clone();
         compiler.dynamic_function_base = dynamic_function_base;
+        // Inherited so a self-call inside the body can be recognised: the body
+        // is a compiler of its own, and the binding being initialized is a fact
+        // about the enclosing `let`.
+        compiler.initializing_binding = self.initializing_binding.clone();
         compiler.function.param_count = params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
         compiler.function.param_names = Vec::with_capacity(params.len());

@@ -20,6 +20,25 @@ impl Compiler {
         value: &Expr,
         is_const: bool,
     ) -> Result<()> {
+        // Only for the diagnostic in `load_callable_by_name`: a binding is not
+        // in scope inside its own initializer, and saying which binding that is
+        // turns "Compiler undefined callable `fact`" into the rule it broke.
+        let outer_initializing = self.initializing_binding.take();
+        if let Pattern::Variable(name) = pattern {
+            self.initializing_binding = Some(name.clone());
+        }
+        let lowered = self.lower_let_inner(pattern, type_annotation, value, is_const);
+        self.initializing_binding = outer_initializing;
+        lowered
+    }
+
+    fn lower_let_inner(
+        &mut self,
+        pattern: &Pattern,
+        type_annotation: Option<&crate::val::Type>,
+        value: &Expr,
+        is_const: bool,
+    ) -> Result<()> {
         if let Pattern::Variable(name) = pattern {
             // NOTE: never alias the binding to a shared loop-literal cache
             // register (the old fast path here): a later reassignment

@@ -719,10 +719,17 @@ impl **后面**也算数:先扫全程序收集,再填。
 **支持它是一个特性,不是这条修复**:嵌套 `fn` 捕获不了外层(那是 Rust 的规矩),
 所以做法是 hoist 加一个带作用域的名字 —— 见 todos。
 
-顺带:递归因此**只有顶层 `fn` 写得出来**。`let fact = |n| … fact(n-1) …` 报
-"undefined callable"(绑定在自己的初始化式里还不可见),手写 Lua 那套
-`let fact = nil; fact = |n| …;` 过不了类型检查(`fact` 是 Nil,"Cannot call
-non-function type")。这条也在 todos 里。
+顺带:递归因此**只有顶层 `fn` 写得出来** —— 和 Rust 一样(Rust 的闭包也不能递
+归)。`let fact = |n| … fact(n-1) …` 里 `fact` 在自己的初始化式里还不可见;手写
+Lua 那套 `let fact = nil; fact = |n| …;` 过不了类型检查(`fact` 是 Nil,"Cannot
+call non-function type")。
+
+这条规矩现在**自己说出来**:以前报 "Compiler undefined callable `fact`" ——
+一句关于操作数的话,讲的是关于作用域的规矩,读者拿它没有任何可做的事。现在报
+"`fact` is not in scope inside its own initializer, so this closure cannot call
+itself; write a recursive function as a top-level `fn fact(…)`"。判据是"被调的
+名字正是当前正在初始化的那个绑定",所以拼错的名字仍然读作拼错;外层同名绑定是
+另一个函数,调它不受影响。
 
 ## lambda 可以写自己的类型(2026-07-30 补)
 
