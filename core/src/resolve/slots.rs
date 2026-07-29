@@ -143,13 +143,19 @@ impl FnCtx {
         if let Some(top) = self.scopes.last_mut() {
             top.insert(name.clone(), idx);
         }
-        self.decls.push(Decl {
-            name,
-            index: idx,
-            is_param,
-            block_depth: self.block_depth(),
-            span: None,
-        });
+        // A desugar's temporary gets a slot like any other local — the code
+        // has to run — but it is not something the writer declared, so it does
+        // not go in the list tools read. The editor's outline used to list
+        // `__optcall0` and `__unwrap1` beside the real variables.
+        if !crate::ast::is_desugar_local(&name) {
+            self.decls.push(Decl {
+                name,
+                index: idx,
+                is_param,
+                block_depth: self.block_depth(),
+                span: None,
+            });
+        }
         idx
     }
 

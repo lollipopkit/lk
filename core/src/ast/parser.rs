@@ -70,6 +70,24 @@ struct ParsedSelectCase {
     body: Expr,
 }
 
+/// The name a parse-time desugar binds its temporary under.
+///
+/// `$` cannot appear in a source identifier — the lexer will not produce one —
+/// which is why the internal builtins (`try$call`, `select$block`) already use
+/// it. Minting every desugar local through here keeps the two halves from
+/// drifting: the name nothing can collide with, and the name tools recognise
+/// as *not the writer's*. They used to be `__unwrap0` / `__optcall0`, which a
+/// program may legitimately spell, so no filter could tell them apart — and
+/// the editor's outline listed them beside the real variables.
+pub(crate) fn desugar_local(kind: &str, id: usize) -> String {
+    format!("{kind}${id}")
+}
+
+/// Is `name` a local a desugar minted, rather than one the writer bound?
+pub fn is_desugar_local(name: &str) -> bool {
+    name.contains('$')
+}
+
 /// Build the desugared AST for `a?.m(args)`.
 ///
 /// `{ let t = a; t == nil ? nil : t.m(args) }` — the receiver is evaluated
@@ -77,7 +95,7 @@ struct ParsedSelectCase {
 fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<Expr>>) -> Expr {
     use crate::stmt::Stmt;
 
-    let name = format!("__optcall{id}");
+    let name = desugar_local("optcall", id);
     let binding = Box::new(Stmt::Let {
         pattern: Pattern::Variable(name.clone()),
         type_annotation: None,
@@ -105,7 +123,7 @@ fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<E
 fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
     use crate::stmt::Stmt;
 
-    let name = format!("__unwrap{id}");
+    let name = desugar_local("unwrap", id);
     let binding = Box::new(Stmt::Let {
         pattern: Pattern::Variable(name.clone()),
         type_annotation: None,
@@ -166,7 +184,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
     // Channel operands, send values, and guards evaluate eagerly, in source
     // order (Go's rule), into synthesized locals.
     for (i, case) in cases.into_iter().enumerate() {
-        let channel_name = format!("__select{id}_ch_{i}");
+        let channel_name = format!("{}_ch_{i}", desugar_local("select", id));
         let (kind, binding) = match case.arm {
             ParsedSelectArm::Recv { binding, channel } => {
                 statements.push(let_stmt(channel_name.clone(), channel));
@@ -175,13 +193,13 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
             }
             ParsedSelectArm::Send { channel, value } => {
                 statements.push(let_stmt(channel_name.clone(), channel));
-                let value_name = format!("__select{id}_v_{i}");
+                let value_name = format!("{}_v_{i}", desugar_local("select", id));
                 statements.push(let_stmt(value_name.clone(), value));
                 values.push(Box::new(Expr::Var(value_name)));
                 (1, None)
             }
         };
-        let guard_name = format!("__select{id}_g_{i}");
+        let guard_name = format!("{}_g_{i}", desugar_local("select", id));
         // Normalize any truthy guard to a real Bool — `select$block` treats
         // non-Bool guard entries as disabled.
         let guard_value = match case.guard {
@@ -195,7 +213,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         arms.push((binding, case.body));
     }
 
-    let result_name = format!("__select{id}_r");
+    let result_name = format!("{}_r", desugar_local("select", id));
     statements.push(let_stmt(
         result_name.clone(),
         Expr::Call(

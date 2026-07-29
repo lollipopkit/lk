@@ -1308,3 +1308,40 @@ fn full_range(s: &str) -> Range {
     let end_col = s.lines().last().map(|l| l.len() as u32).unwrap_or(0);
     Range::new(Position::new(0, 0), Position::new(end_line, end_col))
 }
+
+/// The editor's outline shows what the writer wrote.
+///
+/// A parse-time desugar binds a temporary — `a?.m()` and `expr!` both do — and
+/// those temporaries were listed in the document outline beside the real
+/// variables, as `__optcall0` and `__unwrap1`. They could not be filtered by
+/// name either: `__optcall0` is a name a program may legitimately spell. They
+/// are minted with a `$` now, which no source identifier can contain, and the
+/// resolver keeps them out of the list tools read.
+#[test]
+fn the_outline_lists_only_the_writers_variables() {
+    fn flatten(symbols: &[tower_lsp::lsp_types::DocumentSymbol], out: &mut Vec<String>) {
+        for symbol in symbols {
+            out.push(symbol.name.clone());
+            if let Some(children) = &symbol.children {
+                flatten(children, out);
+            }
+        }
+    }
+
+    let mut analyzer = LkAnalyzer::new();
+    let src = "let m = {\"a\": \"xy\"};\nlet n = m.get(\"a\")?.len();\nlet v = n!;\n";
+    let result = analyzer.analyze(src);
+    let mut names = Vec::new();
+    flatten(&result.symbols, &mut names);
+
+    for written in ["m", "n", "v"] {
+        assert!(
+            names.iter().any(|name| name == written),
+            "{written} should be listed: {names:?}"
+        );
+    }
+    assert!(
+        !names.iter().any(|name| name.contains('$')),
+        "a desugar's temporary is not the writer's variable: {names:?}"
+    );
+}

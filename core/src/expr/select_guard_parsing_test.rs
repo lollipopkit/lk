@@ -74,7 +74,7 @@ mod tests {
             panic!("third arg must be the values list");
         };
         assert!(
-            matches!(values[0].as_ref(), Expr::Var(name) if name.starts_with("__select")),
+            matches!(values[0].as_ref(), Expr::Var(name) if crate::ast::is_desugar_local(name) && name.starts_with("select$")),
             "send value must be hoisted: {:?}",
             values[0]
         );
@@ -118,11 +118,11 @@ mod tests {
         let rendered = format!("{expr:?}");
         // Two desugar instances → two distinct counters in synthesized names.
         assert!(
-            rendered.contains("__select1_r"),
+            rendered.contains("select$1_r"),
             "outer or inner select id 1: {rendered}"
         );
         assert!(
-            rendered.contains("__select2_r"),
+            rendered.contains("select$2_r"),
             "outer or inner select id 2: {rendered}"
         );
     }

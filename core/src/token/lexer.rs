@@ -175,16 +175,6 @@ fn is_ident_continue(c: char) -> bool {
     }
 }
 
-#[inline]
-fn is_alnum_char(c: char) -> bool {
-    let flags = ascii_flags(c);
-    if flags != 0 {
-        flags & (ASCII_ALPHA | ASCII_DIGIT) != 0
-    } else {
-        c.is_alphanumeric()
-    }
-}
-
 /// [chars] and [idx] can be used for syntax error reporting.
 pub struct Tokenizer<'a> {
     chars: Vec<char>,
