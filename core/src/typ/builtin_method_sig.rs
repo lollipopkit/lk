@@ -551,6 +551,48 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int?",
         "Character position of the first occurrence, or nil",
     ),
+    // The read surface every other sequence has. `slice` in particular reads
+    // the same as `List`/`Slice`/`Bytes` — start and end, not start and length
+    // — because `xs.slice(1, 3)` and `s.substring(1, 3)` taking different
+    // windows from the same numbers is a trap, not a feature.
+    m(
+        Str,
+        "slice",
+        &[p("start", "Int"), p("end", "Int")],
+        "String",
+        "Characters in `[start, end)`, clamped",
+    ),
+    m(
+        Str,
+        "index_of",
+        &[p("needle", "String")],
+        "Int?",
+        "Character position of the first occurrence, or nil",
+    ),
+    m(
+        Str,
+        "get",
+        &[p("index", "Int")],
+        "String?",
+        "The character at `index`, or nil",
+    ),
+    m(Str, "first", &[], "String?", "First character, or nil when empty"),
+    m(Str, "last", &[], "String?", "Last character, or nil when empty"),
+    m(
+        Str,
+        "take",
+        &[p("count", "Int")],
+        "String",
+        "The first `count` characters",
+    ),
+    m(
+        Str,
+        "skip",
+        &[p("count", "Int")],
+        "String",
+        "Everything after the first `count` characters",
+    ),
+    // TODO(remove): superseded by `slice` above — kept until the corpus moves.
     m(
         Str,
         "substring",

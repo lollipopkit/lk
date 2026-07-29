@@ -667,6 +667,17 @@ fn make_string_val(s: &str, heap: &mut HeapStore) -> RuntimeVal {
 
 /// Dispatch built-in string instance methods: split, starts_with, ends_with, contains, trim.
 /// Returns Some(value) if handled, None to fall through.
+/// The character at `index`, counting from the end when negative, `nil` when
+/// out of range — the rule every sequence's `get` follows.
+fn string_char_at(text: &str, index: i64, heap: &mut HeapStore) -> RuntimeVal {
+    let total = crate::util::text::char_len(text) as i64;
+    let resolved = if index < 0 { total + index } else { index };
+    if resolved < 0 || resolved >= total {
+        return RuntimeVal::Nil;
+    }
+    make_string_val(crate::util::text::substring(text, resolved as usize, 1), heap)
+}
+
 fn dispatch_string_builtin_method(
     receiver: &RuntimeVal,
     method: &str,
@@ -788,6 +799,91 @@ fn dispatch_string_builtin_method(
                 None => Ok(Some(RuntimeVal::Nil)),
             }
         }
+        // The read surface `List` / `Slice` / `Bytes` share. A `String` is a
+        // sequence of characters — that is what `len()` counts and what `[i]`
+        // indexes — and was the one sequence type without them.
+        //
+        // `slice(start, end)` in particular is why this matters beyond tidiness:
+        // `substring(start, length)` looks identical at the call site and means
+        // something else, so `xs.slice(1, 3)` and `s.substring(1, 3)` take
+        // different windows from the same numbers.
+        "slice" => {
+            if positional.len() != 2 {
+                bail!(
+                    "string.slice() expects 2 arguments (start, end), got {}",
+                    positional.len()
+                );
+            }
+            let RuntimeVal::Int(start) = &positional[0] else {
+                bail!("string.slice() start must be Int");
+            };
+            let RuntimeVal::Int(end) = &positional[1] else {
+                bail!("string.slice() end must be Int");
+            };
+            let length = (*end - *start).max(0);
+            let text = crate::util::text::substring(s, (*start).max(0) as usize, length as usize);
+            Ok(Some(make_string_val(text, heap)))
+        }
+        "index_of" => {
+            if positional.len() != 1 {
+                bail!(
+                    "string.index_of() expects 1 argument (needle), got {}",
+                    positional.len()
+                );
+            }
+            let needle = extract_string_detached(&positional[0], heap, "string.index_of() needle")?;
+            match crate::util::text::find_char_index(s, needle.as_str()) {
+                Some(index) => Ok(Some(RuntimeVal::Int(index as i64))),
+                None => Ok(Some(RuntimeVal::Nil)),
+            }
+        }
+        "get" => {
+            if positional.len() != 1 {
+                bail!("string.get() expects 1 argument (index), got {}", positional.len());
+            }
+            let RuntimeVal::Int(index) = &positional[0] else {
+                bail!("string.get() index must be Int");
+            };
+            Ok(Some(string_char_at(s, *index, heap)))
+        }
+        "first" => {
+            if !positional.is_empty() {
+                bail!("string.first() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(string_char_at(s, 0, heap)))
+        }
+        "last" => {
+            if !positional.is_empty() {
+                bail!("string.last() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(string_char_at(s, -1, heap)))
+        }
+        "take" => {
+            if positional.len() != 1 {
+                bail!("string.take() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(count) = &positional[0] else {
+                bail!("string.take() count must be Int");
+            };
+            let text = crate::util::text::substring(s, 0, (*count).max(0) as usize);
+            Ok(Some(make_string_val(text, heap)))
+        }
+        "skip" => {
+            if positional.len() != 1 {
+                bail!("string.skip() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(count) = &positional[0] else {
+                bail!("string.skip() count must be Int");
+            };
+            let total = crate::util::text::char_len(s);
+            let start = (*count).max(0) as usize;
+            let text = crate::util::text::substring(s, start, total.saturating_sub(start));
+            Ok(Some(make_string_val(text, heap)))
+        }
+        // TODO(remove): `substring(start, length)` and `find` predate the
+        // sequence read surface above. `slice(start, end)` and `index_of` say
+        // the same things the way every other sequence says them; keep these
+        // two until the corpus and docs have moved off them.
         "substring" => {
             if positional.len() != 2 {
                 bail!(

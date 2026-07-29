@@ -465,6 +465,57 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// A `String` is a sequence, and reads like one.
+    ///
+    /// `List`, `Slice` and `Bytes` were unified on `first`/`last`/`get`/
+    /// `slice`/`take`/`skip`/`index_of`; `String` — a sequence of characters,
+    /// which is what `len()` counts and `[i]` indexes — was left out. It had
+    /// `substring(start, length)` and `find` instead, and `substring` is the
+    /// reason this is more than tidiness: it takes a *length* where every
+    /// `slice` takes an *end*, so `xs.slice(1, 3)` and `s.substring(1, 3)`
+    /// cut different windows from the same numbers.
+    #[test]
+    fn a_string_reads_like_every_other_sequence() {
+        let source = "let s = \"h\u{e9}llo\";\n\
+                      return [\n\
+                        s.slice(1, 3), s.take(2), s.skip(2),\n\
+                        s.first(), s.last(), s.get(1),\n\
+                        s.substring(1, 3),\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("strings only");
+        let text = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+                RuntimeVal::Obj(h) => match outcome.state.heap().get(*h) {
+                    Some(HeapValue::String(s)) => s.to_string(),
+                    other => panic!("expected a string, got {other:?}"),
+                },
+                other => panic!("expected a string, got {other:?}"),
+            }
+        };
+        // `slice` counts to an *end*, so this is two characters — the same
+        // window `[10, 20, 30, 40].slice(1, 3)` takes.
+        assert_eq!(text(&items[0]), "él");
+        assert_eq!(text(&items[1]), "hé");
+        assert_eq!(text(&items[2]), "llo");
+        assert_eq!(text(&items[3]), "h");
+        assert_eq!(text(&items[4]), "o");
+        assert_eq!(text(&items[5]), "é");
+        // …and `substring` still counts a *length*, which is why it is on its
+        // way out.
+        assert_eq!(text(&items[6]), "éll");
+    }
+
     /// `==`, `in`, and the constant folder answer the same question the same
     /// way.
     ///
