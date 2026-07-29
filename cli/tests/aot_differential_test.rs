@@ -353,6 +353,13 @@ fn differential_lists() {
                 "str_nil_branch",
                 "let xs = [\"a\"];\nif xs[9] == nil { return 1; }\nreturn 0;\n",
             ),
+            // `index_of` on an int list. The VM has it on every sequence; the
+            // lowering had it only on `Str`, so this dropped its module to the
+            // VM — same answer, only slower, which no gate can see.
+            new(
+                "list_index_of",
+                "let xs = [10, 20, 30];\nprintln(xs.index_of(20) ?? -1);\nprintln(xs.index_of(99) ?? -1);\nprintln([1].index_of(1) ?? -1);\nreturn 0;\n",
+            ),
             new(
                 "nil_branch_oob",
                 "let xs = [1];\nif xs[9] == nil { return 1; }\nreturn 0;\n",

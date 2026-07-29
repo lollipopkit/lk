@@ -351,6 +351,10 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64, Borrowed);
             ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr, Borrowed);
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            // `index_of` is on every sequence in the VM; the lowering had it
+            // only on `Str`. (`join` is *not* — the VM refuses a non-string
+            // list, loudly, and the lowering matches that.)
+            ("list_h", "i64_index_of", lkrt_lklist_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
             // `.slice(start[, end])` is a **window**, not a copy — see the

@@ -1507,6 +1507,23 @@ pub(crate) fn lower_method_dispatch(
             (nil, Ty::Nil)
         }
         // `xs.contains(v)` on typed lists (fcmp semantics for f64, like the VM).
+        // `index_of` on an int list. The VM has it on every sequence; here it
+        // existed only on `Str`, so `[1,2,3].index_of(2)` dropped its module to
+        // the VM — same answer, just slower, which is the kind of gap neither
+        // the differential corpus nor the coverage gate can see.
+        //
+        // `join` is deliberately *not* alongside it: the VM refuses a
+        // non-string list ("ListJoin list must contain only strings"), so
+        // accepting one here would make native answer where the VM raises.
+        (Ty::ListI64, "index_of", [(v, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_index_of"),
+                args: vec![receiver, *v],
+            });
+            (dst, Ty::Dyn)
+        }
         (Ty::ListI64, "contains", [(v, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

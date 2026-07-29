@@ -873,6 +873,26 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get_pair(handle: *mut c_void, index: i6
         }
     }
 }
+/// `xs.index_of(v)` over an `i64` list — the first position, or **nil** when the
+/// value is absent, boxed as a `LkDyn` because the module answers `Int?`.
+///
+/// The VM has had this on every sequence; the lowering had it only on `Str`, so
+/// `[1, 2, 3].index_of(2)` dropped its module to the VM.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_index_of(handle: *mut c_void, needle: i64) -> crate::lkdyn::LkDyn {
+    if handle.is_null() {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+    let values = unsafe { &*(handle as *mut Vec<i64>) };
+    match values.iter().position(|value| *value == needle) {
+        Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
 
 /// Linear membership test: returns `1` if `needle` is an element, else `0` (the
 /// VM's `list.contains` on a typed int list — an exact `==` search).
