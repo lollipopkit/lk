@@ -10,6 +10,8 @@ mod const_load;
 mod container;
 mod dispatch;
 mod display;
+
+pub use display::runtime_display_value;
 mod frame;
 mod gc;
 mod globals;
@@ -1452,10 +1454,14 @@ fn gc_stress_enabled() -> bool {
     }
 }
 
-/// Format a single [`RuntimeVal`] against its heap into the VM's canonical
-/// display string. Exposed for host embedders that hold a `RuntimeVal` plus the
-/// [`HeapStore`] it came from (e.g. `lk-api`'s ergonomic `Value` conversion for
-/// heap kinds without a structured host representation).
+/// Format a single [`RuntimeVal`] against its heap, for a caller that has
+/// nowhere to put an error — a `Debug` impl, a diagnostic. Rendering *can*
+/// fail (a dangling handle, a value nested past [`crate::val::MAX_VALUE_DEPTH`])
+/// and this reports that as the text `<invalid ref>`.
+///
+/// Anything that can propagate should call [`runtime_display_value`] instead:
+/// `println` reached this one through a `Result`-returning wrapper, so a value
+/// too deep to print came out as `<invalid ref>` with the real reason dropped.
 pub fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore) -> String {
     // The one renderer (`display`), not the VM's old private one: the REPL, a
     // host embedder and `println` were showing the same value three ways.

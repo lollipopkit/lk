@@ -369,12 +369,12 @@ fn typed_list_string_item_equal(
     }
 }
 
-/// How a value looks — `lk_core::vm::display_runtime_value`, which is the one
+/// How a value looks — `lk_core::vm::runtime_display_value`, which is the one
 /// rendering there is.
 ///
 /// This crate used to hold it and the VM had its own, so `println` and the REPL
 /// showed the same value differently. `show` dispatch is a layer above, in
 /// `language::display`: it calls user code, which a renderer cannot.
 pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
-    Ok(lk_core::vm::display_runtime_value(value, heap))
+    lk_core::vm::runtime_display_value(value, heap)
 }

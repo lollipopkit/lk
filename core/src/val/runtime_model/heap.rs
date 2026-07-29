@@ -118,39 +118,45 @@ impl HeapStore {
         self.gc_threshold = threshold.max(1);
     }
 
+    /// Mark and sweep.
+    ///
+    /// Marking walks an explicit worklist rather than recursing. Recursion put
+    /// the object graph's *depth* on the Rust stack, so a chain a program can
+    /// build in a loop —
+    ///
+    /// ```lk
+    /// let node: Any = [1];
+    /// for i in 0..200000 { node = [node]; }
+    /// ```
+    ///
+    /// — aborted the process with `fatal runtime error: stack overflow` at the
+    /// next collection, with no way for a script to catch it and no line to
+    /// blame: the allocation that tripped the threshold, not the one at fault.
+    /// The worklist also lets edges land straight in it, so marking no longer
+    /// allocates a fresh `Vec` per object visited.
     pub fn collect(&mut self, roots: impl IntoIterator<Item = HeapRef>) {
         for mark in &mut self.marks {
             *mark = Self::WHITE;
         }
-        for root in roots {
-            self.mark_ref(root);
-        }
-        self.sweep();
-        self.alloc_since_gc = 0;
-    }
-
-    fn mark_ref(&mut self, reference: HeapRef) {
-        let index = reference.index() as usize;
-        let Some(slot) = self.slots.get(index) else {
-            return;
-        };
-        if slot.is_none() || self.marks.get(index).copied() == Some(Self::BLACK) {
-            return;
-        }
-        self.marks[index] = Self::BLACK;
-        let mut refs = Vec::new();
+        let mut worklist: Vec<HeapRef> = roots.into_iter().collect();
         let mut runtime_callables = Vec::new();
-        collect_heap_value_edges(
-            slot.as_ref().expect("checked live slot"),
-            &mut refs,
-            &mut runtime_callables,
-        );
-        for reference in refs {
-            self.mark_ref(reference);
+        while let Some(reference) = worklist.pop() {
+            let index = reference.index() as usize;
+            if index >= self.slots.len() || self.slots[index].is_none() || self.marks[index] == Self::BLACK {
+                continue;
+            }
+            self.marks[index] = Self::BLACK;
+            let value = self.slots[index].as_ref().expect("checked live slot");
+            collect_heap_value_edges(value, &mut worklist, &mut runtime_callables);
         }
+        // Deferred to here rather than done mid-walk: each of these collects a
+        // *different* heap (the callable's own module state), so the order
+        // relative to this heap's marking cannot matter.
         for function in runtime_callables {
             let _ = function.collect_garbage();
         }
+        self.sweep();
+        self.alloc_since_gc = 0;
     }
 }
 
@@ -425,6 +431,26 @@ mod tests {
         assert!(heap.get(cursor).is_some());
         assert!(heap.get(stream_root).is_some());
         assert!(heap.get(cursor_root).is_some());
+        assert!(heap.get(garbage).is_none());
+    }
+
+    /// Marking used to recurse, so the *depth* of the object graph sat on the
+    /// Rust stack and a chain a loop can build aborted the process at the next
+    /// collection. There is no depth bound here on purpose: a collection cannot
+    /// be allowed to fail.
+    #[test]
+    fn heap_store_gc_marks_a_chain_far_deeper_than_the_rust_stack() {
+        let mut heap = HeapStore::new();
+        let mut node = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
+        for _ in 0..200_000 {
+            node = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(node)])));
+        }
+        let garbage = heap.alloc(HeapValue::String(Arc::<str>::from("garbage")));
+
+        heap.collect([node]);
+
+        assert_eq!(heap.len(), 200_001);
+        assert!(heap.get(node).is_some());
         assert!(heap.get(garbage).is_none());
     }
 

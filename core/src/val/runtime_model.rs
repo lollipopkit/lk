@@ -11,8 +11,29 @@ use alloc::sync::Arc;
 use crate::val::{ShortStr, Type};
 use crate::vm::DeclaredType;
 
+mod equality;
 mod heap;
 
+pub use equality::{runtime_value_equals_str, runtime_values_equal};
+
+/// How far the runtime will walk into a value before giving up.
+///
+/// Comparing and rendering both recurse on the *shape* of a value, so a chain a
+/// loop can build —
+///
+/// ```lk
+/// let node: Any = [1];
+/// for i in 0..200000 { node = [node]; }
+/// ```
+///
+/// — put 200000 frames on the Rust stack and aborted the process with
+/// `fatal runtime error: stack overflow`. A script must not be able to do that.
+/// Past this depth those walks raise an ordinary catchable error instead, which
+/// is what Python and Lua do with the same problem.
+///
+/// Generous for data — JSON nests single digits deep, a hand-written tree tens
+/// — and far below the number of Rust frames the real stack would take.
+pub const MAX_VALUE_DEPTH: u32 = 512;
 pub use heap::{HeapRef, HeapStore};
 
 /// A value, 16 bytes and `Copy`.
@@ -31,9 +52,8 @@ pub use heap::{HeapRef, HeapStore};
 /// ```
 ///
 /// Equality needs the heap, so it cannot be a `PartialEq` impl at all: it is
-/// `Executor::runtime_values_equal` in the VM and
-/// `lk_stdlib_common::runtime_native::runtime_values_equal` outside it. Asking
-/// for one of those is a decision; `==` was not.
+/// [`runtime_values_equal`], which takes the heap. Asking for it is a decision;
+/// `==` was not.
 ///
 /// [`RuntimeVal::same_value_or_handle`] is the escape hatch for the places that
 /// genuinely mean "the same nil/bool/int, or literally the same object".
@@ -91,8 +111,8 @@ impl RuntimeVal {
     /// still the right question in a few places — deduplicating a constant
     /// pool, telling whether two registers hold the same object — and wrong in
     /// every place that means "equal". Having to name it is the point: the
-    /// language's `==` is `Executor::runtime_values_equal`, which needs the
-    /// heap and answers by value.
+    /// language's `==` is [`runtime_values_equal`], which needs the heap and
+    /// answers by value.
     #[inline]
     pub fn same_value_or_handle(&self, other: &Self) -> bool {
         match (self, other) {

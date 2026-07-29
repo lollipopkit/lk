@@ -2,7 +2,7 @@
 use crate::compat::prelude::*;
 use alloc::sync::Arc;
 
-use anyhow::{anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 
 mod bytes_dispatch;
@@ -1155,8 +1155,8 @@ pub(super) fn typed_list_element(list_handle: HeapRef, index: usize, heap: &mut 
 ///
 /// The typed variants never touch the heap at all: an `Int` list compares
 /// integers, a `String` list compares text against text.
-pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Option<usize> {
-    match list {
+pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Result<Option<usize>> {
+    Ok(match list {
         TypedList::Int(values) => match needle {
             RuntimeVal::Int(needle) => values.iter().position(|value| value == needle),
             // A float needle can still equal an integer element (`1.0 == 1`),
@@ -1164,8 +1164,10 @@ pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &
             RuntimeVal::Float(needle) => values.iter().position(|value| *value as f64 == *needle),
             _ => None,
         },
+        // By value, like `==`: bits made `0.0` not find `-0.0` and `NaN` find
+        // itself, in this one function.
         TypedList::Float(values) => match needle {
-            RuntimeVal::Float(needle) => values.iter().position(|value| value.to_bits() == needle.to_bits()),
+            RuntimeVal::Float(needle) => values.iter().position(|value| value == needle),
             RuntimeVal::Int(needle) => values.iter().position(|value| *value == *needle as f64),
             _ => None,
         },
@@ -1173,14 +1175,21 @@ pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &
             RuntimeVal::Bool(needle) => values.iter().position(|value| value == needle),
             _ => None,
         },
-        TypedList::String(values) => {
-            let needle = runtime_value_text(needle, heap)?;
-            values.iter().position(|value| value.as_ref() == needle)
+        TypedList::String(values) => match runtime_value_text(needle, heap) {
+            Some(needle) => values.iter().position(|value| value.as_ref() == needle),
+            None => None,
+        },
+        TypedList::Mixed(values) => {
+            let mut found = None;
+            for (index, value) in values.iter().enumerate() {
+                if crate::val::runtime_values_equal(value, needle, heap)? {
+                    found = Some(index);
+                    break;
+                }
+            }
+            found
         }
-        TypedList::Mixed(values) => values
-            .iter()
-            .position(|value| runtime_values_equal(value, needle, heap)),
-    }
+    })
 }
 
 /// The list with later duplicates dropped, order preserved, representation kept.
@@ -1194,8 +1203,8 @@ pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &
 ///
 /// `Mixed` keeps the quadratic scan, and has to: its elements are arbitrary
 /// values whose equality needs the heap, and there is no key to hash them by.
-pub(super) fn typed_list_unique(list: &TypedList, heap: &HeapStore) -> TypedList {
-    match list {
+pub(super) fn typed_list_unique(list: &TypedList, heap: &HeapStore) -> Result<TypedList> {
+    Ok(match list {
         TypedList::Int(values) => {
             let mut seen = crate::util::fast_map::fast_hash_set_new();
             TypedList::Int(values.iter().copied().filter(|value| seen.insert(*value)).collect())
@@ -1246,13 +1255,20 @@ pub(super) fn typed_list_unique(list: &TypedList, heap: &HeapStore) -> TypedList
         TypedList::Mixed(values) => {
             let mut unique: Vec<RuntimeVal> = Vec::new();
             for value in values {
-                if !unique.iter().any(|seen| runtime_values_equal(seen, value, heap)) {
+                let mut seen_before = false;
+                for seen in &unique {
+                    if crate::val::runtime_values_equal(seen, value, heap)? {
+                        seen_before = true;
+                        break;
+                    }
+                }
+                if !seen_before {
                     unique.push(*value);
                 }
             }
             TypedList::Mixed(unique)
         }
-    }
+    })
 }
 
 /// The text a value holds, without allocating — `None` when it is not a string.
@@ -1264,200 +1280,6 @@ fn runtime_value_text<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<
             _ => None,
         },
         _ => None,
-    }
-}
-
-/// Value equality for the search methods (`contains`, `index_of`, `unique`).
-///
-/// Two heap values are compared by *what they are*, not by which handle they
-/// arrived on. Comparing handles is what this used to do, and the boundary it
-/// drew was `ShortStr`'s seven-byte inline limit:
-///
-/// ```text
-/// ["ab", "cd"].contains("ab")                 → true
-/// ["abcdefghij", …].contains("abcdefghij")    → false
-/// ```
-///
-/// A string too long to live inline is a heap object, and two equal strings
-/// built separately are two handles. So a list could not be searched for any
-/// string of eight characters or more — nor for a list, a map or a set, ever.
-/// Same shape as the `TypedList::String` read bug: the seven-byte boundary is
-/// invisible in the source and decides the answer.
-fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> bool {
-    match (left, right) {
-        (RuntimeVal::Nil, RuntimeVal::Nil) => true,
-        (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left == right,
-        (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left == right,
-        // By value, the same as `==` (`Executor::runtime_values_equal`). Bits
-        // were the rule here, which made `0.0 != -0.0` and `NaN == NaN` for
-        // every caller of this function — `unique`, `index_of`, `position`,
-        // `contains` on a mixed list — and only for them.
-        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left == right,
-        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => (*left as f64) == *right,
-        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => *left == (*right as f64),
-        (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str() == right.as_str(),
-        // A short string and a heap string can hold the same text: the same
-        // literal reaches one form or the other depending only on its length.
-        (RuntimeVal::ShortStr(left), RuntimeVal::Obj(right)) => {
-            matches!(heap.get(*right), Some(HeapValue::String(right)) if left.as_str() == right.as_ref())
-        }
-        (RuntimeVal::Obj(left), RuntimeVal::ShortStr(right)) => {
-            matches!(heap.get(*left), Some(HeapValue::String(left)) if left.as_ref() == right.as_str())
-        }
-        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) if left == right => true,
-        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) => match (heap.get(*left), heap.get(*right)) {
-            (Some(left), Some(right)) => heap_values_equal(left, right, heap),
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-fn heap_values_equal(left: &HeapValue, right: &HeapValue, heap: &HeapStore) -> bool {
-    match (left, right) {
-        (HeapValue::String(left), HeapValue::String(right)) => left == right,
-        (HeapValue::Bytes(left), HeapValue::Bytes(right)) => left == right,
-        (HeapValue::List(left), HeapValue::List(right)) => typed_lists_equal(left, right, heap),
-        (HeapValue::Set(left), HeapValue::Set(right)) => {
-            left.len() == right.len() && left.entries().all(|key| right.contains(key))
-        }
-        (HeapValue::Map(left), HeapValue::Map(right)) => {
-            let left = left.entries_iter();
-            let right = right.entries_iter();
-            left.len() == right.len()
-                && left.iter().all(|(key, value)| {
-                    right.iter().any(|(other_key, other_value)| {
-                        key == other_key && runtime_values_equal(value, other_value, heap)
-                    })
-                })
-        }
-        // A window and the list it windows hold the same elements, and the
-        // executor's `==` already says so; this is the same question asked from
-        // a method.
-        (HeapValue::Slice(left), HeapValue::Slice(right)) => {
-            left.len == right.len && (0..left.len).all(|index| slice_element_equal_at(left, index, right, index, heap))
-        }
-        (HeapValue::Slice(left), HeapValue::List(right)) => slice_equals_list(left, right, heap),
-        (HeapValue::List(left), HeapValue::Slice(right)) => slice_equals_list(right, left, heap),
-        _ => false,
-    }
-}
-
-fn typed_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> bool {
-    left.len() == right.len()
-        && (0..left.len()).all(|index| {
-            runtime_values_equal(
-                &typed_list_value_at(left, index),
-                &typed_list_value_at(right, index),
-                heap,
-            )
-        })
-}
-
-/// One element as a value, without allocating for a long string.
-///
-/// A `TypedList::String` element is an `Arc<str>` with no `RuntimeVal` short of
-/// a heap allocation, so comparison reads those through `heap` instead — see
-/// `typed_list_string_at`.
-fn typed_list_value_at(list: &TypedList, index: usize) -> RuntimeVal {
-    match list {
-        TypedList::Mixed(values) => values.get(index).copied().unwrap_or(RuntimeVal::Nil),
-        TypedList::Int(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Int),
-        TypedList::Float(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Float),
-        TypedList::Bool(values) => values.get(index).copied().map_or(RuntimeVal::Nil, RuntimeVal::Bool),
-        // Long ones cannot become a `RuntimeVal` without allocating; the
-        // string-aware comparisons below handle them.
-        TypedList::String(values) => values
-            .get(index)
-            .and_then(|text| ShortStr::new(text).map(RuntimeVal::ShortStr))
-            .unwrap_or(RuntimeVal::Nil),
-    }
-}
-
-/// The text of a `TypedList::String` element, for the comparisons that
-/// `typed_list_value_at` cannot express.
-fn typed_list_string_at(list: &TypedList, index: usize) -> Option<&str> {
-    match list {
-        TypedList::String(values) => values.get(index).map(|text| text.as_ref()),
-        _ => None,
-    }
-}
-
-fn slice_source_list<'a>(slice: &SliceValue, heap: &'a HeapStore) -> Option<&'a TypedList> {
-    let RuntimeVal::Obj(handle) = slice.source else {
-        return None;
-    };
-    match heap.get(handle) {
-        Some(HeapValue::List(list)) => Some(list),
-        _ => None,
-    }
-}
-
-fn slice_element_equal_at(
-    left: &SliceValue,
-    left_index: usize,
-    right: &SliceValue,
-    right_index: usize,
-    heap: &HeapStore,
-) -> bool {
-    let (Some(left_list), Some(right_list)) = (slice_source_list(left, heap), slice_source_list(right, heap)) else {
-        return false;
-    };
-    elements_equal(
-        left_list,
-        left.start + left_index,
-        right_list,
-        right.start + right_index,
-        heap,
-    )
-}
-
-fn slice_equals_list(slice: &SliceValue, list: &TypedList, heap: &HeapStore) -> bool {
-    if slice.len != list.len() {
-        return false;
-    }
-    let Some(source) = slice_source_list(slice, heap) else {
-        return false;
-    };
-    (0..slice.len).all(|index| elements_equal(source, slice.start + index, list, index, heap))
-}
-
-/// Two list elements, by position, string-aware.
-fn elements_equal(
-    left: &TypedList,
-    left_index: usize,
-    right: &TypedList,
-    right_index: usize,
-    heap: &HeapStore,
-) -> bool {
-    match (
-        typed_list_string_at(left, left_index),
-        typed_list_string_at(right, right_index),
-    ) {
-        (Some(left), Some(right)) => left == right,
-        (Some(text), None) | (None, Some(text)) => {
-            let other = if typed_list_string_at(left, left_index).is_some() {
-                typed_list_value_at(right, right_index)
-            } else {
-                typed_list_value_at(left, left_index)
-            };
-            runtime_value_is_text(&other, text, heap)
-        }
-        (None, None) => runtime_values_equal(
-            &typed_list_value_at(left, left_index),
-            &typed_list_value_at(right, right_index),
-            heap,
-        ),
-    }
-}
-
-fn runtime_value_is_text(value: &RuntimeVal, text: &str, heap: &HeapStore) -> bool {
-    match value {
-        RuntimeVal::ShortStr(value) => value.as_str() == text,
-        RuntimeVal::Obj(handle) => {
-            matches!(heap.get(*handle), Some(HeapValue::String(value)) if value.as_ref() == text)
-        }
-        _ => false,
     }
 }
 

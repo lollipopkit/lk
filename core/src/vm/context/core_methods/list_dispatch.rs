@@ -103,7 +103,7 @@ pub(super) fn dispatch_list_builtin_method(
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
-            let unique = typed_list_unique(list, heap);
+            let unique = typed_list_unique(list, heap)?;
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(unique)))))
         }
         "contains" => {
@@ -114,7 +114,7 @@ pub(super) fn dispatch_list_builtin_method(
                 return Ok(None);
             };
             Ok(Some(RuntimeVal::Bool(
-                typed_list_position(list, &positional[0], heap).is_some(),
+                typed_list_position(list, &positional[0], heap)?.is_some(),
             )))
         }
         "index_of" => {
@@ -124,7 +124,7 @@ pub(super) fn dispatch_list_builtin_method(
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
-            let index = typed_list_position(list, &positional[0], heap).map_or(-1, |index| index as i64);
+            let index = typed_list_position(list, &positional[0], heap)?.map_or(-1, |index| index as i64);
             Ok(Some(RuntimeVal::Int(index)))
         }
         "is_empty" => {

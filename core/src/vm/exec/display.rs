@@ -26,7 +26,8 @@ use anyhow::{Result, anyhow};
 use core::fmt::Write as _;
 
 use crate::val::{
-    CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, SliceValue, TypedList, TypedMap,
+    CallableValue, HeapStore, HeapValue, MAX_VALUE_DEPTH, RuntimeMapKey, RuntimeSet, RuntimeVal, SliceValue, TypedList,
+    TypedMap,
 };
 
 /// A value inside a container, where a string is quoted.
@@ -45,7 +46,15 @@ use crate::val::{
 /// A string on its own is still its text: `println("abc")` prints `abc`. The
 /// split is the usual one — a value shown *as data* is quoted, a string printed
 /// *as output* is not.
-fn runtime_display_nested(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
+///
+/// Every step further into a container goes through here, so this is where the
+/// walk's depth is bounded — see [`MAX_VALUE_DEPTH`].
+fn runtime_display_nested(value: &RuntimeVal, heap: &HeapStore, depth: u32) -> Result<String> {
+    if depth >= MAX_VALUE_DEPTH {
+        return Err(anyhow!(
+            "value nested deeper than {MAX_VALUE_DEPTH} levels; it is cyclic or too deeply nested to print"
+        ));
+    }
     match value {
         RuntimeVal::ShortStr(value) => Ok(quote_string(value.as_str())),
         RuntimeVal::Obj(handle) => match heap
@@ -53,13 +62,17 @@ fn runtime_display_nested(value: &RuntimeVal, heap: &HeapStore) -> Result<String
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::String(value) => Ok(quote_string(value)),
-            other => runtime_display_heap_value(other, heap),
+            other => runtime_display_heap_value(other, heap, depth + 1),
         },
-        other => runtime_display_value(other, heap),
+        other => runtime_display_value_at(other, heap, depth + 1),
     }
 }
 
 pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
+    runtime_display_value_at(value, heap, 0)
+}
+
+fn runtime_display_value_at(value: &RuntimeVal, heap: &HeapStore, depth: u32) -> Result<String> {
     match value {
         RuntimeVal::Nil => Ok("nil".to_string()),
         RuntimeVal::Bool(value) => Ok(value.to_string()),
@@ -70,27 +83,38 @@ pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<Str
             let value = heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            runtime_display_heap_value(value, heap)
+            runtime_display_heap_value(value, heap, depth)
         }
     }
 }
-fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<String> {
+fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore, depth: u32) -> Result<String> {
     match value {
         HeapValue::String(value) => Ok(value.to_string()),
         HeapValue::Bytes(value) => Ok(runtime_display_bytes(value)),
-        HeapValue::List(values) => runtime_display_list(values, heap),
-        HeapValue::Slice(slice) => runtime_display_slice(slice, heap),
-        HeapValue::Map(values) => runtime_display_map(values, heap),
+        HeapValue::List(values) => runtime_display_list(values, heap, depth),
+        HeapValue::Slice(slice) => runtime_display_slice(slice, heap, depth),
+        HeapValue::Map(values) => runtime_display_map(values, heap, depth),
         HeapValue::Set(values) => runtime_display_set(values),
         HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
         HeapValue::Object(value) => {
             let mut out = value.type_name().to_string();
+            // Field names sorted, not in hash order: a struct printed the same
+            // fields in an order no reader could predict from the source, and
+            // one a hasher change would silently permute. Declaration order
+            // would be better still, but a `RuntimeObject` only carries its
+            // `DeclaredType`'s name and scope — it has no field list to consult.
+            // TODO: print declaration order once `DeclaredType` carries fields.
+            let mut fields: Vec<_> = value.fields.iter().collect();
+            fields.sort_by(|(left, _), (right, _)| left.cmp(right));
             append_display_entries(
                 &mut out,
-                value
-                    .fields
-                    .iter()
-                    .map(|(key, value)| Ok((key.to_string(), runtime_display_value(value, heap)?))),
+                fields
+                    // A field's value is data inside a container, so it quotes
+                    // like a list element or a map value. It used to go through
+                    // the top-level renderer instead, so `P { name: "a, b" }`
+                    // printed as `P{name:a, b}` — which reads as two fields.
+                    .into_iter()
+                    .map(|(key, value)| Ok((key.to_string(), runtime_display_nested(value, heap, depth)?))),
             )?;
             Ok(out)
         }
@@ -151,14 +175,14 @@ fn runtime_display_callable(value: &CallableValue) -> String {
         }
     }
 }
-fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> {
+fn runtime_display_list(values: &TypedList, heap: &HeapStore, depth: u32) -> Result<String> {
     let mut out = String::from("[");
     let mut first = true;
     match values {
         TypedList::Mixed(values) => {
             for value in values {
                 push_display_sep(&mut out, &mut first);
-                out.push_str(&runtime_display_nested(value, heap)?);
+                out.push_str(&runtime_display_nested(value, heap, depth)?);
             }
         }
         TypedList::Int(values) => {
@@ -189,7 +213,7 @@ fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> 
     out.push(']');
     Ok(out)
 }
-fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore) -> Result<String> {
+fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore, depth: u32) -> Result<String> {
     let RuntimeVal::Obj(source) = slice.source else {
         return Ok("[]".to_string());
     };
@@ -197,22 +221,25 @@ fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore) -> Result<String>
         return Ok("[]".to_string());
     };
     let window = values.window(slice.start, slice.len);
-    runtime_display_list(&window, heap)
+    runtime_display_list(&window, heap, depth)
 }
-fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
+fn runtime_display_map(values: &TypedMap, heap: &HeapStore, depth: u32) -> Result<String> {
     let mut out = String::new();
     match values {
         TypedMap::Mixed(entries) => append_display_entries(
             &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((runtime_display_map_key(key), runtime_display_nested(value, heap)?))),
+            entries.iter().map(|(key, value)| {
+                Ok((
+                    runtime_display_map_key(key),
+                    runtime_display_nested(value, heap, depth)?,
+                ))
+            }),
         )?,
         TypedMap::StringMixed(entries) => append_display_entries(
             &mut out,
             entries
                 .iter()
-                .map(|(key, value)| Ok((quote_string(key), runtime_display_nested(value, heap)?))),
+                .map(|(key, value)| Ok((quote_string(key), runtime_display_nested(value, heap, depth)?))),
         )?,
         TypedMap::StringInt(entries) => append_display_entries(
             &mut out,
@@ -267,4 +294,66 @@ fn push_display_sep(out: &mut String, first: &mut bool) {
 }
 fn quote_string(value: &str) -> String {
     format!("{value:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+
+    use super::*;
+    use crate::util::fast_map::fast_hash_map_from_iter;
+    use crate::val::{MAX_VALUE_DEPTH, RuntimeObject};
+    use crate::vm::{DeclaredType, TypeScope};
+
+    fn object_of(fields: &[(&str, RuntimeVal)]) -> RuntimeObject {
+        RuntimeObject::new(
+            Arc::new(DeclaredType::new(TypeScope::anonymous(), Arc::<str>::from("P"))),
+            fast_hash_map_from_iter(fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value))),
+        )
+    }
+
+    /// A struct field is data inside a container, so it quotes like a list
+    /// element. It went through the top-level renderer instead, and
+    /// `P { name: "a, b" }` printed as `P{name:a, b}` — which reads as two
+    /// fields. Field order is sorted, not the hash order a reader cannot
+    /// predict from the source.
+    #[test]
+    fn object_fields_are_quoted_and_ordered() {
+        let mut heap = HeapStore::new();
+        let text = RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::<str>::from("a, b"))));
+        let object = RuntimeVal::Obj(heap.alloc(HeapValue::Object(object_of(&[
+            ("name", text),
+            ("count", RuntimeVal::Int(2)),
+        ]))));
+
+        assert_eq!(
+            runtime_display_value(&object, &heap).expect("render"),
+            "P{count:2,name:\"a, b\"}"
+        );
+    }
+
+    /// Printing a chain deeper than the bound raises instead of overflowing the
+    /// Rust stack, which used to abort the process.
+    #[test]
+    fn nesting_past_the_bound_raises_instead_of_aborting() {
+        let mut heap = HeapStore::new();
+        let mut node = RuntimeVal::Int(1);
+        for _ in 0..(MAX_VALUE_DEPTH + 8) {
+            node = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(vec![node]))));
+        }
+
+        let error = runtime_display_value(&node, &heap).expect_err("too deep to print");
+        assert!(error.to_string().contains("nested deeper than"), "{error}");
+    }
+
+    #[test]
+    fn nesting_within_the_bound_still_renders() {
+        let mut heap = HeapStore::new();
+        let mut node = RuntimeVal::Int(1);
+        for _ in 0..3 {
+            node = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(vec![node]))));
+        }
+
+        assert_eq!(runtime_display_value(&node, &heap).expect("render"), "[[[1]]]");
+    }
 }

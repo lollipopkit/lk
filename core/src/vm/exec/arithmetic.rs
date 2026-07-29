@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
 use crate::vm::{Instr, Opcode};
 
 use super::Executor;
@@ -367,33 +367,10 @@ impl Executor {
         self.runtime_values_equal(&self.state.stack[lhs], &self.state.stack[rhs])
     }
 
+    /// `==`. One implementation, shared with the container methods and living
+    /// with the value model — see [`crate::val::runtime_values_equal`].
     pub(in crate::vm::exec) fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {
-        Ok(match (lhs, rhs) {
-            (RuntimeVal::Nil, RuntimeVal::Nil) => true,
-            (RuntimeVal::Bool(lhs), RuntimeVal::Bool(rhs)) => lhs == rhs,
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs == rhs,
-            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => lhs == rhs,
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => *lhs as f64 == *rhs,
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => *lhs == *rhs as f64,
-            (RuntimeVal::Obj(lhs), RuntimeVal::Obj(rhs)) if lhs == rhs => true,
-            (RuntimeVal::Obj(lhs), RuntimeVal::Obj(rhs)) => {
-                let lhs = self
-                    .state
-                    .heap
-                    .get(*lhs)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", lhs.index()))?;
-                let rhs = self
-                    .state
-                    .heap
-                    .get(*rhs)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", rhs.index()))?;
-                self.heap_values_equal(lhs, rhs)?
-            }
-            _ => match (self.runtime_value_to_string(lhs)?, self.runtime_value_to_string(rhs)?) {
-                (Some(lhs), Some(rhs)) => lhs == rhs,
-                _ => false,
-            },
-        })
+        crate::val::runtime_values_equal(lhs, rhs, &self.state.heap)
     }
 
     fn runtime_value_to_list_snapshot(&self, value: &RuntimeVal) -> Result<Option<RuntimeListSnapshot>> {
@@ -816,7 +793,9 @@ impl Executor {
             RuntimeListSnapshot::Int(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Int(rhs[rhs_index])),
             RuntimeListSnapshot::Float(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Float(rhs[rhs_index])),
             RuntimeListSnapshot::Bool(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Bool(rhs[rhs_index])),
-            RuntimeListSnapshot::String(rhs) => self.runtime_value_equals_string(&lhs, &rhs[rhs_index]),
+            RuntimeListSnapshot::String(rhs) => {
+                crate::val::runtime_value_equals_str(&lhs, &rhs[rhs_index], &self.state.heap)
+            }
         }
     }
 
@@ -827,7 +806,9 @@ impl Executor {
         rhs_index: usize,
     ) -> Result<bool> {
         match rhs {
-            RuntimeListSnapshot::Mixed(rhs) => self.runtime_value_equals_string(&rhs[rhs_index], lhs),
+            RuntimeListSnapshot::Mixed(rhs) => {
+                crate::val::runtime_value_equals_str(&rhs[rhs_index], lhs, &self.state.heap)
+            }
             RuntimeListSnapshot::String(rhs) => Ok(lhs == &rhs[rhs_index]),
             _ => Ok(false),
         }
@@ -849,228 +830,6 @@ impl Executor {
         }
     }
 
-    fn heap_values_equal(&self, lhs: &HeapValue, rhs: &HeapValue) -> Result<bool> {
-        Ok(match (lhs, rhs) {
-            (HeapValue::String(lhs), HeapValue::String(rhs)) => lhs == rhs,
-            (HeapValue::Bytes(lhs), HeapValue::Bytes(rhs)) => lhs == rhs,
-            (HeapValue::List(lhs), HeapValue::List(rhs)) => self.typed_lists_equal(lhs, rhs)?,
-            // A window compares by its elements, like everything else that has
-            // elements. It had no arm at all, so it fell to `false` below: a
-            // window printed `[97,98,99]` and compared unequal to
-            // `[97,98,99]` — and, worse, unequal to another window over the
-            // same range of the same list.
-            (HeapValue::Slice(lhs), HeapValue::Slice(rhs)) => {
-                self.slice_ranges_equal(lhs.source, lhs.start, lhs.len, rhs.source, rhs.start, rhs.len)?
-            }
-            (HeapValue::Slice(lhs), HeapValue::List(rhs)) => {
-                self.slice_and_list_equal(lhs.source, lhs.start, lhs.len, rhs)?
-            }
-            (HeapValue::List(lhs), HeapValue::Slice(rhs)) => {
-                self.slice_and_list_equal(rhs.source, rhs.start, rhs.len, lhs)?
-            }
-            (HeapValue::Map(lhs), HeapValue::Map(rhs)) => self.typed_maps_equal(lhs, rhs)?,
-            (HeapValue::Set(lhs), HeapValue::Set(rhs)) => runtime_sets_equal(lhs, rhs),
-            _ => false,
-        })
-    }
-
-    /// The list a window reads through to, or `None` if the source is gone.
-    fn slice_source_list(&self, source: RuntimeVal) -> Option<&TypedList> {
-        let RuntimeVal::Obj(handle) = source else {
-            return None;
-        };
-        match self.state.heap.get(handle) {
-            Some(HeapValue::List(list)) => Some(list),
-            _ => None,
-        }
-    }
-
-    /// Two windows, compared element by element through their sources.
-    ///
-    /// Nothing is materialized: `typed_list_items_equal` already compares by
-    /// index, so a window only needs to offset the index it asks for.
-    fn slice_ranges_equal(
-        &self,
-        lhs_source: RuntimeVal,
-        lhs_start: usize,
-        lhs_len: usize,
-        rhs_source: RuntimeVal,
-        rhs_start: usize,
-        rhs_len: usize,
-    ) -> Result<bool> {
-        if lhs_len != rhs_len {
-            return Ok(false);
-        }
-        let (Some(lhs), Some(rhs)) = (self.slice_source_list(lhs_source), self.slice_source_list(rhs_source)) else {
-            return Ok(false);
-        };
-        if lhs_start + lhs_len > lhs.len() || rhs_start + rhs_len > rhs.len() {
-            return Ok(false);
-        }
-        for index in 0..lhs_len {
-            if !self.typed_list_items_equal(lhs, lhs_start + index, rhs, rhs_start + index)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// A window against a whole list.
-    fn slice_and_list_equal(&self, source: RuntimeVal, start: usize, len: usize, other: &TypedList) -> Result<bool> {
-        if len != other.len() {
-            return Ok(false);
-        }
-        let Some(list) = self.slice_source_list(source) else {
-            return Ok(false);
-        };
-        if start + len > list.len() {
-            return Ok(false);
-        }
-        for index in 0..len {
-            if !self.typed_list_items_equal(list, start + index, other, index)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    fn typed_lists_equal(&self, lhs: &TypedList, rhs: &TypedList) -> Result<bool> {
-        if lhs.len() != rhs.len() {
-            return Ok(false);
-        }
-        match (lhs, rhs) {
-            (TypedList::Int(lhs), TypedList::Int(rhs)) => return Ok(lhs == rhs),
-            (TypedList::Float(lhs), TypedList::Float(rhs)) => return Ok(lhs == rhs),
-            (TypedList::Bool(lhs), TypedList::Bool(rhs)) => return Ok(lhs == rhs),
-            (TypedList::String(lhs), TypedList::String(rhs)) => return Ok(lhs == rhs),
-            _ => {}
-        }
-        for index in 0..lhs.len() {
-            if !self.typed_list_items_equal(lhs, index, rhs, index)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    fn typed_list_items_equal(
-        &self,
-        lhs: &TypedList,
-        lhs_index: usize,
-        rhs: &TypedList,
-        rhs_index: usize,
-    ) -> Result<bool> {
-        match (lhs, rhs) {
-            (TypedList::Mixed(lhs), TypedList::Mixed(rhs)) => {
-                self.runtime_values_equal(&lhs[lhs_index], &rhs[rhs_index])
-            }
-            (TypedList::Mixed(lhs), TypedList::String(rhs)) => {
-                self.runtime_value_equals_string(&lhs[lhs_index], &rhs[rhs_index])
-            }
-            (TypedList::String(lhs), TypedList::Mixed(rhs)) => {
-                self.runtime_value_equals_string(&rhs[rhs_index], &lhs[lhs_index])
-            }
-            (TypedList::Int(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Int(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::Float(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Float(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::Bool(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Bool(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::String(lhs), _) => self.typed_list_string_item_equal(&lhs[lhs_index], rhs, rhs_index),
-            (TypedList::Mixed(lhs), _) => self.typed_list_runtime_item_equal(lhs[lhs_index], rhs, rhs_index),
-        }
-    }
-
-    fn typed_list_runtime_item_equal(&self, lhs: RuntimeVal, rhs: &TypedList, rhs_index: usize) -> Result<bool> {
-        match rhs {
-            TypedList::Mixed(rhs) => self.runtime_values_equal(&lhs, &rhs[rhs_index]),
-            TypedList::Int(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Int(rhs[rhs_index])),
-            TypedList::Float(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Float(rhs[rhs_index])),
-            TypedList::Bool(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Bool(rhs[rhs_index])),
-            TypedList::String(rhs) => self.runtime_value_equals_string(&lhs, &rhs[rhs_index]),
-        }
-    }
-
-    fn typed_list_string_item_equal(&self, lhs: &Arc<str>, rhs: &TypedList, rhs_index: usize) -> Result<bool> {
-        match rhs {
-            TypedList::Mixed(rhs) => self.runtime_value_equals_string(&rhs[rhs_index], lhs),
-            TypedList::String(rhs) => Ok(lhs == &rhs[rhs_index]),
-            _ => Ok(false),
-        }
-    }
-
-    fn runtime_value_equals_string(&self, value: &RuntimeVal, expected: &str) -> Result<bool> {
-        Ok(match value {
-            RuntimeVal::ShortStr(value) => value.as_str() == expected,
-            RuntimeVal::Obj(handle) => matches!(
-                self.state
-                    .heap
-                    .get(*handle)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", handle.index()))?,
-                HeapValue::String(value) if value.as_ref() == expected
-            ),
-            _ => false,
-        })
-    }
-
-    fn typed_maps_equal(&self, lhs: &TypedMap, rhs: &TypedMap) -> Result<bool> {
-        if lhs.len() != rhs.len() {
-            return Ok(false);
-        }
-        match lhs {
-            TypedMap::Mixed(entries) => {
-                for (key, value) in entries {
-                    if !self.typed_map_value_equal(rhs, key, value)? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringMixed(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, value)? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringInt(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Int(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringFloat(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Float(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringBool(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Bool(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    fn typed_map_value_equal(&self, rhs: &TypedMap, key: &RuntimeMapKey, lhs_value: &RuntimeVal) -> Result<bool> {
-        let Some(rhs_value) = rhs.get(key) else {
-            return Ok(false);
-        };
-        self.runtime_values_equal(lhs_value, &rhs_value)
-    }
-
     fn runtime_value_to_typed_map(&self, value: &RuntimeVal) -> Result<Option<&TypedMap>> {
         let RuntimeVal::Obj(handle) = value else {
             return Ok(None);
@@ -1080,10 +839,6 @@ impl Executor {
         };
         Ok(Some(map))
     }
-}
-
-fn runtime_sets_equal(lhs: &RuntimeSet, rhs: &RuntimeSet) -> bool {
-    lhs.len() == rhs.len() && lhs.entries().all(|key| rhs.contains(key))
 }
 
 fn merge_typed_maps(lhs: &TypedMap, rhs: &TypedMap) -> TypedMap {
