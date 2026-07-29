@@ -661,11 +661,20 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get(handle: *mut c_void, index: i64, pr
     }
 }
 
+/// A store index resolved against `len`: a negative one counts from the end,
+/// exactly as the read does. `None` means it is out of range even after that,
+/// which is a *halt* for a store — unlike a read, which answers nil.
+fn store_index(index: i64, len: usize) -> Option<usize> {
+    let len = len as i64;
+    let resolved = if index < 0 { len + index } else { index };
+    (resolved >= 0 && resolved < len).then_some(resolved as usize)
+}
+
 /// Stores `value` at `index`. Unlike indexing (`get`), the VM treats an
-/// out-of-range or **negative** store index as a fatal error (`list index N out of
-/// bounds` / `list index must be non-negative`), not a nil/grow — so this
-/// `abort()`s on an invalid index, matching the VM's *halt* (a loud failure, never
-/// a silent wrong write). An in-range store is the only non-aborting path.
+/// out-of-range store index as a fatal error (`list index N out of bounds`),
+/// not a nil/grow — so this raises, matching the VM's *halt* (a loud failure,
+/// never a silent wrong write). A negative index counts from the end, as
+/// `xs[-1] = v` does in the VM.
 ///
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
@@ -676,10 +685,10 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<i64>) };
-    if index < 0 || index as usize >= values.len() {
+    let Some(index) = store_index(index, values.len()) else {
         crate::panic::raise_str("runtime error");
-    }
-    values[index as usize] = value;
+    };
+    values[index] = value;
 }
 
 /// Stores `value` at `index` in an `f64` list; aborts on an invalid index (see
@@ -694,10 +703,10 @@ pub unsafe extern "C" fn lkrt_lklist_f64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<f64>) };
-    if index < 0 || index as usize >= values.len() {
+    let Some(index) = store_index(index, values.len()) else {
         crate::panic::raise_str("runtime error");
-    }
-    values[index as usize] = value;
+    };
+    values[index] = value;
 }
 
 /// A `Maybe<i64>` returned by value: `present == 0` means the element was absent

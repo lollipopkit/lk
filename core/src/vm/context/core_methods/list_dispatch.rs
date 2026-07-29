@@ -227,11 +227,14 @@ pub(super) fn dispatch_list_builtin_method(
                     positional.len()
                 );
             }
-            let index = list_index_arg(&positional[0], "list.insert() index")?;
             let value = positional[1];
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
+            // `-1` inserts before the last element, the same "from the end" the
+            // read side means; `len` (the past-the-end position) stays legal
+            // because that is where an append goes.
+            let index = write_index_arg(&positional[0], list.len(), "list.insert() index")?;
             if index > list.len() {
                 bail!("list.insert() index {} out of bounds (len={})", index, list.len());
             }
@@ -277,10 +280,10 @@ pub(super) fn dispatch_list_builtin_method(
             if positional.len() != 1 {
                 bail!("list.remove_at() expects 1 argument (index), got {}", positional.len());
             }
-            let index = list_index_arg(&positional[0], "list.remove_at() index")?;
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
+            let index = write_index_arg(&positional[0], list.len(), "list.remove_at() index")?;
             if index >= list.len() {
                 bail!("list.remove_at() index {} out of bounds (len={})", index, list.len());
             }
@@ -301,11 +304,11 @@ pub(super) fn dispatch_list_builtin_method(
                     positional.len()
                 );
             }
-            let index = list_index_arg(&positional[0], "list.set() index")?;
             let value = positional[1];
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
+            let index = write_index_arg(&positional[0], list.len(), "list.set() index")?;
             if index >= list.len() {
                 bail!("list.set() index {} out of bounds (len={})", index, list.len());
             }

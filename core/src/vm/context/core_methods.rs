@@ -978,14 +978,22 @@ pub(super) fn slice_position(value: &RuntimeVal, len: usize, context: &str) -> a
     Ok(resolved.clamp(0, len) as usize)
 }
 
-fn list_index_arg(value: &RuntimeVal, context: &str) -> anyhow::Result<usize> {
+/// A *write* position against a container of `len` elements.
+///
+/// Negative counts from the end, as everywhere else — `xs.set(-1, v)` writes
+/// the last element, which is what `xs[-1]` reads. Still out of range after
+/// that is an error and stays one: reading past the end is nil, writing past it
+/// is not something a program can mean. The caller does the upper-bound check,
+/// because `insert` accepts `len` and the others do not.
+pub(super) fn write_index_arg(value: &RuntimeVal, len: usize, context: &str) -> anyhow::Result<usize> {
     let RuntimeVal::Int(index) = value else {
         bail!("{context} must be Int");
     };
-    if *index < 0 {
-        bail!("{context} must be non-negative");
+    let resolved = if *index < 0 { len as i64 + *index } else { *index };
+    if resolved < 0 {
+        bail!("{context} {index} is before the start of a list of {len}");
     }
-    Ok(*index as usize)
+    Ok(resolved as usize)
 }
 
 fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {

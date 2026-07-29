@@ -135,6 +135,8 @@ impl Executor {
             }
         };
 
+        let key = self.resolve_negative_list_key(handle, key);
+
         if let Some(done) = self.try_set_string_list(handle, &key, value)? {
             self.maybe_bump_shape(handle, has_static_fact);
             return Ok(done);
@@ -235,6 +237,39 @@ impl Executor {
         }
     }
 
+    /// A write index resolved against the list's length: **negative counts from
+    /// the end**, exactly as the read does.
+    ///
+    /// `xs[-1]` read the last element and `xs[-1] = 9` answered "list index must
+    /// be non-negative" — the same expression, one direction. Out of range
+    /// after resolving is still an error: writing past the end is not something
+    /// you can mean, unlike reading past it (which is nil).
+    ///
+    /// The length lookup happens only for a negative index, so the ordinary
+    /// write pays one predictable compare.
+    #[inline]
+    pub(super) fn negative_list_index_from_end(&self, handle: HeapRef, index: i64) -> i64 {
+        if index >= 0 {
+            return index;
+        }
+        match self.state.heap.get(handle) {
+            Some(HeapValue::List(list)) => index + list.len() as i64,
+            _ => index,
+        }
+    }
+
+    /// [`Self::negative_list_index_from_end`] for the dynamic path, where the
+    /// key has already been built and the target may not be a list at all.
+    #[inline]
+    fn resolve_negative_list_key(&self, handle: HeapRef, key: RuntimeMapKey) -> RuntimeMapKey {
+        match key {
+            RuntimeMapKey::Int(index) if index < 0 => {
+                RuntimeMapKey::Int(self.negative_list_index_from_end(handle, index))
+            }
+            other => other,
+        }
+    }
+
     pub(super) fn set_list_index_handle(
         &mut self,
         handle: HeapRef,
@@ -244,7 +279,7 @@ impl Executor {
         known_value_kind: Option<PerfValueKind>,
         has_static_fact: bool,
     ) -> Result<()> {
-        let index = self.int_key_from_register_or_value(key_reg, moved_key)?;
+        let index = self.negative_list_index_from_end(handle, self.int_key_from_register_or_value(key_reg, moved_key)?);
         let key = RuntimeMapKey::Int(index);
         if matches!(
             self.state.heap.get(handle),

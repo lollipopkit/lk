@@ -357,6 +357,13 @@ fn differential_lists() {
                 "nil_branch_oob",
                 "let xs = [1];\nif xs[9] == nil { return 1; }\nreturn 0;\n",
             ),
+            // Writing at a negative index means what reading at one means. It
+            // used to raise in both backends while `xs[-1]` read the last
+            // element — the same expression, one direction.
+            new(
+                "negative_store",
+                "let xs = [1, 2, 3];\nxs[-1] = 9;\nxs.set(-2, 8);\nprintln(xs);\nreturn 0;\n",
+            ),
             // A window's negative bounds count from the end, like `xs[-1]`.
             // The VM raised on them and the native slice raised too, while the
             // *string* slice on each side did something different again.

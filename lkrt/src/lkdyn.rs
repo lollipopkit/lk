@@ -757,19 +757,19 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_at(handle: *mut c_void, index: i64) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_set(handle: *mut c_void, index: i64, value: LkDyn) {
     if handle.is_null() {
-        return;
+        crate::panic::raise_str("runtime error");
     }
     let values = unsafe { &mut *(handle as *mut Vec<LkDyn>) };
     let len = values.len() as i64;
     let idx = if index < 0 { len + index } else { index };
-    if idx < 0 {
-        return;
+    // Out of range is a halt, matching the VM's `list index N out of bounds`.
+    // This used to *grow* the list to fit (and silently ignore an index before
+    // the start), so `xs[9] = 1` on a three-element list raised interpreted and
+    // appended six nils compiled.
+    if idx < 0 || idx >= len {
+        crate::panic::raise_str("runtime error");
     }
-    let idx = idx as usize;
-    if idx >= values.len() {
-        values.resize(idx + 1, LkDyn::NIL);
-    }
-    values[idx] = value;
+    values[idx as usize] = value;
 }
 
 /// # Safety
