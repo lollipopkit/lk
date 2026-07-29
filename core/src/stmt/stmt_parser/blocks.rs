@@ -142,6 +142,16 @@ impl<'a> StmtParser<'a> {
         }
 
         if end_pos == start_pos {
+            // In a `while`/`for` header the only expression that can start with
+            // `{` is a map literal, and this `{` is the body's. Say the way out
+            // rather than only that this is wrong — the same wording `if` and
+            // `match` use (`ast::Parser::parse_header_expr_before_brace`).
+            if stop_at_for_loop_body && matches!(self.tokens.get(start_pos), Some(Token::LBrace)) {
+                return Err(anyhow!(self.err(
+                    "Expected an expression before '{': a `{` here opens the body, \
+                     so a map literal must be parenthesised — `({…}) { … }`"
+                )));
+            }
             return Err(anyhow!(self.err("Expected expression")));
         }
 

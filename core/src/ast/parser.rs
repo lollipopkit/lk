@@ -1279,7 +1279,13 @@ impl<'a> Parser<'a> {
         }
 
         if i == start_pos {
-            let msg = alloc::format!("Expected an expression before '{{' in {keyword}");
+            // The only expression that can start with `{` is a map literal, and
+            // here `{` is the body's — so say which way out there is rather
+            // than only that this is wrong.
+            let msg = alloc::format!(
+                "Expected an expression before '{{' in {keyword}: a `{{` here opens the body, \
+                 so a map literal must be parenthesised — `{keyword} ({{…}}) {{ … }}`"
+            );
             return Err(anyhow!(self.err(&msg)));
         }
 
