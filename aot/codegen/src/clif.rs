@@ -695,11 +695,12 @@ impl Lower {
         dst: Option<ValueId>,
         args: &[Value],
     ) -> Result<(), ClifError> {
-        self.call_raw(b, mctx, callee, dst, false, args)
+        self.call_raw(b, mctx, callee, dst, false, args, "a runtime helper")
     }
 
     /// Import `callee` and emit a call with pre-flattened `args`. When `dst` is
     /// set, bind the result as a `{i64,i64}` pair (`dst_pair`) or a single value.
+    #[allow(clippy::too_many_arguments)]
     fn call_raw(
         &mut self,
         b: &mut FunctionBuilder,
@@ -708,6 +709,10 @@ impl Lower {
         dst: Option<ValueId>,
         dst_pair: bool,
         args: &[Value],
+        // What to call the callee in an error. Cranelift's own name for it is
+        // `userextname7`, which is no help at all; the call site knows the
+        // symbol, so it hands it down.
+        callee_name: &str,
     ) -> Result<(), ClifError> {
         let func_ref = mctx.module.declare_func_in_func(callee, b.func);
         // Checked here rather than left to the Cranelift verifier: the verifier
@@ -719,9 +724,8 @@ impl Lower {
             .params
             .len();
         if expected != args.len() {
-            let name = b.func.dfg.ext_funcs[func_ref].name.display(None).to_string();
             return Err(ClifError::Module(format!(
-                "call to {name} passes {} machine argument(s), declared with {expected}",
+                "call to {callee_name} passes {} machine argument(s), declared with {expected}",
                 args.len()
             )));
         }
@@ -739,9 +743,13 @@ impl Lower {
                 );
                 self.set2(dst, a, c);
             } else {
-                let v = *results
-                    .first()
-                    .ok_or(ClifError::Unsupported("call has no result for dst"))?;
+                // Naming the callee: without it this says only that *some* call
+                // produced nothing for a destination, and the whole point of
+                // checking here rather than leaving it to the Cranelift verifier
+                // is to have a name to start from.
+                let v = *results.first().ok_or_else(|| {
+                    ClifError::Module(format!("call to {callee_name} produces no result, but one is wanted"))
+                })?;
                 self.set1(dst, v);
             }
         }
@@ -984,7 +992,7 @@ impl Lower {
             } => {
                 let a = self.args_v(args)?;
                 let callee = mctx.extern_func(symbol, arg_tys, *ret)?;
-                return self.call_raw(b, mctx, callee, *dst, ty_is_pair(*ret), &a);
+                return self.call_raw(b, mctx, callee, *dst, ty_is_pair(*ret), &a, symbol);
             }
             Inst::CallFn { dst, func, args } => {
                 let a = self.args_v(args)?;
@@ -993,7 +1001,7 @@ impl Lower {
                     .get(func)
                     .ok_or(ClifError::Unsupported("call to undeclared function"))?;
                 let dst_pair = mctx.fn_rets.get(func).is_some_and(|t| ty_is_pair(*t));
-                return self.call_raw(b, mctx, callee, *dst, dst_pair, &a);
+                return self.call_raw(b, mctx, callee, *dst, dst_pair, &a, &format!("lk_fn_{}", func.0));
             }
             Inst::Call { dst, callee, args } => {
                 let abi = callee.resolve().ok_or(ClifError::Unsupported("unknown ABI function"))?;
@@ -1016,7 +1024,15 @@ impl Lower {
                 }
                 let dst_pair = matches!(abi.result, lk_aot_abi::AbiType::DynVal);
                 let clif_id = mctx.abi_func(abi)?;
-                return self.call_raw(b, mctx, clif_id, *dst, dst_pair, &a);
+                return self.call_raw(
+                    b,
+                    mctx,
+                    clif_id,
+                    *dst,
+                    dst_pair,
+                    &a,
+                    &format!("{}.{}", abi.module, abi.name),
+                );
             }
             Inst::Cmp {
                 dst,
@@ -1186,7 +1202,15 @@ impl Lower {
             Inst::UnwrapMaybeF64 { dst, src } => {
                 let (value, present) = self.two(*src)?;
                 let clif_id = mctx.raw_func("lkrt_maybe_f64_unwrap", &[types::F64, types::I64], &[types::F64])?;
-                return self.call_raw(b, mctx, clif_id, Some(*dst), false, &[value, present]);
+                return self.call_raw(
+                    b,
+                    mctx,
+                    clif_id,
+                    Some(*dst),
+                    false,
+                    &[value, present],
+                    "lkrt_maybe_f64_unwrap",
+                );
             }
             Inst::TraitDispatch { dst, self_arg, arms } => {
                 return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
@@ -1354,11 +1378,11 @@ impl Lower {
                     &[types::I32, types::I64, types::I64],
                     &[types::I64, types::I64],
                 )?;
-                self.call_raw(b, mctx, call_r, Some(d), true, &[fid, bufarg, argc])
+                self.call_raw(b, mctx, call_r, Some(d), true, &[fid, bufarg, argc], "lk_hybrid_call_r")
             }
             None => {
                 let call_v = mctx.raw_func("lk_hybrid_call_v", &[types::I32, types::I64, types::I64], &[])?;
-                self.call_raw(b, mctx, call_v, None, false, &[fid, bufarg, argc])
+                self.call_raw(b, mctx, call_v, None, false, &[fid, bufarg, argc], "lk_hybrid_call_v")
             }
         }
     }
@@ -1451,7 +1475,7 @@ impl Lower {
         let args = self.args_v(arg_ids)?;
         let params = vec![types::I64; args.len()];
         let clif_id = mctx.raw_func(symbol, &params, &[types::I64, types::I64])?;
-        self.call_raw(b, mctx, clif_id, Some(dst), true, &args)
+        self.call_raw(b, mctx, clif_id, Some(dst), true, &args, symbol)
     }
 
     /// Emit an `lkrt_*_get_out(args…, out_value: *f64, out_present: *i64)` call and
@@ -1496,7 +1520,7 @@ impl Lower {
     ) -> Result<(), ClifError> {
         let (value, present) = self.two(src)?;
         let clif_id = mctx.raw_func(symbol, &[types::I64, types::I64], &[types::I64])?;
-        self.call_raw(b, mctx, clif_id, Some(dst), false, &[value, present])
+        self.call_raw(b, mctx, clif_id, Some(dst), false, &[value, present], symbol)
     }
 
     fn term(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, term: &Term) -> Result<(), ClifError> {

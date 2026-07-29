@@ -343,6 +343,19 @@ pub fn lower_bundled(
                 && snapshot.7 == sig.global_tys
                 && snapshot.8 == sig.spawned_isolate.len()
                 && snapshot.9 == sig.force_dyn_globals.len()
+                // Extra cells were counted into the *budget* below but left out
+                // of this conjunction, so a pass that discovered one still
+                // counted as converged — the fixpoint stopped one pass early and
+                // every signature that pass would have refined stayed at its
+                // default. That is how a call to a function returning nothing
+                // was emitted wanting a result: the caller had never seen the
+                // callee's real return type.
+                && snapshot.10
+                    == sig
+                        .try_body_extra_cells
+                        .values()
+                        .map(std::collections::HashSet::len)
+                        .sum::<usize>()
                 && snapshot.11 == sig.try_body_param_tys
                 && snapshot.12 == sig.try_body_rebound;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
