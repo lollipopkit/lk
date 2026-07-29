@@ -489,6 +489,86 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// An `if` with no `else` is a value that may be nil, not a contradiction.
+    ///
+    /// The missing branch is a synthesised `nil`, and the two arms were
+    /// constrained to be *equal* — so `let r = if c { "a" };` reported "Cannot
+    /// unify String with Nil" and the expression form could not do what the
+    /// statement form does. `c ? "a" : nil` reads the same way and now gets the
+    /// same answer: `String?`.
+    #[test]
+    fn an_if_without_else_is_optional_not_a_conflict() {
+        fn check(source: &str) -> Result<(), String> {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .map_err(|e| e.to_string())
+        }
+
+        for source in [
+            "let c = true;\nlet r = if c { \"a\" };\n",
+            "let c = true;\nlet r: String? = if c { \"a\" };\n",
+            "let c = true;\nlet r = c ? \"a\" : nil;\n",
+            "let c = true;\nlet r = c ? nil : \"a\";\n",
+            // Both branches present and agreeing keeps the bare type.
+            "let c = true;\nlet r: String = if c { \"a\" } else { \"b\" };\n",
+        ] {
+            check(source).unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        let error = check("let c = true;\nlet r: String = if c { \"a\" };\n")
+            .expect_err("a branch that may not run makes the value optional");
+        assert!(error.contains("String?"), "should say String?, said: {error}");
+    }
+
+    /// A `match` that can miss is typed as able to miss.
+    ///
+    /// LK's rule is that an unmatched `match` evaluates to `nil` — deliberate,
+    /// and tested. The *type* ignored it: the expression was typed as its
+    /// arms' type, so
+    ///
+    /// ```text
+    /// let r: String = match x { 1 => "one" };   // checked, held nil
+    /// r.len()                                   // approved, failed at runtime
+    /// ```
+    ///
+    /// A binding annotated `String` holding nil is the type system saying
+    /// something untrue. It says `String?` now, and the shapes that cannot
+    /// miss — a catch-all arm, or a `Bool` with both literals — keep the bare
+    /// type so the common cases do not grow a `?`.
+    #[test]
+    fn a_match_that_can_miss_is_typed_as_nullable() {
+        fn check(source: &str) -> Result<(), String> {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .map_err(|e| e.to_string())
+        }
+
+        for source in [
+            "let x = 5;\nlet r: String = match x { 1 => \"one\" };\n",
+            "fn f(x: Int) -> String { return match x { 1 => \"one\" }; }\n",
+        ] {
+            let error = check(source).expect_err("a match that can miss is not a bare String");
+            assert!(error.contains("String?"), "{source} should say String?, said: {error}");
+        }
+
+        for source in [
+            // A catch-all arm always matches.
+            "let x = 5;\nlet r: String = match x { 1 => \"a\", _ => \"b\" };\n",
+            // A binding pattern is a catch-all too.
+            "let x = 5;\nlet r: String = match x { 1 => \"a\", other => \"b\" };\n",
+            // Both `Bool` literals cover every value of the type.
+            "let b = true;\nlet r: Int = match b { true => 1, false => 2 };\n",
+            // And the nullable type is writable when the miss is intended.
+            "let x = 5;\nlet r: String? = match x { 1 => \"one\" };\n",
+        ] {
+            check(source).unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+    }
+
     /// A type declaration's position in the file does not matter.
     ///
     /// Function signatures were hoisted and type declarations were not, which

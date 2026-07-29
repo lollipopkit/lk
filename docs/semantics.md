@@ -92,6 +92,13 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
   (可 catch),否则原值。两条边界:`!` 紧跟 `(`/`[`/`{` 是**宏调用**语法
   (`name!(...)`),解包后调用/索引需加括号 `(x!)(...)`;lexer 贪婪 `!=`→Ne,
   `x!==1` 是 parse 错误,写 `x! == 1`。
+- **可能落空的分支,类型是 `T?`**:`match` 无匹配时给 nil、`if` 没有
+  `else` 时给 nil —— 这是运行时规则,类型必须跟着说。所以
+  `let r: String = match x { 1 => "one" };` 是类型错误(它是 `String?`),
+  `let r = if c { "a" };` 也是 `String?` 而不是"String 与 Nil 冲突"。
+  判定"不会落空":match 有无守卫的 catch-all(`_` 或绑定名),或者被匹配
+  值是 Bool 且两个字面量都在;`if` 有 `else`。判定是**保守的**:
+  判错方向的代价是多写一个 `?`,反方向的代价是 String 变量里装着 nil。
 - **`if` 是表达式**:`if c { a } else { b }` 取所在分支块的最后一个表达式为值;
   没有 `else`、或分支块以语句结尾,值为 nil。`else if` 链按嵌套展开。它与
   `match`、三元 `? :` 降到同一个节点(`Expr::Conditional`),所以三者不会走散。

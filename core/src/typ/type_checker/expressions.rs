@@ -525,6 +525,21 @@ impl TypeChecker {
                 // are values; `check_block_value` answers for either.
                 let then_ty = self.check_block_value(then_expr)?;
                 let else_ty = self.check_block_value(else_expr)?;
+                // One branch `nil` and the other not: the value is *optional*,
+                // not a contradiction. An `if` with no `else` synthesises a nil
+                // branch, so `let r = if c { "a" };` reported "Cannot unify
+                // String with Nil" — the expression form could not do what the
+                // statement form does. `c ? "a" : nil` reads the same way and
+                // gets the same answer.
+                let nullable = |value: &Type| Type::Optional(Box::new(value.clone()));
+                let resolved_then = self.resolve_aliases(&then_ty);
+                let resolved_else = self.resolve_aliases(&else_ty);
+                if resolved_then == Type::Nil && resolved_else != Type::Nil {
+                    return Ok(nullable(&else_ty));
+                }
+                if resolved_else == Type::Nil && resolved_then != Type::Nil {
+                    return Ok(nullable(&then_ty));
+                }
                 // unify then/else types; return the unified type (prefer then_ty)
                 self.inference_engine.add_constraint(then_ty.clone(), else_ty.clone());
                 Ok(then_ty)
@@ -881,8 +896,20 @@ impl TypeChecker {
                     }
                 }
 
-                result_type
-                    .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))
+                let result_type = result_type
+                    .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))?;
+
+                // A `match` that can miss evaluates to `nil` — that is the
+                // language's rule, and it was the *type* that ignored it:
+                // `let r: String = match x { 1 => "one" };` type-checked and
+                // held nil, and `r.len()` was approved and then failed at
+                // runtime with "Len target expected string/list/map/set, got
+                // Nil". The value really can be nil, so the type says so.
+                if matches_every_value(arms, &self.resolve_aliases(&value_type)) {
+                    Ok(result_type)
+                } else {
+                    Ok(Type::Optional(Box::new(result_type)))
+                }
             }
             Expr::Paren(expr) => self.check_expr(expr),
             Expr::Block(_) => Ok(Type::Any),
@@ -2327,4 +2354,34 @@ pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Ty
         Type::Variable(name) => bindings.get(name).cloned().unwrap_or_else(|| ty.clone()),
         other => other.clone(),
     }
+}
+
+/// Does some arm of `arms` match every value of `value_type`?
+///
+/// Deliberately an under-approximation: it answers `true` only for the two
+/// shapes a reader would call obviously total — a catch-all arm, and a `Bool`
+/// whose two literals both appear. Anything else is treated as able to miss,
+/// which makes the match's type `T?`. Being wrong in that direction costs a
+/// `?` at the call site; being wrong the other way is what let a `String`
+/// binding hold nil.
+///
+/// A guard makes an arm conditional, so a guarded catch-all is not one.
+fn matches_every_value(arms: &[crate::expr::MatchArm], value_type: &Type) -> bool {
+    use crate::expr::Pattern;
+
+    fn is_catch_all(pattern: &Pattern) -> bool {
+        matches!(pattern, Pattern::Wildcard | Pattern::Variable(_))
+    }
+    fn is_bool_literal(pattern: &Pattern, wanted: bool) -> bool {
+        matches!(pattern, Pattern::Literal(LiteralVal::Bool(value)) if *value == wanted)
+    }
+
+    if arms.iter().any(|arm| is_catch_all(&arm.pattern)) {
+        return true;
+    }
+    if *value_type == Type::Bool {
+        let covers = |wanted: bool| arms.iter().any(|arm| is_bool_literal(&arm.pattern, wanted));
+        return covers(true) && covers(false);
+    }
+    false
 }
