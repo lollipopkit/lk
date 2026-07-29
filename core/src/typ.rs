@@ -25,7 +25,7 @@ mod type_system_test;
 // dependency (a step toward extracting values into an L0 crate).
 pub use crate::val::{NumericClass, NumericHierarchy};
 pub use builtin_method_sig::{
-    BUILTIN_METHODS, BuiltinMethodSig, BuiltinParam, BuiltinReceiverKind, ResolvedBuiltinMethod,
+    BUILTIN_METHODS, BuiltinMethodSig, BuiltinParam, BuiltinReceiverKind, ResolvedBuiltinMethod, builtin_method_arity,
     builtin_method_signature, builtin_method_signature_with, builtin_methods_for, receiver_kind, slice_of,
 };
 #[cfg(feature = "std")]

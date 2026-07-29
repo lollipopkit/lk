@@ -465,6 +465,43 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// The declared arity is the arity — one source, not two.
+    ///
+    /// Each dispatcher stated its own in a `bail!` guard, so a method could
+    /// accept a shape the checker rejected (or the reverse) and nothing said
+    /// so. Three had drifted by the time anyone compared them by hand:
+    /// `bytes.slice` (checker computed the wrong count for a named call),
+    /// `map.get` (runtime took a default, the table declared one parameter),
+    /// and `str.slice` (declared `end` required where every other sequence has
+    /// it optional). Dispatch checks the declaration now, so a guard that
+    /// disagrees is unreachable rather than quietly authoritative.
+    #[test]
+    fn a_methods_optional_arguments_are_the_declared_ones() {
+        let source = "let m = {\"a\": 1};\n\
+                      let text = \"abcd\";\n\
+                      let xs = [10, 20, 30];\n\
+                      return [\n\
+                        m.get(\"z\", 9), m.get(\"a\", 9),\n\
+                        text.slice(1).len(), text.slice(1, 3).len(), xs.slice(1).len(),\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        assert_eq!(items[0], RuntimeVal::Int(9), "an absent key takes the default");
+        assert_eq!(items[1], RuntimeVal::Int(1), "a present key ignores it");
+        assert_eq!(items[2], RuntimeVal::Int(3), "slice without an end runs to the end");
+        assert_eq!(items[3], RuntimeVal::Int(2));
+        assert_eq!(items[4], RuntimeVal::Int(2));
+    }
+
     /// A `String` is a sequence, and reads like one.
     ///
     /// `List`, `Slice` and `Bytes` were unified on `first`/`last`/`get`/

@@ -107,6 +107,7 @@ pub(super) fn core_call_method_named_builtin(
 /// dispatchers are mutually exclusive on receiver type, so dispatch probes
 /// exactly one instead of trying each in turn (every probe copies the
 /// positional args out of the heap list).
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum BuiltinReceiver {
     Map,
     Set,
@@ -133,13 +134,49 @@ fn builtin_receiver_kind(receiver: &RuntimeVal, heap: &HeapStore) -> BuiltinRece
     }
 }
 
+/// The declared arity for `method` on `kind`, checked before dispatch.
+///
+/// Each dispatcher used to state its own arity in a `bail!` guard, which made
+/// the declaration and the implementation two sources that drifted apart —
+/// `bytes.slice`, `map.get` and `str.slice` each accepted a shape the checker
+/// rejected, or the reverse, and only a hand-run comparison found them. The
+/// declaration decides here; a guard that disagrees is now unreachable rather
+/// than quietly authoritative.
+fn check_declared_arity(kind: BuiltinReceiver, method: &str, count: usize) -> anyhow::Result<()> {
+    let declared = match kind {
+        BuiltinReceiver::Map => crate::typ::BuiltinReceiverKind::Map,
+        BuiltinReceiver::Set => crate::typ::BuiltinReceiverKind::Set,
+        BuiltinReceiver::Str => crate::typ::BuiltinReceiverKind::Str,
+        BuiltinReceiver::Slice => crate::typ::BuiltinReceiverKind::Slice,
+        BuiltinReceiver::Bytes => crate::typ::BuiltinReceiverKind::Bytes,
+        BuiltinReceiver::List => crate::typ::BuiltinReceiverKind::List,
+        BuiltinReceiver::Other => return Ok(()),
+    };
+    // A name the table does not declare is left to the implementation: a map's
+    // entries are its fields, so `m.f(x)` need not be a method at all.
+    let Some((required, most)) = crate::typ::builtin_method_arity(declared, method) else {
+        return Ok(());
+    };
+    if count < required || count > most {
+        let expected = if required == most {
+            alloc::format!("{required}")
+        } else {
+            alloc::format!("{required} to {most}")
+        };
+        bail!("{method}() expects {expected} arguments, got {count}");
+    }
+    Ok(())
+}
+
 fn dispatch_builtin_method(
     receiver: &RuntimeVal,
     method: &str,
     positional: MethodPositionalArgs,
     runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<Option<RuntimeVal>> {
-    match builtin_receiver_kind(receiver, runtime.heap()) {
+    let kind = builtin_receiver_kind(receiver, runtime.heap());
+    check_declared_arity(kind, method, positional.len(runtime.heap())?)?;
+    match kind {
         BuiltinReceiver::Map => positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_map_builtin_method(receiver, method, positional, heap)
         }),
@@ -808,20 +845,26 @@ fn dispatch_string_builtin_method(
         // something else, so `xs.slice(1, 3)` and `s.substring(1, 3)` take
         // different windows from the same numbers.
         "slice" => {
-            if positional.len() != 2 {
+            if positional.is_empty() || positional.len() > 2 {
                 bail!(
-                    "string.slice() expects 2 arguments (start, end), got {}",
+                    "string.slice() expects 1 or 2 arguments (start[, end]), got {}",
                     positional.len()
                 );
             }
             let RuntimeVal::Int(start) = &positional[0] else {
                 bail!("string.slice() start must be Int");
             };
-            let RuntimeVal::Int(end) = &positional[1] else {
-                bail!("string.slice() end must be Int");
+            let start = (*start).max(0);
+            let total = crate::util::text::char_len(s) as i64;
+            // Omitting `end` means "to the end", as it does on every other
+            // sequence.
+            let end = match positional.get(1) {
+                Some(RuntimeVal::Int(end)) => *end,
+                Some(_) => bail!("string.slice() end must be Int"),
+                None => total,
             };
-            let length = (*end - *start).max(0);
-            let text = crate::util::text::substring(s, (*start).max(0) as usize, length as usize);
+            let length = (end - start).max(0);
+            let text = crate::util::text::substring(s, start as usize, length as usize);
             Ok(Some(make_string_val(text, heap)))
         }
         "index_of" => {

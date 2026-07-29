@@ -447,7 +447,16 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     // ---- Map ----
     m(Map, "len", &[], "Int", "Number of entries"),
     m(Map, "is_empty", &[], "Bool", "Whether the map has no entries"),
-    m(Map, "get", &[p("key", "Key")], "Val?", "Value for `key`, or nil"),
+    // The default is optional *here* too: the runtime has always accepted
+    // `get(key, default)` and only the declaration said otherwise, so the one
+    // form that avoids a nil check was a type error.
+    m(
+        Map,
+        "get",
+        &[p("key", "Key"), opt("default", "Val")],
+        "Val?",
+        "Value for `key`, or `default` when absent (nil without one)",
+    ),
     m(
         Map,
         "set",
@@ -558,9 +567,9 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Str,
         "slice",
-        &[p("start", "Int"), p("end", "Int")],
+        &[p("start", "Int"), opt("end", "Int")],
         "String",
-        "Characters in `[start, end)`, clamped",
+        "Characters in `[start, end)`, clamped; to the end without `end`",
     ),
     m(
         Str,
@@ -699,6 +708,23 @@ pub fn builtin_method_signature_with(
 }
 
 /// Every method available on `receiver`, for completion and signature help.
+/// How many positional arguments a declared method takes: `(required, most)`.
+///
+/// Answers `None` for a name this table does not declare, which is the signal
+/// to leave the question to the implementation.
+///
+/// The runtime dispatchers used to state their own arity in a `bail!` guard,
+/// so the declaration and the implementation were two sources that drifted:
+/// `bytes.slice`, `map.get` and `str.slice` each accepted a form the checker
+/// rejected, or the reverse. This is the one source.
+pub fn builtin_method_arity(receiver: BuiltinReceiverKind, method: &str) -> Option<(usize, usize)> {
+    let sig = BUILTIN_METHODS
+        .iter()
+        .find(|sig| sig.receiver == receiver && sig.name == method)?;
+    let required = sig.params.iter().filter(|param| !param.optional).count();
+    Some((required, sig.params.len()))
+}
+
 pub fn builtin_methods_for(receiver: BuiltinReceiverKind) -> impl Iterator<Item = &'static BuiltinMethodSig> {
     BUILTIN_METHODS.iter().filter(move |sig| sig.receiver == receiver)
 }
