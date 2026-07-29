@@ -95,6 +95,10 @@ pub struct Compiler {
     /// Machine-int field widths, by struct name then field name — see
     /// [`support::collect_struct_field_machine_widths`].
     struct_field_machine_widths: HashMap<String, HashMap<String, crate::val::IntKind>>,
+    /// Method names any `impl` in this program declares — see
+    /// [`support::collect_impl_method_names`]. A call to one of these is never
+    /// lowered to a builtin opcode.
+    impl_method_names: HashSet<String>,
     /// Which struct a local is known to hold, learned from a struct-literal
     /// initializer or a declared type. The compiler tracks no other types; this
     /// exists only to give `r.field` a width to wrap to.

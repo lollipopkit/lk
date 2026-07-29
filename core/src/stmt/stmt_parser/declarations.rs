@@ -240,6 +240,24 @@ impl<'a> StmtParser<'a> {
                 return Err(anyhow!(self.err("Expected 'fn' in impl block")));
             }
             let m = self.parse_function_stmt()?;
+            // Two methods of one name in one block: the second silently won,
+            // and the first was compiled and never reachable. Nothing else in
+            // the language lets a declaration be shadowed by a sibling.
+            if let Stmt::Function { name, .. } = &m {
+                let name = name.clone();
+                let already = methods.iter().any(|existing| {
+                    let item = match existing {
+                        Stmt::Attributed { item, .. } => item.as_ref(),
+                        other => other,
+                    };
+                    matches!(item, Stmt::Function { name: existing, .. } if *existing == name)
+                });
+                if already {
+                    return Err(anyhow!(
+                        self.err(&alloc::format!("method `{name}` is defined twice in this impl block"))
+                    ));
+                }
+            }
             if attributes.is_empty() {
                 methods.push(m);
             } else {

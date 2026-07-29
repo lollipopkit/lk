@@ -379,6 +379,14 @@ impl Compiler {
     }
 
     fn lower_builtin_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // A name some `impl` in this program declares is not assumed builtin —
+        // see `collect_impl_method_names`. The dedicated opcodes below are
+        // chosen from the method name alone, with no type for the receiver, so
+        // a struct method called `len` answered "Len target object is not
+        // sized" and one called `push` failed at compile time on arity.
+        if self.impl_method_names.contains(method) {
+            return self.lower_dynamic_method_call(target, method, args);
+        }
         match method {
             "len" => {
                 if !args.is_empty() {

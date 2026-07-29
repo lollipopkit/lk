@@ -654,3 +654,33 @@ fn a_method_on_a_builtin_container_is_found_whatever_its_elements_are() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[2,\"b\",1,2]");
 }
+
+/// The compiler picks a dedicated opcode for `len`/`push`/`set`/`split`/`join`
+/// from the method *name* alone — it has no type for the receiver there. That
+/// is right for a list and wrong for a struct with a method of that name:
+/// `s.len()` answered "Len target object is not sized", and the four that take
+/// arguments failed at *compile* time on arity, so the method could not even be
+/// written.
+#[test]
+fn a_user_method_named_after_a_builtin_one_is_still_reachable() {
+    let result = execute_source(
+        r#"
+        struct Boxed { items: List<Int> }
+        impl Boxed {
+            fn len(self) -> Int { return 99; }
+            fn push(self) -> Int { return 1; }
+            fn set(self) -> Int { return 2; }
+            fn split(self) -> Int { return 3; }
+            fn join(self) -> Int { return 4; }
+        }
+        let b = Boxed { items: [1] };
+        // The builtins keep working on the types they belong to.
+        let xs = [1, 2, 3];
+        return [b.len(), b.push(), b.set(), b.split(), b.join(), xs.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[99,1,2,3,4,3]");
+}

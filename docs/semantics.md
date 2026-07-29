@@ -431,6 +431,17 @@ impl Methods for Point { fn norm2(self) -> Int { … } }
 
 `ImplDecl.trait_name` 因此变成 `Option`,`MODULE_ARTIFACT_VERSION` 16。
 
+**用户方法名可以和内置方法同名**(同日补)。编译器把 `len`/`push`/`set`/
+`split`/`join` 降低成专用 opcode 时只看**方法名**,那里还没有接收者的类型 ——
+对列表和字符串是对的,对同名的结构体方法是错的:`s.len()` 答
+"Len target object is not sized",另外四个带参数的更是在**编译期**就因为 arity
+失败,方法根本写不出来。现在:凡是本程序里某个 `impl` 声明过的名字,都不再假定
+是内置的,那些调用走普通动态分发。代价只落在给方法起了内置同名的程序上,而且
+只落在那个名字上。
+
+**一个 impl 块里不能重复定义同名方法**(同日补)。此前后者静默胜出,前者被
+编译出来却永远到不了。语言里没有别的地方允许一个声明被它的兄弟遮蔽。
+
 **内置容器的 impl 目标不能写元素类型**(同日补)。运行时按**擦除元素类型**
 之后分发(`heap_dispatch_type` 把每个列表都报成 `List<Any>` —— 一个
 `TypedList::Mixed` 也报不出别的),所以 `List<Int>` 和 `List<String>` 到的是

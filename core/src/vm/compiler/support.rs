@@ -138,6 +138,45 @@ pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<Str
 /// declarations, and looked up by name. Without it `r.value + 1` on a `u32`
 /// field added at 64 bits — the register holding the field has no width, so
 /// nothing wraps.
+/// Every method name any `impl` block in this program declares.
+///
+/// The compiler lowers `x.len()`, `x.push(v)`, `x.set(k, v)`, `x.split(s)` and
+/// `x.join(s)` to dedicated opcodes on the method *name* alone — it has no type
+/// for the receiver there. That is right for a list or a string and wrong for a
+/// struct with a method of that name: `impl S { fn len(self) -> Int { … } }`
+/// made `s.len()` answer "Len target object is not sized", and the four with
+/// arguments failed at *compile* time on arity ("Compiler method push expects 1
+/// arg, got 0"), so the method could not even be written.
+///
+/// A name declared by an impl is therefore never assumed builtin: those calls
+/// go through the ordinary dynamic dispatch, which asks the receiver. The cost
+/// falls only on programs that name a method after a builtin one, and only for
+/// that name.
+pub(super) fn collect_impl_method_names(program: &Program) -> HashSet<String> {
+    fn visit(stmt: &Stmt, names: &mut HashSet<String>) {
+        match item_without_attributes(stmt) {
+            Stmt::Impl { methods, .. } => {
+                for method in methods {
+                    if let Stmt::Function { name, .. } = item_without_attributes(method) {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+            Stmt::Block { statements } => {
+                for inner in statements {
+                    visit(inner, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut names = HashSet::new();
+    for stmt in &program.statements {
+        visit(stmt, &mut names);
+    }
+    names
+}
+
 pub(super) fn collect_struct_field_machine_widths(
     program: &Program,
 ) -> HashMap<String, HashMap<String, crate::val::IntKind>> {

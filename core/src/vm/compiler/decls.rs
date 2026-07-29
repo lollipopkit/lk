@@ -117,6 +117,7 @@ impl Compiler {
             self.user_let_globals.clone(),
             self.function_machine_returns.clone(),
             self.struct_field_machine_widths.clone(),
+            self.impl_method_names.clone(),
             self.global_machine_widths.clone(),
             HashMap::new(),
             function_index + 1,
