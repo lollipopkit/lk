@@ -529,10 +529,12 @@ impl ResolverCore {
                     self.current_fn().pop_block();
                 }
             }
-            // Block expressions in general expression position (today only
-            // synthesized — e.g. the `select` desugar; closure bodies take
-            // the dedicated path above): resolve their statements in a block
-            // scope of their own, same as a statement-level block.
+            // Block expressions in general expression position — both branches
+            // of an `if` used for its value, and the synthesized bodies of the
+            // `select` / `?.` desugars; closure bodies take the dedicated path
+            // above. Resolve their statements in a block scope of their own,
+            // same as a statement-level block, so a `let` inside a branch does
+            // not leak past it.
             Expr::Block(statements) => {
                 self.resolve_stmt(
                     &Stmt::Block {

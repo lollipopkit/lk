@@ -815,6 +815,87 @@ fn parse_options_for_uri(uri: &Url) -> syntax::ParseOptions {
     options
 }
 
+/// Reorder `candidates` so the declaration a cursor at `cursor_offset` can see
+/// comes first.
+///
+/// A declaration is visible when the innermost `{ … }` that encloses *it* also
+/// encloses the cursor; among those, the nearest enclosing block wins, which is
+/// what shadowing means. Attributing a declaration to any block that happens to
+/// contain it is not enough — a function body contains both `x`s below, so the
+/// inner one would win even after its own block closed:
+///
+/// ```lk
+/// let x = 1;
+/// if true { let x = 2; println(x); }   // ← this one sees `x = 2`
+/// println(x);                          // ← and this one sees `x = 1`
+/// ```
+fn innermost_visible_first(
+    candidates: Vec<token::Span>,
+    tokens: &[token::Token],
+    spans: &[token::Span],
+    cursor_offset: usize,
+) -> Vec<token::Span> {
+    if candidates.len() < 2 {
+        return candidates;
+    }
+    // Every `{ … }` range in the file. An unclosed one runs to the end, so a
+    // half-written buffer still resolves.
+    let mut open: Vec<usize> = Vec::new();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for (index, tok) in tokens.iter().enumerate() {
+        let Some(span) = spans.get(index) else { continue };
+        match tok {
+            token::Token::LBrace => open.push(span.start.offset),
+            token::Token::RBrace => {
+                if let Some(start) = open.pop() {
+                    blocks.push((start, span.end.offset));
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks.extend(open.into_iter().map(|start| (start, usize::MAX)));
+
+    // The innermost block containing `offset`, as its width — narrower is
+    // nearer. `None` means "outside every block", which is the widest scope.
+    let innermost = |offset: usize| -> Option<(usize, usize)> {
+        blocks
+            .iter()
+            .filter(|(start, end)| *start <= offset && offset <= *end)
+            .min_by_key(|(start, end)| end.saturating_sub(*start))
+            .copied()
+    };
+
+    let cursor_block = innermost(cursor_offset);
+    let mut visible: Vec<token::Span> = Vec::new();
+    let mut rest: Vec<token::Span> = Vec::new();
+    for span in candidates {
+        let declared_before = span.start.offset <= cursor_offset;
+        let block = innermost(span.start.offset);
+        // Visible when the declaration's own block also holds the cursor:
+        // either they share a block, or the declaration sits outside every
+        // block (top level) and so encloses everything.
+        let sees_cursor = match (block, cursor_block) {
+            (None, _) => true,
+            (Some(declared), Some(at_cursor)) => {
+                declared.0 <= at_cursor.0 && at_cursor.1 <= declared.1
+            }
+            (Some(_), None) => false,
+        };
+        if declared_before && sees_cursor {
+            visible.push(span);
+        } else {
+            rest.push(span);
+        }
+    }
+    // Nearest declaration first among the visible ones — that is the shadowing
+    // rule, since an inner block's declaration always comes later in the file
+    // than the outer one it shadows.
+    visible.sort_by_key(|span| core::cmp::Reverse(span.start.offset));
+    visible.extend(rest);
+    visible
+}
+
 fn definition_location_in_program(
     program: &stmt::Program,
     tokens: &[token::Token],
@@ -866,6 +947,17 @@ fn definition_location_in_program(
             }
         }
     }
+    // The declaration the cursor can actually see, innermost first.
+    //
+    // This used to take `candidate_spans.first()` — the earliest declaration
+    // with a matching name, whatever scope it was in — so under shadowing
+    // go-to-definition always landed on the outermost binding:
+    //
+    // ```lk
+    // let x = 1;
+    // if true { let x = 2; println(x); }   // ← jumped to `let x = 1`
+    // ```
+    let candidate_spans = innermost_visible_first(candidate_spans, tokens, spans, cursor_offset);
     if let Some(sp) = candidate_spans.first() {
         let range = Range::new(
             Position::new(sp.start.line - 1, sp.start.column - 1),
@@ -1177,6 +1269,29 @@ mod tests {
             qualified_symbol_context_at_offset(&tokens, &spans, content.find("greetings").expect("qualifier") + 2);
 
         assert_eq!(on_qualifier, None);
+    }
+
+    /// Go-to-definition used to answer the *earliest* declaration with a
+    /// matching name, so on a shadowed binding it always jumped past the one
+    /// the reader is standing in.
+    #[test]
+    fn definition_resolves_the_innermost_binding_in_scope() {
+        let uri = Url::parse("file:///shadow.lk").expect("uri");
+        let content = "fn outer() {\n    let x = 1;\n    if true {\n        let x = 2;\n        println(x);\n    }\n    println(x);\n}\n";
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokens");
+        let program = stmt::stmt_parser::StmtParser::new_with_spans(&tokens, &spans)
+            .parse_program_with_enhanced_errors(content)
+            .expect("program");
+
+        let inside_the_block = content.find("println(x);\n    }").expect("inner use") + 8;
+        let after_the_block = content.rfind("println(x)").expect("outer use") + 8;
+
+        let inner = definition_location_in_program(&program, &tokens, &spans, "x", inside_the_block, &uri);
+        let outer = definition_location_in_program(&program, &tokens, &spans, "x", after_the_block, &uri);
+
+        // `let x = 2` is line 3, `let x = 1` is line 1 (both 0-based).
+        assert_eq!(inner.map(|location| location.range.start.line), Some(3));
+        assert_eq!(outer.map(|location| location.range.start.line), Some(1));
     }
 
     #[test]
