@@ -773,3 +773,34 @@ fn a_struct_compares_by_its_fields_like_every_other_aggregate() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[true,false,true,true,true,true,false]");
 }
+
+/// A block is a scope: a `let` inside one does not outlive it.
+///
+/// It did, in every construct — `if`, `while`, `for`, a bare block, a `match`
+/// arm — because a `let` shadowing an outer name reused that name's *register*,
+/// so the enclosing scope resumed reading the inner value. Three separate holes
+/// fed it: the statement path reused the register, the inliner never restored
+/// bindings at all (which also made `fn f(c) { let y = 1; if c { let y = 2; }
+/// let s = 45; return y; }` answer 45 — `y` still pointed at the inner
+/// register, and `s` was handed it), and a block *expression* — which is what a
+/// match arm body is — had no scope at all.
+#[test]
+fn a_block_is_a_scope_in_every_construct() {
+    let result = execute_source(
+        r#"
+        fn in_if(c: Bool) -> Int { let y = 1; if c { let y = 2; } return y; }
+        fn in_while(c: Bool) -> Int { let y = 1; while c { let y = 2; break; } return y; }
+        fn in_for() -> Int { let y = 1; for i in 0..1 { let y = 7; } return y; }
+        fn in_block() -> Int { let y = 1; { let y = 3; } return y; }
+        fn in_match() -> Int { let y = 1; let r = match 1 { 1 => { let y = 5; y + 1 } _ => 0 }; return y * 100 + r; }
+        // The inline path: small enough to be inlined at the call site, and the
+        // trailing `let` is what used to collect the shadow's register.
+        fn inlined(c: Bool) -> Int { let y = 1; if c { let y = 2; } let s = 45; return y; }
+        return [in_if(true), in_while(true), in_for(), in_block(), in_match(), inlined(true)];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,1,1,1,106,1]");
+}

@@ -50,6 +50,7 @@ impl Compiler {
     fn inline_direct_function_body(&mut self, params: &[String], args: &[Box<Expr>], body: &Stmt) -> Result<u16> {
         let saved_locals = self.locals.clone();
         let saved_cell_locals = self.cell_locals.clone();
+        let saved_scopes = self.enter_scope();
         let mutated_names = mutated_names_in_stmt(body);
 
         let result = (|| {
@@ -105,6 +106,7 @@ impl Compiler {
         // restore; only names the inline shadowed with a fresh binding revert.
         self.cell_locals = self.scope_restored_cell_locals(&saved_locals, saved_cell_locals);
         self.locals = saved_locals;
+        self.exit_scope(saved_scopes);
         result
     }
 
@@ -157,9 +159,27 @@ impl Compiler {
         match stmt {
             Stmt::Attributed { item, .. } => self.lower_inline_stmt(item, result, returns, tail_position),
             Stmt::Block { statements } => {
+                // The same scope save/restore `Stmt::Block` gets outside an
+                // inline. Without it a `let` in a nested block rebound the
+                // name **permanently**, so
+                // `fn f(c) { let y = 1; if c { let y = 2; } let s = 45; return y; }`
+                // returned 45 once inlined: `y` still pointed at the inner
+                // binding's register, and `s` was handed that register back.
+                let watermark = self.next_reg;
+                let locals = self.locals.clone();
+                let cell_locals = self.cell_locals.clone();
+                let const_map_locals = self.const_map_locals.clone();
+                let scopes = self.enter_scope();
                 self.local_rebind_suppression += 1;
                 self.lower_inline_stmt_sequence(statements, result, returns)?;
                 self.local_rebind_suppression -= 1;
+                // In-block promotions of an *outer* local survive the restore —
+                // see the same note on the non-inline arm.
+                self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
+                self.locals = locals;
+                self.const_map_locals = const_map_locals;
+                self.exit_scope(scopes);
+                self.next_reg = self.live_register_floor().max(watermark);
                 Ok(())
             }
             Stmt::Let {

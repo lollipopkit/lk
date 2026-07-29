@@ -61,6 +61,17 @@ pub struct Compiler {
     next_reg: u16,
     peak_reg: u16, // highest next_reg ever reached — used for register_count
     locals: HashMap<String, u16>,
+    /// Which scope each live binding was declared in.
+    ///
+    /// `locals` alone cannot answer "is this name bound *here*, or outside?",
+    /// and `let` needs that: a `let` shadowing an outer binding must take a
+    /// fresh register, because reusing the outer one overwrites the value the
+    /// enclosing scope goes back to reading. `if c { let x = 2; }` left `x` at
+    /// 2 outside the block — in every construct, silently.
+    local_scopes: HashMap<String, u32>,
+    /// How many scopes deep the lowering currently is. Bumped wherever
+    /// `locals` is saved and restored.
+    scope_depth: u32,
     function_names: HashMap<String, u32>,
     function_signatures: HashMap<String, FunctionSignature>,
     function_bodies: HashMap<String, FunctionInlineBody>,
@@ -675,6 +686,26 @@ impl Compiler {
     }
 
     pub(super) fn lower_block_expr(&mut self, statements: &[Box<Stmt>]) -> Result<u16> {
+        // A block expression is a scope, like the statement form. Without the
+        // restore a `let` inside one rebound the name for good — `match x { 1
+        // => { let u = 5; } }` left `u` at 5 afterwards, and a match arm body
+        // *is* a block expression.
+        //
+        // The registers are deliberately not rolled back: the block's value
+        // lives in one of them, and the caller has not read it yet.
+        let saved_locals = self.locals.clone();
+        let saved_cell_locals = self.cell_locals.clone();
+        let saved_const_maps = self.const_map_locals.clone();
+        let saved_scopes = self.enter_scope();
+        let result = self.lower_block_expr_inner(statements);
+        self.cell_locals = self.scope_restored_cell_locals(&saved_locals, saved_cell_locals);
+        self.locals = saved_locals;
+        self.const_map_locals = saved_const_maps;
+        self.exit_scope(saved_scopes);
+        result
+    }
+
+    fn lower_block_expr_inner(&mut self, statements: &[Box<Stmt>]) -> Result<u16> {
         let mut last = None;
         for stmt in statements {
             match stmt.as_ref() {

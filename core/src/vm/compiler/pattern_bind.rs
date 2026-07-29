@@ -38,7 +38,14 @@ impl Compiler {
             // register may have held a `u32` in a branch that has since been
             // recycled.
             let slot = if let Some(slot) = self.locals.get(name).copied() {
-                if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+                if !self.local_declared_in_current_scope(name) {
+                    // Shadowing a binding from an enclosing scope. Reusing its
+                    // register wrote *through* it, so `if c { let x = 2; }`
+                    // left `x` at 2 after the block — in every construct, with
+                    // nothing said. A fresh register leaves the outer value
+                    // alone for the scope restore to hand back.
+                    self.alloc_reg()
+                } else if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                     // A fresh binding must not write the old register in
                     // place: it would clobber the counter the fused loop
                     // opcodes drive (`for i { let i = …; }`), or overwrite a

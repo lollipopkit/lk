@@ -126,10 +126,12 @@ impl Compiler {
         // back afterwards, or the shadowed local reads as the raw cell object.
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
+        let scopes = self.enter_scope();
         self.insert_fresh_local(catch_var.to_string(), catch_reg);
         let handler_returns = self.lower_scoped_stmt_sequence_valued(handler, catch_reg, value_reg)?;
         self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
+        self.exit_scope(scopes);
 
         if let Some(jmp_end) = jmp_end {
             let end = self.function.code.len();
@@ -165,6 +167,7 @@ impl Compiler {
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
         let const_map_locals = self.const_map_locals.clone();
+        let scopes = self.enter_scope();
         self.emitted_return = false;
         self.local_rebind_suppression += 1;
         self.lower_stmt_sequence(statements)?;
@@ -187,6 +190,7 @@ impl Compiler {
         self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
         self.const_map_locals = const_map_locals;
+        self.exit_scope(scopes);
         if !returns {
             self.next_reg = self.live_register_floor().max(keep_reg + 1);
         }

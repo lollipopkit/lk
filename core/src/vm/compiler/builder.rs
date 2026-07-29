@@ -212,7 +212,33 @@ impl Compiler {
         let name = name.into();
         self.single_char_string_locals.remove(&name);
         self.function.performance.mark_local_slot(reg);
+        self.local_scopes.insert(name.clone(), self.scope_depth);
         self.locals.insert(name, reg)
+    }
+
+    /// Opens a nested scope, answering what [`Self::exit_scope`] needs back.
+    ///
+    /// The bindings themselves are saved by the callers (each has its own rule
+    /// for `cell_locals` and the const-map cache); this pairs with them to keep
+    /// the *depth* consistent, which is what tells a `let` whether the name it
+    /// is binding belongs to this scope or an enclosing one.
+    pub(super) fn enter_scope(&mut self) -> crate::compat::collections::HashMap<String, u32> {
+        self.scope_depth += 1;
+        self.local_scopes.clone()
+    }
+
+    pub(super) fn exit_scope(&mut self, saved: crate::compat::collections::HashMap<String, u32>) {
+        self.scope_depth -= 1;
+        self.local_scopes = saved;
+    }
+
+    /// Whether `name`'s live binding was declared in the scope being lowered.
+    ///
+    /// A `let` may reuse the register of a binding it *replaces* in the same
+    /// scope; shadowing one from an enclosing scope must not, or the value the
+    /// outer scope resumes reading is the inner one.
+    pub(super) fn local_declared_in_current_scope(&self, name: &str) -> bool {
+        self.local_scopes.get(name) == Some(&self.scope_depth)
     }
 
     /// Binds a *fresh declaration*: a new binding is a plain value, so any

@@ -102,6 +102,7 @@ impl Compiler {
                 let locals = self.locals.clone();
                 let cell_locals = self.cell_locals.clone();
                 let const_map_locals = self.const_map_locals.clone();
+                let scopes = self.enter_scope();
                 self.local_rebind_suppression += 1;
                 self.lower_stmt_sequence(statements)?;
                 self.local_rebind_suppression -= 1;
@@ -111,6 +112,7 @@ impl Compiler {
                 self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
                 self.locals = locals;
                 self.const_map_locals = const_map_locals;
+                self.exit_scope(scopes);
                 if !self.emitted_return {
                     self.next_reg = self.live_register_floor().max(watermark);
                 }
@@ -303,7 +305,11 @@ impl Compiler {
         // A `define` is never a `const`.
         let cacheable = self.top_level_binding_is_cacheable(name, false);
         let slot = if let Some(slot) = self.locals.get(name).copied() {
-            if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+            if !self.local_declared_in_current_scope(name) {
+                // See `lower_let`: shadowing an enclosing binding must not
+                // write through its register.
+                self.alloc_reg()
+            } else if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                 // A fresh binding must not write the old register in place:
                 // it would clobber the counter the fused loop opcodes drive
                 // (`for i { let i = …; }`), or overwrite a promoted cell that
