@@ -165,14 +165,6 @@ impl BytesModule {
         out.extend_from_slice(&right);
         Ok(runtime_bytes_value(out, runtime.heap_mut()))
     }
-
-    #[stdlib_export(name = "eq", params(left: Bytes, right: Bytes), returns = Bool)]
-    fn eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.eq() first argument")?;
-        let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.eq() second argument")?;
-        Ok(RuntimeVal::Bool(left == right))
-    }
 }
 
 fn byte_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<u8>> {

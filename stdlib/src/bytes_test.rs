@@ -40,7 +40,7 @@ mod tests {
                 && bytes.to_list(bytes.slice(c, 1, 4)) == [66, 67, 100]
                 && bytes.to_string_utf8(c) == "ABCde"
                 && bytes.to_string_lossy(bytes.from_list([255])) != ""
-                && bytes.eq(a, bytes.from_list([65, 66, 67]));
+                && a == bytes.from_list([65, 66, 67]);
         "#;
 
         let result = run(source)?;
@@ -88,7 +88,7 @@ mod tests {
             file.close(reader);
             fs.remove_file("{path}");
             fs.remove_file(text_path);
-            return bytes.eq(raw, data) && text == "hello";
+            return raw == data && text == "hello";
             "#
         );
 

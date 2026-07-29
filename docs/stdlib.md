@@ -72,7 +72,8 @@ exists — they are what a new container type should be checked against:
 `string.index_of` 多一个可选的起始位置,那是方法形式没地方放的东西。
 
 `Set.has` 也已删:它是 `contains` 的纯别名。`Map.has` 留着 —— 见上面
-那条,它问的是键,不是同义词。
+那条,它问的是键,不是同义词。`bytes.eq(a, b)` 同样已删:它逐字节就是
+`a == b`,而运算符不需要一个模块函数替身。
 
 方法的**元数以 `core/src/typ/builtin_method_sig.rs` 的声明为准**:
 分发前按它校验,所以实现里再写一份 arity 守卫是够不到的。三次漂移

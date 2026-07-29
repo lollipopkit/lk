@@ -276,7 +276,7 @@ mod tests {
             return [
                 s.len() == 5,
                 s.bytes().len() == 6,
-                bytes.eq(s.bytes(), bytes.from_string(s)),
+                s.bytes() == bytes.from_string(s),
                 bytes.to_string_utf8(s.bytes()) == s,
                 s.chars() == ["h", "é", "l", "l", "o"],
             ];
