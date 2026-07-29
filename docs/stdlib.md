@@ -36,6 +36,7 @@ exists — they are what a new container type should be checked against:
 | 前/后 n 个 | `take(n)` / `skip(n)` | List / Slice / Bytes / Str |
 | 两端 | `first()` / `last()` | List / Slice / Bytes / Str |
 | 删一个 | `delete(key)` | Map / Set |
+| 清空 | `clear()`,原地,答容器本身 | List / Map / Set |
 
 **列表的可变方法一律原地改**,答复只有两种:改完的**列表本身**(所以
 `xs.push(1).push(2)` 能链),或者**被取出来的那个元素**。
