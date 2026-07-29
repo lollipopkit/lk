@@ -169,7 +169,8 @@ pub use lkstr::{
     lkrt_str_char_at, lkrt_str_char_len, lkrt_str_chars, lkrt_str_cmp, lkrt_str_concat, lkrt_str_concat_i64,
     lkrt_str_contains, lkrt_str_count, lkrt_str_ends_with, lkrt_str_index_of, lkrt_str_lower, lkrt_str_repeat,
     lkrt_str_replace, lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix,
-    lkrt_str_strip_suffix, lkrt_str_title, lkrt_str_trim, lkrt_str_upper, lkrt_u64_to_str,
+    lkrt_str_strip_suffix, lkrt_str_title, lkrt_str_to_float, lkrt_str_to_int, lkrt_str_trim, lkrt_str_upper,
+    lkrt_u64_to_str,
 };
 #[cfg(feature = "std")]
 pub use net::{

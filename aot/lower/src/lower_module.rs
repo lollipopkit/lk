@@ -103,6 +103,34 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (handle, Ty::ListI64));
         return Ok(());
     }
+    // `string.to_int(text[, base])` — the base is optional in the language and
+    // not in the ABI, so a missing one is materialized as 10 here rather than
+    // duplicating the entry. Only the String arm lowers: `to_int(3.99)` is a
+    // Float and takes the generic path (it has no ABI row, so it falls back).
+    if module == "string" && name == "to_int" {
+        if !(1..=2).contains(&argc) {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let text = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::Str, pc)?;
+        let radix = if argc == 2 {
+            read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?
+        } else {
+            let ten = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: ten,
+                value: Const::I64(10),
+            });
+            ten
+        };
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("str", "to_int"),
+            args: vec![text, radix],
+        });
+        ssa.write(base, block, (dst, Ty::Dyn));
+        return Ok(());
+    }
     // `math.floor`/`ceil`/`round` dispatch on the argument's static type,
     // matching the VM's `integer_round`: an `Int` passes through unchanged, a
     // `Float` rounds via the lkrt helper (`f64::xxx() as i64`).

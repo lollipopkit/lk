@@ -424,6 +424,10 @@ macro_rules! for_each_abi_fn {
             // are Unicode-aware, byte-identical to the stdlib module.
             ("str", "strip_prefix", lkrt_str_strip_prefix, WritesHost, [StrPtr, StrPtr], DynVal);
             ("str", "strip_suffix", lkrt_str_strip_suffix, WritesHost, [StrPtr, StrPtr], DynVal);
+            // Text → number, the only path there is; the answer is boxed
+            // because the module returns `Int?`/`Float?`.
+            ("str", "to_int", lkrt_str_to_int, Pure, [StrPtr, I64], DynVal);
+            ("str", "to_float", lkrt_str_to_float, Pure, [StrPtr], DynVal);
             ("str", "count", lkrt_str_count, Pure, [StrPtr, StrPtr], I64);
             ("str", "capitalize", lkrt_str_capitalize, WritesHost, [StrPtr], StrPtr);
             ("str", "title", lkrt_str_title, WritesHost, [StrPtr], StrPtr);

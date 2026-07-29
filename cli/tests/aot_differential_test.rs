@@ -416,6 +416,31 @@ fn differential_strings() {
                 "long_string_var",
                 "let s = \"a-fairly-long-string-literal\";\nreturn s + \"!\";\n",
             ),
+            // Text → number: the whole point is that unparseable text answers
+            // nil rather than guessing, so the two engines must agree on which
+            // spellings are numbers. `lkrt_str_to_int` is a second
+            // implementation of `lk_stdlib_string::to_int`'s String arm; this
+            // is what keeps them the same one.
+            new(
+                "to_int_ok",
+                "use string;\nprintln(string.to_int(\"42\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_trims",
+                "use string;\nprintln(string.to_int(\"  -7\\n\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_refuses",
+                "use string;\nprintln(string.to_int(\"42abc\") ?? -1);\nprintln(string.to_int(\"\") ?? -1);\nprintln(string.to_int(\"42.0\") ?? -1);\nprintln(string.to_int(\"9223372036854775808\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_base",
+                "use string;\nprintln(string.to_int(\"ff\", 16) ?? -1);\nprintln(string.to_int(\"-101\", 2) ?? -1);\nprintln(string.to_int(\"9\", 8) ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_float_ok",
+                "use string;\nprintln(string.to_float(\"3.5\") ?? -1.0);\nprintln(string.to_float(\" -2e3 \") ?? -1.0);\nprintln(string.to_float(\"nope\") ?? -1.0);\nreturn 0;\n",
+            ),
         ],
     );
 }

@@ -270,6 +270,15 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Str,
     ),
     abi_row("string", "title", AbiRef::new("str", "title"), &[Ty::Str], Ty::Str),
+    // Text → number. `to_int` is not here: its base is optional, so it is
+    // materialized in `lower_module` instead of split across two rows.
+    abi_row(
+        "string",
+        "to_float",
+        AbiRef::new("str", "to_float"),
+        &[Ty::Str],
+        Ty::Dyn,
+    ),
     // Native channels/goroutines (plan H): channel/task values are i64
     // ids; blocking semantics + raises live in lkrt.
     abi_row("chan", "close", AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil),

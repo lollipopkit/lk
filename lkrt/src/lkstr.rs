@@ -406,6 +406,39 @@ pub unsafe extern "C" fn lkrt_str_strip_suffix(s: *const c_char, suffix: *const 
     }
 }
 
+/// `string.to_int(s[, base])` — the number, or nil when the text is not one.
+///
+/// Whitespace is trimmed and the answer is boxed because the module returns
+/// `Int?`. Must stay byte-identical to `lk_stdlib_string::to_int`'s String arm:
+/// `i64::from_str_radix` on the trimmed text, so `"42.0"`, `""` and an
+/// out-of-range number are all nil rather than a guess.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_to_int(s: *const c_char, base: i64) -> crate::lkdyn::LkDyn {
+    if !(2..=36).contains(&base) {
+        crate::panic::raise_str("to_int() base must be between 2 and 36");
+    }
+    match i64::from_str_radix(view(s).trim(), base as u32) {
+        Ok(value) => crate::lkdyn::lkrt_dyn_from_i64(value),
+        Err(_) => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.to_float(s)` — see [`lkrt_str_to_int`]. `"nan"`, `"inf"` and
+/// `"-inf"` parse: they are Float values.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_to_float(s: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).trim().parse::<f64>() {
+        Ok(value) => crate::lkdyn::lkrt_dyn_from_f64(value),
+        Err(_) => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
 /// `string.count(s, needle)` — non-overlapping matches; an empty needle
 /// counts *byte* length + 1 (the stdlib module's exact rule).
 ///
