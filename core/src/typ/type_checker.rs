@@ -438,6 +438,22 @@ impl TypeChecker {
             Type::Union(variants) | Type::Tuple(variants) => {
                 variants.iter().try_for_each(|v| self.check_type_annotation(v, context))
             }
+            // A trait's method signatures arrive as one of these, and were the
+            // last annotation nothing looked inside: a trait could promise a
+            // type that does not exist, and every impl of it was then measured
+            // against nothing.
+            Type::Function {
+                params,
+                named_params,
+                return_type,
+            } => {
+                params.iter().try_for_each(|p| self.check_type_annotation(p, context))?;
+                named_params
+                    .iter()
+                    .try_for_each(|p| self.check_type_annotation(&p.ty, context))?;
+                self.check_type_annotation(return_type, context)
+            }
+            Type::Task(inner) | Type::Channel(inner) => self.check_type_annotation(inner, context),
             _ => Ok(()),
         }
     }

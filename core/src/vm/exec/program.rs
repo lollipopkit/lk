@@ -583,11 +583,23 @@ mod tests {
                 .to_string()
         }
 
+        // Every position an annotation can appear in. The bug repeated itself
+        // one position at a time — binding, then parameter, then return, then
+        // impl target, then trait method, then struct field — so the list is
+        // the point of the test.
         for (source, expected) in [
             ("let x: Strng = \"a\";\n", "Unknown type 'Strng'"),
             ("fn f(v: Nonexistent) { return 1; }\n", "Unknown type 'Nonexistent'"),
             ("fn f() -> Bogus { return 1; }\n", "Unknown type 'Bogus'"),
             ("let x: List<Nope> = [1];\n", "Unknown type 'Nope'"),
+            ("let x: Map<String, Nope> = {};\n", "Unknown type 'Nope'"),
+            ("struct P { a: Nope }\n", "Unknown type 'Nope'"),
+            ("trait T { fn f(self) -> Missing; }\n", "Unknown type 'Missing'"),
+            ("trait T { fn f(self, v: Bogus) -> Int; }\n", "Unknown type 'Bogus'"),
+            (
+                "trait T { fn f(self) -> Int; }\nimpl T for Nonexistent { fn f(self) -> Int { return 1; } }\n",
+                "Unknown type 'Nonexistent'",
+            ),
         ] {
             let message = check_error(source);
             assert!(

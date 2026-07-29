@@ -65,6 +65,8 @@ impl Stmt {
                 for (k, ty_opt) in fields.iter() {
                     match ty_opt {
                         Some(ty) => {
+                            type_checker
+                                .check_type_annotation(ty, &alloc::format!("field '{k}' of struct '{name}'"))?;
                             fm.insert(k.clone(), ty.clone());
                         }
                         None => {
@@ -93,6 +95,11 @@ impl Stmt {
                 // Register trait with method signatures
                 let mut map = HashMap::with_capacity(methods.len());
                 for (m, ty) in methods.iter() {
+                    // A trait's method signatures are annotations like any
+                    // other, and were the one kind nothing checked: a trait
+                    // could promise a type that does not exist, and every impl
+                    // of it would then be measured against nothing.
+                    type_checker.check_type_annotation(ty, &alloc::format!("method '{m}' of trait '{name}'"))?;
                     map.insert(m.clone(), ty.clone());
                 }
                 let def = TraitDef {
@@ -107,6 +114,11 @@ impl Stmt {
                 target_type,
                 methods,
             } => {
+                // The *target* was unchecked while the trait name was checked
+                // and the method bodies were checked: `impl Show for
+                // Nonexistent { … }` registered methods on a type nothing
+                // declares, so they could never be reached and nothing said so.
+                type_checker.check_type_annotation(target_type, "the impl target")?;
                 let prev = type_checker.set_impl_self_type(Some(type_checker.resolve_aliases(target_type)));
                 let result: Result<()> = methods.iter().try_for_each(|method| method.type_check(type_checker));
                 type_checker.set_impl_self_type(prev);
