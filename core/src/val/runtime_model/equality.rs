@@ -134,8 +134,37 @@ impl<'a> Comparison<'a> {
             }
             (HeapValue::Map(left), HeapValue::Map(right)) => self.maps(left, right, depth)?,
             (HeapValue::Set(left), HeapValue::Set(right)) => sets_equal(left, right),
+            // A struct is a product of values, and every other aggregate here
+            // compares by its contents. This one used to compare by *handle*,
+            // so `P { x: 1 } == P { x: 1 }` was false — and silently:
+            // `[p].contains(p_equal)`, `index_of`, `unique` all inherited it.
+            (HeapValue::Object(left), HeapValue::Object(right)) => self.objects(left, right, depth)?,
             _ => false,
         })
+    }
+
+    /// Two structs: the same declared type, and every field equal.
+    ///
+    /// The type check is by `DeclaredType` — module *and* name — because a name
+    /// alone is only unique within one module (see `vm::TypeScope`), and two
+    /// modules' identically-shaped `Point`s are not the same type.
+    fn objects(&self, left: &super::RuntimeObject, right: &super::RuntimeObject, depth: u32) -> Result<bool> {
+        // Scope and name, not the whole `DeclaredType`: its `fields` list is
+        // empty when the declaration is out of reach (another module, or a
+        // host-built object), and comparing it would make the same type unequal
+        // to itself across that boundary.
+        if left.ty.scope != right.ty.scope || left.ty.name != right.ty.name || left.fields.len() != right.fields.len() {
+            return Ok(false);
+        }
+        for (name, left_value) in &left.fields {
+            let Some(right_value) = right.fields.get(name) else {
+                return Ok(false);
+            };
+            if !self.values(left_value, right_value, depth + 1)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// The list a window reads through to, or `None` if the source is gone.

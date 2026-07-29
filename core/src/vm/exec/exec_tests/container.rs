@@ -741,3 +741,35 @@ fn a_top_level_let_and_its_functions_share_one_variable() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[[2,2],[5,5]]", "one storage, whichever side writes it");
 }
+
+/// A struct compares by its **fields**, like every other aggregate.
+///
+/// It used to compare by handle, so `P { x: 1 } == P { x: 1 }` was false while
+/// `[1] == [1]`, `{"a": 1} == {"a": 1}` and `Set([1]) == Set([1])` were all
+/// true. The silence was the worst part: `xs.contains(p)`, `index_of` and
+/// `unique` inherited it, so a list of structs could not be searched.
+#[test]
+fn a_struct_compares_by_its_fields_like_every_other_aggregate() {
+    let result = execute_source(
+        r#"
+        struct P { x: Int, y: Int }
+        struct Q { x: Int, y: Int }
+        struct N { inner: P }
+        let a = P { x: 1, y: 2 };
+        return [
+            a == P { x: 1, y: 2 },
+            a == P { x: 1, y: 3 },
+            [a] == [P { x: 1, y: 2 }],
+            [a].contains(P { x: 1, y: 2 }),
+            [a, P { x: 1, y: 2 }].unique().len() == 1,
+            N { inner: a } == N { inner: P { x: 1, y: 2 } },
+            // A different declaration with the same shape is a different type.
+            a == Q { x: 1, y: 2 },
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[true,false,true,true,true,true,false]");
+}

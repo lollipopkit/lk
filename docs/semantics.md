@@ -249,6 +249,24 @@ native 另有一份 `unique_eq`(数值 to_bits、>7 字节字符串永不相等�
 不同 —— 而它们恰好被这份文档划在差分子集之外,所以没人发现。现已并入
 `cli/tests/aot_differential_test.rs` 的 `differential_equality_and_unique`。
 
+## 结构体按字段比较(2026-07-30 裁决)
+
+`P { x: 1, y: 2 } == P { x: 1, y: 2 }` 是 **true**。同一个声明的类型
+(模块 + 名字,不是名字)加上每个字段相等,递归走同一份深度受限的
+`runtime_values_equal`。
+
+此前结构体按**句柄**比较,于是它是这门语言里唯一不按内容比较的聚合:
+`[1] == [1]`、`{"a":1} == {"a":1}`、`Set([1]) == Set([1])` 全是 true,只有
+结构体是 false。而且是静默的 —— `xs.contains(p)`、`index_of`、`unique` 全部
+继承了它,一个结构体列表根本搜不了。
+
+类型身份用 `scope` + `name`,不用整个 `DeclaredType`:后者的 `fields` 在声明
+够不到时(跨模块、宿主构造的对象)是空的,连它一起比会让同一个类型跨边界
+不等于自己。
+
+结构体**仍然不能**作 map 键或 set 成员 —— 那是另一条裁决(键只有 nil / Bool /
+Int / String),相等不蕴含可哈希。
+
 ## `in` 操作符等值语义(2026-07-29 修订)
 
 `needle in list` 与 `==` **用同一条规则**:Int/Float 跨类型按数值比较
