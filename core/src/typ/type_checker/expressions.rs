@@ -1766,6 +1766,16 @@ impl TypeChecker {
         })
     }
 
+    /// Method typing that the declarative table (`BUILTIN_METHODS`) cannot
+    /// express, for receivers it is not keyed by — a `Tuple`, or a type
+    /// variable inference has not resolved yet.
+    ///
+    /// The table is consulted *first*, so an arm here that only handles
+    /// `List`/`Map`/`Set` never runs. There were four such arms (`add`, `push`,
+    /// `keys`/`values`, `clear`), and two of them disagreed with the table about
+    /// the return type — `push` and `clear` said `Nil` where the table says
+    /// `Self`. Dead code that contradicts the live rule is a trap set for
+    /// whoever adds the next receiver kind, so they are gone.
     fn check_builtin_container_method(
         &mut self,
         receiver_ty: &Type,
@@ -2002,91 +2012,6 @@ impl TypeChecker {
                     Type::Variable(_) => Ok(None),
                     _ => Ok(None),
                 }
-            }
-            "add" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::Set(elem_type) => {
-                        if args.len() != 1 {
-                            return Err(Self::type_err(
-                                "Method add expects 1 argument",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let arg_ty = self.check_expr(&args[0])?;
-                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
-                        Ok(Some(Type::Bool))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "push" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::List(elem_type) => {
-                        if args.len() != 1 {
-                            return Err(Self::type_err(
-                                "Method push expects 1 argument",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let arg_ty = self.check_expr(&args[0])?;
-                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
-                        Ok(Some(Type::Nil))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "keys" | "values" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::Map(key_type, value_type) => {
-                        if !args.is_empty() {
-                            return Err(Self::type_err(
-                                &format!("Method {method} expects 0 arguments"),
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let elem = if method == "keys" { *key_type } else { *value_type };
-                        Ok(Some(Type::List(Box::new(elem))))
-                    }
-                    Type::Set(elem_type) if method == "values" => {
-                        if !args.is_empty() {
-                            return Err(Self::type_err(
-                                "Method values expects 0 arguments",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        Ok(Some(Type::List(elem_type)))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "clear" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                if matches!(&resolved_receiver, Type::Map(_, _) | Type::Set(_) | Type::List(_)) {
-                    if !args.is_empty() {
-                        return Err(Self::type_err(
-                            "Method clear expects 0 arguments",
-                            None,
-                            None,
-                            Some(func.clone()),
-                        ));
-                    }
-                    return Ok(Some(Type::Nil));
-                }
-                Ok(None)
             }
             _ => Ok(None),
         }
