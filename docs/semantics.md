@@ -92,6 +92,11 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
   (可 catch),否则原值。两条边界:`!` 紧跟 `(`/`[`/`{` 是**宏调用**语法
   (`name!(...)`),解包后调用/索引需加括号 `(x!)(...)`;lexer 贪婪 `!=`→Ne,
   `x!==1` 是 parse 错误,写 `x! == 1`。
+- **`?.` 可以调方法**:`a?.m(args)` 在 parse 时脱糖成
+  `{ let t = a; t == nil ? nil : t.m(args) }` —— 接收者只求值一次,
+  为 nil 时**调用根本不发生**,结果类型是 `T?`。此前只有字段访问
+  (struct / map)走得通,`s?.len()` 会把 `OptionalAccess` 当成索引,
+  运行时报 "String index must be Int"。
 - **可能落空的分支,类型是 `T?`**:`match` 无匹配时给 nil、`if` 没有
   `else` 时给 nil —— 这是运行时规则,类型必须跟着说。所以
   `let r: String = match x { 1 => "one" };` 是类型错误(它是 `String?`),

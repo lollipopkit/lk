@@ -70,6 +70,37 @@ struct ParsedSelectCase {
     body: Expr,
 }
 
+/// Build the desugared AST for `a?.m(args)`.
+///
+/// `{ let t = a; t == nil ? nil : t.m(args) }` — the receiver is evaluated
+/// once, and the call does not happen at all when it is nil.
+fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<Expr>>) -> Expr {
+    use crate::stmt::Stmt;
+
+    let name = format!("__optcall{id}");
+    let binding = Box::new(Stmt::Let {
+        pattern: Pattern::Variable(name.clone()),
+        type_annotation: None,
+        value: Box::new(receiver),
+        span: None,
+        is_const: false,
+    });
+    let call = Expr::CallExpr(
+        Box::new(Expr::Access(Box::new(Expr::Var(name.clone())), Box::new(field))),
+        args,
+    );
+    let check = Expr::Conditional(
+        Box::new(Expr::Bin(
+            Box::new(Expr::Var(name)),
+            BinOp::Eq,
+            Box::new(Expr::Literal(LiteralVal::Nil)),
+        )),
+        Box::new(Expr::Literal(LiteralVal::Nil)),
+        Box::new(call),
+    );
+    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
+}
+
 /// Build the desugared AST for a postfix `!` unwrap (see `parse_postfix`).
 fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
     use crate::stmt::Stmt;
@@ -731,7 +762,28 @@ impl<'a> Parser<'a> {
                 }
                 self.pos += 1; // skip ')'
 
-                if saw_named {
+                // `a?.m(args)` is a *call*, and `OptionalAccess` is a read:
+                // the compiler lowers it as an index, so `s?.len()` indexed the
+                // string with the string `"len"` and failed at runtime with
+                // "String index must be Int" — on the one operator that exists
+                // for values which may be nil.
+                //
+                // Rewritten here into the conditional it means, the way postfix
+                // `!` is. The checker and the compiler then see ordinary
+                // constructs, and the result is `T?` because one branch is nil
+                // — the rule every other maybe-missing branch follows.
+                let optional_receiver = match (&expr, saw_named) {
+                    (Expr::OptionalAccess(_, _), false) => true,
+                    _ => false,
+                };
+                if optional_receiver {
+                    let Expr::OptionalAccess(receiver, field) = expr else {
+                        unreachable!("checked just above");
+                    };
+                    let id = self.desugar_counter;
+                    self.desugar_counter += 1;
+                    expr = desugar_optional_call(id, *receiver, *field, pos_args);
+                } else if saw_named {
                     expr = Expr::CallNamed(Box::new(expr), pos_args, named_args);
                 } else {
                     expr = Expr::CallExpr(Box::new(expr), pos_args);
@@ -765,6 +817,16 @@ impl<'a> Parser<'a> {
                     return Err(anyhow!(self.err("Expecting field after '?.'")));
                 }
                 let field = self.parse_field_name()?;
+                // `a?.m(args)` is a *call*, and `OptionalAccess` is a read: the
+                // compiler lowers it as an index, so `s?.len()` indexed the
+                // string with the string `"len"` and failed at runtime with
+                // "String index must be Int" — on the one operator that exists
+                // for values which may be nil.
+                //
+                // Desugared here, the way postfix `!` is, into the conditional
+                // it means. Both the checker and the compiler then see ordinary
+                // constructs: the result is `T?` because one branch is nil,
+                // which is the rule every other maybe-missing branch follows.
                 // Optional access is only supported on regular expressions, not @ expressions
                 expr = Expr::OptionalAccess(Box::new(expr), Box::new(field));
             } else if !self.eof()

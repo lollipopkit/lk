@@ -489,6 +489,42 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// `?.` calls a method, which is most of what it is for.
+    ///
+    /// `OptionalAccess` is a *read*, and the compiler lowers it as an index —
+    /// so `s?.len()` indexed the string with the string `"len"` and failed at
+    /// runtime with "String index must be Int". The null-safe operator did not
+    /// work on the values it exists for; only field access on a struct or map
+    /// went through. It is rewritten at parse time now, the way postfix `!`
+    /// is, so the checker and the compiler both see ordinary constructs.
+    #[test]
+    fn optional_chaining_reaches_methods_and_stops_at_nil() {
+        let source = "let present = \"abcd\";\n\
+                      let m = {\"a\": \"xy\"};\n\
+                      let missing = if false { \"abc\" };\n\
+                      return [\n\
+                        present?.len(), m.get(\"a\")?.len(), m.get(\"z\")?.len(),\n\
+                        missing?.len(), missing?.len() ?? 0,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("scalars only");
+        assert_eq!(items[0], RuntimeVal::Int(4));
+        assert_eq!(items[1], RuntimeVal::Int(2));
+        // The call does not happen at all when the receiver is nil.
+        assert_eq!(items[2], RuntimeVal::Nil);
+        assert_eq!(items[3], RuntimeVal::Nil);
+        assert_eq!(items[4], RuntimeVal::Int(0));
+    }
+
     /// An `if` with no `else` is a value that may be nil, not a contradiction.
     ///
     /// The missing branch is a synthesised `nil`, and the two arms were
