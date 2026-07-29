@@ -125,10 +125,14 @@ pub(crate) fn outline(parent: &FunctionData, region: &TryRegionShape) -> Functio
         positional_param_count: 0,
         param_names: Vec::new(),
         capture_count: 0,
-        debug_name: parent
-            .debug_name
-            .as_ref()
-            .map(|name| format!("{name}$try{}", region.begin_pc)),
+        // Named even when the parent is not — the top-level entry has no name,
+        // so its outlined bodies had none either and a blocker in one arrived
+        // bare. `try@12` is not a made-up id like `fn41`: the pc is where the
+        // region begins, which is the one thing a reader can look up.
+        debug_name: Some(match parent.debug_name.as_ref() {
+            Some(name) => format!("{name}$try{}", region.begin_pc),
+            None => format!("try@{}", region.begin_pc),
+        }),
         export_name: None,
         extern_name: None,
     }
