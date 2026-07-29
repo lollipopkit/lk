@@ -55,8 +55,8 @@ impl BinOp {
 
     pub(crate) fn cmp_literals(&self, l: &LiteralVal, r: &LiteralVal) -> Option<bool> {
         match self {
-            BinOp::Eq => Some(l == r),
-            BinOp::Ne => Some(l != r),
+            BinOp::Eq => Some(literals_equal(l, r)),
+            BinOp::Ne => Some(!literals_equal(l, r)),
             BinOp::In => match (l, r) {
                 (l, r) if l.as_str().is_some() && r.as_str().is_some() => {
                     Some(r.as_str().unwrap().contains(l.as_str().unwrap()))
@@ -75,6 +75,26 @@ impl BinOp {
                 }
             }
         }
+    }
+}
+
+/// Are two literals equal, by the rule the *runtime* uses?
+///
+/// `==` used to fold through `LiteralVal`'s derived `PartialEq`, which is
+/// structural: `Int(1)` and `Float(1.0)` are different variants, so
+/// `println(1 == 1.0)` answered `false` while
+/// `let a = 1; let b = 1.0; println(a == b)` answered `true` — the same
+/// question, decided by whether the operands were literals. It also
+/// contradicted the folder's *own* ordering rule, which promotes across the
+/// two: `1 <= 1.0 && 1 >= 1.0` folded to `true`.
+///
+/// Ordering is the rule, so equality is "ordering says equal". Values it
+/// cannot order — `Bool`, `Nil`, a `NaN` — fall back to the structural
+/// comparison, which is what the runtime does for them too.
+fn literals_equal(l: &LiteralVal, r: &LiteralVal) -> bool {
+    match cmp_literal_ordering(l, r) {
+        Some(ordering) => ordering == Ordering::Equal,
+        None => l == r,
     }
 }
 

@@ -330,6 +330,10 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
             // Linear membership test; returns 0/1 (the caller narrows to `i1`).
             ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
+            // Cross-type numeric membership: `1 in [1.0]` and `1.0 in [1, 2]`
+            // follow `==`, not the list's internal representation.
+            ("list_h", "i64_contains_f64", lkrt_lklist_i64_contains_f64, ReadsHost, [Ptr, F64], I64, Borrowed);
+            ("list_h", "f64_contains_i64", lkrt_lklist_f64_contains_i64, ReadsHost, [Ptr, I64], I64, Borrowed);
             // `xs[start..]`: a fresh handle with the elements from `start` on
             // (negative `start` aborts, matching the VM's fatal slice error).
             ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);

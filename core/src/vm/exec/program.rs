@@ -465,6 +465,87 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// `==`, `in`, and the constant folder answer the same question the same
+    /// way.
+    ///
+    /// There were three answers to "is `1` equal to `1.0`":
+    ///
+    /// ```text
+    /// println(1 == 1.0);                     → false   (constant folder)
+    /// let a = 1; let b = 1.0; a == b;        → true    (runtime)
+    /// 1 in [1.0];                            → false   (typed-list `in`)
+    /// ```
+    ///
+    /// The folder used `LiteralVal`'s derived `PartialEq` — structural, so two
+    /// variants are never equal — while contradicting its *own* ordering rule,
+    /// which promotes: `1 <= 1.0 && 1 >= 1.0` folded to `true`. And `in`
+    /// matched on the element's variant, so the answer depended on the list's
+    /// internal representation, which no program can see.
+    #[test]
+    fn equality_answers_the_same_whoever_asks() {
+        let source = "let a = 1;\n\
+                      let b = 1.0;\n\
+                      let ints = [1, 2];\n\
+                      let floats = [1.0, 2.0];\n\
+                      return [\n\
+                        1 == 1.0, a == b, 1 <= 1.0 && 1 >= 1.0,\n\
+                        a in floats, b in ints, 1 in floats, 1.0 in ints,\n\
+                        1.5 in ints, a in ints,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of answers");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let answers = list.collect_owned().expect("bools only");
+        let expected = [true, true, true, true, true, true, true, false, true];
+        for (index, want) in expected.iter().enumerate() {
+            assert_eq!(
+                answers[index],
+                RuntimeVal::Bool(*want),
+                "answer {index} disagrees with the others"
+            );
+        }
+    }
+
+    /// A container is a container for `in`, whatever inferred it.
+    ///
+    /// `in`'s type check listed `List`/`Map`/`Set` and nothing else, so a
+    /// `String` (which contains substrings) and a `Tuple` (what a heterogeneous
+    /// list *literal* infers to) were rejected — while indexing, `len()` and
+    /// method dispatch took both. `"a" in "abc"` therefore worked as a folded
+    /// literal and was a type error one line later through a variable.
+    #[test]
+    fn in_accepts_every_container_the_rest_of_the_language_does() {
+        let source = "let text = \"abc\";\n\
+                      let mixed = [1, \"a\"];\n\
+                      return [\"b\" in text, \"z\" in text, \"a\" in mixed, 1 in mixed];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let mut checker = crate::typ::TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .expect("a String and a Tuple are containers");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of answers");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let answers = list.collect_owned().expect("bools only");
+        assert_eq!(answers[0], RuntimeVal::Bool(true));
+        assert_eq!(answers[1], RuntimeVal::Bool(false));
+        assert_eq!(answers[2], RuntimeVal::Bool(true));
+        assert_eq!(answers[3], RuntimeVal::Bool(true));
+    }
+
     /// The braced constructs agree on punctuation and on parentheses.
     ///
     /// Three rules used to differ for no reason any of them could explain:

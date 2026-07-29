@@ -127,11 +127,12 @@ pub use lkdyn::{
 };
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_chain, lkrt_lklist_f64_contains,
-    lkrt_lklist_f64_display, lkrt_lklist_f64_eq, lkrt_lklist_f64_get_pair, lkrt_lklist_f64_len, lkrt_lklist_f64_new,
-    lkrt_lklist_f64_push, lkrt_lklist_f64_set, lkrt_lklist_f64_slice_from, lkrt_lklist_i64_at, lkrt_lklist_i64_chain,
-    lkrt_lklist_i64_contains, lkrt_lklist_i64_display, lkrt_lklist_i64_eq, lkrt_lklist_i64_f64_eq,
-    lkrt_lklist_i64_filter_fn, lkrt_lklist_i64_from_range, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair,
-    lkrt_lklist_i64_len, lkrt_lklist_i64_map_fn, lkrt_lklist_i64_new, lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn,
+    lkrt_lklist_f64_contains_i64, lkrt_lklist_f64_display, lkrt_lklist_f64_eq, lkrt_lklist_f64_get_pair,
+    lkrt_lklist_f64_len, lkrt_lklist_f64_new, lkrt_lklist_f64_push, lkrt_lklist_f64_set, lkrt_lklist_f64_slice_from,
+    lkrt_lklist_i64_at, lkrt_lklist_i64_chain, lkrt_lklist_i64_contains, lkrt_lklist_i64_contains_f64,
+    lkrt_lklist_i64_display, lkrt_lklist_i64_eq, lkrt_lklist_i64_f64_eq, lkrt_lklist_i64_filter_fn,
+    lkrt_lklist_i64_from_range, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair, lkrt_lklist_i64_len,
+    lkrt_lklist_i64_map_fn, lkrt_lklist_i64_new, lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn,
     lkrt_lklist_i64_reverse, lkrt_lklist_i64_set, lkrt_lklist_i64_skip, lkrt_lklist_i64_slice,
     lkrt_lklist_i64_slice_from, lkrt_lklist_i64_sort, lkrt_lklist_i64_take, lkrt_lklist_i64_unique, lkrt_lklist_str_at,
     lkrt_lklist_str_chain, lkrt_lklist_str_contains, lkrt_lklist_str_display, lkrt_lklist_str_eq,

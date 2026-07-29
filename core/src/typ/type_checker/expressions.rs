@@ -1004,8 +1004,13 @@ impl TypeChecker {
                 self.check_ordering_operands(left_expr, &left_type, right_expr, &right_type)?;
                 Ok(Type::Bool)
             }
+            // A `Tuple` is what a heterogeneous list *literal* infers to, and a
+            // `String` contains substrings — both were containers everywhere
+            // else (indexing, `len`, method dispatch) and rejected only here.
+            // `"a" in "abc"` therefore worked as a folded literal and was a
+            // type error one line later with the same value in a variable.
             BinOp::In => match self.resolve_aliases(&right_type) {
-                Type::List(_) | Type::Map(_, _) | Type::Set(_) => Ok(Type::Bool),
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) | Type::String => Ok(Type::Bool),
                 other => Err(Self::type_err(
                     "'in' operator requires container type",
                     Some(Type::List(Box::new(Type::Any))),

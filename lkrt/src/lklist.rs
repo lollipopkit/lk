@@ -894,6 +894,40 @@ pub unsafe extern "C" fn lkrt_lklist_f64_contains(handle: *mut c_void, needle: f
     i64::from(values.contains(&needle))
 }
 
+/// `x in xs` where the list holds `i64` and the needle is an `f64`.
+///
+/// Numeric comparison, the same rule `==` uses: the element is widened, not
+/// the needle narrowed, so `1 in [1.0]` and `1.0 in [1, 2]` answer the same
+/// way `1 == 1.0` does. The VM spells it `*value as f64 == *needle`; this is
+/// that expression.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_contains_f64(handle: *mut c_void, needle: f64) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+    let values = unsafe { &*(handle as *mut Vec<i64>) };
+    i64::from(values.iter().any(|value| *value as f64 == needle))
+}
+
+/// `x in xs` where the list holds `f64` and the needle is an `i64` (see
+/// [`lkrt_lklist_i64_contains_f64`]).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_f64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_contains_i64(handle: *mut c_void, needle: i64) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
+    let values = unsafe { &*(handle as *mut Vec<f64>) };
+    i64::from(values.iter().any(|value| *value == needle as f64))
+}
+
 /// Linear membership test for a string list — by *content*, matching the
 /// VM's `TypedList::String` contains (which stringifies and compares text,
 /// for short and long strings alike).

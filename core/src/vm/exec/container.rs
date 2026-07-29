@@ -401,8 +401,21 @@ impl Executor {
                 }
                 found
             }
-            TypedList::Int(values) => matches!(needle, RuntimeVal::Int(needle) if values.contains(needle)),
-            TypedList::Float(values) => matches!(needle, RuntimeVal::Float(needle) if values.contains(needle)),
+            // Numeric comparison across `Int`/`Float`, the same rule `==` uses.
+            // These arms used to demand the *same variant*, so `a == b` was
+            // true and `a in [b]` was false for the same pair — and the answer
+            // depended on the list's internal representation, since the
+            // `Mixed` arm above compares by value.
+            TypedList::Int(values) => match needle {
+                RuntimeVal::Int(needle) => values.contains(needle),
+                RuntimeVal::Float(needle) => values.iter().any(|value| *value as f64 == *needle),
+                _ => false,
+            },
+            TypedList::Float(values) => match needle {
+                RuntimeVal::Float(needle) => values.contains(needle),
+                RuntimeVal::Int(needle) => values.iter().any(|value| *value == *needle as f64),
+                _ => false,
+            },
             TypedList::Bool(values) => matches!(needle, RuntimeVal::Bool(needle) if values.contains(needle)),
             TypedList::String(values) => {
                 let Some(needle) = self.runtime_value_to_string(needle)? else {

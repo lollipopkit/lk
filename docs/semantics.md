@@ -151,15 +151,28 @@ typed 列表两种常见形状;Mixed 列表同变量长串重复是已知分歧,
 列表元素的句柄同一性 native 以「NewList 窗口内同寄存器装箱一次」保持
 (`let l=[7]; [l,l].unique()` 去重,两个 `[1]` 字面量不去重)。
 
-## `in` 操作符等值语义(2026-07-06 裁决)
+## `in` 操作符等值语义(2026-07-29 修订)
 
-`needle in list` 走 VM `list_contains`,**与 `==`/unique 都不同**——第三套 eq:
-typed 列表严格同型(`1.0 in [1, 2]`、`1 in [1.0]` 均 false,无数值 coercion;
-String 列表按内容,长短一致);Mixed 列表是 `RuntimeVal` 的 derive `PartialEq`
-(同变体严格、float 按值 `==`(`0.0==-0.0` true、NaN 永 false)、ShortStr 内容、
-heap 对象按句柄)。native:typed 列表跨型 needle 编译期折叠 false,Mixed
-(`ListDyn`)走 lkrt `contains_eq`(同款 strict 语义);长字符串/嵌套列表的句柄
-同一性限制与 unique() 同款(intern/转换边界,已留档,不进差分子集)。
+`needle in list` 与 `==` **用同一条规则**:Int/Float 跨类型按数值比较
+(`1 in [1.0]`、`1.0 in [1, 2]` 均 true),String 按内容(长短一致),
+其余按 `runtime_values_equal`。native 侧新增 `list_h.i64_contains_f64` /
+`f64_contains_i64` 两个 helper 与之逐条对齐。
+
+此前这里是**第三套 eq**:typed 列表要求 needle 与元素同变体,Mixed 列表却
+按值比较——于是 `a == b` 为 true 而 `a in [b]` 为 false,且答案取决于列表的
+内部表示(程序看不见的东西)。同期常量折叠对 `==` 走 `LiteralVal` 的 derive
+`PartialEq`(结构相等),所以 `println(1 == 1.0)` 是 false 而变量版是 true,
+还与折叠器自己的序比较矛盾(`1 <= 1.0 && 1 >= 1.0` 折成 true)。
+
+`in` 的类型检查此前只认 List/Map/Set,漏了 `String`(含子串)和 `Tuple`
+(异构列表**字面量**推出来的类型)——两者在索引、`len()`、方法分发处都是
+容器。于是 `"a" in "abc"` 作为字面量折叠可用,换成变量就是类型错误。
+
+长字符串/嵌套列表的句柄同一性限制与 unique() 同款(intern/转换边界,
+已留档,不进差分子集)。
+
+**`unique()` 仍是单独一套**(上一节的 `to_bits`),尚未并入——它牵扯 native
+的字符串 intern 边界,需要与 AOT 侧一并裁决。
 
 ## 错误文本(2026-07-08 裁决)
 

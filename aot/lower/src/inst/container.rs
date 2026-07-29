@@ -1293,11 +1293,13 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
-            // Typed-list `in` is *strictly* same-typed in the VM
-            // (`list_contains` matches on the needle's variant): `1.0 in
-            // [1, 2]` and `1 in [1.0]` are false — no numeric coercion,
-            // unlike `==`. A needle whose proven type can't match folds to
-            // constant false; a Dyn needle (runtime-typed) still rejects.
+            // Typed-list `in` compares numerically across `Int`/`Float`, the
+            // same rule `==` uses. It used to demand the *same* type here and
+            // in the VM, so `a == b` was true and `a in [b]` false for the
+            // same pair — and the answer depended on the list's internal
+            // representation, which no program can see. A needle whose proven
+            // type cannot match any element (a string against a number list)
+            // still folds to constant false; a Dyn needle still rejects.
             let (fn_name, needle) = match list_ty {
                 Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
                     let (nv, nty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
@@ -1305,6 +1307,8 @@ pub(super) fn lower(
                         (Ty::ListI64, Ty::I64) => ("i64_contains", nv),
                         (Ty::ListF64, Ty::F64) => ("f64_contains", nv),
                         (Ty::ListStr, Ty::Str) => ("str_contains", nv),
+                        (Ty::ListI64, Ty::F64) => ("i64_contains_f64", nv),
+                        (Ty::ListF64, Ty::I64) => ("f64_contains_i64", nv),
                         (_, Ty::Dyn) => return Err(Unsupported::TypeMismatch { pc }),
                         _ => {
                             let dst = ssa.new_val();
