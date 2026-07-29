@@ -8,7 +8,14 @@ license = "Apache-2.0"
 
 [lib]
 name = "lk_stdlib"
-crate-type = ["rlib", "staticlib"]
+# `rlib` only. A `staticlib` crate-type is emitted on *every* build of the
+# crate, and for this one that archive is ~480MB (the whole dependency graph's
+# objects plus debuginfo) — 19GB of stale generations had accumulated under
+# `target/debug/deps`. Nothing ever linked it: the AOT driver links
+# `liblkrt_cabi.a` and `liblk_api.a`, and both of those come from crates that
+# exist to produce them. Same rule as `lkrt-cabi`: a staticlib belongs to a
+# crate whose job is the staticlib.
+crate-type = ["rlib"]
 
 [features]
 default = []

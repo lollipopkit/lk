@@ -96,6 +96,21 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 
+# Debuginfo dominates `target/debug`: with the default `debug = 2` every one of
+# the workspace's ~30 test binaries carries full DWARF for the entire graph
+# (measured: 944 binaries, 70GB). `line-tables-only` keeps what a backtrace
+# actually reads — file, line, function — and drops the variable/type tables
+# that only an interactive debugger uses. Third-party dependencies get nothing
+# at all; stepping into `serde` is not something this workspace does.
+#
+# Raise to `debug = 2` locally (or `CARGO_PROFILE_DEV_DEBUG=2`) when a session
+# genuinely needs gdb-level inspection of a dependency.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 panic = "abort"
 opt-level = 2

@@ -6,7 +6,7 @@ VSC_EXT_DIR := ecosystem/vsc-ext
 VSC_EXTENSIONS := lsp
 ZED_EXT_DIR := ecosystem/zed-ext
 
-.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext zed-ext-check zed-ext-release-check install
+.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext zed-ext-check zed-ext-release-check install prune
 
 vsix: $(VSC_EXTENSIONS:%=vsix-%)
 
@@ -62,6 +62,12 @@ $(VSC_EXTENSIONS:%=vsix-%): vsix-%:
 
 clean-vsix:
 	rm -f $(VSC_EXT_DIR)/*/*.vsix
+
+# Reclaim `target/`. Cargo never removes the artifacts of a fingerprint it has
+# stopped using, so the directory only grows: this workspace reached 190GB of
+# `target/debug` before anyone looked. `cargo clean --gc` is still nightly-only.
+prune:
+	bash scripts/prune_target.sh
 
 debug-lsp-ext:
 	./scripts/debug-vscode-lsp.sh
