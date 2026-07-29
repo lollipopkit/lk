@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 use crate::val::{HeapRef, RuntimeVal};
 
@@ -89,11 +89,25 @@ impl RuntimeModuleState {
 }
 
 impl RuntimeCallable {
+    /// Collect the heap this callable's *own* module owns.
+    ///
+    /// Reached from [`HeapStore::collect`](crate::val::HeapStore::collect) when
+    /// marking a heap that holds an imported function: the function's captures
+    /// live in the exporting module's heap, not in the one being marked, so
+    /// that heap has to be collected against its own roots.
+    ///
+    /// `try_lock`, not `lock`. This walk can arrive back at a state that is
+    /// already being collected further up the stack, and neither backing mutex
+    /// is re-entrant — `lock` would hang the process with no error and no
+    /// output. Today the import graph is a DAG (`ModuleResolver` rejects
+    /// circular imports by path), so that cannot happen; but nothing here
+    /// depends on that check, or would notice if it were relaxed. Skipping is
+    /// the conservative answer either way: the heap keeps its objects until the
+    /// collection already in progress, or the next one, reaches them.
     pub fn collect_garbage(&self) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("RuntimeCallable state lock poisoned"))?;
+        let Some(mut state) = self.state.try_lock() else {
+            return Ok(());
+        };
         state.collect_garbage(self.captures.iter());
         Ok(())
     }
