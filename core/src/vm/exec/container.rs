@@ -600,7 +600,6 @@ impl Executor {
                     RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value)))
                 }
             }
-            RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
         }
     }
 

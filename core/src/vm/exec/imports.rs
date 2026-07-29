@@ -1,13 +1,11 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
-use crate::val::{
-    CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap,
-};
+use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap};
 
 use super::{RuntimeCallable, runtime_value_to_callable_shared};
 use crate::vm::{Module, RuntimeExport};
@@ -85,13 +83,7 @@ fn import_heap_value(
             source_module,
             source_state,
         )?),
-        HeapValue::Set(values) => HeapValue::Set(import_runtime_set(
-            values,
-            source_heap,
-            dest_heap,
-            source_module,
-            source_state,
-        )?),
+        HeapValue::Set(values) => HeapValue::Set(import_runtime_set(values)),
         HeapValue::Object(object) => {
             let mut fields = fast_hash_map_new();
             for (key, value) in &object.fields {
@@ -176,24 +168,11 @@ fn import_heap_value(
     })
 }
 
-fn import_runtime_set(
-    values: &RuntimeSet,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    source_module: Arc<Module>,
-    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
-) -> Result<RuntimeSet> {
-    let mut out = fast_hash_set_new();
-    for key in values.entries() {
-        out.insert(import_runtime_map_key(
-            key,
-            source_heap,
-            dest_heap,
-            Arc::clone(&source_module),
-            source_state.clone(),
-        )?);
-    }
-    Ok(RuntimeSet::from_entries(out))
+/// A set crosses heaps as itself: its members are `RuntimeMapKey`s, and none of
+/// those carries a heap handle — a long string is an `Arc<str>` held inline, and
+/// a container cannot be a member at all (see `RuntimeMapKey::from_value`).
+fn import_runtime_set(values: &RuntimeSet) -> RuntimeSet {
+    values.clone()
 }
 
 fn import_typed_list(
@@ -236,13 +215,7 @@ fn import_typed_map(
             let mut out = fast_hash_map_new();
             for (key, value) in values {
                 out.insert(
-                    import_runtime_map_key(
-                        key,
-                        source_heap,
-                        dest_heap,
-                        Arc::clone(&source_module),
-                        source_state.clone(),
-                    )?,
+                    key.clone(),
                     import_runtime_value(
                         value,
                         source_heap,
@@ -273,34 +246,6 @@ fn import_typed_map(
         TypedMap::StringInt(values) => TypedMap::StringInt(copy_string_map_values(values)),
         TypedMap::StringFloat(values) => TypedMap::StringFloat(copy_string_map_values(values)),
         TypedMap::StringBool(values) => TypedMap::StringBool(copy_string_map_values(values)),
-    })
-}
-
-fn import_runtime_map_key(
-    key: &RuntimeMapKey,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    source_module: Arc<Module>,
-    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
-) -> Result<RuntimeMapKey> {
-    Ok(match key {
-        RuntimeMapKey::Nil => RuntimeMapKey::Nil,
-        RuntimeMapKey::Bool(value) => RuntimeMapKey::Bool(*value),
-        RuntimeMapKey::Int(value) => RuntimeMapKey::Int(*value),
-        RuntimeMapKey::ShortStr(value) => RuntimeMapKey::ShortStr(*value),
-        RuntimeMapKey::String(value) => RuntimeMapKey::String(Arc::clone(value)),
-        RuntimeMapKey::Obj(handle) => {
-            match import_runtime_value(
-                &RuntimeVal::Obj(*handle),
-                source_heap,
-                dest_heap,
-                source_module,
-                source_state,
-            )? {
-                RuntimeVal::Obj(handle) => RuntimeMapKey::Obj(handle),
-                _ => unreachable!("object map key use must stay an object"),
-            }
-        }
     })
 }
 

@@ -672,7 +672,6 @@ fn runtime_map_key_to_value(value: RuntimeMapKey, heap: &mut HeapStore) -> Runti
         RuntimeMapKey::Int(value) => RuntimeVal::Int(value),
         RuntimeMapKey::ShortStr(value) => RuntimeVal::ShortStr(value),
         RuntimeMapKey::String(value) => make_string_val(&value, heap),
-        RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
     }
 }
 

@@ -1266,6 +1266,19 @@ fn typed_map_entry_value(map: &TypedMap, key: &RuntimeMapKey) -> Option<RuntimeV
     }
 }
 
+/// What a map or set indexes by.
+///
+/// Every variant is **self-contained**: no heap handle. That is not an accident
+/// of the current variants but the rule — a value whose identity is a handle
+/// cannot be a key, because mutating it would lose the entry (see
+/// [`RuntimeMapKey::from_value`]). There was an `Obj(HeapRef)` variant, and once
+/// the two "value → key" conversions were unified nothing could produce one; it
+/// left a GC edge to walk, an artifact variant to encode, and two cross-heap
+/// translations that chased a handle no key held.
+///
+/// The rule is worth keeping because of what it buys: a key crosses heaps as
+/// itself, a set has no outgoing GC edges at all, and neither needs the heap to
+/// be copied.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeMapKey {
     Nil,
@@ -1273,7 +1286,6 @@ pub enum RuntimeMapKey {
     Int(i64),
     ShortStr(ShortStr),
     String(Arc<str>),
-    Obj(HeapRef),
 }
 
 impl RuntimeMapKey {

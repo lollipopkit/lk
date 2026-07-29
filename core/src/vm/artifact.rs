@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stmt::import::ImportStmt,
-    val::{HeapRef, RuntimeMapKey, ShortStr},
+    val::{RuntimeMapKey, ShortStr},
 };
 
 use super::{
@@ -416,7 +416,6 @@ pub enum RuntimeMapKeyData {
     Int(i64),
     ShortStr(String),
     String(String),
-    Obj(u32),
 }
 
 impl RuntimeMapKeyData {
@@ -427,7 +426,6 @@ impl RuntimeMapKeyData {
             RuntimeMapKey::Int(value) => Self::Int(*value),
             RuntimeMapKey::ShortStr(value) => Self::ShortStr(value.as_str().to_string()),
             RuntimeMapKey::String(value) => Self::String(value.to_string()),
-            RuntimeMapKey::Obj(value) => Self::Obj(value.index()),
         }
     }
 
@@ -440,7 +438,6 @@ impl RuntimeMapKeyData {
                 ShortStr::new(&value).ok_or_else(|| anyhow!("artifact short string key exceeds inline limit"))?,
             ),
             Self::String(value) => RuntimeMapKey::String(Arc::<str>::from(value)),
-            Self::Obj(value) => RuntimeMapKey::Obj(HeapRef::new(value)),
         })
     }
 }

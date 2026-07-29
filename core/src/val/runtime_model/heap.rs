@@ -2,7 +2,7 @@
 use crate::compat::prelude::*;
 use alloc::sync::Arc;
 
-use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap};
+use super::{CallableValue, HeapValue, RuntimeVal, TypedList, TypedMap};
 use crate::vm::RuntimeCallable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -184,7 +184,11 @@ fn collect_heap_value_edges(
         HeapValue::Slice(slice) => collect_runtime_value_edge(&slice.source, refs),
         HeapValue::List(values) => collect_typed_list_edges(values, refs),
         HeapValue::Map(values) => collect_typed_map_edges(values, refs),
-        HeapValue::Set(values) => collect_runtime_set_edges(values, refs),
+        // A set's members are `RuntimeMapKey`s, and none of those is a heap
+        // handle any more: a long string key is an `Arc<str>` held inline, and
+        // a container cannot be a key at all (see `RuntimeMapKey::from_value`).
+        // So a set has no outgoing edges, like a string or a byte buffer.
+        HeapValue::Set(_) => {}
         HeapValue::Object(object) => {
             for value in object.fields.values() {
                 collect_runtime_value_edge(value, refs);
@@ -208,12 +212,6 @@ fn collect_heap_value_edges(
     }
 }
 
-fn collect_runtime_set_edges(values: &RuntimeSet, refs: &mut Vec<HeapRef>) {
-    for key in values.entries() {
-        collect_runtime_map_key_edge(key, refs);
-    }
-}
-
 fn collect_typed_list_edges(values: &TypedList, refs: &mut Vec<HeapRef>) {
     if let TypedList::Mixed(values) = values {
         for value in values {
@@ -225,8 +223,8 @@ fn collect_typed_list_edges(values: &TypedList, refs: &mut Vec<HeapRef>) {
 fn collect_typed_map_edges(values: &TypedMap, refs: &mut Vec<HeapRef>) {
     match values {
         TypedMap::Mixed(values) => {
-            for (key, value) in values {
-                collect_runtime_map_key_edge(key, refs);
+            // Keys hold no handles — see the `Set` arm above.
+            for value in values.values() {
                 collect_runtime_value_edge(value, refs);
             }
         }
@@ -236,12 +234,6 @@ fn collect_typed_map_edges(values: &TypedMap, refs: &mut Vec<HeapRef>) {
             }
         }
         TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
-    }
-}
-
-fn collect_runtime_map_key_edge(key: &RuntimeMapKey, refs: &mut Vec<HeapRef>) {
-    if let RuntimeMapKey::Obj(reference) = key {
-        refs.push(*reference);
     }
 }
 
@@ -391,21 +383,6 @@ mod tests {
             );
         }
         assert!(heap.get(garbage).is_none());
-    }
-
-    #[test]
-    fn heap_store_gc_marks_mixed_map_object_keys() {
-        let mut heap = HeapStore::new();
-        let key_object = heap.alloc(HeapValue::String(Arc::<str>::from("key-object")));
-        let map = heap.alloc(HeapValue::Map(TypedMap::Mixed(fast_hash_map_from_iter([(
-            RuntimeMapKey::Obj(key_object),
-            RuntimeVal::Int(1),
-        )]))));
-
-        heap.collect([map]);
-
-        assert!(heap.get(map).is_some());
-        assert!(heap.get(key_object).is_some());
     }
 
     #[test]

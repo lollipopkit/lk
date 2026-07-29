@@ -1,15 +1,14 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::sync::Mutex;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
     val::{
-        CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, TypedList,
-        TypedMap,
+        CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap,
     },
     vm::{Module, NativeArgs, NativeEntry, RuntimeCallable, RuntimeModuleState, VmContext},
 };
@@ -1206,7 +1205,8 @@ fn copy_heap_value(
         HeapValue::Bytes(value) => HeapValue::Bytes(Arc::clone(value)),
         HeapValue::List(values) => HeapValue::List(copy_typed_list(values, source_heap, dest_heap, mode)?),
         HeapValue::Map(values) => HeapValue::Map(copy_typed_map(values, source_heap, dest_heap, mode)?),
-        HeapValue::Set(values) => HeapValue::Set(copy_runtime_set(values, source_heap, dest_heap, mode)?),
+        // No member carries a heap handle — see `imports::import_runtime_set`.
+        HeapValue::Set(values) => HeapValue::Set(values.clone()),
         HeapValue::Object(object) => {
             let mut fields = fast_hash_map_new();
             for (key, value) in &object.fields {
@@ -1267,19 +1267,6 @@ fn copy_heap_value(
             },
         }),
     })
-}
-
-fn copy_runtime_set(
-    values: &RuntimeSet,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
-) -> Result<RuntimeSet> {
-    let mut out = fast_hash_set_new();
-    for key in values.entries() {
-        out.insert(copy_runtime_map_key(key, source_heap, dest_heap, mode)?);
-    }
-    Ok(RuntimeSet::from_entries(out))
 }
 
 fn copy_typed_list(
@@ -1350,30 +1337,9 @@ fn copy_runtime_entries(
     let mut out = fast_hash_map_new();
     for (key, value) in values {
         out.insert(
-            copy_runtime_map_key(key, source_heap, dest_heap, mode)?,
+            key.clone(),
             copy_runtime_value_with(value, source_heap, dest_heap, mode)?,
         );
     }
     Ok(out)
-}
-
-fn copy_runtime_map_key(
-    key: &RuntimeMapKey,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
-) -> Result<RuntimeMapKey> {
-    Ok(match key {
-        RuntimeMapKey::Nil => RuntimeMapKey::Nil,
-        RuntimeMapKey::Bool(value) => RuntimeMapKey::Bool(*value),
-        RuntimeMapKey::Int(value) => RuntimeMapKey::Int(*value),
-        RuntimeMapKey::ShortStr(value) => RuntimeMapKey::ShortStr(*value),
-        RuntimeMapKey::String(value) => RuntimeMapKey::String(Arc::clone(value)),
-        RuntimeMapKey::Obj(handle) => {
-            match copy_runtime_value_with(&RuntimeVal::Obj(*handle), source_heap, dest_heap, mode)? {
-                RuntimeVal::Obj(handle) => RuntimeMapKey::Obj(handle),
-                _ => unreachable!("object map key copy must stay an object"),
-            }
-        }
-    })
 }

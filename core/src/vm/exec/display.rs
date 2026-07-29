@@ -284,7 +284,6 @@ fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
         RuntimeMapKey::Int(value) => value.to_string(),
         RuntimeMapKey::ShortStr(value) => quote_string(value.as_str()),
         RuntimeMapKey::String(value) => quote_string(value),
-        RuntimeMapKey::Obj(value) => format!("<object:{}>", value.index()),
     }
 }
 fn append_display_entries(out: &mut String, entries: impl IntoIterator<Item = Result<(String, String)>>) -> Result<()> {

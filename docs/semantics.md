@@ -246,6 +246,11 @@ println(s)                      → Set([<object:80>,<object:82>])
 
 现在只有一份(`RuntimeMapKey::from_value`),两条路都拒绝,错误文本相同。
 
+统一之后 `RuntimeMapKey::Obj(HeapRef)` 就**没人造得出来**了,已删除
+(`MODULE_ARTIFACT_VERSION` 15 一并覆盖)。于是这条规则变成了结构性的:键
+一律自包含,不带堆句柄 —— set 因此**完全没有 GC 出边**,键跨堆搬运就是
+`clone()`,两侧原本各有一份追句柄的翻译函数也一并没了。
+
 ## 字符串序比较(2026-07-29 裁决)
 
 `"a" < "z"` 可用,按**字节字典序**,长短字符串一视同仁 —— 与 `list.sort()`

@@ -359,7 +359,6 @@ fn map_key_to_string(key: &lk_core::val::RuntimeMapKey) -> String {
         RuntimeMapKey::Int(value) => value.to_string(),
         RuntimeMapKey::ShortStr(value) => value.as_str().to_string(),
         RuntimeMapKey::String(value) => value.to_string(),
-        RuntimeMapKey::Obj(handle) => format!("<obj {}>", handle.index()),
     }
 }
 
