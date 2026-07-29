@@ -20,7 +20,6 @@ exports.
   `encode_component` and `decode_component`. A parser without its serializer is
   half an operation — `stringify` was missing, so a script could read a config
   and change it but not write it back.
-  `json`, `yaml`, `toml`, `base64`, `hex`, and `url`.
 - Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
   `spawn` global start goroutines, `chan` owns channel operations, and
   `task` owns task management (`await`, `try_await`, `join_all` — which takes
