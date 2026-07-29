@@ -429,8 +429,12 @@ impl Compiler {
     /// mutating method you could not chain — an arbitrary split, since
     /// `push` beside it has always answered the container.
     fn lower_set_method_call(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<u16> {
-        self.emit_set_method_effect(target, key, value)?;
-        self.lower_mutable_method_receiver(target)
+        // The register the write went through *is* the answer. Lowering the
+        // receiver a second time here evaluated the expression twice: for a
+        // local that is the same slot, but `make().set(0, 9)` called `make`
+        // twice, wrote into the first list and answered the second — so the
+        // write appeared to do nothing. `push` beside it never had this shape.
+        self.emit_set_method_effect(target, key, value)
     }
 
     fn lower_len_method_call(&mut self, target: &Expr) -> Result<u16> {
@@ -483,7 +487,9 @@ impl Compiler {
         Ok(true)
     }
 
-    fn emit_set_method_effect(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<()> {
+    /// Emits the write and answers the register it wrote through — the
+    /// receiver, which is what `xs.set(k, v)` evaluates to.
+    fn emit_set_method_effect(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<u16> {
         self.clear_const_map_target(target);
         let was_plain = self.plain_local_receiver(target);
         let target_reg = self.lower_mutable_method_receiver(target)?;
@@ -513,7 +519,7 @@ impl Compiler {
             if let Some(fact) = index_fact {
                 self.function.performance.set_index_fact(pc, fact);
             }
-            return Ok(());
+            return Ok(target_reg);
         }
         let (key_reg, key_fact) = self.lower_index_key_for_target(target_reg, index_fact, key)?;
         let value_reg = self.lower_readonly_operand(value)?;
@@ -545,7 +551,7 @@ impl Compiler {
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
-        Ok(())
+        Ok(target_reg)
     }
 
     fn lower_push_method_call(&mut self, target: &Expr, value: &Expr) -> Result<u16> {

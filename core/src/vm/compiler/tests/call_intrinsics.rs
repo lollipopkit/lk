@@ -402,6 +402,40 @@ fn compiler_drops_set_method_nil_result_for_statement() {
 
 /// `set` answers the receiver, so a write chains.
 ///
+/// `set` answers the thing it wrote to.
+///
+/// It used to lower the receiver expression twice — once for the write, once
+/// for the answer. On a local that is the same slot and nothing shows; on any
+/// other expression it wrote into one value and answered another, so
+/// `[1, 2, 3].set(0, 9)` was `[1, 2, 3]`. (The other half — a receiver with
+/// side effects running twice — is
+/// `set_evaluates_a_side_effecting_receiver_once` in the exec tests, which can
+/// run a program with functions in it.) `push` next door has always had the
+/// single-lowering shape.
+#[test]
+fn compiler_set_method_answers_the_list_it_wrote_to() {
+    let function = compile_source(
+        r#"
+        let answered = [1, 2, 3].set(0, 9);
+        return answered;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list return");
+    };
+    let Some(crate::val::HeapValue::List(crate::val::TypedList::Int(values))) = result.state.heap.get(handle) else {
+        panic!("expected an int list return");
+    };
+    assert_eq!(
+        values.as_slice(),
+        [9, 2, 3],
+        "the answer must be the list the write went into, not a second one"
+    );
+}
+
 /// It used to answer `nil`, which made writing one element the one mutating
 /// method you could not chain — `push` beside it has always answered the
 /// container. This test pinned the `nil`; it pins the receiver now.
