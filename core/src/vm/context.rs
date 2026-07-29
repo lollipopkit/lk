@@ -1218,10 +1218,15 @@ fn core_bit_or_builtin(
 /// same thing on every target, and a shift by a variable that turned out to be
 /// 64 is a bug wherever it happens. The native path raises from
 /// `lkrt_i64_sh*_checked`, so both back ends fail identically.
+///
+/// The message does not name `__lk_shl`: that is the internal builtin the
+/// parser desugars `<<` to, and a program that wrote `<<` has never heard of
+/// it. `func` is still what the argument-type errors use, where naming the
+/// operand position matters more.
 fn shift_amount(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<u32> {
     let amount = bit_arg(value, func)?;
     if !(0..64).contains(&amount) {
-        return Err(anyhow!("{func} shift amount {amount} is out of range 0..63"));
+        return Err(anyhow!("shift amount {amount} is out of range 0..63"));
     }
     Ok(amount as u32)
 }

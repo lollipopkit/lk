@@ -422,7 +422,7 @@ impl Executor {
                     let lhs_idx = self.frame_base + instr.b() as usize;
                     let rhs = instr.sc() as i64;
                     if rhs == 0 {
-                        bail!("ModIntI divisor is zero");
+                        bail!("modulo by zero");
                     }
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
@@ -433,7 +433,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        lhs => bail!("ModIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("% expects an Int on the left, got {:?}", lhs.kind()),
                     }
                 }
                 Opcode::MinInt => {
@@ -597,7 +597,7 @@ impl Executor {
                     let lhs = &self.state.stack[lhs_idx];
                     let rhs = &self.state.stack[rhs_idx];
                     match (lhs, rhs) {
-                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
+                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
                             let value = *l % *r;
                             self.state.stack[dst] = RuntimeVal::Int(value);
@@ -650,7 +650,7 @@ impl Executor {
                 Opcode::FloorDivInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
-                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("FloorDivInt divisor is zero"),
+                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("division by zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
                             self.state.stack[dst] = RuntimeVal::Int(l.div_euclid(*r));
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);

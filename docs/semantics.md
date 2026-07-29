@@ -309,11 +309,42 @@ VM 的语义,补上降低即可。
 失败不再加 `"native `{name}` failed: "` 前缀(曾有,`map_native_error` 处
 移除),与 `error(v)` 一等值对称;调用点归因由 traceback 承担,不进消息。
 
-**跨后端错误文本不保证逐字一致**:VM 与 native 的错误生成机制不同
+**算术失败的文本两端逐字一致**(2026-07-29 补):除零、取模零、移位越界是
+程序能 `catch` 并据以分支的东西,所以这几条手工对齐。此前 `a % b`(b=0)
+VM 说 `ModInt divisor is zero`、native 说 `Division by zero` —— 两个不同的
+字符串,而且都说错了是哪个运算符。
+
+**其余跨后端错误文本不保证逐字一致**:VM 与 native 的错误生成机制不同
 (如 `recv(999)` VM 报 "recv first argument must be a Channel"(类型检查),
 native 报 "Channel not found"(id 查找))。差分语料因此**不打印 catch 到
 的错误文本**,只断言 catch 行为(进入 handler、后续状态可用);若未来要
 开放文本比对,需先逐条对齐两侧消息(fuzz 差分红为发现机制)。
+
+## 错误文本说语言的话,不说实现的话(2026-07-29 裁决)
+
+用户看得见的错误里不出现 **opcode 名**、**内部表示名**、**desugar 出来的
+内部函数名**:
+
+| 写的是 | 曾经说 | 现在说 |
+|---|---|---|
+| `a % 0` | `ModInt divisor is zero` | `modulo by zero` |
+| `a % "s"` | `ModInt expected Int or Float, got …` | `% expects Int or Float, got …` |
+| `-s` | `Neg expected Int or Float, got ShortStr` | `unary '-' expects Int or Float, got String` |
+| `n << 99` | `__lk_shl shift amount 99 is out of range 0..63` | `shift amount 99 is out of range 0..63` |
+| `5[0]` | `GetIndex target expected Obj, got Int` | `Int is not indexable` |
+| `5[0] = 1` | `SetIndex target expected Obj, got Int` | `Int cannot be indexed for assignment` |
+
+`ShortStr` 尤其要紧:那是"短到能内联的字符串"这个**表示**,语言里没有这个
+类型。它是 `RuntimeValKind` 的变体名,而约四十条消息写的是
+`bail!("… got {:?}", v.kind())` —— 所以 `RuntimeValKind` 的 `Debug` 现在是
+手写的,打语言的类型名;要看表示用 `repr_name()`。
+
+opcode 名同理:它说的是编译器挑了哪个**融合**形式,源码里没有 `ModInt`,
+而且这个选择会随优化变化。`operator_symbol` 把算术 opcode 映回源码运算符;
+映不回去的说明是编译器/执行器不匹配,那时 opcode 名才是有用的。
+
+内部不变量被破坏的消息**保留** opcode 名(`GetList target object changed
+while reading list`):那是 VM 的 bug,不是程序的。
 
 ## trait 方法分发与 auto-Display(2026-07-07 裁决,plan J)
 

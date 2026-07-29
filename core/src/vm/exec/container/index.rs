@@ -205,7 +205,7 @@ impl Executor {
                 let idx_val = self.read_unchecked(key_reg);
                 let idx = match idx_val {
                     RuntimeVal::Int(n) => *n,
-                    _ => bail!("String index must be Int"),
+                    _ => bail!("a string index must be Int"),
                 };
                 self.index_string_at(value.as_str(), idx)
             }
@@ -213,7 +213,7 @@ impl Executor {
                 let handle = *handle;
                 self.get_heap_index(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
             }
-            other => bail!("GetIndex target expected Obj, got {:?}", other.kind()),
+            other => bail!("{:?} is not indexable", other.kind()),
         }
     }
 
@@ -592,7 +592,7 @@ impl Executor {
                 let idx_val = self.read(key_reg)?;
                 let idx = match &idx_val {
                     RuntimeVal::Int(n) => *n,
-                    _ => bail!("String index must be Int"),
+                    _ => bail!("a string index must be Int"),
                 };
                 self.index_string_at(value, idx)
             }

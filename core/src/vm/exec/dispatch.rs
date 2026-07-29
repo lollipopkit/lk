@@ -190,7 +190,7 @@ impl Executor {
     pub(super) fn dispatch_floor_div_int(&mut self, instr: Instr) -> Result<()> {
         let (dst, lhs_idx, rhs_idx) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
-            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("FloorDivInt divisor is zero"),
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("division by zero"),
             (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.div_euclid(*rhs)),
             (lhs, rhs) => {
                 let lhs = self.number_value(lhs)?;
@@ -208,7 +208,7 @@ impl Executor {
         let value = match &self.state.stack[index] {
             RuntimeVal::Int(value) => RuntimeVal::Int(value.wrapping_neg()),
             RuntimeVal::Float(value) => RuntimeVal::Float(-value),
-            other => bail!("Neg expected Int or Float, got {:?}", other.kind()),
+            other => bail!("unary '-' expects Int or Float, got {:?}", other.kind()),
         };
         self.write_unchecked(instr.a(), value);
         self.pc += 1;

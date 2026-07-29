@@ -60,7 +60,7 @@ impl Executor {
         let handle = {
             let target = self.read(target_reg)?;
             let RuntimeVal::Obj(handle) = target else {
-                bail!("SetIndex target expected Obj, got {:?}", target.kind());
+                bail!("{:?} cannot be indexed for assignment", target.kind());
             };
             *handle
         };

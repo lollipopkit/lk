@@ -145,7 +145,22 @@ impl RuntimeVal {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a [`RuntimeVal`] is, as a program would say it.
+///
+/// The variants are named after the *representation* — `ShortStr` is a string
+/// that fits inline, `Obj` is a handle — and that is a distinction no program
+/// can see. It reached users anyway: some forty error messages are written
+/// `bail!("… got {:?}", value.kind())`, so `-x` on a string answered
+///
+/// ```text
+/// Neg expected Int or Float, got ShortStr
+/// ```
+///
+/// naming a type the language does not have. `Debug` is written by hand for
+/// that reason: it is what those messages print, so it prints `String` and
+/// `Object`. [`RuntimeValKind::repr_name`] is still there for anyone debugging
+/// the representation itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeValKind {
     Nil,
     Bool,
@@ -153,6 +168,46 @@ pub enum RuntimeValKind {
     Float,
     ShortStr,
     Obj,
+}
+
+impl RuntimeValKind {
+    /// The type name a program would use.
+    pub const fn type_name(self) -> &'static str {
+        match self {
+            Self::Nil => "Nil",
+            Self::Bool => "Bool",
+            Self::Int => "Int",
+            Self::Float => "Float",
+            Self::ShortStr => "String",
+            // A handle; which kind of object needs the heap, so a caller that
+            // has one should reach for `HeapValue::type_name` instead.
+            Self::Obj => "Object",
+        }
+    }
+
+    /// The variant's own name — the representation, not the language's type.
+    pub const fn repr_name(self) -> &'static str {
+        match self {
+            Self::Nil => "Nil",
+            Self::Bool => "Bool",
+            Self::Int => "Int",
+            Self::Float => "Float",
+            Self::ShortStr => "ShortStr",
+            Self::Obj => "Obj",
+        }
+    }
+}
+
+impl core::fmt::Debug for RuntimeValKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.type_name())
+    }
+}
+
+impl core::fmt::Display for RuntimeValKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.type_name())
+    }
 }
 
 #[derive(Clone, Debug)]

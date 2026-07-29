@@ -115,6 +115,42 @@ fn compare_string_values(opcode: Opcode, lhs: &str, rhs: &str) -> Result<bool> {
     })
 }
 
+/// The operator a program wrote, for an arithmetic opcode — `None` when the
+/// opcode is not one a source operator maps to.
+///
+/// These messages used to print the opcode's own name: a program that wrote `%`
+/// was told `ModInt expected Int or Float, got String and Int`. The opcode says
+/// which *fused* form the compiler picked; nothing in the source says `ModInt`,
+/// and the choice can change without the program changing.
+fn operator_symbol(opcode: Opcode) -> Option<&'static str> {
+    Some(match opcode {
+        Opcode::AddInt | Opcode::AddIntI | Opcode::AddFloat => "+",
+        Opcode::SubInt | Opcode::SubFloat => "-",
+        Opcode::MulInt | Opcode::MulIntI | Opcode::MulFloat => "*",
+        Opcode::DivInt | Opcode::DivFloat => "/",
+        Opcode::ModInt | Opcode::ModIntI => "%",
+        _ => return None,
+    })
+}
+
+/// "`%` expects Int or Float, got String and Int" — or, for an opcode with no
+/// source spelling, the opcode, because then it is a compiler/executor mismatch
+/// and the variant name is the useful one.
+fn arith_operand_error(opcode: Opcode, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
+    match operator_symbol(opcode) {
+        Some(symbol) => anyhow::anyhow!(
+            "{symbol} expects Int or Float, got {:?} and {:?}",
+            lhs.kind(),
+            rhs.kind()
+        ),
+        None => anyhow::anyhow!(
+            "{opcode:?} expected Int or Float, got {:?} and {:?}",
+            lhs.kind(),
+            rhs.kind()
+        ),
+    }
+}
+
 impl Executor {
     #[cold]
     pub(super) fn dynamic_add(&mut self, instr: Instr) -> Result<()> {
@@ -235,12 +271,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs as f64, *rhs)),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs as f64)),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs)),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -261,12 +292,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs / *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs / *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -279,17 +305,12 @@ impl Executor {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
             // As `dynamic_div`: only `Int % Int` has no answer.
-            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
             (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs % rhs),
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 % *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs % *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;

@@ -1124,7 +1124,7 @@ impl Executor {
     fn int_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<i64> {
         match moved_key {
             Some(RuntimeVal::Int(value)) => Ok(value),
-            Some(other) => bail!("SetIndex list key must be Int, got {:?}", other.kind()),
+            Some(other) => bail!("a list index must be Int, got {:?}", other.kind()),
             None => self.read_int(register),
         }
     }
