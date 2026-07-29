@@ -489,6 +489,47 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// A zero-parameter closure is a value, so it goes wherever a value goes.
+    ///
+    /// The lexer decides whether `||` opens a closure or is a logical or by
+    /// looking at what precedes it — and it used to look at the previous
+    /// *character*, accepting only `= ( { , ; :`. A character cannot see a
+    /// keyword, so `return || 1;` lexed as an operator ("Unexpected token:
+    /// Or") while `let f = || 1;` was fine, and `[|| 1]` failed on the missing
+    /// `[`. It asks the same predicate `-5` asks now: is a value expected here.
+    #[test]
+    fn a_zero_parameter_closure_goes_where_a_value_goes() {
+        let source = "fn returned() { return || 1; }\n\
+                      fn takes(c) { return c; }\n\
+                      let bound = || 2;\n\
+                      let in_list = [|| 3];\n\
+                      let in_map = {\"f\": || 4};\n\
+                      let x = 1;\n\
+                      return [\n\
+                        returned()(), bound(), in_list[0](), in_map.f(), takes(|| 5)(),\n\
+                        // …and `||` between two operands is still the operator.\n\
+                        (x > 0 || x < 0) ? 6 : 0,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        for (index, want) in [1, 2, 3, 4, 5, 6].iter().enumerate() {
+            assert_eq!(
+                items[index],
+                RuntimeVal::Int(*want),
+                "position {index} should have parsed"
+            );
+        }
+    }
+
     /// The list's mutating methods all mutate, and hand back one of two
     /// things.
     ///

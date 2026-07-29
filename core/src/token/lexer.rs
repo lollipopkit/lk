@@ -1027,24 +1027,17 @@ impl<'a> Tokenizer<'a> {
                     // Disambiguate by looking behind at the previous non-whitespace char.
                     // If the previous significant char indicates we're in the middle of an
                     // expression (identifier, literal, closing bracket/paren/brace), treat as OR.
-                    // If we're at expression start or after a delimiter like '=', '(', '{', ',', ';',
-                    // treat as an empty-parameter closure "|| expr".
-                    let mut prev_idx = start.offset.saturating_sub(1);
-                    while prev_idx > 0 && is_space_char(self.chars[prev_idx]) {
-                        prev_idx = prev_idx.saturating_sub(1);
-                    }
-                    let prev_char = if start.offset == 0 {
-                        None
-                    } else {
-                        Some(self.chars[prev_idx])
-                    };
-
-                    let is_after_expr = matches!(prev_char, Some(')' | ']' | '}' | '"' | '\'' | '`'))
-                        || matches!(prev_char, Some(c) if is_alnum_char(c));
-
-                    let is_after_delim = matches!(prev_char, None | Some('=' | '(' | '{' | ',' | ';' | ':'));
-
-                    if is_after_delim && !is_after_expr {
+                    // `||` is a zero-parameter closure exactly where a *value*
+                    // is expected, and the logical operator everywhere else —
+                    // the same question `signed_number_can_start` answers for
+                    // `-5`, so it is the same predicate.
+                    //
+                    // It used to look at the previous *character* and accept
+                    // only `= ( { , ; :`. A character cannot see a keyword, so
+                    // `return || 1;` lexed as a logical or ("Unexpected token:
+                    // Or") while `let f = || 1;` was fine, and `[|| 1]` failed
+                    // on the missing `[`.
+                    if self.operand_can_start() {
                         // Empty-parameter closure context: emit two Pipe tokens with spans
                         let mid_pos = Position::new(start.line, start.column + 1, start.offset + 1);
                         self.push_with_span(Token::Pipe, start, mid_pos.clone());
@@ -1290,6 +1283,16 @@ impl<'a> Tokenizer<'a> {
                 | '>'
                 | '<'
         )
+    }
+
+    /// Is a *value* expected at this point?
+    ///
+    /// Answers for the two places the lexer has to know: a leading `-` starts a
+    /// negative literal rather than a subtraction, and `||` opens a
+    /// zero-parameter closure rather than a logical or. One predicate, so the
+    /// two cannot disagree about what "here comes a value" means.
+    fn operand_can_start(&self) -> bool {
+        self.signed_number_can_start()
     }
 
     fn signed_number_can_start(&self) -> bool {

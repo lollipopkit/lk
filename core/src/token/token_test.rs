@@ -89,9 +89,21 @@ mod tests {
         assert_eq!(tokens, expected);
     }
 
+    /// `||` between two operands is the logical operator.
+    ///
+    /// The input used to be an operator soup (`>=<= && || == != ! > <`) with
+    /// nothing between the operators, where `||` sits exactly where a *value*
+    /// is expected — which is where it opens a zero-parameter closure. Real
+    /// code has operands, so the test has them now: the question the lexer
+    /// answers is "is a value expected here", and soup cannot ask it.
     #[test]
     fn punctuations() {
-        let t2 = Tokenizer::tokenize(">=<= && || == != ! > <");
+        let t2 = Tokenizer::tokenize("a >= b <= c && d || e == f != g ! h > i < j");
+        let operators: Vec<Token> = t2
+            .unwrap()
+            .into_iter()
+            .filter(|token| !matches!(token, Token::Id(_)))
+            .collect();
         let e2 = vec![
             Token::Ge,
             Token::Le,
@@ -103,7 +115,7 @@ mod tests {
             Token::Gt,
             Token::Lt,
         ];
-        assert_eq!(t2.unwrap(), e2);
+        assert_eq!(operators, e2);
     }
 
     #[test]
