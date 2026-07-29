@@ -189,14 +189,14 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "insert",
         &[p("index", "Int"), p("value", "Elem")],
         "Self",
-        "The list with `value` inserted at `index`",
+        "Inserts at `index`, in place; answers the list so calls chain",
     ),
     m(
         List,
         "remove_at",
         &[p("index", "Int")],
-        "Tuple<Self, Elem>",
-        "A pair of the list without `index` and the element that was there",
+        "Elem",
+        "Removes the element at `index`, in place, and returns it",
     ),
     m(
         List,

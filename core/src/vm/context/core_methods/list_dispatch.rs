@@ -211,28 +211,71 @@ pub(super) fn dispatch_list_builtin_method(
                 );
             }
             let index = list_index_arg(&positional[0], "list.insert() index")?;
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            if index > items.len() {
-                bail!("list.insert() index {} out of bounds (len={})", index, items.len());
+            let value = positional[1];
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            if index > list.len() {
+                bail!("list.insert() index {} out of bounds (len={})", index, list.len());
             }
-            items.insert(index, positional[1]);
-            let items = TypedList::from_runtime_values(&items, heap);
-            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
+            // In place, like `push` and `set`. It used to copy the whole list,
+            // insert, and hand back a *new* one — so `xs.insert(…)` left `xs`
+            // alone while `xs.push(…)` changed it, two opposite answers to
+            // "does adding an element change this list".
+            //
+            // The typed cases move memory and keep the representation; a value
+            // that does not fit the representation (or a string, whose text
+            // lives on the heap) goes the long way and is written back to the
+            // same handle, so it mutates either way.
+            let inserted_in_place = match (heap.get_mut(handle), value) {
+                (Some(HeapValue::List(TypedList::Int(values))), RuntimeVal::Int(value)) => {
+                    values.insert(index, value);
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Float(values))), RuntimeVal::Float(value)) => {
+                    values.insert(index, value);
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Bool(values))), RuntimeVal::Bool(value)) => {
+                    values.insert(index, value);
+                    true
+                }
+                (Some(HeapValue::List(TypedList::Mixed(values))), value) => {
+                    values.insert(index, value);
+                    true
+                }
+                _ => false,
+            };
+            if !inserted_in_place {
+                let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+                items.insert(index, value);
+                let items = TypedList::from_runtime_values(&items, heap);
+                if let Some(slot) = heap.get_mut(handle) {
+                    *slot = HeapValue::List(items);
+                }
+            }
+            Ok(Some(*receiver))
         }
         "remove_at" => {
             if positional.len() != 1 {
                 bail!("list.remove_at() expects 1 argument (index), got {}", positional.len());
             }
             let index = list_index_arg(&positional[0], "list.remove_at() index")?;
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            if index >= items.len() {
-                bail!("list.remove_at() index {} out of bounds (len={})", index, items.len());
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            if index >= list.len() {
+                bail!("list.remove_at() index {} out of bounds (len={})", index, list.len());
             }
-            let old = items.remove(index);
-            let items = TypedList::from_runtime_values(&items, heap);
-            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));
-            let pair = TypedList::from_runtime_values(&[updated, old], heap);
-            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(pair)))))
+            // Returns the element it removed, the way `pop` does. It used to
+            // return a two-element list `[updated, old]` — the only method in
+            // the language shaped that way — *and* leave the receiver alone,
+            // so the "updated" list was a copy nobody was holding.
+            let removed = typed_list_element(handle, index, heap);
+            if let Some(HeapValue::List(list)) = heap.get_mut(handle) {
+                list.remove_at(index);
+            }
+            Ok(Some(removed))
         }
         "set" => {
             if positional.len() != 2 {

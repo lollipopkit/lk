@@ -489,6 +489,53 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// The list's mutating methods all mutate, and hand back one of two
+    /// things.
+    ///
+    /// They used to disagree three ways: `push`/`set` changed the list,
+    /// `insert` copied it and returned a *new* one, and `remove_at` copied it
+    /// and returned a two-element `[updated, old]` — the only method in the
+    /// language shaped that way, whose "updated" list nobody was holding. So
+    /// `xs.push(v)` changed `xs` and `xs.insert(i, v)` did not, which is two
+    /// opposite answers to "does adding an element change this list".
+    ///
+    /// The rule now: a mutating method changes the receiver, and answers
+    /// either the list (so calls chain) or the element it took out.
+    #[test]
+    fn the_mutating_list_methods_agree() {
+        let source = "let xs = [1, 3];\n\
+                      let chained = xs.insert(1, 2);\n\
+                      let after_insert = xs.len();\n\
+                      let removed = xs.remove_at(0);\n\
+                      let after_remove = xs.len();\n\
+                      let strings = [\"a\", \"c\"];\n\
+                      strings.insert(1, \"b\");\n\
+                      let widened = [1, 2];\n\
+                      widened.insert(1, \"middle\");\n\
+                      return [chained.len(), after_insert, removed, after_remove, strings.len(), widened.len()];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        // `insert` answers the *receiver*, not a copy — so the chained value
+        // tracks the later `remove_at` and is two long, not three.
+        assert_eq!(items[0], RuntimeVal::Int(2));
+        assert_eq!(items[1], RuntimeVal::Int(3), "insert changes the receiver");
+        assert_eq!(items[2], RuntimeVal::Int(1), "remove_at answers the element it took");
+        assert_eq!(items[3], RuntimeVal::Int(2), "…and the list is one shorter");
+        assert_eq!(items[4], RuntimeVal::Int(3), "a string list inserts by content");
+        // A value the representation cannot hold widens the list rather than
+        // failing — the same degradation `push` has always done.
+        assert_eq!(items[5], RuntimeVal::Int(3));
+    }
+
     /// `pop` takes the element off; `last` reads it.
     ///
     /// They were the same function under two names — same body, same declared

@@ -37,6 +37,21 @@ exists — they are what a new container type should be checked against:
 | 两端 | `first()` / `last()` | List / Slice / Bytes / Str |
 | 删一个 | `delete(key)` | Map / Set |
 
+**列表的可变方法一律原地改**,答复只有两种:改完的**列表本身**(所以
+`xs.push(1).push(2)` 能链),或者**被取出来的那个元素**。
+
+| 方法 | 答复 |
+|---|---|
+| `push(v)` / `insert(i, v)` | 列表本身 |
+| `pop()` / `remove_at(i)` | 被取出的元素(空列表 `pop()` 给 nil) |
+| `set(i, v)` | nil |
+| `last()` / `first()` / `get(i)` | 只读,不改列表 |
+
+曾经这里是三套约定:`push`/`set` 原地改,`insert` 复制一份返回新列表,
+`remove_at` 复制一份返回 `[新列表, 旧值]` 二元组(全语言唯一这个形状,
+而那个"新列表"没人持有),`pop` 则是 `last` 的逐字重复、根本不弹出。
+于是"加一个元素会不会改变这个列表"有两个相反的答案。
+
 `has` 不是 `contains` 的同义词:对 map 来说 "contains" 说不清问的是键
 还是值,所以键成员单独一个名字。这是有理由的区分,不是历史遗留。
 
