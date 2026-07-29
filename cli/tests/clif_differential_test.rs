@@ -1463,6 +1463,24 @@ fn a_closure_may_assign_to_its_capture() {
                 "capture_rebound_to_a_new_list",
                 "let xs = [1];\nlet reset = || { xs = [9, 9]; };\nreset();\nprintln(xs);\nreturn 0;\n",
             ),
+            // A closure nested in a closure writes what its parent captured:
+            // the cell has to pass *through* the parent by pointer, and the
+            // parent's own capture becomes a cell because of the child's write.
+            new(
+                "nested_closure_writes_the_outer_capture",
+                "let total = 0;\nlet outer = |v| {\n  let inner = |w| { total = total + w; };\n  inner(v);\n  inner(v);\n};\nouter(3);\nprintln(total);\nreturn 0;\n",
+            ),
+            // Three levels: the requirement propagates the whole chain.
+            new(
+                "three_levels_of_nesting",
+                "let total = 0;\nlet l1 = |a| {\n  let l2 = |b| {\n    let l3 = |c| { total = total + c; };\n    l3(b);\n  };\n  l2(a);\n};\nl1(5);\nl1(2);\nprintln(total);\nreturn 0;\n",
+            ),
+            // The inner closure writes one capture and reads another, so only
+            // one of them may become a cell.
+            new(
+                "nested_writes_one_capture_reads_another",
+                "let base = 100;\nlet acc = 0;\nlet outer = |v| {\n  let inner = |w| { acc = acc + w + base; };\n  inner(v);\n};\nouter(1);\nouter(2);\nprintln(acc);\nprintln(base);\nreturn 0;\n",
+            ),
         ],
         NativePath::PureCranelift,
     );

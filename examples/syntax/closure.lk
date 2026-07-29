@@ -81,4 +81,15 @@ assert(only_return(1) == 2);
 let container_param = |xs: List<Int>| -> Int { return xs.len(); };
 assert(container_param([1, 2, 3]) == 3);
 
+// 10. A closure nested in a closure writes what its parent captured — one
+// variable, one cell, however many levels down.
+let ledger = 0;
+let record = |amount| {
+  let apply = |delta| { ledger = ledger + delta; };
+  apply(amount);
+  apply(amount);
+};
+record(5);
+assert(ledger == 10);
+
 println("closure: all assertions passed");

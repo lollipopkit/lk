@@ -183,6 +183,19 @@ pub(crate) enum RetCaptureSrc {
 pub(crate) enum ClosureCapture {
     /// A shared mutable cell, resolved at each call site.
     Cell(u32),
+    /// The *enclosing* function's `k`th capture, captured onward.
+    ///
+    /// A closure nested in a closure (`|v| { let inner = |w| { total = total +
+    /// w; }; … }`) captures what its parent captured. The parent holds it as a
+    /// capture parameter, not as a cell of its own, so there was nothing for
+    /// `Cell(cid)` to name and the whole program fell back.
+    ///
+    /// When the parent's capture is already a runtime cell (`Ty::Cell`) the
+    /// pointer passes straight through — parent and child share one cell, which
+    /// is exactly the VM's semantics. When it is not, the child's need for one
+    /// propagates up: the call site records it against the parent and retries,
+    /// so `SigInfer::cell_captures` reaches a fixpoint over the whole chain.
+    CellParam(usize),
     /// A direct by-value capture.
     Value(ValueId, Ty),
 }

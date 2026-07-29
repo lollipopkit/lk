@@ -398,3 +398,27 @@ join 成 `Dyn`,调用点连 cell 指针都塞不进去。因此记事实的同�
 
 **还没通的**:内层 lambda 写外层 lambda 的捕获(捕获链要一级级传下去),见
 todos #87。
+
+### 13.1 嵌套闭包(2026-07-30)
+
+内层 lambda 写外层 lambda 的捕获:
+
+```lk
+let total = 0;
+let outer = |v| {
+  let inner = |w| { total = total + w; };   // 写的是 outer 捕获的东西
+  inner(v);
+};
+```
+
+`MakeClosure` 只认 `GlobalRef::Cell(cid)`(父函数自己有的 cell)。这里父函数是把
+它当**捕获参数**拿着的,没有 cid 可指,`ssa.read` 于是在那个寄存器上找不到值,
+报 "register r2 is read at pc 2 before any definition" —— 整个程序回落。
+
+加了 `ClosureCapture::CellParam(k)`:父的第 k 个捕获再传下去。父的捕获已经是
+`Ty::Cell` 时**指针直接穿过去** —— 父子共用一个 cell,正是 VM 的语义;还不是
+cell 时,子的需求**往上传**:调用点把它记到父身上并请求重试,于是
+`cell_captures` 在整条链上收敛。三层也是这么通的。
+
+`spawn`、`try` 区域、以及被擦除的闭包环境这三处还不解析 `CellParam`,标了
+TODO —— 它们拒绝,于是程序回落,而不是丢掉写回。

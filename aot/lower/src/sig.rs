@@ -283,6 +283,9 @@ pub(crate) fn ret_closure_candidate(
                 let slot = ssa.cell_slot(*cid);
                 ssa.read_slot(slot, block, 0).ok()?
             }
+            // A capture taken onward from an enclosing closure is not one of
+            // *this* function's parameter values, so the summary does not apply.
+            ClosureCapture::CellParam(_) => return None,
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
         let k = fn_params

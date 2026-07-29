@@ -16,6 +16,8 @@ pub(super) fn lower(
     let func = ctx.func;
     let funcs = ctx.funcs;
     let entry = ctx.entry;
+    let capture_params = ctx.capture_params;
+    let ctx_func_index = ctx.func_index;
     match instr.opcode() {
         Opcode::CallMethodK => {
             lower_method_call_k(ssa, insts, globals, func, funcs, entry, sig, instr, block, pc)?;
@@ -70,9 +72,18 @@ pub(super) fn lower(
                 let reg = instr.c().wrapping_add(k as u8);
                 // The compiler captures locals through upvalue cells (shared
                 // mutable boxes); a plain value is captured directly.
-                if let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, reg)) {
-                    captures.push(ClosureCapture::Cell(*cid));
-                    continue;
+                match ssa.builtin_ref_at(reg, block) {
+                    Some(GlobalRef::Cell(cid)) => {
+                        captures.push(ClosureCapture::Cell(cid));
+                        continue;
+                    }
+                    // A closure nested in a closure captures what its parent
+                    // captured; the parent holds that as a capture parameter.
+                    Some(GlobalRef::CellParam(k)) => {
+                        captures.push(ClosureCapture::CellParam(k));
+                        continue;
+                    }
+                    _ => {}
                 }
                 let (v, ty) = ssa.read(reg, block, pc)?;
                 // Same set as call arguments: scalars and handles pass through,
@@ -260,6 +271,22 @@ pub(super) fn lower(
                                 } else {
                                     (cur, cur_ty)
                                 }
+                            }
+                            // Captured onward from the enclosing closure. A
+                            // cell passes through by pointer — parent and child
+                            // share it, which is the VM's semantics — and if the
+                            // parent's capture is not a cell yet, the need for
+                            // one propagates up and this pass retries.
+                            ClosureCapture::CellParam(outer) => {
+                                let &(v, ty) = capture_params.get(*outer).ok_or(Unsupported::BadConst { pc })?;
+                                if ty != Ty::Cell {
+                                    let param_count = func.param_count as usize;
+                                    if sig.require_cell_capture(ctx_func_index as usize, param_count, *outer) {
+                                        return Err(Unsupported::TypeMismatch { pc });
+                                    }
+                                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                                }
+                                (v, ty)
                             }
                             ClosureCapture::Value(v, ty) => (*v, *ty),
                         };
