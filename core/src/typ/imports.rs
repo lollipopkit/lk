@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::stmt::{ImportSource, ImportStmt, Program, Stmt};
 use crate::syntax::{ParseOptions, parse_program_source};
 use crate::typ::{FunctionSig, NamedParamSig, TypeChecker};
-use crate::typ::{StructDef, TraitDef};
+use crate::typ::{StructDef, TraitDef, TypeAlias};
 use crate::val::{FunctionNamedParamType, Type};
 
 /// Registers a signature for every function `program` imports from a file.
@@ -176,6 +176,14 @@ fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
                 checker.registry_mut().register_trait(TraitDef {
                     name: name.clone(),
                     methods: methods.iter().cloned().collect(),
+                });
+            }
+            // A `type` alias is a declared name like the other two, and crosses
+            // a module boundary the same way.
+            Stmt::TypeAlias { name, target } => {
+                checker.registry_mut().register_type_alias(TypeAlias {
+                    name: name.clone(),
+                    target_type: target.clone(),
                 });
             }
             _ => {}

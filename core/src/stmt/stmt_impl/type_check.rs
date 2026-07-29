@@ -491,8 +491,16 @@ impl Stmt {
                         }
                     }
                 }
+                // Resolved before the solver sees them: a `type` alias is a
+                // second spelling, not a second type, and the solver has no
+                // registry to look it up in. `fn f(v: Int) -> U` with
+                // `type U = Int` failed with "Cannot unify U with Int" —
+                // aliases worked in a binding and in a parameter, and broke in
+                // exactly one position.
+                let declared_return = type_checker.resolve_aliases(&return_placeholder);
                 for ty in &collected_returns {
-                    type_checker.add_constraint(return_placeholder.clone(), ty.clone());
+                    let returned = type_checker.resolve_aliases(ty);
+                    type_checker.add_constraint(declared_return.clone(), returned);
                 }
 
                 type_checker.pop_scope();

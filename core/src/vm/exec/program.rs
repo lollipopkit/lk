@@ -489,6 +489,43 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// A `type` alias works in every position, including across a module
+    /// boundary.
+    ///
+    /// It is a second *spelling*, not a second type. It worked in a binding
+    /// (`let x: U = 5`) and in a parameter (`fn f(v: U)`) and broke in exactly
+    /// one place — the return type — with "Cannot unify U with Int", because
+    /// the declared type went to the solver unresolved and the solver has no
+    /// registry to look a name up in. Aliases also never crossed a module
+    /// boundary at all: only `struct`s and `trait`s were seeded from an
+    /// imported file.
+    #[test]
+    fn a_type_alias_is_a_spelling_not_a_type() {
+        for source in [
+            "type U = Int;\nlet x: U = 5;\nreturn x;\n",
+            "type U = Int;\nfn f(v: U) -> Int { return v; }\nreturn f(3);\n",
+            "type U = Int;\nfn f(v: Int) -> U { return v; }\nreturn f(3);\n",
+            "type U = Int;\nfn f(v: Int) -> U { return v; }\nfn g(v: Int) -> U { return f(v); }\nreturn g(3);\n",
+            "type Pair = List<Int>;\nfn f() -> Pair { return [1, 2]; }\nreturn f().len();\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        // …and a genuine mismatch is still one.
+        let source = "type U = Int;\nfn f(v: Int) -> U { return \"x\"; }\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let error = program
+            .type_check(&mut crate::typ::TypeChecker::new())
+            .expect_err("a String is not an Int by another name");
+        assert!(error.to_string().contains("Return type mismatch"), "got: {error}");
+    }
+
     /// A misspelled type name is reported where it is written.
     ///
     /// `Type::Named` is the parser's answer for any identifier in type
