@@ -892,6 +892,14 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // Two implementors, one of them never calling a method it defines.
+            // Every impl method is a lowering root, so an *uncalled* one used to
+            // be lowered with the `I64` parameter default and fail reading a
+            // field — killing the module from a method nobody calls.
+            new(
+                "trait_uncalled_impl_method",
+                "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int;\n  fn quad(self) -> Int;\n}\nstruct A { v: Int }\nimpl Sz for A {\n  fn base(self) -> Int { return self.v; }\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct B { v: Int }\nimpl Sz for B {\n  fn base(self) -> Int { return self.v; }\n  fn doubled(self) -> Int { return self.v * 3; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nprintln(A { v: 5 }.quad());\nprintln(B { v: 5 }.quad());\nreturn 0;\n",
+            ),
             new(
                 "trait_static_dynamic_show",
                 "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",

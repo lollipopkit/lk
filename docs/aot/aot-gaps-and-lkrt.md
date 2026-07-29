@@ -227,5 +227,20 @@ devirtualization 此前只认一个来源的类型出身:`NewObject` 写进
 `self.other()` devirt 到**错的** impl —— 那是错答案,不是拒绝。`impl_owner`
 因此在发现歧义时返回 `None`。
 
-**仍然不降低**:同一个方法名有两个以上实现者、且方法体里调 `self` 上的另一个
-方法(`t4` 形状)。与默认实现无关 —— 手写出来一样。
+### 同日续:**没人调用的 impl 方法**也不能用 `I64` 兜底
+
+上面那条修完之后 `t4` 形状还是拒,报的是 `in `B::base`: an operand at pc 1 is a
+str where a i64 is required` —— 而 `B::base` 在那个程序里**从来没被调用过**。
+
+两件事凑在一起:每个 impl 方法都是降低的 root(trait 的每条臂都必须存在),
+而没有调用点的参数类型走 `param_ty` 的默认值 `I64`。于是一个没人调用的方法
+按"参数是整数"降低,体里一读字段就炸,整个模块跟着掉回 Tier 0 —— 起因是一个
+谁也没调的方法。
+
+`param_ty` 现在对 impl 方法的参数 0 给 `MapStrDyn`:`self` 是结构体实例,
+调用点说什么都不改变这件事,**包括一个调用点都没有的时候**。
+
+这条也是上面那条能生效的前提:诊断此前指不到人。impl 方法从来没有
+`debug_name`,所有关于它们的 AOT 报错都是光秃秃的 `an operand at pc 1 …`;
+现在它们叫 `Type::method`(`compile_impl_method_function_indexed`)。**是这个
+名字直接指出了真凶**——在那之前我一直在错的函数上找。

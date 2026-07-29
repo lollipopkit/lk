@@ -66,7 +66,13 @@ impl Compiler {
             };
             // The compiled body's index is the durable identity of this method;
             // the registration call below only re-encodes it as a runtime value.
-            let function_index = self.compile_impl_method_function_indexed(params, param_types, named_params, body)?;
+            let function_index = self.compile_impl_method_function_indexed(
+                params,
+                param_types,
+                named_params,
+                body,
+                &alloc::format!("{target_type_text}::{name}"),
+            )?;
             let method_type = impl_method_type(target_type, params, param_types, named_params, return_type);
             let method_type_text = method_type.display();
             decl_methods.push(crate::vm::ImplMethod {
@@ -99,6 +105,7 @@ impl Compiler {
         param_types: &[Option<crate::val::Type>],
         named_params: &[crate::stmt::NamedParamDecl],
         body: &Stmt,
+        debug_name: &str,
     ) -> Result<u32> {
         let function_index = self
             .dynamic_function_base
@@ -122,6 +129,10 @@ impl Compiler {
             HashMap::new(),
             function_index + 1,
         )?;
+        // `Type::method`, so a diagnostic about this function can name it.
+        // Impl methods carried no name at all, and every AOT blocker inside one
+        // read as a bare `an operand at pc 1 …` with nothing to look up.
+        compiled.function.debug_name = Some(alloc::sync::Arc::<str>::from(debug_name));
         self.pending_functions.push(compiled.function);
         self.pending_functions.append(&mut compiled.pending_functions);
         Ok(function_index)

@@ -169,7 +169,20 @@ impl SigInfer {
     /// the live functions it happens to call. A function that cannot lower on
     /// the `I64` guess is dropped instead, provided nothing reaches it.
     pub(crate) fn param_ty(&self, func: usize, i: usize) -> Ty {
-        self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
+        if let Some(observed) = self.param_obs[func].get(i).copied().flatten() {
+            return observed;
+        }
+        // `self` in `impl T { … }` is a struct instance, whatever the call
+        // sites said — including when there are none. Every impl method is a
+        // lowering root (a trait's arms must all exist), so an *uncalled* one
+        // was lowered with the `I64` default and then failed reading a field:
+        // `an operand at pc 1 is a str where a i64 is required`, in a method
+        // nobody calls, killing the whole module. `t4`/`t6` in the trait notes
+        // are exactly that.
+        if i == 0 && self.traits.impl_owner(func as u32).is_some() {
+            return Ty::MapStrDyn;
+        }
+        Ty::I64
     }
 
     /// Records one call-site observation of `callee`'s parameter `slot_idx`
