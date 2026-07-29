@@ -18,7 +18,8 @@ exports.
   `json`, `yaml`, `toml`, `base64`, `hex`, and `url`.
 - Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
   `spawn` global start goroutines, `chan` owns channel operations, and
-  `task` owns task management (`await`, `try_await`, `join_all`, `sleep`).
+  `task` owns task management (`await`, `try_await`, `join_all` — which takes
+  either the tasks or one list of them — and `sleep`).
   Failures raise (v2 error model) — there are no `[ok, value]` pairs.
 
 ## Method Naming

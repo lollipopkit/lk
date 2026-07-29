@@ -222,6 +222,42 @@ mod tests {
         Ok(())
     }
 
+    /// Tasks are collected in a loop, into a list, and the language has no
+    /// spread operator — so variadic-only meant a number of tasks the program
+    /// did not know when it was written could not be joined at all.
+    ///
+    /// Asserted through the *rejection*, because a synthetic task is not
+    /// registered with the async runtime and joining one cannot succeed here:
+    /// a mixed list of tasks gets past the argument check and fails on the
+    /// join, while a typed list — which cannot hold tasks — is rejected as the
+    /// wrong argument. Those two outcomes are only distinguishable if the list
+    /// was unwrapped.
+    #[test]
+    fn task_join_all_takes_one_list_of_tasks_as_well_as_the_tasks() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        let task = resolved_task(RuntimeVal::Int(7), state.heap_mut());
+        let tasks = RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::List(lk_core::val::TypedList::Mixed(vec![task]))),
+        );
+        let ints = RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::List(lk_core::val::TypedList::Int(vec![1, 2]))),
+        );
+
+        let unwrapped = call("join_all", &[tasks], &mut state).expect_err("no live runtime here");
+        assert!(
+            !unwrapped.to_string().contains("expects a Task argument"),
+            "a list of tasks must be unwrapped, not rejected: {unwrapped}"
+        );
+
+        let rejected = call("join_all", &[ints], &mut state).expect_err("a List<Int> holds no tasks");
+        assert!(rejected.to_string().contains("expects a Task argument"), "{rejected}");
+        Ok(())
+    }
+
     #[test]
     fn task_join_all_empty_returns_empty_list() -> Result<()> {
         let mut state = RuntimeModuleState::default();
