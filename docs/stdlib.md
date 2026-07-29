@@ -21,6 +21,34 @@ exports.
   `task` owns task management (`await`, `try_await`, `join_all`, `sleep`).
   Failures raise (v2 error model) — there are no `[ok, value]` pairs.
 
+## Method Naming
+
+One operation, one name, across every container. The rules, and the reason each
+exists — they are what a new container type should be checked against:
+
+| 操作 | 名字 | 谁有 |
+|---|---|---|
+| 成员 | `contains(value)` | List / Slice / Bytes / Str / Set |
+| 键成员 | `has(key)` | Map |
+| 位置 | `index_of(needle)` | List / Slice / Bytes / Str |
+| 读一个 | `get(index)`,越界给 nil | List / Slice / Bytes / Str / Map |
+| 窗口 | `slice(start[, end])`,**起止**不是起点+长度 | List / Slice / Bytes / Str |
+| 前/后 n 个 | `take(n)` / `skip(n)` | List / Slice / Bytes / Str |
+| 两端 | `first()` / `last()` | List / Slice / Bytes / Str |
+| 删一个 | `delete(key)` | Map / Set |
+
+`has` 不是 `contains` 的同义词:对 map 来说 "contains" 说不清问的是键
+还是值,所以键成员单独一个名字。这是有理由的区分,不是历史遗留。
+
+`slice` 取**起止**是硬规则。曾经 `String` 只有 `substring(start, length)`,
+于是 `xs.slice(1, 3)` 和 `s.substring(1, 3)` 从同样的数字里切出不同的
+窗口 —— 同形的调用,不同的语义,是陷阱不是特性。`substring` 与 `find`
+仍在,标了 `TODO(remove)`。
+
+方法的**元数以 `core/src/typ/builtin_method_sig.rs` 的声明为准**:
+分发前按它校验,所以实现里再写一份 arity 守卫是够不到的。三次漂移
+(`bytes.slice`、`map.get`、`str.slice`)都是因为声明和实现各写各的。
+
 ## Common Modules
 
 - `hash`: `sha256`, `sha1`, `crc32`, `fnv64`.
