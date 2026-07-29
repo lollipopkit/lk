@@ -372,10 +372,89 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
         !native.status.success(),
         "the bridged uncaught error must fail the hybrid binary too"
     );
+    // Not just "nonzero": the same status. An uncaught error used to abort
+    // natively, so a script forgetting a `catch` died with SIGABRT (134) once
+    // compiled and with exit 1 under the VM.
+    assert_eq!(
+        native.status.code(),
+        vm.status.code(),
+        "an uncaught error must exit with the same status on both backends"
+    );
+    assert_eq!(vm.status.code(), Some(1), "the VM reports an uncaught error as exit 1");
     let native_stderr = String::from_utf8_lossy(&native.stderr).into_owned();
     assert!(
         native_stderr.contains("bad: 5"),
         "the VM's rendered error must reach stderr: {native_stderr}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A host error is a *language* error: catchable, and fatal only as exit 1.
+///
+/// `fs.read_dir` on a missing directory raises in the VM and used to abort the
+/// process natively — the same program was recoverable interpreted and fatal
+/// compiled, with SIGABRT instead of a status.
+#[test]
+fn native_host_error_raises_and_exits_one_like_the_vm() {
+    let dir = std::env::temp_dir().join(format!("lk_native_host_err_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let missing = dir.join("no-such-dir");
+    let program = format!(
+        "use fs;\nprintln(fs.read_dir(\"{}\"));\n",
+        missing.to_string_lossy().replace('\\', "\\\\")
+    );
+    std::fs::write(dir.join("dirfail.lk"), program).expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("dirfail.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert_eq!(vm.status.code(), Some(1), "the VM raises a missing directory");
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "dirfail.lk"])
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let native = native_run(&dir, "dirfail");
+    assert_eq!(
+        native.status.code(),
+        Some(1),
+        "a host error must exit 1 natively, not abort: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    // And it is catchable, which aborting made impossible.
+    std::fs::write(
+        dir.join("dircatch.lk"),
+        format!(
+            "use fs;\ntry {{\n  println(fs.read_dir(\"{}\"));\n}} catch e {{\n  println(\"caught\");\n}}\n",
+            missing.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .expect("write program");
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "dircatch.lk"])
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let caught = native_run(&dir, "dircatch");
+    assert!(caught.status.success(), "a caught host error must not end the program");
+    assert_eq!(String::from_utf8_lossy(&caught.stdout).trim(), "caught");
+
     let _ = std::fs::remove_dir_all(&dir);
 }

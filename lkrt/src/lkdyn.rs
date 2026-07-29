@@ -6,8 +6,8 @@
 //!
 //! Semantics contract: every operation here must match the VM (the
 //! differential gates compare stdout byte-for-byte). Type errors are the
-//! VM's loud failures — `flush_and_abort()` (the contract compares only
-//! `success()` + stdout, not stderr text).
+//! VM's loud failures — a raise that, uncaught, exits 1 (the contract
+//! compares only `success()` + stdout, not stderr text).
 
 // `alloc`, not the std prelude: this module is part of the computation-only
 // subset that builds without an OS.

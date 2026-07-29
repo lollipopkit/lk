@@ -51,17 +51,28 @@
 
 ## 响亮失败(loud failure)
 
-失败路径的契约是**响亮失败 + stdout 为空**;具体退出机制不作为契约:
-VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
-壳层显示 134)结束。差分测试只比较 `success()` 与 stdout,不比较退出码数值
-与 stderr 文本。
+失败路径的契约是**响亮失败 + stdout 为空**,**两个后端退出码都是 1**
+(2026-07-30 收紧)。差分测试仍只比较 `success()` 与 stdout,不比较 stderr
+文本 —— 但退出码不再"不作为契约"。
+
+此前 native 用 `abort()` 结束(SIGABRT,壳层显示 134,还可能落 core dump),
+理由是"退出机制不是契约"。可这让同一个程序在 `lk prog.lk` 下 `$? = 1`、编译
+之后 `$? = 134`,壳层多打一行 `Aborted` —— 调用方拿脚本判退出码时两者不通用。
+未捕获的 raise 是**程序**失败,不是运行时故障,所以走 `exit(1)`;`panic()` 同理
+(仍然不可捕获,只是退出码对齐)。真正的运行时/链接故障(ABI 版本不匹配)
+仍然 abort。
 
 | 程序 | 期望 | 说明 |
 |------|------|------|
 | `let x = 2; let y = 0; return x / y;` | 失败,stdout 空 | 整数除零。native 侧禁止直接依赖 LLVM `sdiv` UB,必须走 `lkrt_i64_div_checked` guard |
 | `x % 0` | 失败,stdout 空 | 整数模零,同上 |
 | `1.0 / 0.0` | 失败,stdout 空 | 浮点除零是响亮失败,**不是** IEEE `inf`(native guard 与 VM 对齐) |
-| `let m = {"a": 1}; return m["z"] + 1;` | 失败,stdout 空 | 缺失值(nil)参与算术 = halt。VM 报 `Add expected numbers…got Nil`,native abort |
+| `let m = {"a": 1}; return m["z"] + 1;` | 失败,stdout 空 | 缺失值(nil)参与算术 = halt。VM 报 `Add expected numbers…got Nil` |
+
+**宿主错误是语言错误。** `fs.read_dir("/nope")` 这类 IO 失败在 VM 里是可以
+`try`/`catch` 住的 raise;native 侧此前经 `aborting()` 直接终止进程,同一个程序
+解释执行能恢复、编译之后必死。现在它们统一 raise(`lkrt::abi::raising`),
+没人接就按上面的规则 exit 1。
 
 ## nil 与缺失值
 

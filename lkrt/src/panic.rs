@@ -4,8 +4,8 @@
 //! The generated code executes `_setjmp` itself (declared `returns_twice` in
 //! the IR — the compiler must see it); this module owns the jump buffers,
 //! the raised value, and the raise entry points. `raise` with no live
-//! handler stays `flush_and_abort()` — an uncaught error's observable
-//! behaviour (flushed stdout + abnormal exit) is unchanged.
+//! handler flushes stdout, prints the error, and exits 1 — the same status
+//! the VM gives, because an uncaught error is the program failing.
 //!
 //! longjmp-over-Rust-frames safety: the frames skipped between a raise and
 //! its handler only hold arena-owned values and plain temporaries (the arena
@@ -225,16 +225,17 @@ fn raise_current(value: LkDyn) -> ! {
         // Uncaught: surface the error before dying — the VM prints its
         // uncaught message to stderr, a silent abort loses it. (Only the
         // stderr *text* differs across backends; the differential contract
-        // compares stdout + success only.)
+        // compares stdout + success only.) Exit 1 like the VM rather than
+        // abort: the program failed, the runtime did not.
         None => {
             crate::rt_eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
-            crate::abi::flush_and_abort()
+            crate::abi::flush_and_exit_failure()
         }
     }
 }
 
 /// Internal guard entry: raises a message string to the nearest `try` frame
-/// (arena-owned), or aborts loudly — every lkrt guard that mirrors a
+/// (arena-owned), or reports it and exits 1 — every lkrt guard that mirrors a
 /// *catchable* VM error routes through here (G3). `panic` stays fatal.
 pub(crate) fn raise_str(message: &str) -> ! {
     let owned = arena_c_string(CString::new(message).unwrap_or_default());

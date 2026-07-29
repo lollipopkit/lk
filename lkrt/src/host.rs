@@ -1,5 +1,5 @@
 use crate::{
-    abi::{aborting, c_str, owned_c_string, status, write_out},
+    abi::{c_str, owned_c_string, raising, status, write_out},
     state::with_runtime,
 };
 use core::ffi::c_char;
@@ -35,7 +35,7 @@ pub extern "C" fn lkrt_env_get(key: *const c_char, out: *mut *mut c_char) -> i64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_env_get_or(key: *const c_char, default: *const c_char) -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let key = c_str(key, "env.get_or key")?;
         let default = c_str(default, "env.get_or default")?;
         let value = {
@@ -48,7 +48,7 @@ pub extern "C" fn lkrt_env_get_or(key: *const c_char, default: *const c_char) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_env_has(key: *const c_char) -> i64 {
-    aborting(|| {
+    raising(|| {
         let key = c_str(key, "env.has key")?;
         let _env = env_lock();
         Ok(i64::from(std::env::var_os(key.as_str()).is_some()))
@@ -86,7 +86,7 @@ pub extern "C" fn lkrt_env_remove(key: *const c_char) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.exists path")?;
         Ok(i64::from(Path::new(path.as_str()).exists()))
     })
@@ -94,7 +94,7 @@ pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_read(path: *const c_char) -> i64 {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.read path")?;
         let data = fs::read(path.as_str()).map_err(|err| format!("fs.read {path}: {err}"))?;
         Ok(with_runtime(|rt| rt.insert_bytes(data)))
@@ -103,7 +103,7 @@ pub extern "C" fn lkrt_fs_read(path: *const c_char) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_read_to_string(path: *const c_char) -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.read_to_string path")?;
         let data = fs::read_to_string(path.as_str()).map_err(|err| format!("fs.read_to_string {path}: {err}"))?;
         owned_c_string(data)
@@ -112,7 +112,7 @@ pub extern "C" fn lkrt_fs_read_to_string(path: *const c_char) -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_write_str(path: *const c_char, data: *const c_char) -> i64 {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.write path")?;
         let data = c_str(data, "fs.write data")?;
         fs::write(path.as_str(), data.as_bytes()).map_err(|err| format!("fs.write {path}: {err}"))?;
@@ -122,7 +122,7 @@ pub extern "C" fn lkrt_fs_write_str(path: *const c_char, data: *const c_char) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: i64) -> i64 {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.write path")?;
         let data = with_runtime(|rt| rt.take_bytes(data))?;
         fs::write(path.as_str(), &data).map_err(|err| format!("fs.write {path}: {err}"))?;
@@ -132,27 +132,27 @@ pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_metadata_len(path: *const c_char) -> i64 {
-    aborting(|| fs_metadata_field(path, MetadataField::Len))
+    raising(|| fs_metadata_field(path, MetadataField::Len))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_metadata_is_file(path: *const c_char) -> i64 {
-    aborting(|| fs_metadata_field(path, MetadataField::IsFile))
+    raising(|| fs_metadata_field(path, MetadataField::IsFile))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_metadata_is_dir(path: *const c_char) -> i64 {
-    aborting(|| fs_metadata_field(path, MetadataField::IsDir))
+    raising(|| fs_metadata_field(path, MetadataField::IsDir))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_metadata_readonly(path: *const c_char) -> i64 {
-    aborting(|| fs_metadata_field(path, MetadataField::Readonly))
+    raising(|| fs_metadata_field(path, MetadataField::Readonly))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_canonicalize(path: *const c_char) -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.canonicalize path")?;
         let path = fs::canonicalize(path.as_str()).map_err(|err| format!("fs.canonicalize {path}: {err}"))?;
         owned_c_string(path.to_string_lossy())
@@ -161,7 +161,7 @@ pub extern "C" fn lkrt_fs_canonicalize(path: *const c_char) -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_temp_dir() -> *mut c_char {
-    aborting(|| owned_c_string(std::env::temp_dir().to_string_lossy()))
+    raising(|| owned_c_string(std::env::temp_dir().to_string_lossy()))
 }
 
 #[unsafe(no_mangle)]
@@ -171,7 +171,7 @@ pub extern "C" fn lkrt_path_temp_dir() -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_process_cwd() -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let cwd = std::env::current_dir().map_err(|err| format!("process.cwd failed: {err}"))?;
         owned_c_string(cwd.to_string_lossy())
     })
@@ -181,7 +181,7 @@ pub extern "C" fn lkrt_process_cwd() -> *mut c_char {
 /// stdlib os module's exact fallback chain.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_hostname() -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let hostname = std::env::var_os("HOSTNAME")
             .or_else(|| std::env::var_os("COMPUTERNAME"))
             .and_then(|value| value.into_string().ok())
@@ -194,13 +194,13 @@ pub extern "C" fn lkrt_os_hostname() -> *mut c_char {
 /// for the same target the interpreter runs on).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_arch() -> *mut c_char {
-    aborting(|| owned_c_string(std::env::consts::ARCH))
+    raising(|| owned_c_string(std::env::consts::ARCH))
 }
 
 /// `os.os()` — `std::env::consts::OS`.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_name() -> *mut c_char {
-    aborting(|| owned_c_string(std::env::consts::OS))
+    raising(|| owned_c_string(std::env::consts::OS))
 }
 
 /// `fs.read_dir(path)` — the sorted list of entry *names* (UTF-8 names only,
@@ -212,7 +212,7 @@ pub extern "C" fn lkrt_os_name() -> *mut c_char {
 /// is a caller bug and aborts with a loud `lkrt error`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_fs_read_dir_list(path: *const c_char) -> *mut core::ffi::c_void {
-    aborting(|| {
+    raising(|| {
         let path = c_str(path, "fs.read_dir path")?;
         let mut names = Vec::new();
         for entry in fs::read_dir(path.as_str()).map_err(|err| format!("failed to read directory '{path}': {err}"))? {
@@ -355,7 +355,7 @@ pub extern "C" fn lkrt_datetime_now() -> i64 {
 /// `format` must be a valid NUL-terminated C string, or null (empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_datetime_format(timestamp: i64, format: *const c_char) -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         let format = c_str(format, "datetime.format format")?;
         let formatted = datetime_utc(timestamp, "datetime.format")
             .format(format.as_str())
@@ -371,7 +371,7 @@ pub unsafe extern "C" fn lkrt_datetime_format(timestamp: i64, format: *const c_c
 /// Both pointers must be valid NUL-terminated C strings, or null (empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_datetime_parse(value: *const c_char, format: *const c_char) -> i64 {
-    aborting(|| {
+    raising(|| {
         let value = c_str(value, "datetime.parse value")?;
         let format = c_str(format, "datetime.parse format")?;
         let naive = chrono::NaiveDateTime::parse_from_str(value.as_str(), format.as_str())
@@ -431,7 +431,7 @@ pub extern "C" fn lkrt_time_now_ms() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_time_sleep_ms(ms: i64) {
-    aborting(|| {
+    raising(|| {
         if ms < 0 {
             return Err(format!("time.sleep expects non-negative milliseconds, got {ms}"));
         }

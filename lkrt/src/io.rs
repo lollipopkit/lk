@@ -1,4 +1,4 @@
-use crate::abi::{aborting, c_str, owned_c_string};
+use crate::abi::{c_str, owned_c_string, raising};
 use std::{
     ffi::c_char,
     io::{Read, Write},
@@ -8,7 +8,7 @@ const MAX_STDIN_READ_BYTES: u64 = 1024 * 1024;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_io_std_write(resource: i64, data: *const c_char, newline: i64) -> i64 {
-    aborting(|| {
+    raising(|| {
         let data = c_str(data, "io.std.write data")?;
         match resource {
             1 => write_std_stream(std::io::stdout().lock(), data.as_bytes(), newline != 0, "stdout"),
@@ -20,7 +20,7 @@ pub extern "C" fn lkrt_io_std_write(resource: i64, data: *const c_char, newline:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_io_std_flush(resource: i64) -> i64 {
-    aborting(|| match resource {
+    raising(|| match resource {
         0 => Err("io.std.flush unsupported for stdin".to_string()),
         1 => std::io::stdout()
             .flush()
@@ -36,7 +36,7 @@ pub extern "C" fn lkrt_io_std_flush(resource: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_io_std_read_to_string(resource: i64) -> *mut c_char {
-    aborting(|| {
+    raising(|| {
         if resource != 0 {
             return Err(format!("io.std.read_to_string expects stdin handle, got {resource}"));
         }

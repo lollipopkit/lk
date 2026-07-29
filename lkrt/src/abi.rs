@@ -40,6 +40,26 @@ pub(crate) fn flush_and_abort() -> ! {
     }
 }
 
+/// The exit of a program whose own error nobody caught.
+///
+/// Distinct from [`flush_and_abort`] on purpose: an uncaught raise is the
+/// *program* failing, not the runtime, and the VM reports it as exit status 1.
+/// Aborting instead made the same program die with SIGABRT (status 134), print
+/// `Aborted` from the shell, and — where core dumps are enabled — write one for
+/// a script that merely forgot a `catch`.
+pub(crate) fn flush_and_exit_failure() -> ! {
+    flush_c_stdio();
+    #[cfg(feature = "std")]
+    {
+        std::process::exit(1)
+    }
+    // Bare metal has no process to exit; the panic handler is the stop.
+    #[cfg(not(feature = "std"))]
+    {
+        panic!("lk: uncaught error")
+    }
+}
+
 /// Flushes every C stdio stream (`fflush(NULL)`). Rust-side writers that share
 /// a stream with generated `printf` output call this first so the two buffers
 /// cannot interleave out of order.
@@ -53,11 +73,11 @@ pub(crate) fn flush_c_stdio() {
     }
 }
 
-/// FFI surface of [`flush_and_abort`] for generated code (`Term::Abort`).
+/// The generated-code guard exit (`Term::Abort`), kept under its ABI name.
+/// It does not abort: those guards mirror *catchable* VM errors, so this
+/// raises to the nearest `try` frame and, uncaught, exits 1 like the VM.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_abort() {
-    // Generated-code guards (`Term::Abort`) mirror catchable VM errors:
-    // raise first, abort only without a handler.
     crate::panic::raise_str("runtime error");
 }
 
@@ -145,9 +165,10 @@ pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     }
 }
 
-/// Runtime `panic(message)` lowered from AOT builtin calls: always fatal,
-/// matching the VM's loud panic halt (the message text goes to stderr; the
-/// VM additionally prints a backtrace, which stderr comparisons don't cover).
+/// Runtime `panic(message)` lowered from AOT builtin calls: always fatal and
+/// uncatchable, matching the VM's loud panic halt down to the exit status
+/// (the message goes to stderr; the VM additionally prints a backtrace,
+/// which stderr comparisons don't cover).
 ///
 /// # Safety
 /// `message` must be null or a NUL-terminated string pointer.
@@ -160,7 +181,10 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
         unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
     };
     crate::rt_eprintln!("{text}");
-    flush_and_abort();
+    // Uncatchable in both backends, but the *status* has to agree: the VM's
+    // panic halt exits 1, so aborting here made the same program die with
+    // SIGABRT (134) once compiled.
+    flush_and_exit_failure();
 }
 
 /// Runtime `assert(cond)` lowered from AOT builtin calls: a false (zero)
@@ -169,7 +193,7 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
 pub extern "C" fn lkrt_assert(cond: i64) {
     if cond == 0 {
         // Catchable in the VM (a try around a failing assert recovers):
-        // raise to the nearest frame, abort when uncaught (same as before).
+        // raise to the nearest frame, exit 1 when uncaught.
         crate::panic::raise_str("Assertion failed");
     }
 }
@@ -214,13 +238,23 @@ pub(crate) fn owned_c_string(value: impl AsRef<str>) -> Result<*mut c_char, Stri
     Ok(ptr)
 }
 
-pub(crate) fn aborting<T>(f: impl FnOnce() -> Result<T, String>) -> T {
+/// Runs a host operation whose failure is a *language* error — a missing file,
+/// an unreadable directory, a bad address — and raises it to the nearest `try`
+/// frame, exactly as the VM does.
+///
+/// It used to abort the process. That made the same `fs.read_dir("/nope")`
+/// catchable in the VM and fatal natively, with SIGABRT (status 134) instead of
+/// the VM's exit 1 — a backend disagreement about whether a program can handle
+/// its own IO failure. `set_last_error` still records the text for the ABI
+/// entries that report a status instead of raising.
+pub(crate) fn raising<T>(f: impl FnOnce() -> Result<T, String>) -> T {
     match f() {
         Ok(value) => value,
         Err(error) => {
+            // Both borrows are dropped before the raise: `raise_str` longjmps
+            // past Rust drops, so a live `RefCell` borrow would stay flagged.
             set_last_error(error.clone());
-            crate::rt_eprintln!("lkrt error: {error}");
-            flush_and_abort();
+            crate::panic::raise_str(&error)
         }
     }
 }
