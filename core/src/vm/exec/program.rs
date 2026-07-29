@@ -863,6 +863,27 @@ mod tests {
             );
         }
 
+        // …and say what to write instead, when there is an obvious answer. A
+        // bare "Unknown type 'bool'" is accurate and useless: someone arriving
+        // from Rust or Python writes `bool`, `str`, `int` by reflex, and `f32`
+        // is a *decision* (one float type, spelled `Float` or `f64`) rather
+        // than an omission.
+        for (source, hint) in [
+            ("let x: bool = true;\n", "did you mean `Bool`?"),
+            ("let x: int = 1;\n", "did you mean `Int`?"),
+            ("let x: Strng = \"a\";\n", "did you mean `String`?"),
+            ("struct Point { a: Int }\nlet p: Poimt = 1;\n", "did you mean `Point`?"),
+            ("let x: str = \"a\";\n", "LK spells that `String`"),
+            ("let x: f32 = 1.0;\n", "LK spells that `Float`"),
+        ] {
+            let message = check_error(source);
+            assert!(message.contains(hint), "{source} should suggest, said: {message}");
+        }
+
+        // A name with no near miss says nothing rather than guessing.
+        let far = check_error("let x: Zzzzz = 1;\n");
+        assert!(!far.contains("did you mean"), "should not invent a suggestion: {far}");
+
         // Declared names, builtins and documented runtime handles all pass.
         for source in [
             "let x: Int = 1;\n",

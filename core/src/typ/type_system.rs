@@ -110,6 +110,19 @@ impl TypeRegistry {
         }
     }
 
+    /// Every type name this program declares — structs, traits, aliases.
+    ///
+    /// Used by the unknown-type diagnostic to suggest a near miss, so a typo in
+    /// a *user's* type name is caught the same way one in a builtin's is.
+    pub fn declared_type_names(&self) -> Vec<String> {
+        self.type_aliases
+            .keys()
+            .chain(self.structs.keys())
+            .chain(self.traits.keys())
+            .cloned()
+            .collect()
+    }
+
     /// Resolve a named type to its concrete type
     pub fn resolve_type(&self, name: &str) -> Option<Type> {
         // Check if it's a type alias

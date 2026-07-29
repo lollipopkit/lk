@@ -421,8 +421,9 @@ impl TypeChecker {
                 {
                     return Ok(());
                 }
+                let hint = self.suggest_type_name(name);
                 Err(Self::type_err(
-                    &alloc::format!("Unknown type '{name}' in {context}"),
+                    &alloc::format!("Unknown type '{name}' in {context}{hint}"),
                     None,
                     None,
                     None,
@@ -455,6 +456,71 @@ impl TypeChecker {
             }
             Type::Task(inner) | Type::Channel(inner) => self.check_type_annotation(inner, context),
             _ => Ok(()),
+        }
+    }
+
+    /// What the writer probably meant, as a trailing ` — did you mean …` or
+    /// the empty string.
+    ///
+    /// A bare "Unknown type 'bool'" is accurate and useless: LK spells it
+    /// `Bool`, and someone arriving from Rust or Python writes `bool`, `str`,
+    /// `int` by reflex. The near-misses that matter are a case difference, a
+    /// typo, and a handful of names from other languages that LK deliberately
+    /// does not have — `f32` among them, which is a decision (one float type,
+    /// spelled `Float` or `f64`) rather than an omission.
+    fn suggest_type_name(&self, name: &str) -> alloc::string::String {
+        // Spellings LK deliberately does not have, and what to write instead.
+        const FOREIGN: &[(&str, &str)] = &[
+            ("str", "String"),
+            ("char", "String"),
+            ("void", "Nil"),
+            ("none", "Nil"),
+            ("null", "Nil"),
+            ("f32", "Float"),
+            ("f64", "Float"),
+            ("i128", "Int"),
+            ("u128", "Int"),
+            ("boolean", "Bool"),
+            ("dict", "Map"),
+            ("array", "List"),
+            ("vec", "List"),
+        ];
+
+        let mut candidates: Vec<alloc::string::String> = crate::val::PRIMITIVE_TYPES
+            .iter()
+            .map(|(spelling, _)| (*spelling).to_string())
+            .chain(
+                crate::val::TYPE_SPELLINGS
+                    .iter()
+                    .map(|(spelling, _)| (*spelling).to_string()),
+            )
+            .chain(core::iter::once(crate::val::NUMBER_TYPE_NAME.to_string()))
+            .chain(crate::val::IntKind::ALL.iter().map(|kind| kind.name().to_string()))
+            .collect();
+        candidates.extend(self.registry.declared_type_names());
+
+        // A case difference first: it is the likeliest mistake and the surest
+        // answer.
+        if let Some(exact) = candidates.iter().find(|candidate| candidate.eq_ignore_ascii_case(name)) {
+            return alloc::format!(" — did you mean `{exact}`?");
+        }
+        if let Some((_, replacement)) = FOREIGN.iter().find(|(foreign, _)| foreign.eq_ignore_ascii_case(name)) {
+            return alloc::format!(" — LK spells that `{replacement}`");
+        }
+        // Then a typo, measured rather than guessed: one edit for a short name,
+        // two for a longer one, so `Strng` finds `String` and `Foo` does not
+        // find `Int`.
+        let budget = if name.len() <= 4 { 1 } else { 2 };
+        let mut best: Option<(usize, &alloc::string::String)> = None;
+        for candidate in &candidates {
+            let distance = edit_distance(name, candidate);
+            if distance <= budget && best.is_none_or(|(previous, _)| distance < previous) {
+                best = Some((distance, candidate));
+            }
+        }
+        match best {
+            Some((_, candidate)) => alloc::format!(" — did you mean `{candidate}`?"),
+            None => alloc::string::String::new(),
         }
     }
 
@@ -784,4 +850,21 @@ pub struct PendingStrictParam {
     pub name: String,
     pub ty: Type,
     pub annotated: bool,
+}
+
+/// Levenshtein distance, for the "did you mean" hint on an unknown type name.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0usize; right.len() + 1];
+    for (i, l) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, r) in right.iter().enumerate() {
+            let substitute = previous[j] + usize::from(l != r);
+            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        core::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
