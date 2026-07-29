@@ -813,6 +813,15 @@ impl<'a> Parser<'a> {
                     expr = self.parse_struct_literal_after_name(name.clone())?;
                 } else if self.prefix_mode {
                     break;
+                } else if matches!(&expr, Expr::Access(_, _)) {
+                    // `module.Type { … }`. The old message suggested writing
+                    // `Type { ... }` — which is what the reader wrote, only
+                    // qualified — and said nothing about the actual rule.
+                    return Err(anyhow!(self.err(
+                        "a struct literal names an unqualified type, so `module.Type { … }` is not a form. \
+                         An imported type cannot be constructed directly: call a constructor the defining \
+                         module exports (`module.make(…)`)"
+                    )));
                 } else {
                     // If not a simple Var before '{', treat as error to avoid ambiguity with blocks
                     return Err(anyhow!(self.err(

@@ -741,8 +741,12 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
         .into_iter()
         .find(|candidate| candidate.exists())
         .ok_or_else(|| {
+            // "macro import" is what this scan is *for*, not what the reader
+            // wrote: every `use "path"` passes through here because a file
+            // module may export macros. Saying so told someone importing an
+            // ordinary module about a mechanism they never used.
             format!(
-                "File not found for macro import '{}': expected '{}.lk' or '{}/mod.lk'",
+                "module '{}' not found: expected '{}.lk' or '{}/mod.lk'",
                 path.display(),
                 path.display(),
                 path.display()

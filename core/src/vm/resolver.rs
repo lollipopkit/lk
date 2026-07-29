@@ -389,7 +389,17 @@ fn runtime_export_field(module: &RuntimeExport, name: &str) -> Result<RuntimeExp
     if let Some(value) = map.get_str(name) {
         return Ok(RuntimeExport::new(value, module.shared_state(), module.shared_module()));
     }
-    Err(anyhow!("Export '{}' not found in runtime module", name))
+    // A module's exports are *values*. A `struct` or `trait` declaration is not
+    // one, so a name that looks like a type gets the reason rather than a bare
+    // lookup failure — it is the most common way to land here.
+    if name.starts_with(char::is_uppercase) {
+        return Err(anyhow!(
+            "'{name}' is not an export of this module. A module exports values, and a `struct` or \
+             `trait` declaration is not one — an imported type cannot be named or constructed \
+             directly. Export a constructor function instead."
+        ));
+    }
+    Err(anyhow!("'{}' is not an export of this module", name))
 }
 
 pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &mut VmContext) -> Result<()> {

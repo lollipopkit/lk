@@ -221,6 +221,27 @@ x            // 曾经是 2
 | `for i in 0..3 { let f=\|x\| x+i; println(f(10)); }` | `10` `11` `12` | **for 循环变量**捕获为每站点快照 cell(fused 循环 opcode 驱动原始寄存器,不可重绑);快照是 copy 而非 move(曾把计数器 move 成 Nil) |
 | 循环内 `g = \|x\| x+i` 逃逸循环后调用 | 共享 cell 终值 | native 侧跨迭代闭包 ref 逃逸响亮拒绝(ref 一致性在 loop header 处终止) |
 
+## 导入的类型不能直接构造(2026-07-30 记)
+
+一个模块导出的是**值**。`struct` / `trait` 声明不是值,所以:
+
+- `module.Type { … }` 不是一种写法 —— 结构体字面量取的是**不带限定**的类型名。
+- `use { Pt } from "types";` 也拿不到 `Pt`。
+
+导入模块里的类型仍然完全可用:它的**方法**分发得到、`println` 显示得对,只是
+实例得由定义方模块交出来(导出一个构造函数,`Type::new` 的位置)。
+
+**为什么不是顺手能补的**:类型的身份带着定义它的模块(`vm::TypeScope`) ——
+两个模块里同名的 `Pt` 不是同一个类型,`impl` 也是按这个身份注册的。而
+`NewObject` 只带类型**名**,`declared_type` 用的是"当前执行模块"的 scope。跨
+模块字面量要正确,得让 opcode 带上定义方 scope(新 opcode + artifact 版本
++ 执行器 + AOT 降低),外加把定义方的字段序也带过去(否则 display 退化)。
+是一个独立项目,不是一处修改。
+
+在那之前,两句报错至少说清了规则,而不是各自暗示别的东西("did you mean a
+struct literal like `Type { ... }`?" —— 那正是读者写的,只是带了限定;以及
+"Export 'Pt' not found in runtime module" —— 说的是运行时表)。
+
 ## 模块与 IO
 
 | 程序 | 期望 stdout | 说明 |
