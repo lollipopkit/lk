@@ -212,6 +212,25 @@ nil 流到下一个读 `n` 的地方才炸 —— 报的是错的行,而那个�
 | `println("${xs}")`(xs 是 list) | 响亮失败 | **两条 display 路径**:print/println/panic/assert 消息走 stdlib `runtime_display`(容器可显示);`ToString`/模板插值/`+` 拼接走 exec `runtime_value_display_string`(标量 only,容器 loud error)。native 对后者拒绝编译 |
 | `println(map)` | hash 迭代序 | map display 顺序 = 底层 hash map 迭代序,**跨运行稳定但不可移植**(依赖 hasher+增长历史)——native 侧不进子集,响亮拒绝 |
 
+### map 迭代序:为什么没有跟着结构体一起改(2026-07-30 记)
+
+结构体字段序当初从 hasher 序改成声明序,理由是"换个 hasher 会静默重排每一个
+结构体"。**同一条理由对 map 成立**,而且插入序正是 Python / JavaScript 给的
+东西。这里没有跟着改,是权衡后的决定,不是漏掉:
+
+- `TypedMap` 的五个变体都是 `FastHashMap`,全仓 260 处 `TypedMap::` 匹配点;
+  `lkrt` 还有一份自己的 map,由 `lkrt/src/vm_mirror.rs` 逐条比对迭代序 ——
+  两边得一起换。
+- 插入序要么是 `Vec<entry>` + 索引表(IndexMap 布局),要么额外一条顺序向量。
+  代价落在 **`delete`**:保序删除是 O(n),而交换删除会毁掉顺序。Python 用
+  墓碑加周期性压缩解决,那是另一套实现。
+- 基准里 map 是最热的容器(`two_sum_map`、`histogram_group_count`、
+  `event_join_by_id`、`config_defaults_merge`),而性能门禁是硬的 10%。
+
+结构体那次的代价是"记录一个字段顺序",这次的代价是换掉最热容器的表示。
+所以现状保留:hash 迭代序,**跨运行稳定、两个后端一致**(有 `vm_mirror`
+一致性测试兜着),但不可移植。要改就当一个独立项目做,连着基准一起。
+
 ## `unique()` 等值语义(2026-07-29 修订)
 
 `list.unique()` 与 `==`、`in` **用同一条规则**:数值按值(`1 == 1.0` 去重、
