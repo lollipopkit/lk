@@ -316,6 +316,29 @@ pub(crate) fn to_display_str(
             });
             Ok((dst, true))
         }
+        // A struct instance. `NewObject` marked it with its type id and the
+        // entry described that type to the runtime (name + field order), so the
+        // renderer produces the VM's `Name{f:v,…}` — including for a field that
+        // holds another struct, which is why this cannot be spelled out at the
+        // display site (see `docs/aot/aot-gaps-and-lkrt.md`).
+        //
+        // A *plain* map stays out of the subset: its order is the underlying
+        // hash iteration order, which the two runtimes do not share.
+        Ty::MapStrDyn => {
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_map"),
+                args: vec![v],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", if containers { "display_quoted" } else { "display" }),
+                args: vec![boxed],
+            });
+            Ok((dst, true))
+        }
         _ => Err(Unsupported::TypeMismatch { pc }),
     }
 }

@@ -124,6 +124,7 @@ pub use lkdyn::{
     lkrt_lklist_dyn_new, lkrt_lklist_dyn_push, lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set, lkrt_lklist_dyn_skip,
     lkrt_lklist_dyn_slice_from, lkrt_lklist_dyn_take, lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip,
     lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn, lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark,
+    lkrt_struct_type_begin, lkrt_struct_type_field,
 };
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_chain, lkrt_lklist_f64_contains,

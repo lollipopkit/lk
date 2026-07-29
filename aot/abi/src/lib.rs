@@ -505,6 +505,12 @@ macro_rules! for_each_abi_fn {
             // marked map would leave a stale entry that a later allocation at
             // the same address would inherit.
             ("map_h", "obj_mark", lkrt_lkmap_obj_mark, WritesHost, [Ptr, I64], Nil);
+            // A struct type's name and field order, described once at startup
+            // so `display` can render a marked instance the way the VM does
+            // (declaration order, nested values quoted). Two calls rather than
+            // a static table: these are shapes the ABI already has.
+            ("obj_ty", "begin", lkrt_struct_type_begin, WritesHost, [I64, StrPtr], Nil);
+            ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
             ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);

@@ -898,6 +898,18 @@ fn differential_trait_dispatch_contract() {
             // dangling callee and the module fails MIR validation, so this
             // pins both halves at once: an uncalled `unused` alongside a
             // `show` that only `"${…}"` reaches.
+            // A struct with no `show` renders like the VM's default:
+            // `Name{f:v,…}`, declaration order, nested values quoted.
+            //
+            // **Nesting is the point.** An earlier attempt spelled the
+            // rendering out at the display site and printed a nested struct as
+            // a hash-ordered map — a field holding a struct is a bare map by
+            // then, and the display site cannot tell. The type description now
+            // lives at runtime, where the mark is, so nesting recurses.
+            new(
+                "struct_default_display",
+                "struct P { name: String, n: Int, ok: Bool, f: Float }\nstruct Outer { inner: P, tag: String }\nstruct WithList { p: P, xs: List<Int>, s: String }\nstruct E {}\nlet p = P { name: \"a, b\", n: -3, ok: true, f: 1.5 };\nlet o = Outer { inner: p, tag: \"x\" };\nlet w = WithList { p: p, xs: [1, 2], s: \"z\" };\nlet e = E {};\nprintln(\"${p}\");\nprintln(\"${o}\");\nprintln(\"${w}\");\nprintln(\"${e}\");\nprintln(p);\nreturn 0;\n",
+            ),
             // A function that returns a struct carries the type name out to
             // its callers, so a method on the result devirtualizes. The name
             // used to stop at the function boundary — `make(3, 4).norm()` had

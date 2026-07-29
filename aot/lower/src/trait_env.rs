@@ -14,6 +14,13 @@ pub(crate) struct TraitEnv {
     pub(crate) type_ids: std::collections::HashMap<String, i64>,
     /// Method name → dispatch arms `(type id, impl fn)`, declaration order.
     pub(crate) methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
+    /// Type name → its field names in **declaration order**, which is the order
+    /// `display` prints them in (see `vm::DeclaredType::fields`).
+    ///
+    /// Emitted into the entry prologue as `obj_ty.begin`/`obj_ty.field` calls so
+    /// the runtime can render a marked instance. Ordered by type id, so the
+    /// emission order is fixed.
+    pub(crate) struct_fields: Vec<(i64, String, Vec<String>)>,
 }
 
 /// Method names the lowering may call **without** a `CallMethodK` naming them.
@@ -80,6 +87,14 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
     let mut env = TraitEnv::default();
     // Declaration order fixes the runtime type ids, so the ordering here is
     // load-bearing.
+    // Every declared struct gets a type id, not only the ones with impls: the
+    // id is also how `display` finds a type's name and field order, and a
+    // struct with no methods still prints.
+    for decl in &module.type_info.structs {
+        let next_id = env.type_ids.len() as i64 + 1;
+        let tid = *env.type_ids.entry(decl.name.clone()).or_insert(next_id);
+        env.struct_fields.push((tid, decl.name.clone(), decl.fields.clone()));
+    }
     for decl in &module.type_info.impls {
         let next_id = env.type_ids.len() as i64 + 1;
         let tid = *env.type_ids.entry(decl.type_name.clone()).or_insert(next_id);

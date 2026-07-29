@@ -439,6 +439,34 @@ pub(crate) fn lower_function(
             ssa.single_fallthrough_target[bi] = Some(end);
         }
         let mut insts = Vec::new();
+        // The entry describes every declared struct to the runtime before any
+        // user code runs: its type id, name, and field names in declaration
+        // order. `display` needs them where the *mark* is — at runtime — because
+        // a field holding another struct is a bare map by then and the display
+        // site cannot tell (see `docs/aot/aot-gaps-and-lkrt.md`).
+        if is_entry && bi == 0 {
+            for (tid, name, fields) in sig.traits.struct_fields.clone() {
+                let id = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: id,
+                    value: Const::I64(tid),
+                });
+                let name_v = const_str_value(&mut ssa, &mut insts, globals, &name);
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("obj_ty", "begin"),
+                    args: vec![id, name_v],
+                });
+                for field in &fields {
+                    let field_v = const_str_value(&mut ssa, &mut insts, globals, field);
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("obj_ty", "field"),
+                        args: vec![id, field_v],
+                    });
+                }
+            }
+        }
         #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
             // What the tracked registers held before this instruction, so a
@@ -1182,4 +1210,15 @@ pub(crate) fn lower_function(
         // `#[export]` on it would be a second name for the same symbol.
         export_name: if is_entry { None } else { func.export_name.clone() },
     })
+}
+
+/// A string constant as an SSA value, interned into the module's global table.
+fn const_str_value(ssa: &mut Ssa, insts: &mut Vec<Inst>, globals: &mut Vec<String>, text: &str) -> ValueId {
+    let gid = crate::prescan::intern_global(globals, text);
+    let dst = ssa.new_val();
+    insts.push(Inst::Const {
+        dst,
+        value: Const::Str(GlobalId(gid)),
+    });
+    dst
 }

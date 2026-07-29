@@ -318,10 +318,134 @@ fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -
 }
 
 /// Marks a freshly built struct-instance map with its lowering-assigned
-/// type id (`NewObject` of a type that has trait impls).
+/// type id (`NewObject` of a declared struct).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
     with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
+}
+
+/// One struct type as `display` needs it: its name, and its field names in
+/// **declaration order**.
+///
+/// The lowering knows both, but it cannot spell the rendering out at the display
+/// site: a *field* holding another struct is a bare `str→Dyn` map by then, and
+/// whether a field holds one is not decidable there. So the knowledge has to be
+/// available at runtime, where the mark is — and then nesting recurses through
+/// the same display for free. (An earlier attempt inlined it and printed a
+/// nested struct as a hash-ordered map; see `docs/aot/aot-gaps-and-lkrt.md`.)
+#[derive(Default)]
+struct StructTypeDesc {
+    name: String,
+    fields: Vec<String>,
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+    static STRUCT_TYPES: core::cell::RefCell<crate::lkmap::FxMap<i64, StructTypeDesc>> =
+        core::cell::RefCell::new(crate::lkmap::FxMap::default());
+}
+
+#[cfg(not(feature = "std"))]
+static STRUCT_TYPES_CELL: spin::Mutex<Option<crate::lkmap::FxMap<i64, StructTypeDesc>>> = spin::Mutex::new(None);
+
+#[cfg(feature = "std")]
+fn with_struct_types<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<i64, StructTypeDesc>) -> R) -> R {
+    STRUCT_TYPES.with(|types| f(&mut types.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_struct_types<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<i64, StructTypeDesc>) -> R) -> R {
+    let mut slot = STRUCT_TYPES_CELL.lock();
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
+}
+
+/// Opens a type's description: `type_id`'s name is `name`, no fields yet.
+///
+/// Called from the generated entry prologue, once per declared struct, followed
+/// by one [`lkrt_struct_type_field`] per field in declaration order. A sequence
+/// of calls rather than a static table because that needs nothing new from
+/// codegen — the pieces are the `StrPtr`/`I64` shapes the ABI already has.
+///
+/// # Safety
+/// `name` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_struct_type_begin(type_id: i64, name: *const c_char) {
+    // SAFETY: the caller passes a NUL-terminated string constant.
+    let name = if name.is_null() {
+        String::new()
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    with_struct_types(|types| {
+        types.insert(
+            type_id,
+            StructTypeDesc {
+                name,
+                fields: Vec::new(),
+            },
+        )
+    });
+}
+
+/// Appends one field name to `type_id`'s description. See
+/// [`lkrt_struct_type_begin`].
+///
+/// # Safety
+/// `field` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_char) {
+    // SAFETY: as above.
+    let field = if field.is_null() {
+        String::new()
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(field) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    with_struct_types(|types| {
+        if let Some(desc) = types.get_mut(&type_id) {
+            desc.fields.push(field);
+        }
+    });
+}
+
+/// Renders a marked struct instance the way the VM does — `Name{f1:v1,f2:v2}`,
+/// fields in declaration order, each value quoted as a nested one.
+///
+/// `false` (nothing written) when the value is not a marked struct or its type
+/// was never described, so the caller falls through to the map rendering — which
+/// is also what the VM does for a struct whose declaration is out of reach.
+fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool) -> bool {
+    if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
+        return false;
+    }
+    let type_id = with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0));
+    if type_id == 0 {
+        return false;
+    }
+    let Some((name, fields)) =
+        with_struct_types(|types| types.get(&type_id).map(|desc| (desc.name.clone(), desc.fields.clone())))
+    else {
+        return false;
+    };
+    let entries = dyn_map(v);
+    out.push_str(&name);
+    out.push('{');
+    for (i, field) in fields.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(field);
+        out.push(':');
+        match entries.iter().find(|(k, _)| *k == field.as_str()) {
+            Some((_, value)) => display_into_impl(out, *value, true, raise_on_unknown),
+            None => out.push_str("nil"),
+        }
+    }
+    out.push('}');
+    true
 }
 
 /// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
@@ -522,6 +646,7 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
             }
             out.push(']');
         }
+        DYN_MAP if display_marked_struct(out, v, raise_on_unknown) => {}
         DYN_MAP => {
             // Quoted keys *and* values (`{"k":1,"s":"txt"}`) — a value in a
             // map is inside a container too, and the keys were already quoted.
@@ -1237,5 +1362,57 @@ mod tests {
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, 1) }.payload, 20);
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, -1) }.payload, 20); // tail
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, 9) }.tag, DYN_NIL); // OOB → nil
+    }
+
+    /// A marked struct renders `Name{f:v,…}` in declaration order, with nested
+    /// values quoted — and a **nested struct** renders as a struct, which is the
+    /// whole reason the type description lives here rather than at the display
+    /// site (see `docs/aot/aot-gaps-and-lkrt.md`).
+    #[test]
+    fn a_marked_struct_displays_like_the_vm() {
+        // struct P { name: String, v: Int }
+        unsafe {
+            lkrt_struct_type_begin(101, c"P".as_ptr());
+            lkrt_struct_type_field(101, c"name".as_ptr());
+            lkrt_struct_type_field(101, c"v".as_ptr());
+            // struct Outer { inner: P, tag: String }
+            lkrt_struct_type_begin(102, c"Outer".as_ptr());
+            lkrt_struct_type_field(102, c"inner".as_ptr());
+            lkrt_struct_type_field(102, c"tag".as_ptr());
+        }
+
+        let inner = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe {
+            crate::lkmap::lkrt_lkmap_str_dyn_set(inner, c"name".as_ptr(), s("a, b"));
+            crate::lkmap::lkrt_lkmap_str_dyn_set(inner, c"v".as_ptr(), lkrt_dyn_from_i64(-3));
+        }
+        lkrt_lkmap_obj_mark(inner, 101);
+        let inner_dyn = lkrt_dyn_from_map(inner);
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(inner_dyn) }),
+            r#"P{name:"a, b",v:-3}"#,
+            "declaration order, string field quoted"
+        );
+
+        let outer = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe {
+            crate::lkmap::lkrt_lkmap_str_dyn_set(outer, c"inner".as_ptr(), inner_dyn);
+            crate::lkmap::lkrt_lkmap_str_dyn_set(outer, c"tag".as_ptr(), s("x"));
+        }
+        lkrt_lkmap_obj_mark(outer, 102);
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(lkrt_dyn_from_map(outer)) }),
+            r#"Outer{inner:P{name:"a, b",v:-3},tag:"x"}"#,
+            "a nested struct is a struct, not a hash-ordered map"
+        );
+
+        // An unmarked map is still a map: order is the layout's, and that is
+        // deliberately outside the lowering subset.
+        let plain = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe { crate::lkmap::lkrt_lkmap_str_dyn_set(plain, c"k".as_ptr(), lkrt_dyn_from_i64(1)) };
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(lkrt_dyn_from_map(plain)) }),
+            r#"{"k":1}"#
+        );
     }
 }
