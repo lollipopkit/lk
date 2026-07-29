@@ -667,6 +667,58 @@ fn test_type_hints_use_imported_signatures() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// The editor must not cry wolf about a type that lives in another file.
+///
+/// An unknown type name is a diagnostic now, and a type crosses a module
+/// boundary by its bare name — `use * as L from "./lib"; fn f() -> Row` names
+/// `Row`, not `L.Row`. Only *functions* used to be seeded from an imported
+/// file, so the checker had never heard of `Row`; while unknown names were
+/// silently accepted that cost nothing, and the moment they became an error it
+/// would have put a red squiggle under correct code.
+#[test]
+fn test_imported_types_are_not_reported_as_unknown() {
+    let dir = unique_tmp_dir("imported_type_diagnostics");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "struct Row { id: Int }
+type Id = Int;
+trait Shown { fn show(self) -> Int; }
+fn mk(v: Int) -> Row { return Row { id: v }; }
+",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+    let src = "use * as L from \"lib\";\n\
+               fn pass(v: Int) -> Row { return L.mk(v); }\n\
+               fn ident(v: Id) -> Id { return v; }\n";
+
+    let result = analyzer.analyze(src);
+    let unknown: Vec<&String> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| &diagnostic.message)
+        .filter(|message| message.contains("Unknown type"))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "imported types should be known to the editor, got {unknown:?}"
+    );
+
+    // …and a name nothing declares is still reported, so this is not vacuous.
+    let typo = analyzer.analyze("let x: Strng = \"a\";\n");
+    assert!(
+        typo.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("Unknown type 'Strng'")),
+        "a typo should still be reported, got {:?}",
+        typo.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_type_hints_use_namespace_import_members() {
     let dir = unique_tmp_dir("namespace_import_hints");
