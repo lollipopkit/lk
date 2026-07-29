@@ -462,3 +462,28 @@ fn try_in_statement_position_still_runs_for_effect() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[\"handler\",\"fine\"]");
 }
+
+/// A receiver that is a plain local *is* that local's register, not a copy.
+/// Capturing the same local in a closure boxes it in place, so an argument
+/// containing such a closure changed what the already-taken receiver pointed
+/// at — and the call ran against the cell: `xs.map(|x| x + xs.len())` answered
+/// "UpvalCell has no method 'map'".
+#[test]
+fn a_method_receiver_survives_an_argument_that_captures_it() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2];
+        let widened = xs.map(|x| x + xs.len());
+        let kept = xs.filter(|x| xs.len() > 1);
+        let boxed: List<Any> = [1];
+        boxed.push(|| boxed.len());
+        let m = {"a": 1};
+        m.set("b", || m.len());
+        return [widened, kept, boxed.len(), m.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[3,4],[1,2],2,2]");
+}

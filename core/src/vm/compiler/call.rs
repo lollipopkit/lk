@@ -477,11 +477,15 @@ impl Compiler {
 
     fn emit_set_method_effect(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<()> {
         self.clear_const_map_target(target);
+        let was_plain = self.plain_local_receiver(target);
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target_reg)
             .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
         if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {
             let value_reg = self.lower_readonly_operand(value)?;
+            // See `reread_promoted_receiver`: the key or the value may have
+            // boxed the receiver's local.
+            let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
             let move_value = !self.is_current_local_slot(value_reg);
             let pc = self.function.code.len();
             self.emit(Instr::abc(
@@ -505,6 +509,7 @@ impl Compiler {
         }
         let (key_reg, key_fact) = self.lower_index_key_for_target(target_reg, index_fact, key)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
         let move_key = set_method_key_move_preferred(key) && !self.is_current_local_slot(key_reg);
         let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
@@ -536,8 +541,12 @@ impl Compiler {
     }
 
     fn lower_push_method_call(&mut self, target: &Expr, value: &Expr) -> Result<u16> {
+        let was_plain = self.plain_local_receiver(target);
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        // The value may have boxed the receiver's local — see
+        // `reread_promoted_receiver`.
+        let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
         let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
         self.emit(Instr::abc(
@@ -626,6 +635,36 @@ impl Compiler {
         self.lower_expr(target)
     }
 
+    /// Whether `target` is a plain local that is *not* yet a capture cell —
+    /// the one shape whose register a later argument can change underneath the
+    /// receiver.
+    fn plain_local_receiver(&self, target: &Expr) -> Option<String> {
+        let Expr::Var(name) = target else { return None };
+        (self.locals.contains_key(name.as_str()) && !self.cell_locals.contains(name.as_str())).then(|| name.to_string())
+    }
+
+    /// Re-reads the receiver when lowering the arguments promoted it.
+    ///
+    /// A receiver that is a plain local is the local's *register*, not a copy.
+    /// Capturing that local in a closure boxes it in place
+    /// (`promote_captured_local` moves the cell over the register), so an
+    /// argument containing such a closure changes what the already-taken
+    /// receiver points at — and the call then runs against the cell:
+    ///
+    /// ```text
+    /// xs.map(|x| x + xs.len())   → UpvalCell has no method 'map'
+    /// ```
+    ///
+    /// Re-reading is free in every other case (a set lookup) and costs nothing
+    /// semantically here: the receiver is a variable, so reading it twice has
+    /// no effect the first read did not.
+    fn reread_promoted_receiver(&mut self, target: &Expr, receiver: u16, was_plain: Option<String>) -> Result<u16> {
+        match was_plain {
+            Some(name) if self.cell_locals.contains(&name) => self.lower_readonly_operand(target),
+            _ => Ok(receiver),
+        }
+    }
+
     fn lower_dynamic_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
         // Fast shape: `CallMethodK` calls the method with the receiver and the
         // args in a plain register window — no argument list is boxed and no
@@ -634,11 +673,13 @@ impl Compiler {
         // to the generic helper call below.
         let name_const = self.push_string(method)?;
         if name_const <= u16::from(u8::MAX) && args.len() <= u8::MAX as usize {
+            let was_plain = self.plain_local_receiver(target);
             let receiver = self.lower_readonly_operand(target)?;
             let mut arg_regs = Vec::with_capacity(args.len());
             for arg in args {
                 arg_regs.push(self.lower_readonly_operand(arg)?);
             }
+            let receiver = self.reread_promoted_receiver(target, receiver, was_plain)?;
             let base = self.alloc_regs(args.len() + 1)?;
             self.emit_call_window_move(base, receiver, "method receiver")?;
             for (offset, arg) in arg_regs.iter().copied().enumerate() {
@@ -654,12 +695,14 @@ impl Compiler {
             return Ok(base);
         }
         let helper = self.load_callable_by_name("__lk_call_method")?;
+        let was_plain = self.plain_local_receiver(target);
         let receiver = self.lower_readonly_operand(target)?;
         let method = self.lower_val(&LiteralVal::from_str(method))?;
         let mut arg_regs = Vec::with_capacity(args.len());
         for arg in args {
             arg_regs.push(self.lower_readonly_operand(arg)?);
         }
+        let receiver = self.reread_promoted_receiver(target, receiver, was_plain)?;
         let args_list = self.materialize_list(arg_regs)?;
         self.lower_call_window_regs(helper, &[receiver, method, args_list])
     }
