@@ -898,6 +898,14 @@ fn differential_trait_dispatch_contract() {
             // dangling callee and the module fails MIR validation, so this
             // pins both halves at once: an uncalled `unused` alongside a
             // `show` that only `"${…}"` reaches.
+            // A function that returns a struct carries the type name out to
+            // its callers, so a method on the result devirtualizes. The name
+            // used to stop at the function boundary — `make(3, 4).norm()` had
+            // an untyped receiver, in one module as much as across two.
+            new(
+                "struct_returning_function",
+                "struct Pt { x: Int, y: Int }\ntrait Norm { fn norm(self) -> Int; }\nimpl Norm for Pt { fn norm(self) -> Int { return self.x + self.y; } }\nfn make(a: Int, b: Int) -> Pt { return Pt { x: a, y: b }; }\nfn pick(c: Bool) -> Pt { if c { return make(1, 2); } return make(3, 4); }\nprintln(make(3, 4).norm());\nprintln(pick(true).norm());\nprintln(pick(false).norm());\nreturn 0;\n",
+            ),
             // A named call devirtualizes like a positional one, plus the
             // argument *order*: every name is a constant, so the permutation
             // into the callee's frame order is a compile-time fact. The whole

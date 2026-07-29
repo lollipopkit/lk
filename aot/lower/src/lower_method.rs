@@ -291,7 +291,20 @@ pub(crate) fn emit_call_with_args(
         func: FuncId(fidx as u32),
         args,
     });
+    seed_ret_struct(ssa, sig, fidx, dst);
     Ok((dst, ret))
+}
+
+/// Records the struct a call's result is known to be (`sig.ret_structs`).
+///
+/// The one place the callee's returned type name reaches the caller. Without it
+/// the name stopped at the function boundary and `make(3, 4).norm()` had an
+/// untyped receiver — the same missing-provenance failure as an `impl` method's
+/// `self`, one call deeper.
+pub(crate) fn seed_ret_struct(ssa: &mut Ssa, sig: &SigInfer, fidx: usize, dst: ValueId) {
+    if let Some(Some(name)) = sig.ret_structs.get(&(fidx as u32)) {
+        ssa.struct_types.insert(dst, name.clone());
+    }
 }
 
 /// The VM's auto-Display (`try_runtime_display_show`): `print`/`println`

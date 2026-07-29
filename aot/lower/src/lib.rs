@@ -163,6 +163,7 @@ pub fn lower_bundled(
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
+        ret_structs: std::collections::HashMap::new(),
         imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
@@ -249,6 +250,7 @@ pub fn lower_bundled(
                 sig.dyn_loop_phis.len(),
                 sig.dyn_empty_lists.len(),
                 sig.dyn_rets.len(),
+                sig.ret_structs.clone(),
                 sig.global_tys.clone(),
                 sig.spawned_isolate.len(),
                 sig.force_dyn_globals.len(),
@@ -356,9 +358,10 @@ pub fn lower_bundled(
                 && snapshot.4 == sig.dyn_loop_phis.len()
                 && snapshot.5 == sig.dyn_empty_lists.len()
                 && snapshot.6 == sig.dyn_rets.len()
-                && snapshot.7 == sig.global_tys
-                && snapshot.8 == sig.spawned_isolate.len()
-                && snapshot.9 == sig.force_dyn_globals.len()
+                && snapshot.7 == sig.ret_structs
+                && snapshot.8 == sig.global_tys
+                && snapshot.9 == sig.spawned_isolate.len()
+                && snapshot.10 == sig.force_dyn_globals.len()
                 // Extra cells were counted into the *budget* below but left out
                 // of this conjunction, so a pass that discovered one still
                 // counted as converged — the fixpoint stopped one pass early and
@@ -366,14 +369,14 @@ pub fn lower_bundled(
                 // default. That is how a call to a function returning nothing
                 // was emitted wanting a result: the caller had never seen the
                 // callee's real return type.
-                && snapshot.10
+                && snapshot.11
                     == sig
                         .try_body_extra_cells
                         .values()
                         .map(std::collections::HashSet::len)
                         .sum::<usize>()
-                && snapshot.11 == sig.try_body_param_tys
-                && snapshot.12 == sig.try_body_rebound;
+                && snapshot.12 == sig.try_body_param_tys
+                && snapshot.13 == sig.try_body_rebound;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.

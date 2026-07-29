@@ -90,6 +90,18 @@ pub(crate) struct SigInfer {
     /// nullable carrier): the next fixpoint pass boxes every return point,
     /// making the function return `Dyn` instead of rejecting the module.
     pub(crate) dyn_rets: std::collections::HashSet<u32>,
+    /// Per function: the struct its returns are known to construct.
+    ///
+    /// A type's *name* only ever entered the lowering from a `NewObject`
+    /// (`ssa.struct_types`), so it stopped at the function boundary: the
+    /// receiver of `make(3, 4).norm()` had no type and the method call fell out
+    /// of the devirtualizing path — in one module as much as across two. This
+    /// carries it out, and the fixpoint carries it to callers lowered before
+    /// their callee.
+    ///
+    /// `Some(None)` where the returns disagree or one of them is not a struct:
+    /// an answer that is sometimes wrong would devirtualize to the wrong impl.
+    pub(crate) ret_structs: std::collections::HashMap<u32, Option<String>>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).

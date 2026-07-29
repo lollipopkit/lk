@@ -521,6 +521,24 @@ pub(crate) fn lower_function(
                     });
                 }
                 let (v, ty) = ssa.read(reg, bi, start)?;
+                // The struct this return constructs, carried out to callers so
+                // a method on the result devirtualizes (`sig.ret_structs`).
+                // Joined across return points: two different structs, or one
+                // return that is not a struct, answer "unknown" rather than a
+                // name that is right only sometimes.
+                if !is_entry {
+                    let returned = ssa.struct_types.get(&v).cloned();
+                    match sig.ret_structs.entry(func_index) {
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(returned);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut slot) => {
+                            if *slot.get() != returned {
+                                slot.insert(None);
+                            }
+                        }
+                    }
+                }
                 // A function discovered to mix return types boxes every
                 // return point: it returns `Dyn`, callers consume through
                 // the Dyn arms (plan M4.2 cross-function Dyn flow).

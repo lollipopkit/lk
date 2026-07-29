@@ -553,6 +553,7 @@ pub(crate) fn lower_user_call(
             func: FuncId(callee_idx as u32),
             args,
         });
+        seed_ret_struct(ssa, sig, callee_idx, dst);
         ssa.write(dst_reg, block, (dst, ret));
     }
     Ok(())
@@ -639,18 +640,6 @@ pub(crate) fn lower_named_call(
     let args = args.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
 
     let (dst, ty) = emit_call_with_args(ssa, insts, funcs, entry, sig, callee_idx, args, Opcode::CallNamed, pc)?;
-    // A struct constructor's result *is* that struct. Provenance otherwise
-    // comes only from a `NewObject`, and a cross-module literal has none here —
-    // the object is built by the other module. Without this, a method on the
-    // result (`types.Pt { … }.norm()`) had an untyped receiver and fell out of
-    // the devirtualizing path.
-    if let Some(struct_name) = callee
-        .debug_name
-        .as_deref()
-        .and_then(lk_core::stmt::struct_ctors::constructed_struct_name)
-    {
-        ssa.struct_types.insert(dst, struct_name.to_string());
-    }
     ssa.write(base, block, (dst, ty));
     Ok(())
 }
