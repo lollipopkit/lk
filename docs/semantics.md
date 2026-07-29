@@ -139,17 +139,23 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
 | `println("${xs}")`(xs 是 list) | 响亮失败 | **两条 display 路径**:print/println/panic/assert 消息走 stdlib `runtime_display`(容器可显示);`ToString`/模板插值/`+` 拼接走 exec `runtime_value_display_string`(标量 only,容器 loud error)。native 对后者拒绝编译 |
 | `println(map)` | hash 迭代序 | map display 顺序 = 底层 hash map 迭代序,**跨运行稳定但不可移植**(依赖 hasher+增长历史)——native 侧不进子集,响亮拒绝 |
 
-## `unique()` 等值语义(2026-07-06 裁决)
+## `unique()` 等值语义(2026-07-29 修订)
 
-`list.unique()` 走 VM `core_methods` 的 `runtime_values_equal`:数值按 `to_bits`
-(`1 == 1.0` 去重、`0.0 != -0.0` 保留)、≤7 字节字符串(`ShortStr`)按内容、
-**列表/map/长字符串按 heap 句柄**。句柄同一性是 VM 内部表示细节,长字符串
-(>7 字节)在 typed String 列表里每次读出重新 alloc(`[s, s].unique()` 保留两个),
-在 Mixed 列表里直存句柄(`[1, s, s].unique()` 去重)。native 侧字符串常量 intern,
-指针无法区分这两种,**裁决:native 对长字符串永不去重**——对齐字面量重复与
-typed 列表两种常见形状;Mixed 列表同变量长串重复是已知分歧,不进差分子集。
-列表元素的句柄同一性 native 以「NewList 窗口内同寄存器装箱一次」保持
-(`let l=[7]; [l,l].unique()` 去重,两个 `[1]` 字面量不去重)。
+`list.unique()` 与 `==`、`in` **用同一条规则**:数值按值(`1 == 1.0` 去重、
+`0.0 == -0.0` 去重、NaN 永不去重所以一串 NaN 原样保留)、字符串按内容
+(不分长短)、列表/map 按结构。native 侧 `lkrt_lklist_dyn_unique` 直接调
+`dyn_eq_inner`,与 `==` 同一个函数。
+
+typed Float 列表仍是**单次哈希查找**而非 O(n²) 扫描:键在插入前规范化
+(NaN 给一个递增序号,零统一成 `+0.0` 的位型),所以既跟得上 `==` 又没丢
+性能。
+
+此前这里是**第三套 eq**:VM 按 `to_bits`(`0.0 != -0.0`、NaN 自等),
+native 另有一份 `unique_eq`(数值 to_bits、>7 字节字符串永不相等、
+列表按句柄)。后者写的是**当时**的 VM;VM 的相等后来改成 heap-aware,
+这份没跟上,于是 `[s, s].unique()`、`[[1], [1]].unique()` 两条后端答案
+不同 —— 而它们恰好被这份文档划在差分子集之外,所以没人发现。现已并入
+`cli/tests/aot_differential_test.rs` 的 `differential_equality_and_unique`。
 
 ## `in` 操作符等值语义(2026-07-29 修订)
 
@@ -171,8 +177,7 @@ typed 列表两种常见形状;Mixed 列表同变量长串重复是已知分歧,
 长字符串/嵌套列表的句柄同一性限制与 unique() 同款(intern/转换边界,
 已留档,不进差分子集)。
 
-**`unique()` 仍是单独一套**(上一节的 `to_bits`),尚未并入——它牵扯 native
-的字符串 intern 边界,需要与 AOT 侧一并裁决。
+`==`、`in`、`unique()` 三者现已同规则,常量折叠亦然。
 
 ## 错误文本(2026-07-08 裁决)
 

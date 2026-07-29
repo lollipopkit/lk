@@ -129,6 +129,40 @@ fn differential_scalars() {
     );
 }
 
+/// The shapes `docs/semantics.md` used to exclude from this corpus.
+///
+/// They were excluded because the two backends genuinely disagreed:
+/// `unique()` had a hand-written equality on each side, and lkrt's still
+/// described the VM *of the time* — numerics by `to_bits`, strings "never
+/// equal" past seven bytes, lists by handle. Once the VM's equality became
+/// heap-aware the two drifted, and being outside the corpus is why nothing
+/// said so. One equality now, so these belong here.
+#[test]
+fn differential_equality_and_unique() {
+    run_differential(
+        "equality",
+        &[
+            new("unique_zeros", "let xs = [0.0, -0.0];\nreturn xs.unique();\n"),
+            new("unique_floats", "let xs = [1.0, 2.0, 1.0];\nreturn xs.unique();\n"),
+            new(
+                "unique_long_strings",
+                "let s = \"abcdefghij\";\nlet xs = [s, s, \"ab\"];\nreturn xs.unique();\n",
+            ),
+            new("unique_nested", "let xs = [[1], [1], [2]];\nreturn xs.unique();\n"),
+            new("eq_across_int_float", "let a = 1;\nlet b = 1.0;\nreturn a == b;\n"),
+            new(
+                "in_across_int_float",
+                "let a = 1;\nlet ys = [1.0, 2.0];\nreturn a in ys;\n",
+            ),
+            new(
+                "in_across_float_int",
+                "let a = 1.0;\nlet ys = [1, 2];\nreturn a in ys;\n",
+            ),
+            new("in_misses", "let ys = [1, 2];\nreturn 1.5 in ys;\n"),
+        ],
+    );
+}
+
 #[test]
 fn differential_control_flow() {
     run_differential(

@@ -1032,41 +1032,22 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_zip(a: *mut c_void, b: *mut c_void) -> 
     arena_handle(pairs)
 }
 
-/// The VM's `runtime_values_equal` (core_methods.rs) — used by `unique()`,
-/// and deliberately *not* `dyn_eq_inner`: numerics compare by `to_bits`
-/// (`0.0 != -0.0`, `1 == 1.0`), strings compare by content only when both
-/// fit the VM's 7-byte `ShortStr` inline form (longer strings are heap
-/// objects there and compare by handle), lists/maps compare by handle.
-fn unique_eq(a: LkDyn, b: LkDyn) -> bool {
-    match (a.tag, b.tag) {
-        (DYN_NIL, DYN_NIL) => true,
-        (DYN_BOOL, DYN_BOOL) | (DYN_I64, DYN_I64) | (DYN_F64, DYN_F64) => a.payload == b.payload,
-        (DYN_I64, DYN_F64) => (a.payload as f64).to_bits() == b.payload as u64,
-        (DYN_F64, DYN_I64) => a.payload as u64 == (b.payload as f64).to_bits(),
-        (DYN_STR, DYN_STR) => {
-            // Longer strings are heap objects in the VM with no stable
-            // identity across list representations (typed String lists
-            // re-alloc every element on read, so `[s, s].unique()` keeps
-            // both) — and native constants intern, so pointer identity
-            // over-merges literals. "Never equal" matches the VM on every
-            // shape except a Mixed-list variable repeat (docs/semantics.md).
-            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
-            sa.len() <= 7 && sb.len() <= 7 && sa == sb
-        }
-        (DYN_LIST, DYN_LIST) | (DYN_MAP, DYN_MAP) => a.payload == b.payload,
-        _ => false,
-    }
-}
-
-/// `xs.unique()` — order-preserving dedup under [`unique_eq`]. O(n²) like
-/// the VM.
+/// `xs.unique()` — order-preserving dedup under `==`. O(n²), like the VM's
+/// mixed-list path.
+///
+/// This used to call a `unique_eq` of its own: numerics by `to_bits`, strings
+/// "never equal" past seven bytes, lists and maps by handle. That mirrored the
+/// VM *of the time*; once the VM's equality became heap-aware, the two drifted
+/// apart with nothing to catch it — `[s, s].unique()` and `[[1], [1]].unique()`
+/// answered differently on the two backends, and the differential corpus
+/// deliberately did not cover them.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_unique(handle: *mut c_void) -> *mut c_void {
     let mut unique: Vec<LkDyn> = Vec::new();
     for &item in dyn_slice(handle) {
-        if !unique.iter().any(|&seen| unique_eq(seen, item)) {
+        if !unique.iter().any(|&seen| dyn_eq_inner(seen, item)) {
             unique.push(item);
         }
     }
@@ -1202,24 +1183,33 @@ mod tests {
         assert_eq!(text(unsafe { lkrt_dyn_display_quoted(s("b c")) }), "\"b c\"");
     }
 
+    /// `unique()` dedups by `==`, like everything else.
+    ///
+    /// This test used to pin a `unique_eq` of its own — numerics by `to_bits`,
+    /// strings "never equal" past seven bytes, lists by handle — described as
+    /// "VM handle semantics". It *was* the VM's rule once; the VM's equality
+    /// later became heap-aware and this did not follow, so the two backends
+    /// disagreed about `[s, s].unique()` and `[[1], [1]].unique()` with nothing
+    /// to catch it. There is one equality now.
     #[test]
-    fn unique_eq_is_vm_handle_semantics() {
-        // Numerics by to_bits: 1 == 1.0 dedups, 0.0 vs -0.0 does not.
-        assert!(unique_eq(lkrt_dyn_from_i64(1), lkrt_dyn_from_f64(1.0)));
-        assert!(!unique_eq(lkrt_dyn_from_f64(0.0), lkrt_dyn_from_f64(-0.0)));
-        // ShortStr (≤7 bytes) by content; longer strings never dedup
-        // (docs/semantics.md unique() 裁决).
-        assert!(unique_eq(s("ab"), s("ab")));
-        assert!(!unique_eq(s("longer-than-seven"), s("longer-than-seven")));
-        // Lists by handle, not structure.
+    fn unique_dedups_by_the_same_equality_as_everything_else() {
+        // Numerics by value: `1 == 1.0` dedups, and so do the two zeros.
+        assert!(dyn_eq_inner(lkrt_dyn_from_i64(1), lkrt_dyn_from_f64(1.0)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_f64(0.0), lkrt_dyn_from_f64(-0.0)));
+        // …and no NaN equals any NaN, so a list of them never dedups.
+        assert!(!dyn_eq_inner(lkrt_dyn_from_f64(f64::NAN), lkrt_dyn_from_f64(f64::NAN)));
+        // Strings by content, at any length.
+        assert!(dyn_eq_inner(s("ab"), s("ab")));
+        assert!(dyn_eq_inner(s("longer-than-seven"), s("longer-than-seven")));
+        // Lists structurally, not by handle.
         let xs = lkrt_lklist_dyn_new();
         let ys = lkrt_lklist_dyn_new();
         unsafe {
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_i64(7));
             lkrt_lklist_dyn_push(ys, lkrt_dyn_from_i64(7));
         }
-        assert!(unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(xs)));
-        assert!(!unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(ys)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(xs)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(ys)));
         // The chunk/enumerate/zip/flatten family (VM core_methods shapes).
         let src = lkrt_lklist_dyn_new();
         unsafe {

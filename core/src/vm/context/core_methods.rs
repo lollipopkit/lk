@@ -1058,13 +1058,30 @@ pub(super) fn typed_list_unique(list: &TypedList, heap: &HeapStore) -> TypedList
         }
         TypedList::Float(values) => {
             let mut seen = crate::util::fast_map::fast_hash_set_new();
-            // By bits, so that the two zeros stay distinct and two `NaN`s from
-            // one source collapse — the same rule `same_value_or_handle` uses.
+            let mut nan_ordinal = 0u64;
+            // Keyed by what `==` says, not by bits. `0.0` and `-0.0` are equal,
+            // so they share a key; no `NaN` equals any `NaN`, so each gets a
+            // fresh one. Bits said the opposite on both counts — the only two
+            // places `unique()` still disagreed with `==`.
+            //
+            // Still one hash lookup per element: canonicalising the key is what
+            // keeps this from becoming the O(n²) scan that value equality would
+            // otherwise force.
             TypedList::Float(
                 values
                     .iter()
                     .copied()
-                    .filter(|value| seen.insert(value.to_bits()))
+                    .filter(|value| {
+                        let key = if value.is_nan() {
+                            nan_ordinal += 1;
+                            (u64::MAX, nan_ordinal)
+                        } else if *value == 0.0 {
+                            (0f64.to_bits(), 0)
+                        } else {
+                            (value.to_bits(), 0)
+                        };
+                        seen.insert(key)
+                    })
                     .collect(),
             )
         }
@@ -1127,9 +1144,13 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore)
         (RuntimeVal::Nil, RuntimeVal::Nil) => true,
         (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left == right,
         (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left == right,
-        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left.to_bits() == right.to_bits(),
-        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => (*left as f64).to_bits() == right.to_bits(),
-        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => left.to_bits() == (*right as f64).to_bits(),
+        // By value, the same as `==` (`Executor::runtime_values_equal`). Bits
+        // were the rule here, which made `0.0 != -0.0` and `NaN == NaN` for
+        // every caller of this function — `unique`, `index_of`, `position`,
+        // `contains` on a mixed list — and only for them.
+        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left == right,
+        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => (*left as f64) == *right,
+        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => *left == (*right as f64),
         (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str() == right.as_str(),
         // A short string and a heap string can hold the same text: the same
         // literal reaches one form or the other depending only on its length.
