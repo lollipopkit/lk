@@ -564,7 +564,16 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     } else {
         val::Type::Nil
     };
-    let cap_opt = if capacity <= 0 { None } else { Some(capacity as usize) };
+    // `0` is *unbuffered*, as it is in every channel API a reader has seen —
+    // not unbounded, which is what it used to mean here. A program asking for
+    // the strongest backpressure got none at all, and the queue grew until the
+    // process did. The runtime's mpsc has no true rendezvous form, so `0` takes
+    // the smallest bound it offers; the difference from a rendezvous is one
+    // value in flight, against an unbounded queue as the alternative.
+    if capacity < 0 {
+        return Err(anyhow!("chan() capacity cannot be negative, got {capacity}"));
+    }
+    let cap_opt = Some((capacity as usize).max(1));
     let channel_id = runtime
         .async_runtime()
         .with(|runtime| runtime.create_channel(cap_opt))
