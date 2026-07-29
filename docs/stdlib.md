@@ -100,6 +100,28 @@ exists — they are what a new container type should be checked against:
 眼里是同一个答案。`base` 取 2–36,符号写在前面(`to_int("-ff", 16)`)。
 `to_float` 认 `"nan"` / `"inf"` / `"-inf"`,那是 Float 有而 Int 没有的值。
 
+## `datetime.format` / `datetime.parse` 是一对
+
+`parse` 接受 **`format` 能写出来的一切**:完整日期时间、只有日期、只有时间。
+少的那一半按 `format` 丢掉时的默认补 —— 只有日期 = 当天 UTC 零点,只有时间 =
+epoch 那天的那个时刻。
+
+此前 `parse` 只试 `NaiveDateTime`(必须同时有日期和时间),于是这一对**不能
+往返**:`format(t, "%Y-%m-%d")` 给出 `1970-01-02`,拿同一个 format 串 parse 回去
+报 "input is not enough for unique date and time" —— 一句在讲 chrono 自己解析器
+的内部要求,而程序从没提过 chrono。format 串是调用方对**两侧文本**的描述,两个
+方向必须对它的含义达成一致。
+
+不匹配时的报错现在说 `` `zz` does not match the format `%Y-%m-%d` ``。
+
+## 数值哈希是 i64 位模式
+
+`hash.crc32` / `hash.fnv64` 返回 `Int`,而 `Int` 是 i64:`fnv64("")` 的 FNV
+offset basis 是 `0xcbf29ce484222325`,超过 `i64::MAX`,所以看到的是负数。这与
+语言"Int 溢出回绕"的规则一致(`docs/semantics.md`),不是缺陷 —— 但拿它做桶
+下标要先取绝对值或按位掩码。要文本形式的哈希用 `sha256` / `sha1`,它们返回
+十六进制串。
+
 ## Common Modules
 
 - `hash`: `sha256`, `sha1`, `crc32`, `fnv64`.

@@ -81,6 +81,38 @@ mod tests {
         Ok(())
     }
 
+    /// `parse` accepts **whatever `format` can write** — a date alone and a time
+    /// alone included.
+    ///
+    /// It used to try only `NaiveDateTime`, which needs both halves, so the pair
+    /// could not round-trip: `format(t, "%Y-%m-%d")` gave `1970-01-02` and
+    /// parsing it back with the same format string answered chrono's "input is
+    /// not enough for unique date and time". A format string describes the text
+    /// on both sides; the two directions have to agree about what it describes.
+    #[test]
+    fn parse_accepts_every_shape_format_writes() -> Result<()> {
+        // Date only → midnight UTC, which is the half `format` dropped.
+        assert_eq!(
+            call_datetime_strings("parse", "1970-01-02", "%Y-%m-%d")?,
+            RuntimeVal::Int(86400)
+        );
+        // Time only → that time on the epoch day.
+        assert_eq!(
+            call_datetime_strings("parse", "01:01:01", "%H:%M:%S")?,
+            RuntimeVal::Int(3661)
+        );
+        // Before the epoch too.
+        assert_eq!(
+            call_datetime_strings("parse", "1969-12-31", "%Y-%m-%d")?,
+            RuntimeVal::Int(-86400)
+        );
+        // And the error names the format instead of describing chrono's parser.
+        let error = call_datetime_strings("parse", "zz", "%Y-%m-%d").expect_err("not a date");
+        let text = format!("{error:#}");
+        assert!(text.contains("does not match the format"), "unexpected error: {text}");
+        Ok(())
+    }
+
     #[test]
     fn test_day_of_week_and_weekend() -> Result<()> {
         let saturday = Utc.with_ymd_and_hms(2024, 1, 6, 0, 0, 0).unwrap().timestamp();
@@ -137,7 +169,12 @@ mod tests {
     fn test_parse_invalid_string_errors() {
         let err =
             call_datetime_strings("parse", "not-a-date", "%Y-%m-%d").expect_err("invalid datetime string should error");
-        assert!(err.to_string().contains("failed to parse datetime"));
+        // The text names the value and the format, not chrono's own parser
+        // requirement ("input is not enough for unique date and time") — a
+        // sentence about a library the program never mentioned.
+        let text = err.to_string();
+        assert!(text.contains("not-a-date"), "unexpected error: {text}");
+        assert!(text.contains("%Y-%m-%d"), "unexpected error: {text}");
     }
 
     #[test]
