@@ -37,15 +37,21 @@ pub(super) fn lower(
             ssa.write(instr.a(), block, (dst, Ty::Str));
         }
         Opcode::ToString => {
-            // `a` = dst, `b` = source. Display-convert to a `Str` (Str/Int/Bool
-            // supported; float/other fall back).
+            // `a` = dst, `b` = source. Display-convert to a `Str`.
+            //
+            // Containers included. `docs/semantics.md` used to rule that
+            // `ToString`/interpolation was a *scalar-only* path and a container
+            // there was a loud failure — the VM stopped doing that (`"${xs}"`
+            // is `[1,2,3]`, `"m=${m}"` is `m={"k":1}`), and this side kept
+            // mirroring the retired rule, so every template holding a list,
+            // map, set or struct dropped its module to the VM.
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             // Auto-Display (plan J1): a single-interpolation template string
             // (`"${point}"`) compiles to a bare `ToString`.
             let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
-            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, false, pc)?;
+            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, true, pc)?;
             ssa.write(instr.a(), block, (s, Ty::Str));
         }
         Opcode::ConcatString => {
@@ -58,8 +64,8 @@ pub(super) fn lower(
             // registered `show` interpolates its result, like the VM.
             let (lv, lty) = apply_display_show(ssa, insts, funcs, entry, sig, lv, lty, pc)?;
             let (rv, rty) = apply_display_show(ssa, insts, funcs, entry, sig, rv, rty, pc)?;
-            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, false, pc)?;
-            let dst = concat_display(ssa, insts, globals, l, rv, rty, false, pc)?;
+            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, true, pc)?;
+            let dst = concat_display(ssa, insts, globals, l, rv, rty, true, pc)?;
             if l_fresh {
                 free_owned_str(insts, l);
             }
@@ -85,11 +91,11 @@ pub(super) fn lower(
             } else {
                 let (v0, ty0) = ssa.read(start, block, pc)?;
                 let (v0, ty0) = apply_display_show(ssa, insts, funcs, entry, sig, v0, ty0, pc)?;
-                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, false, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, true, pc)?;
                 for i in 1..count {
                     let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
                     let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
-                    let dst = concat_display(ssa, insts, globals, acc, v, ty, false, pc)?;
+                    let dst = concat_display(ssa, insts, globals, acc, v, ty, true, pc)?;
                     // The consumed accumulator is dead; free it if this
                     // lowering allocated it.
                     if acc_fresh {

@@ -288,8 +288,19 @@ argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 
 |------|-------------|------|
 | `println([1,2,3])` | `[1,2,3]` | 逗号分隔无空格;float 元素用 Rust `to_string`(`2.0`→`2`) |
 | `println(["a","b c"])` | `["a","b c"]` | 字符串元素 **Rust `{:?}` 引号+转义**(`"`→`\"`、tab→`\t`) |
-| `println("${xs}")`(xs 是 list) | 响亮失败 | **两条 display 路径**:print/println/panic/assert 消息走 stdlib `runtime_display`(容器可显示);`ToString`/模板插值/`+` 拼接走 exec `runtime_value_display_string`(标量 only,容器 loud error)。native 对后者拒绝编译 |
+| `println("${xs}")`(xs 是 list) | `[1,2,3]` | 模板插值**显示容器**(2026-07-30 更正:此前这条写的是"响亮失败,标量 only",而 VM 早已不是那样)|
+| `println("a${xs}b")` / `"m=${m}"` / `"${[P{v:1}]}"` | `a[1,2,3]b` / `m={"k":1}` / `[P{v:1}]` | 多段模板、map、结构体列表同样 |
 | `println(map)` | hash 迭代序 | map display 顺序 = 底层 hash map 迭代序,**跨运行稳定但不可移植**(依赖 hasher+增长历史)——native 侧不进子集,响亮拒绝 |
+
+### 一条过时的裁决(2026-07-30 更正)
+
+上面那条曾经写着:`ToString` / 模板插值 / `+` 拼接走"标量 only"的显示路径,
+容器在那里是响亮失败。VM 后来改了 —— `"${xs}"` 就是 `[1,2,3]` —— 而**AOT 一侧
+一直照着退休了的规则**传 `containers: false`,于是任何模板里带 list / 结构体
+列表的程序都掉回 VM。答案一致,只是慢,所以差分门禁抓不到;是探针撞上的。
+
+现在两边都显示容器,差分语料补了这条。留在原生子集外的只有两个,各有自己的
+理由:**map**(hash 迭代序不可移植,见下)和 **Set**。
 
 ### map 迭代序:为什么没有跟着结构体一起改(2026-07-30 记)
 

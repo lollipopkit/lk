@@ -898,6 +898,14 @@ fn differential_trait_dispatch_contract() {
             // dangling callee and the module fails MIR validation, so this
             // pins both halves at once: an uncalled `unused` alongside a
             // `show` that only `"${…}"` reaches.
+            // A container in a template renders. `docs/semantics.md` used to
+            // rule this a loud failure — the VM stopped doing that, and the
+            // lowering kept mirroring the retired rule, so every template
+            // holding a list or a struct list dropped its module to the VM.
+            new(
+                "container_in_template",
+                "struct P { v: Int }\nlet xs = [1, 2, 3];\nlet ps = [P { v: 1 }, P { v: 2 }];\nprintln(\"${xs}\");\nprintln(\"a${xs}b\");\nprintln(\"${ps}\");\nprintln(\"n=${xs}, p=${ps}\");\nreturn 0;\n",
+            ),
             // A struct with no `show` renders like the VM's default:
             // `Name{f:v,…}`, declaration order, nested values quoted.
             //
