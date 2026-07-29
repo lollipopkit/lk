@@ -598,3 +598,37 @@ fn a_trait_impl_still_has_to_implement_the_trait() {
     .expect_err("an unimplemented trait method");
     assert!(error.to_string().contains("not implemented"), "{error}");
 }
+
+/// A trait impl carries the trait's methods and nothing else. It used to accept
+/// anything, and it had to: with `impl Type { … }` a syntax error and no UFCS,
+/// a trait impl was the only place a method could live.
+#[test]
+fn a_trait_impl_rejects_a_method_the_trait_never_declared() {
+    let error = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point {
+            fn area(self) -> Int { return self.x; }
+            fn unrelated(self) -> Int { return 0; }
+        }
+        return 1;
+        "#,
+    )
+    .expect_err("`unrelated` is not part of `Area`");
+    assert!(error.to_string().contains("is not declared by trait"), "{error}");
+
+    // …and the fix the message names actually works.
+    let result = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point { fn area(self) -> Int { return self.x; } }
+        impl Point { fn unrelated(self) -> Int { return 7; } }
+        return [Point { x: 1 }.area(), Point { x: 1 }.unrelated()];
+        "#,
+    )
+    .expect("execute source");
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,7]");
+}

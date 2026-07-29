@@ -423,6 +423,12 @@ impl Methods for Point { fn norm2(self) -> Int { … } }
 固有块放它自己的东西。trait impl 的一致性检查不变(缺方法、签名不符、arity
 不符都照报);固有 impl 没有承诺,所以不检查。
 
+**trait impl 里不能出现 trait 没声明的方法**(同日补)。此前能 —— 而且不得
+不能:`impl Type { … }` 是语法错误,方法只能住在 trait impl 里,于是程序声明
+一个空 trait 把所有东西挂上去。现在类型能带自己的方法了,trait impl 里多出来
+的方法就是个有明确改法的错误,报错直接说改法。这条让 trait 的方法列表重新
+有意义:它列的就是全部。
+
 `ImplDecl.trait_name` 因此变成 `Option`,`MODULE_ARTIFACT_VERSION` 16。
 
 ## 错误文本(2026-07-08 裁决)

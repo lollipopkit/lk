@@ -331,6 +331,25 @@ impl TypeRegistry {
             }
         }
 
+        // A method the trait never declared does not belong here. It used to be
+        // accepted, and it had to be: `impl Type { … }` was a syntax error and
+        // there is no UFCS, so a trait impl was the only place a method could
+        // live — programs declared an empty trait and hung everything off it.
+        // Now that a type can carry its own methods, an undeclared one in a
+        // *trait* impl is a mistake with an obvious fix, and saying so is what
+        // keeps the trait's method list meaning something.
+        for method_name in impl_def.methods.keys() {
+            if !trait_def.methods.iter().any(|(declared, _)| declared == method_name) {
+                return Err(anyhow!(
+                    "Method '{}' is not declared by trait '{}' — put it in `impl {} {{ … }}`, \
+                     which is where a type's own methods go",
+                    method_name,
+                    impl_def.trait_name,
+                    Self::type_to_string(&impl_def.target_type)
+                ));
+            }
+        }
+
         Ok(())
     }
 }
