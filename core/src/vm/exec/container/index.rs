@@ -8,8 +8,7 @@ use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, ShortStrOrStr, 
 use crate::vm::analysis::{PerfIndexFact, PerfIndexTargetKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric};
 
 use super::{
-    Executor, IndexTargetKind, heap_kind, record_dynamic_index_key_metric, record_index_key_metric,
-    runtime_map_key_from_str,
+    Executor, IndexTargetKind, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str,
 };
 
 impl Executor {
@@ -82,7 +81,7 @@ impl Executor {
             })?,
             Some(other) => bail!(
                 "GetIndexStrI target object changed while indexing: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
             None => bail!("heap object {} out of bounds", handle.index()),
         }
@@ -411,7 +410,10 @@ impl Executor {
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
                         Ok(map.get_str(key_str).unwrap_or(RuntimeVal::Nil))
                     }
-                    Some(other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+                    Some(other) => bail!(
+                        "GetIndex target object changed while indexing: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                     None => bail!("heap object {} out of bounds", handle.index()),
                 }
             }
@@ -420,7 +422,10 @@ impl Executor {
                 let key = RuntimeMapKey::Int(*n);
                 match self.state.heap.get(handle) {
                     Some(HeapValue::Map(map)) => Ok(map.get(&key).unwrap_or(RuntimeVal::Nil)),
-                    Some(other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+                    Some(other) => bail!(
+                        "GetIndex target object changed while indexing: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                     None => bail!("heap object {} out of bounds", handle.index()),
                 }
             }
@@ -597,7 +602,10 @@ impl Executor {
                 };
                 self.index_string_at(value, idx)
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 }

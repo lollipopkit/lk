@@ -8,8 +8,8 @@ use crate::vm::analysis::{
 };
 
 use super::{
-    Executor, heap_kind, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str,
-    set_list_value, with_string_int_key,
+    Executor, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str, set_list_value,
+    with_string_int_key,
 };
 
 /// A small, stack-allocated key representation that avoids String allocation
@@ -157,7 +157,10 @@ impl Executor {
                 map.set(key, value);
                 Ok::<(), anyhow::Error>(())
             }
-            other => bail!("SetIndex target object changed while writing: {:?}", heap_kind(other)),
+            other => bail!(
+                "SetIndex target object changed while writing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
         Ok(())
@@ -213,7 +216,7 @@ impl Executor {
                 }
                 other => bail!(
                     "SetIndexStrI target object changed while writing map: {:?}",
-                    heap_kind(other)
+                    HeapValue::type_name(other)
                 ),
             }
         })??;
@@ -264,7 +267,7 @@ impl Executor {
             HeapValue::List(list) => set_list_value(list, index, value),
             other => bail!(
                 "SetIndex target object changed while writing list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
@@ -322,7 +325,7 @@ impl Executor {
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::List(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }
@@ -408,7 +411,7 @@ impl Executor {
             }
             other => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
@@ -508,7 +511,7 @@ impl Executor {
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::Map(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }
@@ -582,7 +585,7 @@ impl Executor {
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::Map(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }

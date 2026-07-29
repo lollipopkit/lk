@@ -6,7 +6,7 @@ use core::ops::Range;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    val::{HeapStore, RuntimeVal, TypedList},
     vm::{
         Function, Instr, Module, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, Opcode, RuntimeModuleState,
         VmContext,
@@ -339,26 +339,6 @@ fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<
     // message.
     let _ = native;
     result
-}
-
-pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
-    match value {
-        HeapValue::String(_) => "String",
-        HeapValue::Bytes(_) => "Bytes",
-        HeapValue::List(_) => "List",
-        HeapValue::Map(_) => "Map",
-        HeapValue::Set(_) => "Set",
-        HeapValue::Callable(_) => "Callable",
-        HeapValue::Task(_) => "Task",
-        HeapValue::Channel(_) => "Channel",
-        HeapValue::Stream(_) => "Stream",
-        HeapValue::StreamCursor(_) => "StreamCursor",
-        HeapValue::Slice(_) => "Slice",
-        HeapValue::Resource(resource) => resource.kind,
-        HeapValue::Object(_) => "Object",
-        HeapValue::UpvalCell(_) => "UpvalCell",
-        HeapValue::ErrorVal(_) => "Error",
-    }
 }
 
 impl Executor {

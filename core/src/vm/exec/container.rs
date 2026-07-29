@@ -10,7 +10,7 @@ use crate::val::{
 };
 
 use super::profile::{record_dynamic_index_key_metric, record_index_key_metric};
-use super::{Executor, heap_kind, push_list_value, set_list_value};
+use super::{Executor, push_list_value, set_list_value};
 use crate::vm::{
     IndexInlineCache,
     analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric},
@@ -265,7 +265,10 @@ impl Executor {
             HeapValue::String(_) => Ok(IndexTargetKind::String),
             HeapValue::Slice(_) => Ok(IndexTargetKind::Slice),
             HeapValue::Bytes(_) => Ok(IndexTargetKind::Bytes),
-            other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object is not indexable: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -290,7 +293,7 @@ impl Executor {
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),
-                other => bail!("Len target object is not sized: {:?}", heap_kind(other)),
+                other => bail!("Len target object is not sized: {:?}", HeapValue::type_name(other)),
             },
             other => bail!("Len target expected string/list/map/set, got {:?}", other.kind()),
         }
@@ -321,7 +324,10 @@ impl Executor {
                 HeapValue::List(values) => self.list_contains(values, needle),
                 HeapValue::Map(values) => self.map_contains(values, needle),
                 HeapValue::Set(values) => self.set_contains(values, needle),
-                other => bail!("Contains haystack object is not searchable: {:?}", heap_kind(other)),
+                other => bail!(
+                    "Contains haystack object is not searchable: {:?}",
+                    HeapValue::type_name(other)
+                ),
             },
             other => bail!("Contains haystack expected string/list/map/set, got {:?}", other.kind()),
         }
@@ -341,7 +347,10 @@ impl Executor {
                 {
                     HeapValue::List(values) => SliceFromPlan::List(values.slice_from(start)),
                     HeapValue::String(value) => SliceFromPlan::String(Arc::clone(value)),
-                    other => bail!("SliceFrom target object is not sliceable: {:?}", heap_kind(other)),
+                    other => bail!(
+                        "SliceFrom target object is not sliceable: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                 };
                 match plan {
                     SliceFromPlan::List(values) => Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values)))),
@@ -371,7 +380,7 @@ impl Executor {
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::Map(map) => map,
-            other => bail!("MapRest source object is not a map: {:?}", heap_kind(other)),
+            other => bail!("MapRest source object is not a map: {:?}", HeapValue::type_name(other)),
         };
 
         let mut removed_keys = Vec::with_capacity(usize::from(key_count));
@@ -489,7 +498,10 @@ impl Executor {
                     HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
                     HeapValue::Set(values) => ToIterPlan::Set(values.entries().cloned().collect()),
-                    other => bail!("ToIter target object is not iterable: {:?}", heap_kind(other)),
+                    other => bail!(
+                        "ToIter target object is not iterable: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                 };
                 self.finish_to_iter_plan(plan)
             }
@@ -625,7 +637,7 @@ impl Executor {
             HeapValue::List(TypedList::String(values)) => values.clone(),
             other => bail!(
                 "ListPush target object changed while materializing string list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         };
         let mut mixed = Vec::with_capacity(values.len() + 1);
@@ -677,7 +689,10 @@ impl Executor {
                 target_kind: PerfIndexTargetKind::Unknown,
                 value_kind: PerfValueKind::Unknown,
             }),
-            other => bail!("index target object is not indexable: {:?}", heap_kind(other)),
+            other => bail!(
+                "index target object is not indexable: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -755,7 +770,7 @@ impl Executor {
             }
             other => bail!(
                 "SetIndex target object changed while writing object: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         if !has_static_fact {
@@ -787,7 +802,7 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(value.clone()),
-                other => bail!("object field key cannot be object: {:?}", heap_kind(other)),
+                other => bail!("object field key cannot be object: {:?}", HeapValue::type_name(other)),
             },
             other => bail!("object field key must be string, got {:?}", other.kind()),
         }
@@ -884,7 +899,10 @@ impl Executor {
                 }
                 value.clone()
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         };
         Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(long_string))))
     }
@@ -934,7 +952,10 @@ impl Executor {
             }
             (PerfValueKind::Unknown, _) => Ok(None),
             (_, HeapValue::List(_)) => Ok(None),
-            (_, other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            (_, other) => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -969,7 +990,10 @@ impl Executor {
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::Map(map) => Ok(map.get(key)),
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -988,7 +1012,7 @@ impl Executor {
         let HeapValue::Map(map) = heap_value else {
             bail!(
                 "GetIndex target object changed while indexing: {:?}",
-                heap_kind(heap_value)
+                HeapValue::type_name(heap_value)
             );
         };
         // When value_kind is known, use it for direct typed dispatch.
@@ -1049,7 +1073,10 @@ impl Executor {
                 }
                 Ok(object.get_field(key))
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 

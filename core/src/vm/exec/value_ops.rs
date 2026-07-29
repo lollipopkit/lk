@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
 use crate::vm::{Module, VmContext};
 
-use super::{Executor, heap_kind};
+use super::Executor;
 
 impl Executor {
     pub(super) fn to_runtime_string(&self, register: u8) -> Result<String> {
@@ -181,7 +181,7 @@ impl Executor {
                 parts.join(separator.as_ref())
             }
             HeapValue::List(_) => bail!("ListJoin list must contain only strings"),
-            other => bail!("ListJoin target must be list, got {:?}", heap_kind(other)),
+            other => bail!("ListJoin target must be list, got {:?}", HeapValue::type_name(other)),
         };
         self.write_string(dst, joined)
     }
@@ -246,7 +246,10 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(value.to_string()),
-                other => bail!("object cannot be converted to string: {:?}", heap_kind(other)),
+                other => bail!(
+                    "object cannot be converted to string: {:?}",
+                    HeapValue::type_name(other)
+                ),
             },
         }
     }
