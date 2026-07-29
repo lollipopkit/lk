@@ -38,7 +38,7 @@ assert(path.sep() != "");
 
 // Builtin Set
 let my_set = Set(["a", "b", "a"]);
-assert(my_set.has("a"));
+assert(my_set.contains("a"));
 assert(my_set.contains("b"));
 assert_eq(my_set.len(), 2);
 my_set.add("c");

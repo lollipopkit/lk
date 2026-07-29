@@ -576,7 +576,8 @@ fn dispatch_set_builtin_method(
             };
             Ok(Some(RuntimeVal::Bool(inserted)))
         }
-        "delete" | "remove" => {
+        // `remove` was a second name for this and is gone; nothing used it.
+        "delete" => {
             if positional.len() != 1 {
                 bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
             }

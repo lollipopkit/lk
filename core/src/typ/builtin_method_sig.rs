@@ -484,7 +484,9 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     // ---- Set ----
     m(Set, "len", &[], "Int", "Number of members"),
     m(Set, "is_empty", &[], "Bool", "Whether the set has no members"),
-    m(Set, "has", &[p("value", "Elem")], "Bool", "Whether `value` is a member"),
+    // Membership is `contains` on every value container — the four sequence
+    // types and this one. `has` is a *map's* spelling, where the question is
+    // about a key and "contains" would not say which of the two it means.
     m(
         Set,
         "contains",
@@ -492,6 +494,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Bool",
         "Whether `value` is a member",
     ),
+    // TODO(remove): alias of `contains`, kept until the corpus and docs move.
+    m(Set, "has", &[p("value", "Elem")], "Bool", "Whether `value` is a member"),
     m(
         Set,
         "add",
@@ -502,13 +506,6 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Set,
         "delete",
-        &[p("value", "Elem")],
-        "Bool",
-        "Removes a member, reporting whether it was there",
-    ),
-    m(
-        Set,
-        "remove",
         &[p("value", "Elem")],
         "Bool",
         "Removes a member, reporting whether it was there",
