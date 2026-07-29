@@ -6,9 +6,9 @@ use crate::{
     ast::Parser as ExprParser,
     expr::Expr,
     macro_system::{
-        AstMacroOrigin, MacroExpandOptions, MacroTokenOrigin, MacroTrace, ProcMacroDependency,
-        ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders, expand_ast_macros_with_metadata,
-        expand_macros,
+        AstMacroOrigin, MacroExpandOptions, MacroTokenOrigin, MacroTrace, PackageMacroModuleResolver,
+        ProcMacroDependency, ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders,
+        expand_ast_macros_with_metadata, expand_macros,
     },
     stmt::{Program, StmtParser},
     token::{ParseError, Token, Tokenizer},
@@ -24,6 +24,10 @@ pub struct ParseOptions {
     pub base_dir: Option<PathBuf>,
     pub macro_features: Vec<String>,
     pub proc_macro_providers: ProcMacroProviders,
+    /// How a package-named macro import finds its module — see
+    /// [`PackageMacroModuleResolver`]. Defaulted to the package manager's own
+    /// lookup, which is what makes this the *only* place the two meet.
+    pub package_macro_resolver: Option<PackageMacroModuleResolver>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +57,10 @@ impl Default for ParseOptions {
             base_dir: None,
             macro_features: Vec::new(),
             proc_macro_providers: ProcMacroProviders::default(),
+            #[cfg(feature = "std")]
+            package_macro_resolver: Some(crate::package::macro_module_root),
+            #[cfg(not(feature = "std"))]
+            package_macro_resolver: None,
         }
     }
 }
@@ -130,6 +138,7 @@ fn expand_source_with_recorder(
             recursion_limit: options.recursion_limit,
             trace: options.macro_trace,
             base_dir: options.base_dir,
+            package_macro_resolver: options.package_macro_resolver,
             proc_macro_providers: options.proc_macro_providers,
             proc_macro_features: options.macro_features,
             proc_macro_dependency_recorder: dependency_recorder.clone(),

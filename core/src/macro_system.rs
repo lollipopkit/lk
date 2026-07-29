@@ -55,11 +55,24 @@ pub use procedural::run_proc_macro_process;
 
 const DEFAULT_RECURSION_LIMIT: usize = 128;
 
+/// Where `use <name>;` finds a package module's root, when the name is a
+/// package rather than a builtin macro module.
+///
+/// A function the caller supplies, not a call into `package`: macro expansion
+/// is part of *parsing*, and the package manager is built on top of it — it
+/// hands `ProcMacroProviders` down to expansion. `imports.rs` used to reach up
+/// and call `PackageGraph::discover` itself, which made the two mutually
+/// dependent and, at the crate level, unsplittable. `syntax::ParseOptions`
+/// installs the real one; `None` simply means package macro imports do not
+/// resolve, which is already the answer without a filesystem.
+pub type PackageMacroModuleResolver = fn(&Path, &str) -> Result<Option<PathBuf>, String>;
+
 #[derive(Debug, Clone)]
 pub struct MacroExpandOptions {
     pub recursion_limit: usize,
     pub trace: bool,
     pub base_dir: Option<PathBuf>,
+    pub package_macro_resolver: Option<PackageMacroModuleResolver>,
     pub proc_macro_providers: ProcMacroProviders,
     pub proc_macro_features: Vec<String>,
     pub proc_macro_dependency_recorder: ProcMacroDependencyRecorder,
@@ -71,6 +84,7 @@ impl Default for MacroExpandOptions {
             recursion_limit: DEFAULT_RECURSION_LIMIT,
             trace: false,
             base_dir: None,
+            package_macro_resolver: None,
             proc_macro_providers: ProcMacroProviders::default(),
             proc_macro_features: Vec::new(),
             proc_macro_dependency_recorder: ProcMacroDependencyRecorder::default(),
@@ -300,7 +314,8 @@ pub fn expand_macros(
     let mut expanded;
     let mut rounds = 0usize;
     loop {
-        let (without_defs, registry) = collect_macro_defs(&current, options.base_dir.as_deref())?;
+        let (without_defs, registry) =
+            collect_macro_defs(&current, options.base_dir.as_deref(), options.package_macro_resolver)?;
         expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
         expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
         // Another round only when this one *both* took definitions out and put
@@ -335,10 +350,11 @@ pub fn is_builtin_macro_module(name: &str) -> bool {
 fn collect_macro_defs(
     tokens: &[SourceToken],
     base_dir: Option<&Path>,
+    package_resolver: Option<PackageMacroModuleResolver>,
 ) -> Result<(Vec<SourceToken>, MacroRegistry), ParseError> {
     let mut registry = MacroRegistry::default();
     let mut loading = Vec::new();
-    imports::collect_imported_macro_defs(tokens, base_dir, &mut registry, &mut loading)?;
+    imports::collect_imported_macro_defs(tokens, base_dir, package_resolver, &mut registry, &mut loading)?;
     let mut skipped_ranges = Vec::new();
     let mut export_items = Vec::new();
     let mut local_names = Vec::new();

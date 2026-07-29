@@ -2,7 +2,6 @@ use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 #[cfg(feature = "std")]
-use crate::package::PackageGraph;
 use crate::token::token_lexeme;
 use crate::{
     token::{ParseError, Token, Tokenizer},
@@ -128,11 +127,12 @@ struct LoadedMacroModule {
 pub(super) fn collect_imported_macro_defs(
     tokens: &[SourceToken],
     base_dir: Option<&Path>,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
     registry: &mut MacroRegistry,
     loading: &mut Vec<PathBuf>,
 ) -> Result<(), ParseError> {
     for spec in macro_import_specs(tokens)? {
-        let loaded = load_imported_macros(base_dir, &spec, tokens, loading)?;
+        let loaded = load_imported_macros(base_dir, package_resolver, &spec, tokens, loading)?;
         register_anchor_macros(registry, &loaded.anchors);
         for (anchor, source) in loaded.runtime_anchors.iter().cloned() {
             registry.insert_runtime_anchor(anchor, source);
@@ -230,6 +230,7 @@ fn register_file_macros(
 
 fn load_imported_macros(
     base_dir: Option<&Path>,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
     spec: &MacroImportSpec,
     tokens: &[SourceToken],
     loading: &mut Vec<PathBuf>,
@@ -245,7 +246,7 @@ fn load_imported_macros(
                 };
                 let resolved = resolve_macro_import_path(base_dir, path)
                     .map_err(|message| error_at(tokens, spec.span_index, &message))?;
-                load_macro_file(&resolved, loading)
+                load_macro_file(&resolved, package_resolver, loading)
             }
             #[cfg(not(feature = "std"))]
             {
@@ -254,7 +255,7 @@ fn load_imported_macros(
             }
         }
         MacroImportSource::Module(name) => {
-            if let Some(macros) = load_builtin_macro_module(name, loading)? {
+            if let Some(macros) = load_builtin_macro_module(name, package_resolver, loading)? {
                 return Ok(macros);
             }
             // Package-based macro imports need the `package` manager and the
@@ -264,14 +265,16 @@ fn load_imported_macros(
                 let Some(base_dir) = base_dir else {
                     return Ok(LoadedMacroModule::default());
                 };
-                let Some(resolved) = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)? else {
+                let Some(resolved) =
+                    resolve_package_macro_module(package_resolver, base_dir, name, tokens, spec.span_index)?
+                else {
                     return Ok(LoadedMacroModule::default());
                 };
-                load_macro_file(&resolved, loading)
+                load_macro_file(&resolved, package_resolver, loading)
             }
             #[cfg(not(feature = "std"))]
             {
-                let _ = (base_dir, name, tokens, &mut *loading);
+                let _ = (base_dir, package_resolver, name, tokens, &mut *loading);
                 Ok(LoadedMacroModule::default())
             }
         }
@@ -279,7 +282,11 @@ fn load_imported_macros(
 }
 
 #[cfg(feature = "std")]
-fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
+fn load_macro_file(
+    path: &Path,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
+    loading: &mut Vec<PathBuf>,
+) -> Result<LoadedMacroModule, ParseError> {
     let canonical = path.canonicalize();
     let path = match &canonical {
         Ok(p) => p.clone(),
@@ -297,21 +304,29 @@ fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacr
         return Ok(LoadedMacroModule::default());
     }
     loading.push(path.clone());
-    let result = load_macro_file_inner(&path, loading);
+    let result = load_macro_file_inner(&path, package_resolver, loading);
     loading.pop();
     result
 }
 
 #[cfg(feature = "std")]
-fn load_macro_file_inner(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
+fn load_macro_file_inner(
+    path: &Path,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
+    loading: &mut Vec<PathBuf>,
+) -> Result<LoadedMacroModule, ParseError> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| ParseError::new(format!("Failed to read macro import '{}': {error}", path.display())))?;
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let crate_anchor = macro_crate_anchor_for_label(&path.display().to_string());
-    load_macro_source(&source, base_dir, loading, crate_anchor)
+    load_macro_source(&source, base_dir, package_resolver, loading, crate_anchor)
 }
 
-fn load_builtin_macro_module(name: &str, loading: &mut Vec<PathBuf>) -> Result<Option<LoadedMacroModule>, ParseError> {
+fn load_builtin_macro_module(
+    name: &str,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
+    loading: &mut Vec<PathBuf>,
+) -> Result<Option<LoadedMacroModule>, ParseError> {
     if !is_builtin_macro_module(name) {
         return Ok(None);
     }
@@ -324,6 +339,7 @@ fn load_builtin_macro_module(name: &str, loading: &mut Vec<PathBuf>) -> Result<O
     Ok(Some(load_macro_source(
         BUILTIN_MACRO_SOURCE,
         base_dir,
+        package_resolver,
         loading,
         macro_crate_anchor_for_label(BUILTIN_MACRO_MODULE),
     )?))
@@ -332,6 +348,7 @@ fn load_builtin_macro_module(name: &str, loading: &mut Vec<PathBuf>) -> Result<O
 fn load_macro_source(
     source: &str,
     base_dir: &Path,
+    package_resolver: Option<super::PackageMacroModuleResolver>,
     loading: &mut Vec<PathBuf>,
     crate_anchor: String,
 ) -> Result<LoadedMacroModule, ParseError> {
@@ -354,7 +371,7 @@ fn load_macro_source(
         ..Default::default()
     };
     for spec in macro_import_specs(&source_tokens)? {
-        let imported = load_imported_macros(Some(base_dir), &spec, &source_tokens, loading)?;
+        let imported = load_imported_macros(Some(base_dir), package_resolver, &spec, &source_tokens, loading)?;
         register_file_macro_map(&mut module.macros, &imported.public, &spec, &source_tokens)?;
         merge_anchor_macros(&mut module.anchors, &imported.anchors);
         module.imported_runtime_anchors.extend(imported.runtime_anchors);
@@ -667,26 +684,25 @@ fn default_namespace_alias(raw: &str) -> Option<String> {
 
 #[cfg(feature = "std")]
 fn resolve_package_macro_module(
+    resolver: Option<super::PackageMacroModuleResolver>,
     base_dir: &Path,
     name: &str,
     tokens: &[SourceToken],
     index: usize,
 ) -> Result<Option<PathBuf>, ParseError> {
-    let graph = PackageGraph::discover(base_dir).map_err(|error| {
+    // No resolver installed means nothing here knows what a package is — the
+    // same answer as a program with no manifest. See
+    // [`super::PackageMacroModuleResolver`] for why this is not a direct call.
+    let Some(resolver) = resolver else {
+        return Ok(None);
+    };
+    resolver(base_dir, name).map_err(|error| {
         error_at(
             tokens,
             index,
             &format!("Failed to discover macro package graph: {error}"),
         )
-    })?;
-    let Some(graph) = graph else {
-        return Ok(None);
-    };
-    Ok(graph
-        .modules
-        .into_iter()
-        .find(|module| module.name == name)
-        .map(|module| module.root))
+    })
 }
 
 fn use_statement_end(tokens: &[SourceToken], mut index: usize) -> usize {

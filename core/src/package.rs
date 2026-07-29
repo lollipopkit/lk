@@ -6,6 +6,25 @@ use std::{
 };
 
 use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
+
+/// Where a `use <name>;` macro import finds package `name`'s module root.
+///
+/// Installed into `syntax::ParseOptions` as a
+/// [`crate::macro_system::PackageMacroModuleResolver`]. `imports.rs` used to
+/// call `PackageGraph::discover` itself; that edge ran *upward* — the package
+/// manager already hands proc-macro providers down to expansion — and the two
+/// modules could not be separated because of it.
+#[cfg(feature = "std")]
+pub fn macro_module_root(base_dir: &std::path::Path, name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let graph = PackageGraph::discover(base_dir).map_err(|error| error.to_string())?;
+    Ok(graph.and_then(|graph| {
+        graph
+            .modules
+            .into_iter()
+            .find(|module| module.name == name)
+            .map(|module| module.root)
+    }))
+}
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
