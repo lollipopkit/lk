@@ -78,6 +78,27 @@ exists — they are what a new container type should be checked against:
 分发前按它校验,所以实现里再写一份 arity 守卫是够不到的。三次漂移
 (`bytes.slice`、`map.get`、`str.slice`)都是因为声明和实现各写各的。
 
+## 文本 → 数字
+
+`string.to_int(value[, base])` 与 `string.to_float(value)` 是把 **String** 读成
+数字的地方,也顺带做数字之间的转换。
+
+在这之前语言里**没有**这条路:两个函数都只收 `Number | Bool`,给个 `"42"`
+直接类型报错;`"42".to_int()` 不存在;全局也没有 `int()`/`float()`。也就是说
+读一行配置、切一段 CSV、取一个命令行参数,到"变成数字"这步全是死路 —— 而
+唯一看起来像答案的名字明确拒绝字符串。
+
+两种失败,分得很清楚:
+
+- **文本不是数字 → `nil`。**「这行是不是数字」问的是输入,不是程序错误,
+  所以用值回答,配 `??` 或 `!` 用,和 `index_of` 一个形状。
+- **Float 没有对应的 Int → raise。** NaN、无穷、超出 `i64` 范围都是程序错误。
+  Rust 的 `as` 会给 `0` 或 `i64::MAX` —— 一个装成正确答案的错误答案。
+
+首尾空白会被 trim:从文件读的一行带着换行,`"42\n"` 和 `"42"` 在任何读者
+眼里是同一个答案。`base` 取 2–36,符号写在前面(`to_int("-ff", 16)`)。
+`to_float` 认 `"nan"` / `"inf"` / `"-inf"`,那是 Float 有而 Int 没有的值。
+
 ## Common Modules
 
 - `hash`: `sha256`, `sha1`, `crc32`, `fnv64`.

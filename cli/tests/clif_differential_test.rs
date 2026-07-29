@@ -557,7 +557,12 @@ fn a_boxed_argument_still_lowers_where_a_number_is_required() {
     // `sink` is called with a `Maybe` and with a plain `Int`, which is what
     // makes its parameter `Dyn`; the body then does arithmetic, a comparison
     // and a shift on it — three separate `read_typed_scalar` consumers.
-    let src = "fn sink(b: Int) -> Int {\n\
+    //
+    // The parameter is declared `Int?` because that is what `byte_at` answers,
+    // and an `Int?` argument no longer passes for a declared `Int` (nullability
+    // used to be erased by the numeric-promotion rule). The lowering under test
+    // is unchanged: the parameter is still `Dyn` at both call sites.
+    let src = "fn sink(b: Int?) -> Int {\n\
                \x20   if (b == 8) {\n\
                \x20       return 0;\n\
                \x20   }\n\

@@ -782,6 +782,15 @@ impl Type {
             // convenience, and `u8 -> Int` silently promoting would defeat the
             // point of asking for a fixed width. `as` is the way across.
             (Type::MachineInt(_), _) | (_, Type::MachineInt(_)) => false,
+            // Nullability is not a numeric property. The hierarchy rule below
+            // asks `numeric_class`, which looks *through* `Optional` (it must —
+            // it answers "what does arithmetic on this produce"), so `Int?` and
+            // `Int` both classified as Int and `let n: Int = xs.index_of(x);`
+            // was accepted. The nil then travelled to whatever used `n` and
+            // failed there instead, which is exactly what `?` exists to
+            // prevent — and `String?` was already rejected in the same
+            // position, so the rule only had a hole for numbers.
+            (lhs, rhs) if lhs.may_be_nil() && !rhs.may_be_nil() => false,
             // Numeric hierarchy: allow Int -> Float, Float -> Boxed, etc.
             (lhs, rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => {
                 let lhs_class = lhs.numeric_class().unwrap();
@@ -886,6 +895,19 @@ impl Type {
     /// Map type into numeric hierarchy class when applicable.
     pub fn numeric_class(&self) -> Option<NumericClass> {
         NumericHierarchy::classify(self)
+    }
+
+    /// Whether a value of this type can be `nil`.
+    ///
+    /// `Any` says no: it is *unknown*, not nullable, and assignability already
+    /// lets it flow both ways before this is consulted.
+    pub fn may_be_nil(&self) -> bool {
+        match self {
+            Type::Nil | Type::Optional(_) => true,
+            Type::Union(items) => items.iter().any(Type::may_be_nil),
+            Type::Boxed(inner) => inner.may_be_nil(),
+            _ => false,
+        }
     }
 
     /// Check if this type contains any type variables

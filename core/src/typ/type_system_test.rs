@@ -217,6 +217,19 @@ mod tests {
         assert!(Type::Int.is_assignable_to(&Type::Float));
         assert!(!Type::Float.is_assignable_to(&Type::Int));
 
+        // …and promotion does not erase nullability. `numeric_class` looks
+        // through `Optional` on purpose, which used to make `Int?` and `Int`
+        // the same class here — so a nil flowed into a declared `Int` and
+        // failed wherever it was next used. `String?` was rejected all along.
+        let optional_int = Type::Optional(Box::new(Type::Int));
+        assert!(!optional_int.is_assignable_to(&Type::Int));
+        assert!(!optional_int.is_assignable_to(&Type::Float));
+        assert!(!Type::Union(vec![Type::Int, Type::Nil]).is_assignable_to(&Type::Int));
+        // Still assignable where nil is allowed, or where the target is Any.
+        assert!(optional_int.is_assignable_to(&optional_int));
+        assert!(optional_int.is_assignable_to(&Type::Optional(Box::new(Type::Float))));
+        assert!(optional_int.is_assignable_to(&Type::Any));
+
         // Boxed behaviour
         let boxed_any = Type::Boxed(Box::new(Type::Any));
         assert!(Type::Float.is_assignable_to(&boxed_any));

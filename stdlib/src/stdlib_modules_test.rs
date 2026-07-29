@@ -46,11 +46,13 @@ mod tests {
                 .and_then(|export| export.return_kind),
             Some(StdlibReturnKind::Float)
         );
+        // `string.to_float` answers `Float?` — text that is not a number is
+        // nil — so its return kind is the boxed one, not `Float`.
         assert_eq!(
             catalog
                 .export_path(&["string", "to_float"])
                 .and_then(|export| export.return_kind),
-            Some(StdlibReturnKind::Float)
+            Some(StdlibReturnKind::RuntimeValue)
         );
         assert_eq!(
             catalog

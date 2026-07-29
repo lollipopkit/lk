@@ -244,4 +244,27 @@ mod tests {
             .is_ok()
         );
     }
+
+    /// A nullable value does not pass for a non-nullable one — including for
+    /// numbers, where the promotion rule used to erase the `?`.
+    ///
+    /// `index_of` answers `Int?` because a miss is nil. Assigning that to a
+    /// declared `Int` was accepted, so the nil arrived at whatever read the
+    /// variable next and failed there — a report about the wrong line, for a
+    /// mistake the annotation was written to catch.
+    #[test]
+    fn an_optional_number_is_not_a_number() {
+        let error = check_program("let n: Int = [1, 2].index_of(2);").expect_err("`Int?` is not an `Int`");
+        assert!(
+            format!("{error:#}").contains("Int?"),
+            "the error should name the nullable type: {error:#}"
+        );
+        // The same rule the non-numeric types always had.
+        assert!(check_program("let s: String = [\"a\"].index_of(\"a\");").is_err());
+        // And the ways to say "I have handled the nil" still work.
+        assert!(check_program("let n: Int = [1, 2].index_of(2)!;").is_ok());
+        assert!(check_program("let n: Int = [1, 2].index_of(2) ?? 0;").is_ok());
+        assert!(check_program("let n: Int? = [1, 2].index_of(2);").is_ok());
+        assert!(check_program("let n = [1, 2].index_of(2);").is_ok());
+    }
 }

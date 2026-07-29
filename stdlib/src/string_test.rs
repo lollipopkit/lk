@@ -4,7 +4,9 @@ mod tests {
     use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
-    use crate::{register_stdlib_modules, runtime_native::runtime_string_value, string::StringModule};
+    use crate::{
+        register_stdlib_globals, register_stdlib_modules, runtime_native::runtime_string_value, string::StringModule,
+    };
     use anyhow::Result;
     use lk_core::{
         module::ModuleRegistry,
@@ -20,6 +22,10 @@ mod tests {
         let program = parser.parse_program()?;
 
         let mut registry = ModuleRegistry::new();
+        // The globals too, not just the modules: `!` desugars to a nil check
+        // that raises through `error`, so without them core syntax fails here
+        // with "undefined callable" — a harness gap, not a language one.
+        register_stdlib_globals(&mut registry);
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
@@ -242,7 +248,7 @@ mod tests {
                 s.index_of("zz") == string.index_of(s, "zz"),
                 s.slice(2, 5) == string.slice(s, 2, 5),
                 s.slice(0, s.len()) == s,
-                s.slice(s.index_of("wörld"), s.index_of("wörld") + 5) == "wörld",
+                s.slice(s.index_of("wörld")!, s.index_of("wörld")! + 5) == "wörld",
                 s.len() == 11,
                 s.index_of("zz") == nil,
             ];
@@ -362,6 +368,84 @@ mod tests {
             values.iter().map(|value| value.as_ref()).collect::<Vec<_>>(),
             ["a", "ayb", "abc", ""]
         );
+        Ok(())
+    }
+
+    /// Reading a number out of text is the operation LK did not have.
+    ///
+    /// `string.to_int` looked like the answer and refused a `String` outright,
+    /// so a program could split a CSV, read a config or take an argument and
+    /// had nowhere to go. Text that is not a number answers `nil` (a question
+    /// about input, not a program error); a Float with no Int raises.
+    #[test]
+    fn to_int_reads_text_and_refuses_a_float_with_no_int() -> Result<()> {
+        let out = execute_string(
+            r#"
+            use string;
+            return [
+                string.to_int("42") ?? -1,
+                string.to_int("  42\n") ?? -1,
+                string.to_int("-42") ?? -1,
+                string.to_int("42abc") ?? -1,
+                string.to_int("") ?? -1,
+                string.to_int("42.0") ?? -1,
+                string.to_int("9223372036854775808") ?? -1,
+                string.to_int("ff", 16) ?? -1,
+                string.to_int("-101", 2) ?? -1,
+                string.to_int("9", 8) ?? -1,
+                string.to_int(3.99) ?? -1,
+                string.to_int(-3.99) ?? -1,
+                string.to_int(true) ?? -1,
+            ];
+            "#,
+        )?;
+        let TypedList::Int(values) = runtime_list(out.first_return(), out.state.heap()) else {
+            panic!("expected a list of ints");
+        };
+        assert_eq!(values, &[42, 42, -42, -1, -1, -1, -1, 255, -5, -1, 3, -3, 1]);
+
+        for (source, expected) in [
+            ("string.to_int(0.0 / 0.0);", "NaN"),
+            ("string.to_int(1e30);", "outside the Int range"),
+            ("string.to_int(\"7\", 1);", "base must be between 2 and 36"),
+        ] {
+            let error = execute_string(&format!("use string;\n{source}")).expect_err(source);
+            assert!(
+                format!("{error:#}").contains(expected),
+                "`{source}` should mention `{expected}`: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The `Float` half, including the values only a Float has.
+    #[test]
+    fn to_float_reads_text_including_nan_and_the_infinities() -> Result<()> {
+        let out = execute_string(
+            r#"
+            use string;
+            return [
+                string.to_float("3.5") ?? -1.0,
+                string.to_float(" -2e3 ") ?? -1.0,
+                string.to_float("abc") ?? -1.0,
+                string.to_float("") ?? -1.0,
+                string.to_float(7) ?? -1.0,
+                string.to_float(true) ?? -1.0,
+            ];
+            "#,
+        )?;
+        let TypedList::Float(values) = runtime_list(out.first_return(), out.state.heap()) else {
+            panic!("expected a list of floats");
+        };
+        assert_eq!(values, &[3.5, -2000.0, -1.0, -1.0, 7.0, 1.0]);
+
+        let out = execute_string("use string;\nreturn string.to_float(\"inf\");")?;
+        assert_eq!(out.first_return(), &RuntimeVal::Float(f64::INFINITY));
+        let out = execute_string("use string;\nreturn string.to_float(\"nan\");")?;
+        let RuntimeVal::Float(value) = out.first_return() else {
+            panic!("expected a float");
+        };
+        assert!(value.is_nan(), "`nan` parses to NaN, got {value}");
         Ok(())
     }
 }
