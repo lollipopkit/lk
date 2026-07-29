@@ -283,11 +283,41 @@ pub fn expand_macros(
             }
         })
         .collect::<Vec<_>>();
-    let (without_defs, registry) = collect_macro_defs(&source_tokens, options.base_dir.as_deref())?;
+    // Collect-then-expand, repeated: a `macro_rules!` that an *expansion*
+    // produces is not in the input the collection pass read, so a macro
+    // defining a macro used to leave the inner definition sitting in the token
+    // stream as ordinary tokens — the parser then failed on `macro_rules`
+    // itself, with the origin stack the only hint that a macro put it there.
+    //
+    // Each round expands what the previous one produced. It stops as soon as a
+    // round finds no definitions to collect, which is the first round for every
+    // program that does not do this; the cap is a backstop against a macro that
+    // defines a macro that defines a macro…
+    const MAX_DEFINITION_ROUNDS: usize = 8;
     let mut trace = Vec::new();
     let mut stack = Vec::new();
-    let expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
-    let expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
+    let mut current = source_tokens;
+    let mut expanded;
+    let mut rounds = 0usize;
+    loop {
+        let (without_defs, registry) = collect_macro_defs(&current, options.base_dir.as_deref())?;
+        expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
+        expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
+        // Another round only when this one *both* took definitions out and put
+        // new ones back: otherwise there is nothing left to collect.
+        let produced_definitions = (0..expanded.len()).any(|index| macro_rules_start_at(&expanded, index).is_some());
+        if !produced_definitions {
+            break;
+        }
+        rounds += 1;
+        if rounds >= MAX_DEFINITION_ROUNDS {
+            return Err(ParseError::new(alloc::format!(
+                "macro definitions nested more than {MAX_DEFINITION_ROUNDS} deep; \
+                 a macro that defines a macro that defines a macro… does not terminate here"
+            )));
+        }
+        current = expanded;
+    }
     let (tokens, spans, origins) = split_source_tokens(expanded);
     Ok(MacroExpandResult {
         tokens,
