@@ -176,6 +176,41 @@ mod tests {
         );
     }
 
+    /// A module name that is also a global builtin is a dead end, not a style
+    /// question: `use chan;` binds the name to the module, so the global
+    /// `chan(3)` stops being a call — and until `chan.new` existed there was no
+    /// way left to make a channel at all.
+    ///
+    /// `chan` was the only one. Checked rather than remembered, because the
+    /// next module to collide would fail the same silent way: its constructor
+    /// would keep working right up until someone imported it.
+    #[test]
+    fn no_stdlib_module_shadows_a_global_builtin() -> Result<()> {
+        let mut registry = ModuleRegistry::new();
+        register_stdlib_modules(&mut registry)?;
+        crate::register_stdlib_core_globals(&mut registry);
+        crate::register_stdlib_concurrency_globals(&mut registry);
+
+        for name in crate::stdlib_module_names() {
+            // `chan` is the known exception, and it is *complete*: the module
+            // carries `chan.new`, so importing it does not take the constructor
+            // away — it renames it. A new collision has no such answer.
+            if name == "chan" {
+                assert!(
+                    registry.get_runtime_builtin("chan::new").is_some(),
+                    "chan shadows the global constructor, so the module must carry `new`"
+                );
+                continue;
+            }
+            assert!(
+                registry.get_runtime_builtin(name).is_none(),
+                "module `{name}` is also a global builtin: importing it would shadow the global \
+                 and leave whatever the global did unreachable"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_stdlib_export_macro_registers_selected_runtime_builtins() -> Result<()> {
         let mut registry = ModuleRegistry::new();

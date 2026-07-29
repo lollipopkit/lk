@@ -58,7 +58,7 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
+    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
         copy_runtime_value_same_module,
@@ -187,7 +187,7 @@ fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> 
     Ok(())
 }
 
-fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
+pub(crate) fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
     STDLIB_MODULES.iter().map(|entry| entry.name)
 }
 
@@ -684,27 +684,6 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
     )
 }
 
-/// The string a value is, or `None` when it is not one. Distinct from the
-/// formatter's own check (which takes a `NativeRuntime`): this one is for the
-/// module functions that take a heap.
-fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
-    match value {
-        RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
-        RuntimeVal::Obj(handle) => match heap
-            .get(*handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        {
-            HeapValue::String(value) => Ok(Some(value.clone())),
-            _ => Ok(None),
-        },
-        _ => Ok(None),
-    }
-}
-
-fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {
-    runtime_string_maybe(value, heap)?.ok_or_else(|| anyhow!("{context} must be a string"))
-}
-
 /// Resolve a spawn target to a self-contained `RuntimeCallable`. A
 /// `CallableValue::Runtime` already carries its module + state; a plain
 /// `Closure` gets promoted here by snapshotting: `Arc::new(module.clone())`
@@ -916,17 +895,6 @@ fn expect_runtime_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Re
             "{name}() expects exactly {expected} argument{}",
             if expected == 1 { "" } else { "s" }
         ))
-    }
-}
-
-fn runtime_type_name(value: &RuntimeVal, heap: &HeapStore) -> &'static str {
-    match value {
-        RuntimeVal::Nil => "Nil",
-        RuntimeVal::Bool(_) => "Bool",
-        RuntimeVal::Int(_) => "Int",
-        RuntimeVal::Float(_) => "Float",
-        RuntimeVal::ShortStr(_) => "String",
-        RuntimeVal::Obj(handle) => heap.get(*handle).map(HeapValue::type_name).unwrap_or("Obj"),
     }
 }
 
