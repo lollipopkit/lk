@@ -760,4 +760,20 @@ mod test {
             "`1 < < 3` must not parse as a shift"
         );
     }
+
+    /// Macro expansion runs before parsing, so a `name!(…)` that reaches the
+    /// parser is one no macro answered. It used to leave the `!` unconsumed and
+    /// report "Unexpected tokens at end (found Not)" — a token the program does
+    /// not contain, and no mention of macros at all.
+    #[test]
+    fn an_undefined_macro_says_so() {
+        for source in ["nope!();", "let x = nope!();", "println(nope!());", "let y = nope![1];"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let error = crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .expect_err("no macro named `nope`");
+            let text = format!("{error:#}");
+            assert!(text.contains("no macro named `nope`"), "{source} → {text}");
+        }
+    }
 }

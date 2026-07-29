@@ -940,6 +940,27 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 self.desugar_counter += 1;
                 expr = desugar_unwrap(self.desugar_counter, expr);
+            } else if !self.eof()
+                && self.tokens[self.pos] == Token::Not
+                && matches!(
+                    self.tokens.get(self.pos + 1),
+                    Some(Token::LParen | Token::LBracket | Token::LBrace)
+                )
+            {
+                // A macro invocation that reached the parser is one macro
+                // expansion left alone, and expansion runs first — so no macro
+                // of this name is defined. Saying that beats what the fall
+                // through said: `nope!()` left the `!` unconsumed and reported
+                // "Unexpected tokens at end (found Not)", which names a token
+                // the program does not contain and no macro at all.
+                let msg = match &expr {
+                    Expr::Var(name) => alloc::format!(
+                        "no macro named `{name}` is defined — `{name}!(…)` is a macro invocation, \
+                         and to call an unwrapped value write `({name}!)(…)`"
+                    ),
+                    _ => "a macro invocation reached the parser, so no macro of that name is defined".to_string(),
+                };
+                return Err(anyhow!(self.err(&msg)));
             } else {
                 break; // No more postfix operations
             }
