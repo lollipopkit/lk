@@ -1,7 +1,9 @@
 /* lk.h — C ABI for embedding the LK virtual machine (lk-api `ffi` feature).
  *
- * Build lk-api with `--features ffi` and link the produced static/dynamic
- * library. Each `LkVm` is an isolated instance (no shared global state).
+ * Build `lk-api-cabi` (which turns on lk-api's `ffi` feature) and link the
+ * produced `liblk_api_cabi.a`. The archive is a separate crate so that an
+ * ordinary workspace build does not emit it.
+ * Each `LkVm` is an isolated instance (no shared global state).
  * A cbindgen config could regenerate this; kept hand-written as the surface
  * is tiny and stable.
  */

@@ -42,7 +42,7 @@ jobs:
       # `lk compile` builds this on demand inside a test's per-case timeout —
       # prebuild it so timeouts measure the compile itself, not a cold cargo.
       - name: prebuild the lk-api staticlib
-        run: cargo build -p lk-api --features ffi --release
+        run: cargo build -p lk-api-cabi --release
       - name: cargo test under LK_GC_STRESS
         run: LK_GC_STRESS=1 cargo test -p lk-core -p lk-stdlib -p lk-cli
 
@@ -60,7 +60,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: prebuild the lk-api staticlib
-        run: cargo build -p lk-api --features ffi --release
+        run: cargo build -p lk-api-cabi --release
       - name: hand-written differential cases
         run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test aot_differential_test
       - name: examples corpus differential
@@ -89,7 +89,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: prebuild the lk-api staticlib
-        run: cargo build -p lk-api --features ffi --release
+        run: cargo build -p lk-api-cabi --release
       - name: build ASan lkrt
         run: bash scripts/build_lkrt_asan.sh
       - name: differential suites against the instrumented lkrt
@@ -111,7 +111,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: prebuild the lk-api staticlib
-        run: cargo build -p lk-api --features ffi --release
+        run: cargo build -p lk-api-cabi --release
       - name: fuzz with the run id as seed (printed for reproduction)
         run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
       - name: artifact decoder/verifier fuzz with the run id as seed

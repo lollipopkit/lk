@@ -1206,6 +1206,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lk-api-cabi"
+version = "0.1.3"
+dependencies = [
+ "lk-api",
+]
+
+[[package]]
 name = "lk-cli"
 version = "0.1.3"
 dependencies = [

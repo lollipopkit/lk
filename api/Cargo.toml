@@ -5,7 +5,10 @@ edition = "2024"
 
 [lib]
 name = "lk_api"
-crate-type = ["lib", "staticlib"]
+# `lib` only — the C-ABI archive is `lk-api-cabi`'s job. Declaring `staticlib`
+# here made every build that reached `lk-api` (i.e. every build of `lk-cli`)
+# also emit a 172MB archive that only the AOT linker path opens.
+crate-type = ["lib"]
 
 [features]
 ffi = []

@@ -19,7 +19,11 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
         return Ok(path);
     }
     let workspace = workspace_root()?;
-    let staticlib = workspace.join("target/release/liblk_api.a");
+    // `lk-api-cabi`, not `lk-api`: the archive was split into its own crate so
+    // that an ordinary `cargo build`/`cargo test` stops emitting 172MB of it
+    // for a linker path it never takes. See that crate's docs. The `ffi`
+    // feature now rides along in its manifest rather than on this command line.
+    let staticlib = workspace.join("target/release/liblk_api_cabi.a");
     if !staticlib.exists() {
         eprintln!("building lk-api staticlib (one-time)…");
     }
@@ -28,9 +32,9 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
     // sub-second no-op under cargo's fingerprinting.
     let status = std::process::Command::new("cargo")
         .current_dir(&workspace)
-        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .args(["build", "-p", "lk-api-cabi", "--release"])
         .status()
-        .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cargo build lk-api-cabi: {e}"))?;
     if !status.success() {
         anyhow::bail!("failed to build lk-api staticlib");
     }

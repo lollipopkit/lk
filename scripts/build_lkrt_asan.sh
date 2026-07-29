@@ -47,13 +47,12 @@ fi
 # once. (No sanitizer flags here — instrumenting `lkrt` is the point; partial
 # instrumentation is fine, mismatched toolchains are not.)
 cargo +nightly build \
-    -p lk-api \
-    --features ffi \
+    -p lk-api-cabi \
     --release \
     --target "$TARGET" \
     --target-dir "$TARGET_DIR" 1>&2
 
-API_LIB="$TARGET_DIR/$TARGET/release/liblk_api.a"
+API_LIB="$TARGET_DIR/$TARGET/release/liblk_api_cabi.a"
 if [ ! -f "$API_LIB" ]; then
     echo "error: expected $API_LIB after the build" >&2
     exit 1

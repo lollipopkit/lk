@@ -1131,9 +1131,9 @@ fn warm_lk_api_staticlib() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let status = Command::new("cargo")
         .current_dir(&workspace)
-        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .args(["build", "-p", "lk-api-cabi", "--release"])
         .status()
-        .expect("spawn cargo build lk-api");
+        .expect("spawn cargo build lk-api-cabi");
     assert!(status.success(), "failed to prebuild the lk-api staticlib");
 }
 

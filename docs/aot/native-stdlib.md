@@ -136,5 +136,5 @@ LK user code
 or `lk-stdlib`; that keeps parser/compiler/VM code out of the final binary.
 `lk-aot-lower` is a compile-time crate and may depend on both `lk-core` and
 `lk-stdlib`; the CLI only connects the AOT path when the `aot` feature is
-enabled. A Tier 1 hybrid binary additionally links `liblk_api.a` for the
+enabled. A Tier 1 hybrid binary additionally links `liblk_api_cabi.a` for the
 bridge (see [`tier1-hybrid.md`](./tier1-hybrid.md)).

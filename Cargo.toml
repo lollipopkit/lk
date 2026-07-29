@@ -3,6 +3,7 @@ members = [
     "core",
     "values",
     "api",
+    "api-cabi",
     "cli",
     "completion",
     "aot/abi",

@@ -47,7 +47,7 @@ native and executes only the unsupported ones on the VM, inside one binary.
    statically typed scalar arguments. The serialized artifact is embedded by
    the *link wrapper* (exactly like Tier 0 embeds source today), never by
    the IR. The VM enters at link time: a hybrid executable links `liblkrt.a`
-   *and* `liblk_api.a`.
+   *and* `liblk_api_cabi.a`.
 
 4. **Eligibility — a reachable non-entry function `f` may be marked
    VM-executed instead of failing the module when:**
@@ -188,7 +188,7 @@ removed the "all call sites must agree on a parameter's type" restriction.
    VM-executed callees; `.ll` snapshot tests (still nothing links).
 4. **CLI hybrid link**: when the lowered module has `vm_functions`, emit the
    wrapper (artifact JSON + `lk_hybrid_init` registration), link
-   `liblkrt.a` + `liblk_api.a`; end-to-end demo + hand-written differential
+   `liblkrt.a` + `liblk_api_cabi.a`; end-to-end demo + hand-written differential
    cases (native-with-bridge == VM, stdout + exit code).
 5. **Gate hardening**: teach the generative fuzz to emit eligible-but-
    unsupported callees so hybrid binaries join the seeded differential and
