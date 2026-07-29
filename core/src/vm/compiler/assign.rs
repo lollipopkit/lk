@@ -76,21 +76,25 @@ impl Compiler {
         }
 
         let rhs = self.lower_readonly_operand(value)?;
-        if let Some(dst) = self.locals.get(name).copied() {
-            let lhs = if self.cell_locals.contains(name) {
-                self.emit_load_cell_value(dst)?
-            } else {
-                dst
-            };
-            let (dst, rebind_dst) = if self.cell_locals.contains(name) {
-                (dst, false)
-            } else {
-                self.local_write_slot(dst)
-            };
-            let result = self.emit_bin_op_to_register(dst, op, lhs, rhs)?;
+        if let Some(slot) = self.locals.get(name).copied() {
             if self.cell_locals.contains(name) {
-                self.emit_store_cell_value(dst, result, "compound assign cell")?;
+                // The local's register holds the *cell*, so the arithmetic has
+                // to land somewhere else: computing into it overwrote the cell
+                // with the number, and the store that followed then found no
+                // cell to store into —
+                //
+                //     let n = 1; let f = || n; n += 1;
+                //     → StoreCellVal expected UpvalCell object
+                //
+                // The capture-cell branch below has always done it this way;
+                // `lhs` is the value read out of the cell, which is a fresh
+                // temporary and therefore a safe destination.
+                let lhs = self.emit_load_cell_value(slot)?;
+                let result = self.emit_bin_op_to_register(lhs, op, lhs, rhs)?;
+                self.emit_store_cell_value(slot, result, "compound assign cell")?;
             } else {
+                let (dst, rebind_dst) = self.local_write_slot(slot);
+                let result = self.emit_bin_op_to_register(dst, op, slot, rhs)?;
                 if result != dst {
                     let move_source = !self.is_current_local_slot(result);
                     self.emit_move_with_policy(dst, result, "compound assign local", move_source)?;
@@ -379,15 +383,19 @@ impl Compiler {
         Ok(false)
     }
 
-    fn emit_set_index_expr(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<()> {
-        self.clear_const_map_target(target);
-        let target = self.lower_readonly_access_target(target)?;
+    fn emit_set_index_expr(&mut self, target_expr: &Expr, key: &Expr, value: &Expr) -> Result<()> {
+        self.clear_const_map_target(target_expr);
+        let was_plain = self.plain_local_receiver(target_expr);
+        let target = self.lower_readonly_access_target(target_expr)?;
         let index_fact = index_fact_from_target(&self.function.performance, target)
             .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
         let move_key = set_index_key_move_preferred(key);
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let move_key = move_key && !self.is_current_local_slot(key);
         let value = self.lower_readonly_operand(value)?;
+        // The key or the value may have boxed the target's local — see
+        // `reread_promoted_receiver`.
+        let target = self.reread_promoted_receiver(target_expr, target, was_plain)?;
         let move_value = !self.is_current_local_slot(value);
         let pc = self.function.code.len();
         if let Some(const_key) = get_field_key(index_fact, key_fact) {

@@ -635,36 +635,6 @@ impl Compiler {
         self.lower_expr(target)
     }
 
-    /// Whether `target` is a plain local that is *not* yet a capture cell —
-    /// the one shape whose register a later argument can change underneath the
-    /// receiver.
-    fn plain_local_receiver(&self, target: &Expr) -> Option<String> {
-        let Expr::Var(name) = target else { return None };
-        (self.locals.contains_key(name.as_str()) && !self.cell_locals.contains(name.as_str())).then(|| name.to_string())
-    }
-
-    /// Re-reads the receiver when lowering the arguments promoted it.
-    ///
-    /// A receiver that is a plain local is the local's *register*, not a copy.
-    /// Capturing that local in a closure boxes it in place
-    /// (`promote_captured_local` moves the cell over the register), so an
-    /// argument containing such a closure changes what the already-taken
-    /// receiver points at — and the call then runs against the cell:
-    ///
-    /// ```text
-    /// xs.map(|x| x + xs.len())   → UpvalCell has no method 'map'
-    /// ```
-    ///
-    /// Re-reading is free in every other case (a set lookup) and costs nothing
-    /// semantically here: the receiver is a variable, so reading it twice has
-    /// no effect the first read did not.
-    fn reread_promoted_receiver(&mut self, target: &Expr, receiver: u16, was_plain: Option<String>) -> Result<u16> {
-        match was_plain {
-            Some(name) if self.cell_locals.contains(&name) => self.lower_readonly_operand(target),
-            _ => Ok(receiver),
-        }
-    }
-
     fn lower_dynamic_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
         // Fast shape: `CallMethodK` calls the method with the receiver and the
         // args in a plain register window — no argument list is boxed and no

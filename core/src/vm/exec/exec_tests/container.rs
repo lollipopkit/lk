@@ -510,3 +510,49 @@ fn sorting_orders_lists_element_by_element() {
         "[[[0,\"c\"],[1,\"a\"],[1,\"b\"]],[[1],[1,2],[1,2,3]],[[\"aaaaaaaaaa\"],[\"zzzzzzzzzz\"]],[\"s\",[1],{\"a\":1}]]"
     );
 }
+
+/// A local captured by a closure lives in a cell, and the cell lives in the
+/// local's register. Compound assignment computed the new value *into that
+/// register*, overwriting the cell — so the store that followed found no cell:
+/// `let n = 1; let f = || n; n += 1;` raised
+/// "StoreCellVal expected UpvalCell object". Plain `n = n + 1` always worked,
+/// which is what made it look like an arithmetic problem.
+#[test]
+fn compound_assignment_to_a_captured_local_updates_its_cell() {
+    let result = execute_source(
+        r#"
+        let n = 1;
+        let read = || n;
+        n += 4;
+        n *= 2;
+        n -= 3;
+        let text = "a";
+        let read_text = || text;
+        text += "b";
+        return [n, read(), text, read_text()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[7,7,\"ab\",\"ab\"]");
+}
+
+/// The receiver-aliasing family, in the index-assignment position: a closure in
+/// the *value* boxes the target's local, and the write then landed on the cell.
+#[test]
+fn an_index_assignment_target_survives_a_value_that_captures_it() {
+    let result = execute_source(
+        r#"
+        let xs: List<Any> = [1, 2];
+        xs[0] = || xs.len();
+        let m: Map<String, Any> = {"a": 1};
+        m["b"] = || m.len();
+        return [xs.len(), m.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,2]");
+}

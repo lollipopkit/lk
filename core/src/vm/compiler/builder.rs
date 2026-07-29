@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::expr::Expr;
 use anyhow::{Result, anyhow, bail};
 
 use crate::vm::analysis::{
@@ -152,6 +153,42 @@ impl Compiler {
         }
         self.function.performance.copy_register_fact(dst, src);
         Ok(())
+    }
+
+    /// Whether `target` is a plain local that is *not* yet a capture cell —
+    /// the one shape whose register a later operand can change underneath a
+    /// reference already taken to it.
+    pub(super) fn plain_local_receiver(&self, target: &Expr) -> Option<String> {
+        let Expr::Var(name) = target else { return None };
+        (self.locals.contains_key(name.as_str()) && !self.cell_locals.contains(name.as_str())).then(|| name.to_string())
+    }
+
+    /// Re-reads a target when lowering the operands after it promoted it.
+    ///
+    /// A target that is a plain local is the local's *register*, not a copy.
+    /// Capturing that local in a closure boxes it in place
+    /// (`promote_captured_local` moves the cell over the register), so an
+    /// operand containing such a closure changes what the already-taken target
+    /// points at — and the instruction then runs against the cell:
+    ///
+    /// ```text
+    /// xs.map(|x| x + xs.len())     → UpvalCell has no method 'map'
+    /// xs[0] = || xs.len()          → SetIndex target object changed … "UpvalCell"
+    /// ```
+    ///
+    /// Re-reading is free in every other case (a set lookup) and costs nothing
+    /// semantically here: the target is a variable, so reading it twice has no
+    /// effect the first read did not.
+    pub(super) fn reread_promoted_receiver(
+        &mut self,
+        target: &Expr,
+        receiver: u16,
+        was_plain: Option<String>,
+    ) -> Result<u16> {
+        match was_plain {
+            Some(name) if self.cell_locals.contains(&name) => self.lower_readonly_operand(target),
+            _ => Ok(receiver),
+        }
     }
 
     pub(super) fn insert_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
