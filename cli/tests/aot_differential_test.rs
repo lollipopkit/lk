@@ -165,6 +165,12 @@ fn differential_equality_and_unique() {
             // `try` is an expression, so its value has to survive the region on
             // both backends — natively that means a cell, and a register seeded
             // with nil used to have no way back out of one.
+            // Int overflow wraps rather than raising, and both backends have to
+            // wrap the same way.
+            new(
+                "int_overflow_wraps",
+                "let a = 9223372036854775807;\nlet b = -9223372036854775807 - 1;\nreturn [a + 1, a * 2, b - 1];\n",
+            ),
             new(
                 "try_expression_value",
                 "fn d(a: Int, b: Int) -> Float {\n  if (b == 0) { error(\"zero\"); }\n  return a / b;\n}\nlet ok = try { d(10, 2) } catch e { -1.0 };\nlet bad = try { d(1, 0) } catch e { -1.0 };\nreturn [ok, bad];\n",

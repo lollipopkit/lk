@@ -18,6 +18,7 @@
 | `return 1 / 0;` | `inf` | 成功 | `/` 是浮点除法,除零按 IEEE 给 inf/NaN;`%` 对 Int 除零仍 raise |
 | `return 1.0 / 7.0;` | `0.14285714285714285` | 成功 | Float 显示 = Rust `f64` 的 `Display`(VM-exact,native 侧经 `lkrt_f64_to_str` 逐字节对齐) |
 | `return 5 + 7.5;` | `12.5` | 成功 | Int/Float 混合算术提升为 Float |
+| `let a = 9223372036854775807; return a + 1;` | `-9223372036854775808` | 成功 | Int 溢出**回绕**,不 raise;两端一致(2026-07-29 核对) |
 
 注:`/` 产 Float 是整数中点必须写成 `math.floor((lo + hi) / 2)` 的原因
 (VM 侧 lower 为 `MidInt`)。更一般地,`math.floor(a / b)` **就是**整数除法
