@@ -285,6 +285,36 @@ mod tests {
         Ok(())
     }
 
+    /// `parse` had no `stringify`, so a script could read a config and change
+    /// it but not write it back — `base64`, `hex` and `url` next door are all
+    /// pairs. Object keys come out sorted (`serde_json::Map` is a `BTreeMap`),
+    /// which makes a generated config byte-stable and therefore diffable.
+    #[test]
+    fn test_encoding_stringify_round_trips_and_refuses_what_json_cannot_spell() -> Result<()> {
+        let out = run(r#"
+            use encoding;
+            let text = encoding.json.stringify({"b": [1, 2], "a": "x"});
+            let back = encoding.json.parse(text);
+            let refused_key = try {
+                let m = {};
+                m[1] = 2;
+                encoding.json.stringify(m);
+                "not refused"
+            } catch e { e };
+            let refused_set = try { encoding.json.stringify(Set([1])); "not refused" } catch e { e };
+            return text == "{\"a\":\"x\",\"b\":[1,2]}"
+                && back.a == "x"
+                && back.b[1] == 2
+                && encoding.json.stringify([1, "a", true, nil]) == "[1,\"a\",true,null]"
+                && refused_key.contains("is an Int")
+                && refused_set.contains("no JSON form")
+                && encoding.yaml.stringify({"a": 1}).contains("a: 1")
+                && encoding.toml.stringify({"a": 1}).contains("a = 1");
+            "#)?;
+        assert_eq!(out.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
+
     #[test]
     fn test_encoding_hash_regex_random_uuid_modules() -> Result<()> {
         let out = run(r#"

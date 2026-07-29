@@ -14,7 +14,12 @@ exports.
 - `os` is intentionally narrow: platform and clock helpers only.
 - `env`, `path`, and `process` split out environment lookup, path manipulation,
   and process execution/state.
-- `encoding` is a parent namespace for data formats and byte/text encodings:
+- `encoding` is a parent namespace for data formats and byte/text encodings.
+  Every codec under it is a **pair**: `json`/`yaml`/`toml` have `parse` and
+  `stringify`, `base64`/`hex` have `encode` and `decode`, `url` has
+  `encode_component` and `decode_component`. A parser without its serializer is
+  half an operation — `stringify` was missing, so a script could read a config
+  and change it but not write it back.
   `json`, `yaml`, `toml`, `base64`, `hex`, and `url`.
 - Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
   `spawn` global start goroutines, `chan` owns channel operations, and

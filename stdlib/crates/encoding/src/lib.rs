@@ -67,6 +67,19 @@ impl JsonModule {
     fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         parse_format(args, runtime, "encoding.json.parse", de::Format::Json)
     }
+
+    /// The other half of `parse`. Without it a script could read a config and
+    /// change it but not write it back — two thirds of the most ordinary task
+    /// there is.
+    #[stdlib_export(params(value: Value), returns = String)]
+    fn stringify(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        write_format(
+            args,
+            runtime,
+            "encoding.json.stringify",
+            lk_core::val::ser::to_json_string,
+        )
+    }
 }
 
 #[cfg(feature = "std")]
@@ -80,6 +93,16 @@ impl YamlModule {
     #[stdlib_export(params(source: String), returns = Value)]
     fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         parse_format(args, runtime, "encoding.yaml.parse", de::Format::Yaml)
+    }
+
+    #[stdlib_export(params(value: Value), returns = String)]
+    fn stringify(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        write_format(
+            args,
+            runtime,
+            "encoding.yaml.stringify",
+            lk_core::val::ser::to_yaml_string,
+        )
     }
 }
 
@@ -95,6 +118,31 @@ impl TomlModule {
     fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         parse_format(args, runtime, "encoding.toml.parse", de::Format::Toml)
     }
+
+    #[stdlib_export(params(value: Value), returns = String)]
+    fn stringify(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        write_format(
+            args,
+            runtime,
+            "encoding.toml.stringify",
+            lk_core::val::ser::to_toml_string,
+        )
+    }
+}
+
+/// The `stringify` half of `parse_format`: one argument in, text out.
+fn write_format(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
+    name: &str,
+    write: fn(&RuntimeVal, &lk_core::val::HeapStore) -> Result<String>,
+) -> Result<RuntimeVal> {
+    if args.len() != 1 {
+        return Err(anyhow!("{name}(value) requires 1 argument"));
+    }
+    let text =
+        write(args.get(0).expect("checked arity"), runtime.heap()).map_err(|error| anyhow!("{name}: {error}"))?;
+    Ok(runtime_string_value(&text, runtime.heap_mut()))
 }
 
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]

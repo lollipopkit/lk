@@ -906,7 +906,10 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
 #[cfg(test)]
 mod runtime_registration_tests {
     use super::*;
-    use lk_core::{val::Type, vm::RuntimeModuleState};
+    use lk_core::{
+        val::{ChannelValue, Type},
+        vm::RuntimeModuleState,
+    };
 
     #[test]
     fn named_registration_includes_only_requested_modules() {
