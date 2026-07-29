@@ -132,6 +132,10 @@ struct ChanInner {
     /// Signals bounded senders (space available / closed).
     send_cv: Condvar,
     cap: Option<usize>,
+    /// What the program asked for, which is not `cap`: `chan.new(0)` is
+    /// unbuffered and reports `0` while the queue's bound is 1. The VM keeps
+    /// the same two numbers apart (`ChannelValue::capacity`).
+    requested: i64,
 }
 
 fn registry() -> &'static Mutex<HashMap<i64, Arc<ChanInner>>> {
@@ -182,10 +186,21 @@ fn channel(id: i64) -> Arc<ChanInner> {
 
 static NEXT_CHANNEL_ID: AtomicI64 = AtomicI64::new(1);
 
-/// `chan(capacity)` — `capacity <= 0` is unbounded (the VM's rule). The
-/// channel travels as its `i64` id.
+/// `chan(capacity)`. The channel travels as its `i64` id.
+///
+/// `0` is **unbuffered**, not unbounded — the same ruling the VM's
+/// `create_channel_value` records, and this had been left behind on the older
+/// one (`capacity <= 0` meant unbounded here). It was observable: `chan.new(0)`
+/// then two `try_send`s answered `true, false` on the VM and `true, true`
+/// natively. As there, unbuffered takes the smallest bound the queue offers.
+///
+/// A negative capacity raises, likewise matching the VM instead of silently
+/// handing back an unbounded channel.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_new(capacity: i64) -> i64 {
+    if capacity < 0 {
+        crate::panic::raise_str(&format!("chan() capacity cannot be negative, got {capacity}"));
+    }
     let id = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
     let inner = Arc::new(ChanInner {
         state: Mutex::new(ChanState {
@@ -194,7 +209,8 @@ pub extern "C" fn lkrt_chan_new(capacity: i64) -> i64 {
         }),
         recv_cv: Condvar::new(),
         send_cv: Condvar::new(),
-        cap: if capacity <= 0 { None } else { Some(capacity as usize) },
+        cap: Some((capacity as usize).max(1)),
+        requested: capacity,
     });
     registry().lock().expect("channel registry poisoned").insert(id, inner);
     id
@@ -300,6 +316,12 @@ pub extern "C" fn lkrt_chan_try_recv(id: i64) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_len(id: i64) -> i64 {
     channel(id).state.lock().expect("channel poisoned").queue.len() as i64
+}
+
+/// `chan.capacity(c)` — the capacity as asked for, so `chan.new(0)` reports 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_chan_capacity(id: i64) -> i64 {
+    channel(id).requested
 }
 
 /// `chan.is_closed(c)`.

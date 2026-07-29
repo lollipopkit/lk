@@ -67,6 +67,51 @@ pub fn create_channel_value(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
     )))))
 }
 
+/// Blocking send — the implementation behind both `chan.send(c, v)` and the
+/// bare `send(c, v)` global.
+///
+/// Returns Nil on delivery and raises a catchable error once the channel is
+/// closed (v2 error model: failures raise, they don't return status values —
+/// Go's panic-on-closed-send).
+pub fn blocking_send_value(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>, name: &str) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    if values.len() != 2 {
+        bail!("{name} expects 2 arguments: channel, value");
+    }
+    let channel = channel_arg(&values[0], runtime.heap(), name)?;
+    let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
+    let sent = runtime
+        .async_runtime()
+        .with(|rt| rt.block_on(rt.guard_blocking("send", rt.send_async(channel.id, value))))
+        .map_err(|error| anyhow!("Send operation failed: {error}"))?;
+    if !sent {
+        bail!("send on closed channel");
+    }
+    Ok(RuntimeVal::Nil)
+}
+
+/// Blocking receive — the implementation behind both `chan.recv(c)` and the
+/// bare `recv(c)` global.
+///
+/// Returns the value; raises a catchable error once the channel is closed and
+/// drained (no `[ok, value]` pairs — a consume-until-closed loop wraps itself
+/// in try/catch, or polls `chan.is_closed`/`chan.try_recv`).
+pub fn blocking_recv_value(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>, name: &str) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    if values.len() != 1 {
+        bail!("{name} expects 1 argument: channel");
+    }
+    let channel = channel_arg(&values[0], runtime.heap(), name)?;
+    let (ok, value) = runtime
+        .async_runtime()
+        .with(|rt| rt.block_on(rt.guard_blocking("recv", rt.recv_async(channel.id))))
+        .map_err(|error| anyhow!("Receive operation failed: {error}"))?;
+    if !ok {
+        bail!("receive on closed channel");
+    }
+    value.into_value(runtime.heap_mut())
+}
+
 #[lk_stdlib_common::stdlib_exports(module = "chan", runtime_builtins = true)]
 impl ChannelModule {
     /// `chan.new(capacity[, type])` — the module spelling of the `chan(…)`
@@ -110,6 +155,22 @@ impl ChannelModule {
             .with(|runtime| runtime.channel_is_closed(channel.id))
             .map_err(|err| anyhow!("Failed to read channel closed state: {err}"))?;
         Ok(RuntimeVal::Bool(closed))
+    }
+
+    /// `chan.send(c, v)` — blocking send, the module spelling of the `send`
+    /// global. The module had `try_send` but not this, so `use chan;` produced a
+    /// channel you could only poll: the blocking half was reachable only through
+    /// an unqualified global.
+    #[stdlib_export(name = "send", params(channel: Channel, value: Any), returns = Nil)]
+    fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        blocking_send_value(args, runtime, "chan.send()")
+    }
+
+    /// `chan.recv(c)` — blocking receive, the module spelling of the `recv`
+    /// global.
+    #[stdlib_export(name = "recv", params(channel: Channel), returns = Any)]
+    fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        blocking_recv_value(args, runtime, "chan.recv()")
     }
 
     #[stdlib_export(name = "try_send", params(channel: Channel, value: Any), returns = Bool)]

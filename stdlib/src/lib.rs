@@ -546,43 +546,16 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     lk_stdlib_chan::create_channel_value(args, runtime)
 }
 
-/// `send(c, v)` — blocking send. Returns Nil on delivery; raises a
-/// catchable error once the channel is closed (v2 error model: failures
-/// raise, they don't return status values — Go's panic-on-closed-send).
+/// `send(c, v)` — the bare global, one implementation with `chan.send`.
 fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
-    let values = args.as_slice();
-    let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
-    let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = runtime
-        .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.guard_blocking("send", runtime.send_async(channel_id, value))))
-        .map_err(|error| anyhow!("Send operation failed: {}", error))?;
-    if !sent {
-        return Err(anyhow!("send on closed channel"));
-    }
-    Ok(RuntimeVal::Nil)
+    lk_stdlib_chan::blocking_send_value(args, runtime, "send")
 }
 
-/// `recv(c)` — blocking receive. Returns the value; raises a catchable
-/// error once the channel is closed and drained (v2 error model: no
-/// `[ok, value]` pairs — consume-until-closed loops wrap the loop in
-/// try/catch, or poll `chan.is_closed`/`chan.try_recv`).
+/// `recv(c)` — the bare global, one implementation with `chan.recv`.
 fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "recv")?;
-    let channel_id = channel_id_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "recv first argument",
-    )?;
-    let (ok, value) = runtime
-        .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.guard_blocking("recv", runtime.recv_async(channel_id))))
-        .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
-    if !ok {
-        return Err(anyhow!("receive on closed channel"));
-    }
-    value.into_value(runtime.heap_mut())
+    lk_stdlib_chan::blocking_recv_value(args, runtime, "recv")
 }
 
 /// Non-blocking send: `true` delivered, `false` full (not an error);

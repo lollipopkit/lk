@@ -33,15 +33,22 @@ Channels are the one shared thing (Arc-backed, not copied); the *values*
 sent through them are deep copies.
 
 ```lk
-let c = chan(8);        // capacity 8; chan(0) = unbounded
+let c = chan(8);        // capacity 8; chan(0) = unbuffered; negative raises
 send(c, v);             // blocking; raises once c is closed
 let v = recv(c);        // blocking; raises once c is closed AND drained
 use chan as ch;
+let d = ch.new(8);      // the module spelling of chan(…) — `use` shadows it
+ch.send(d, v);          // the module spells the blocking pair too
+let w = ch.recv(d);
 ch.try_send(c, v);      // -> Bool (false = full, not an error); closed raises
 let v = ch.try_recv(c); // -> value | nil when empty; closed+drained raises
 ch.close(c);            // Go close: buffered values stay receivable
-ch.is_closed(c); ch.len(c); ch.capacity(c);
+ch.is_closed(c); ch.len(c); ch.capacity(c);   // capacity = what was asked for
 ```
+
+Every operation has both spellings — the bare global and `chan.…` — because
+`use chan;` shadows the `chan` global, and a module missing its blocking half
+would send you back to unqualified names.
 
 Failure semantics follow the v2 error model (see `docs/semantics.md`):
 errors **raise** and are caught with try/catch — there are no `[ok, value]`

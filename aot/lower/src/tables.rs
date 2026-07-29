@@ -76,6 +76,17 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         bare_global: true,
         submodule_of: None,
     },
+    // `chan`'s other members arrive pre-flattened (`GetGlobal "chan::close"`),
+    // because they are registered under those names; `chan.new` is an ordinary
+    // module export, so it arrives as the module object plus a `GetIndex`. The
+    // module needed a row here for that shape to resolve at all — without it
+    // `use chan; chan.new(1)` dropped its module to the VM while the global
+    // `chan(1)` lowered.
+    ModuleRow {
+        name: "chan",
+        bare_global: true,
+        submodule_of: None,
+    },
     ModuleRow {
         name: "stream",
         bare_global: true,
@@ -283,6 +294,7 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // ids; blocking semantics + raises live in lkrt.
     abi_row("chan", "close", AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil),
     abi_row("chan", "len", AbiRef::new("chan", "len"), &[Ty::I64], Ty::I64),
+    abi_row("chan", "capacity", AbiRef::new("chan", "capacity"), &[Ty::I64], Ty::I64),
     abi_row(
         "chan",
         "is_closed",
@@ -298,6 +310,14 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Bool,
     ),
     abi_row("chan", "try_recv", AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn),
+    // The blocking pair. Both were reachable only as bare globals until the
+    // module grew them, so neither had a row here either.
+    abi_row("chan", "send", AbiRef::new("chan", "send"), &[Ty::I64, Ty::Dyn], Ty::Nil),
+    abi_row("chan", "recv", AbiRef::new("chan", "recv"), &[Ty::I64], Ty::Dyn),
+    // The module spelling of the global `chan(capacity)`. Same lkrt entry; the
+    // optional type-string argument is a checker hint the VM drops too, so only
+    // the one-argument form has a row (two args takes the generic path).
+    abi_row("chan", "new", AbiRef::new("chan", "new"), &[Ty::I64], Ty::I64),
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
     abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),

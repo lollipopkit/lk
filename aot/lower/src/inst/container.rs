@@ -766,7 +766,21 @@ pub(super) fn lower(
                 ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
                 return Ok(());
             }
-            if let Some(GlobalRef::Module(module)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+            // `use chan;` binds the module over the `chan()` global, and both
+            // are the *same name* — so `builtin_for_name` claims it first and
+            // the module case never got a chance: `chan.new(1)` dropped its
+            // module to the VM while `chan(1)` lowered.
+            //
+            // The bytecode tells them apart even though the name cannot: the
+            // constructor is `GetGlobal chan` + `Call`, the module is the same
+            // read followed by a `GetIndex`. Reaching *here* with the
+            // constructor's ref therefore means the module spelling.
+            let module_ref = match ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                Some(GlobalRef::Module(module)) => Some(module),
+                Some(GlobalRef::Builtin(Builtin::ChanNew)) => Some("chan".to_string()),
+                _ => None,
+            };
+            if let Some(module) = module_ref {
                 let name = {
                     let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
                     key.and_then(|v| ssa.const_strs.get(&v).cloned())

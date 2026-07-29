@@ -77,6 +77,39 @@ mod tests {
 
     /// `try_recv`: value when ready, nil when empty (not an error) — postfix
     /// `!` turns "must have a value" into an assertion.
+    /// The module is usable on its own: `use chan;` shadows the `chan` global,
+    /// and the blocking pair used to exist only as unqualified `send`/`recv`,
+    /// so an imported channel could only be polled.
+    #[test]
+    fn the_module_spells_the_blocking_pair_too() {
+        assert_true(
+            r#"
+            use chan;
+            let c = chan.new(2);
+            chan.send(c, 41);
+            chan.send(c, 42);
+            return chan.recv(c) == 41 && chan.recv(c) == 42 && chan.len(c) == 0;
+            "#,
+        );
+    }
+
+    /// `0` is unbuffered, not unbounded: one value fits, the second does not.
+    /// lkrt read the retired rule (`<= 0` unbounded) and answered `true` twice.
+    #[test]
+    fn capacity_zero_is_unbuffered_and_negative_raises() {
+        assert_true(
+            r#"
+            use chan;
+            let c = chan.new(0);
+            let first = chan.try_send(c, 1);
+            let second = chan.try_send(c, 2);
+            let negative = try { chan.new(-1); false } catch e { true };
+            // `capacity` reports what was asked for, not the queue's bound.
+            return first && !second && chan.len(c) == 1 && negative && chan.capacity(c) == 0;
+            "#,
+        );
+    }
+
     #[test]
     fn try_recv_yields_value_or_nil_and_pairs_with_unwrap() {
         assert_true(

@@ -587,10 +587,34 @@ List/Slice < Map < Set < Object < Callable < Error < 其他):map 和 map 之间
 无界队列现在语言里够不到了,这是有意的:没有上界的队列是一个涨到进程死掉的
 队列。
 
+`lkrt`(AOT 的运行时)直到 2026-07-30 还照着**退休前**的那条规矩写:
+`capacity <= 0` 当无界、负数不报错。这不是"native 慢一点"那类看不见的差异,
+是两端**给不同答案**:`chan.new(0)` 连发两次 `try_send`,VM 给 `true/false`
+(队列上界 1),native 给 `true/true`;`chan.new(-1)` VM 报错,native 递回一个
+无界通道。裁决改在 VM 侧、运行时侧没跟上 —— 一条裁决落在两份实现上就是这个
+下场,和"退休的容器裁决"那条同一个病(见上文模板串一节)。
+
+`capacity` 报的是**要的那个数**,不是队列的上界:`chan.new(0)` 的
+`chan.capacity` 是 `0`,而里面的 mpsc 上界是 1。两个数得分开记(VM 记在
+`ChannelValue::capacity`,lkrt 记在 `ChanInner::requested`)。
+
 **`use chan;` 会遮蔽 `chan()` 全局**,因为模块名和构造函数同名。此前这是条
 死路:导入模块之后**没有任何办法**创建 channel。现在模块里有
 `chan.new(capacity[, type])`,和全局 `chan(…)` 共用一份实现 —— 导入之后用
 模块拼写,不导入就用全局。
+
+模块**要自己完整**,不能只完整一半(2026-07-30)。`chan.new` 补上之后,模块里
+仍然只有 `try_send`/`try_recv`:阻塞的 `send`/`recv` 只作为**不带前缀的全局**
+存在。也就是 `use chan;` 之后拿到的是个只能轮询的通道,要阻塞就得去写
+`send(c, v)` —— 一个和 `chan` 前缀无关的名字。现在 `chan.send`/`chan.recv`
+和那两个全局共用一份实现(`blocking_send_value`/`blocking_recv_value`),和
+`new` 是同一个办法:一份实现,两个名字。
+
+`chan` 同名的这件事也让 AOT 少降低了一半(2026-07-30):`chan` 既是内建构造
+函数又是模块,`builtin_for_name` 先命中构造函数,成员读取就找不到值了 ——
+`chan.new(1)` 悄悄掉回 VM,`chan(1)` 正常降低,两边打印同一个答案。字节码分得
+清这两件事(构造函数是 `GetGlobal chan` + `Call`,模块多一步 `GetIndex`),所以
+判据放在 `GetIndex` 那侧:能走到那里就是模块拼写。
 
 导入之后仍然写 `chan(1)` 的报错也说人话了(2026-07-30):**"this value is not
 a function: it is a Map — an imported module is a map of its members, so call

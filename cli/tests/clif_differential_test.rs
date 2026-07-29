@@ -1418,6 +1418,39 @@ fn try_catch_differential() {
     );
 }
 
+/// The `chan` module's own spelling, pinned to pure Cranelift.
+///
+/// The surrounding channel cases allow degradation because raises through
+/// `select` are recorded debt; these must not, because the bug they cover is
+/// exactly a *silent* drop to the VM. `chan` is both a builtin constructor and
+/// a module under one name, `builtin_for_name` claimed it first, and the member
+/// read found no value — so `chan.new(1)` fell back while `chan(1)` lowered,
+/// with both printing the same answer.
+#[test]
+fn chan_module_lowers_natively() {
+    run_differential(
+        "chan_module",
+        &[
+            // The module spelling of the whole channel surface, including the
+            // blocking pair the module used to lack: `chan` resolves to a
+            // builtin constructor *and* a module under the same name, and the
+            // member read was losing to the constructor, so `chan.new(1)` was
+            // dropping the program to the VM while `chan(1)` lowered.
+            new(
+                "chan_module_spelling_blocking_and_polling",
+                "use chan;\nlet c = chan.new(2);\nchan.send(c, 7);\nprintln(chan.try_send(c, 8));\nprintln(chan.recv(c));\nprintln(chan.try_recv(c) ?? -1);\nprintln(chan.len(c));\nprintln(chan.capacity(c));\nprintln(chan.is_closed(c));\nchan.close(c);\nprintln(chan.is_closed(c));\nreturn 0;\n",
+            ),
+            // `0` is unbuffered, not unbounded — lkrt had kept the retired rule,
+            // and answered `true` to both sends.
+            new(
+                "chan_capacity_zero_is_unbuffered",
+                "use chan;\nlet c = chan.new(0);\nprintln(chan.try_send(c, 1));\nprintln(chan.try_send(c, 2));\nprintln(chan.len(c));\ntry { chan.new(-1); println(\"no\"); } catch e { println(\"caught\"); }\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `as` casts, with the native path pinned: the point of these is that the two
 /// backends agree *bit for bit*, not merely that both produce something.
 ///

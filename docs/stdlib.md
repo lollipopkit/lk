@@ -21,7 +21,10 @@ exports.
   half an operation — `stringify` was missing, so a script could read a config
   and change it but not write it back.
 - Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
-  `spawn` global start goroutines, `chan` owns channel operations, and
+  `spawn` global start goroutines, `chan` owns channel operations — the whole
+  surface, blocking (`send`/`recv`) as well as polling (`try_send`/`try_recv`),
+  because `use chan;` shadows the `chan` global and a module that is only half
+  there sends the reader back to unqualified globals — and
   `task` owns task management (`await`, `try_await`, `join_all` — which takes
   either the tasks or one list of them — and `sleep`).
   Failures raise (v2 error model) — there are no `[ok, value]` pairs.

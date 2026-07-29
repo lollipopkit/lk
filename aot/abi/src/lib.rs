@@ -205,6 +205,7 @@ macro_rules! for_each_abi_fn {
             ("chan", "try_send", lkrt_chan_try_send, WritesHost, [I64, DynVal], I64);
             ("chan", "try_recv", lkrt_chan_try_recv, WritesHost, [I64], DynVal);
             ("chan", "len", lkrt_chan_len, ReadsHost, [I64], I64);
+            ("chan", "capacity", lkrt_chan_capacity, ReadsHost, [I64], I64);
             ("chan", "is_closed", lkrt_chan_is_closed, ReadsHost, [I64], I64);
             ("chan", "select", lkrt_chan_select, WritesHost, [Ptr, Ptr, Ptr, Ptr, I64], Ptr);
             // `encoding` submodules: the VM's exact crates + conversion rules

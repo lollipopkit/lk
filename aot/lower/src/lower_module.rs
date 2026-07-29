@@ -426,6 +426,15 @@ pub(crate) fn lower_module_call(
             }
             continue;
         }
+        // A `Dyn` parameter is the schema's "any value", so it boxes whatever
+        // the register holds rather than demanding the caller already produced a
+        // `Dyn` — the strict read refused `chan.try_send(c, 7)` for no reason
+        // other than 7 being an unboxed Int.
+        if *want == Ty::Dyn {
+            let (v, ty) = ssa.read(arg_reg, block, pc)?;
+            args.push(to_dyn_any(ssa, insts, v, ty, pc)?);
+            continue;
+        }
         args.push(ssa.read_typed(arg_reg, block, *want, pc)?);
     }
     let dst = match ret_ty {
