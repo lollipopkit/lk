@@ -47,7 +47,12 @@ use super::{
 // `false` is the *permissive* answer — a v11 artifact would let a
 // global-writing method run against a temporary copy of its module's globals
 // and silently drop the write, so this one cannot degrade quietly either.
-pub const MODULE_ARTIFACT_VERSION: u32 = 14;
+// Version 15: `TypeInfo.structs` carries each `struct`'s field names in
+// declaration order, which is what `display` prints an instance's fields in. It
+// decodes to empty, and empty means "fall back to sorting by name" — so a v14
+// artifact would print its structs in a different order than the source it was
+// built from. Cosmetic, but a golden-output comparison is not.
+pub const MODULE_ARTIFACT_VERSION: u32 = 15;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -513,7 +518,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 14);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 15);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

@@ -78,7 +78,17 @@ impl Compiler {
             } => self.lower_for(pattern, iterable, body)?,
             Stmt::Break => self.lower_break()?,
             Stmt::Continue => self.lower_continue()?,
-            Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
+            // A `struct` emits no code, but its *field order* is module data:
+            // it is the order `display` prints an instance's fields in, and the
+            // only place it survives is here (an object's fields live in a hash
+            // map, whose order nothing in the source explains).
+            Stmt::Struct { name, fields } => {
+                self.type_info.structs.push(crate::vm::StructDecl {
+                    name: name.clone(),
+                    fields: fields.iter().map(|(field, _)| field.clone()).collect(),
+                });
+            }
+            Stmt::Import(_) | Stmt::TypeAlias { .. } => {}
             Stmt::Trait { name, methods } => self.lower_trait_decl(name, methods)?,
             Stmt::Impl {
                 trait_name,

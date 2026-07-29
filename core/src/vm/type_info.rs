@@ -156,11 +156,30 @@ impl Default for TypeScope {
 pub struct DeclaredType {
     pub scope: TypeScope,
     pub name: Arc<str>,
+    /// The declaration's field names, in the order they were written — empty
+    /// when the declaration is not in reach (a struct from another module, or
+    /// an object built by a host).
+    ///
+    /// Only `display` reads it, and only to print a value's fields the way its
+    /// type was written. Fields live in a hash map on the object, so without
+    /// this the order was the hasher's: `struct Range { start, end }` printed
+    /// `end` first, and a hasher change would have silently permuted every
+    /// struct in the language. It costs nothing per object — instances share
+    /// one `DeclaredType` by `Arc`.
+    pub fields: Arc<[Arc<str>]>,
 }
 
 impl DeclaredType {
     pub fn new(scope: TypeScope, name: Arc<str>) -> Self {
-        Self { scope, name }
+        Self {
+            scope,
+            name,
+            fields: Arc::from([] as [Arc<str>; 0]),
+        }
+    }
+
+    pub fn with_fields(scope: TypeScope, name: Arc<str>, fields: Arc<[Arc<str>]>) -> Self {
+        Self { scope, name, fields }
     }
 }
 
@@ -236,13 +255,33 @@ pub struct ImplDecl {
 pub struct TypeInfo {
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplDecl>,
+    /// Each `struct` this module declares, with its field names in declaration
+    /// order — what `display` prints them in. See [`DeclaredType::fields`].
+    #[serde(default)]
+    pub structs: Vec<StructDecl>,
+}
+
+/// One `struct` declaration: its name and its field names, in order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StructDecl {
+    pub name: String,
+    /// Field names, in declaration order.
+    pub fields: Vec<String>,
 }
 
 impl TypeInfo {
     /// Whether the module declared no traits or impls — the common case, kept
     /// cheap so callers can skip work entirely.
     pub fn is_empty(&self) -> bool {
-        self.traits.is_empty() && self.impls.is_empty()
+        self.traits.is_empty() && self.impls.is_empty() && self.structs.is_empty()
+    }
+
+    /// The field order of a `struct` this module declares.
+    pub fn struct_fields(&self, name: &str) -> Option<&[String]> {
+        self.structs
+            .iter()
+            .find(|decl| decl.name == name)
+            .map(|decl| decl.fields.as_slice())
     }
 
     /// The declaration of whichever impl method compiled to `function`.

@@ -124,6 +124,12 @@ pub struct Executor {
     /// `shared_module` because the plain `run_module*` entries pass the module
     /// by reference and never populate the shared handle.
     type_scope: crate::vm::TypeScope,
+    /// Field order for each `struct` the executing module declares — what
+    /// `display` prints an instance's fields in. Tracked here for the same
+    /// reason as `type_scope`: the plain `run_module*` entries never populate
+    /// `shared_module`. Cloned once per module run, and a module has a handful
+    /// of structs.
+    struct_decls: Vec<crate::vm::StructDecl>,
     /// The identity `NewObject` built last. A loop constructing the same struct
     /// hits this every iteration, so the shared `Arc` is allocated once instead
     /// of per object — which also removes the per-object `Arc<str>` the type
@@ -205,6 +211,7 @@ impl Executor {
             gc_stress: gc_stress_enabled(),
             shared_module: None,
             type_scope: crate::vm::TypeScope::anonymous(),
+            struct_decls: Vec::new(),
             last_declared_type: None,
             instruction_budget: None,
             instruction_count: 0,

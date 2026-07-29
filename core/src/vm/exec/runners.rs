@@ -258,6 +258,7 @@ impl Executor {
             && !self.type_scope.is_same(&module.type_scope)
         {
             self.type_scope = module.type_scope.clone();
+            self.struct_decls = module.type_info.structs.clone();
         }
         let base_frame_depth = self.frames.len();
         self.current_function_index = function_index;

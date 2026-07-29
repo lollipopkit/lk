@@ -1437,6 +1437,7 @@ mod tests {
                         reads_globals: Vec::new(),
                     }],
                 }],
+                structs: Vec::new(),
             },
             ..Module::default()
         })

@@ -210,13 +210,22 @@ GC **没有**这个上限,也不能有:回收不允许失败。`HeapStore::colle
 
 ## 结构体 display 字段序(2026-07-29 裁决)
 
-`println(p)` 的字段**按字段名排序**,不是 hash 迭代序 —— 后者没有读者能从
-源码预测,换个 hasher 就会静默重排。字段值是容器里的数据,**加引号**,和
-列表元素、map 值一致:`P { name: "a, b" }` 打印成 `P{name:"a, b"}`,此前是
-`P{name:a, b}`(读起来像两个字段)。
+`println(p)` 的字段按 **`struct` 声明的顺序**,与构造时写的顺序无关:
 
-声明顺序比字段名序更好,但 `RuntimeObject` 只带 `DeclaredType` 的名字和
-作用域,拿不到字段表 —— 已在 `display.rs` 留 TODO。
+```lk
+struct Range { start: Int, end: Int }
+println(Range { end: 9, start: 1 })   // Range{start:1,end:9}
+```
+
+字段存在 hash map 里,所以此前顺序是 hasher 的 —— `struct Range { start, end }`
+先打 `end`,而且换个 hasher 会静默重排每一个结构体。声明顺序随类型走
+(`DeclaredType::fields`,编译期从 `Stmt::Struct` 收进 `TypeInfo.structs`,
+`MODULE_ARTIFACT_VERSION` 15)。够不到声明时(别的模块的结构体、host 造的
+对象)按字段名排序 —— 任意但稳定,hash 序两样都不是。
+
+字段值是容器里的数据,**加引号**,和列表元素、map 值一致:
+`P { name: "a, b" }` 打印成 `P{name:"a, b"}`,此前是 `P{name:a, b}`(读起来
+像两个字段)。
 
 ## map 键与 set 成员(2026-07-29 裁决)
 

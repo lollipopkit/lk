@@ -98,14 +98,28 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore, depth: u32) -
         HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
         HeapValue::Object(value) => {
             let mut out = value.type_name().to_string();
-            // Field names sorted, not in hash order: a struct printed the same
-            // fields in an order no reader could predict from the source, and
-            // one a hasher change would silently permute. Declaration order
-            // would be better still, but a `RuntimeObject` only carries its
-            // `DeclaredType`'s name and scope — it has no field list to consult.
-            // TODO: print declaration order once `DeclaredType` carries fields.
+            // Declaration order — the order the `struct` was written in, which
+            // travels with the type (see `DeclaredType::fields`). The fields
+            // themselves live in a hash map, so without it the order was the
+            // hasher's: `struct Range { start, end }` printed `end` first, and
+            // a hasher change would have silently permuted every struct.
+            //
+            // Sorted by name when the declaration is out of reach — a struct
+            // from a module whose type info this executor does not hold, or an
+            // object a host built. Arbitrary but stable, which hash order is
+            // not.
+            let declared = value.ty.fields.as_ref();
             let mut fields: Vec<_> = value.fields.iter().collect();
-            fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+            if declared.is_empty() {
+                fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+            } else {
+                let position = |name: &alloc::sync::Arc<str>| {
+                    declared.iter().position(|field| field == name).unwrap_or(usize::MAX)
+                };
+                fields.sort_by(|(left, _), (right, _)| {
+                    position(left).cmp(&position(right)).then_with(|| left.cmp(right))
+                });
+            }
             append_display_entries(
                 &mut out,
                 fields
@@ -313,11 +327,39 @@ mod tests {
         )
     }
 
+    fn declared_object_of(declared: &[&str], fields: &[(&str, RuntimeVal)]) -> RuntimeObject {
+        RuntimeObject::new(
+            Arc::new(DeclaredType::with_fields(
+                TypeScope::anonymous(),
+                Arc::<str>::from("P"),
+                declared.iter().map(|name| Arc::<str>::from(*name)).collect(),
+            )),
+            fast_hash_map_from_iter(fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value))),
+        )
+    }
+
+    /// Fields print in the order the `struct` declares them, whatever order the
+    /// value was built in. They lived in a hash map, so the order used to be
+    /// the hasher's: `struct Range { start, end }` printed `end` first.
+    #[test]
+    fn object_fields_follow_the_declaration_order() {
+        let mut heap = HeapStore::new();
+        let object = RuntimeVal::Obj(heap.alloc(HeapValue::Object(declared_object_of(
+            &["start", "end"],
+            &[("end", RuntimeVal::Int(9)), ("start", RuntimeVal::Int(1))],
+        ))));
+
+        assert_eq!(
+            runtime_display_value(&object, &heap).expect("render"),
+            "P{start:1,end:9}"
+        );
+    }
+
     /// A struct field is data inside a container, so it quotes like a list
     /// element. It went through the top-level renderer instead, and
     /// `P { name: "a, b" }` printed as `P{name:a, b}` — which reads as two
-    /// fields. Field order is sorted, not the hash order a reader cannot
-    /// predict from the source.
+    /// fields. Order is the declaration's, or sorted when the declaration is
+    /// out of reach — never the hash order a reader cannot predict.
     #[test]
     fn object_fields_are_quoted_and_ordered() {
         let mut heap = HeapStore::new();

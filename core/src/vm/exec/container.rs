@@ -161,9 +161,22 @@ impl Executor {
         {
             return Ok(Arc::clone(cached));
         }
-        let ty = Arc::new(crate::vm::DeclaredType::new(
+        // The declaration's field order travels with the type, so `display`
+        // can print an instance the way its `struct` was written. Looked up
+        // once per distinct type thanks to the memo above, not once per object.
+        let name = Arc::<str>::from(name);
+        let fields: Arc<[Arc<str>]> = match self.struct_decls.iter().find(|decl| decl.name == *name) {
+            Some(decl) => decl
+                .fields
+                .iter()
+                .map(|field| Arc::<str>::from(field.as_str()))
+                .collect(),
+            None => Arc::from([] as [Arc<str>; 0]),
+        };
+        let ty = Arc::new(crate::vm::DeclaredType::with_fields(
             self.type_scope.clone(),
-            Arc::<str>::from(name),
+            name,
+            fields,
         ));
         self.last_declared_type = Some(Arc::clone(&ty));
         Ok(ty)
