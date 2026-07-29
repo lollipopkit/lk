@@ -588,7 +588,11 @@ pub extern "C" fn lkrt_task_await(id: i64) -> LkDyn {
             Ok(owned) => materialize(&owned),
             Err(_) => crate::panic::raise_str("task failed"),
         },
-        None => crate::panic::raise_str("Task not found"),
+        // Same wording as the VM: awaiting takes the task, so a second
+        // await finds nothing.
+        None => {
+            crate::panic::raise_str("this task has already been awaited — its result was handed to the first `await`")
+        }
     }
 }
 

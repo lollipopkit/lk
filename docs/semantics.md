@@ -529,6 +529,15 @@ List/Slice < Map < Set < Object < Callable < Error < 其他):map 和 map 之间
 `chan.new(capacity[, type])`,和全局 `chan(…)` 共用一份实现 —— 导入之后用
 模块拼写,不导入就用全局。
 
+导入之后仍然写 `chan(1)` 的报错也说人话了(2026-07-30):**"this value is not
+a function: it is a Map — an imported module is a map of its members, so call
+one of them"**。此前是 `Call callee is not callable` —— 说的是操作数,读者
+没有任何可动作的信息。类型检查器抓得住普通 map(`{"a":1}(1)` 报
+"Cannot call non-function type"),但它不给导入的名字建模,所以这条路是运行时的。
+
+同理 `task.await(h)` 第二次报 **"this task has already been awaited"**,不再是
+`Task not found`(那说的是任务表)。VM 与 lkrt 两侧用同一句话。
+
 ## 范围步长为 0(2026-07-29 裁决)
 
 步长 0 是错误,**三种拼写一句话**:`Range step cannot be zero`。

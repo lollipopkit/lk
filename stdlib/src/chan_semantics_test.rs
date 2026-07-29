@@ -121,4 +121,33 @@ mod tests {
             "#,
         );
     }
+
+    /// Calling an imported module says **what it is** and what to do.
+    ///
+    /// `use chan;` binds the module over the `chan()` global — a documented
+    /// sharp edge — and a module is a map of its members, so `chan(1)` calls a
+    /// Map. The error used to be "Call callee is not callable": an opcode
+    /// operand, with nothing in it to act on. The type checker catches a plain
+    /// map (`{"a": 1}(1)` is "Cannot call non-function type"); it does not
+    /// model an import's value, so this path is the one a program reaches.
+    #[test]
+    fn calling_an_imported_module_says_what_it_is() {
+        let error = run("use chan;\nlet c = chan(1);\n").expect_err("a module is not callable");
+        let text = format!("{error:#}");
+        assert!(text.contains("not a function"), "unexpected error: {text}");
+        assert!(text.contains("Map"), "the error should name the value's type: {text}");
+        assert!(text.contains("module"), "and point at how a program gets here: {text}");
+    }
+
+    /// Awaiting twice says so, instead of describing the task table.
+    #[test]
+    fn awaiting_twice_says_the_result_is_already_taken() {
+        let error = run("use task;\nlet h = spawn(|| 5);\nlet a = task.await(h);\nlet b = task.await(h);\n")
+            .expect_err("the second await has nothing to take");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("already been awaited"),
+            "the error should speak the language: {text}"
+        );
+    }
 }

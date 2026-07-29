@@ -131,7 +131,7 @@ impl Executor {
         let callee = *self
             .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
         let RuntimeVal::Obj(handle) = callee else {
-            bail!("CallNamed callee is not callable");
+            bail!("this value is not a function");
         };
         let callable = callable_target(
             known_target_kind,
@@ -139,7 +139,7 @@ impl Executor {
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-            "CallNamed callee is not callable",
+            "this value is not a function",
         )?;
         match callable {
             CallableTarget::RuntimeNative { arity, function } => {

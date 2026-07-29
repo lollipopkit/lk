@@ -375,7 +375,7 @@ fn call_runtime_value_with_map_args(
 ) -> Result<RuntimeVal> {
     let callee_root = callee;
     let RuntimeVal::Obj(handle) = callee else {
-        bail!("runtime callee is not callable");
+        bail!("this value is not a function");
     };
     let callable = callable_target(
         None,
@@ -383,7 +383,7 @@ fn call_runtime_value_with_map_args(
             .heap
             .get(handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-        "runtime callee is not callable",
+        "this value is not a function",
     )?;
     let Some(named_handle) = named else {
         return match callable {

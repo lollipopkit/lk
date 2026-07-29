@@ -403,7 +403,12 @@ impl Runtime {
     pub async fn join_task(&self, task_id: u64) -> Result<RuntimePayload> {
         let mut task = {
             let mut tasks = self.tasks.lock().unwrap();
-            tasks.remove(&task_id).ok_or_else(|| anyhow!("Task not found"))?
+            tasks.remove(&task_id).ok_or_else(|| {
+                // Awaiting takes the task out of the table, so a second await
+                // finds nothing. "Task not found" described the table; this
+                // describes the program.
+                anyhow!("this task has already been awaited — its result was handed to the first `await`")
+            })?
         };
 
         // If result is already available, return it

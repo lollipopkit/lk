@@ -72,8 +72,33 @@ pub(super) fn callable_target(
         | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::Runtime(function))) => {
             Ok(CallableTarget::Runtime(Arc::clone(function)))
         }
+        // The value *is* a callable, but not the flavour the call site was
+        // compiled for — a fact mismatch, which is the runtime's problem and
+        // not the program's.
         (_, HeapValue::Callable(_)) => bail!("{error}"),
-        _ => bail!("{error}"),
+        // Not a callable at all. Say what it is: the common way to get here is
+        // calling a module (`use chan;` shadows the `chan()` global with the
+        // module, which is a Map of its members), and "is not callable" alone
+        // leaves nothing to act on.
+        (_, other) => bail!(
+            "{error}: it is a {}{}",
+            HeapValue::type_name(other),
+            module_shaped_hint(other)
+        ),
+    }
+}
+
+/// The nudge for a value that is a map.
+///
+/// An imported module *is* a map of its members, and `use chan;` binds it over
+/// the `chan()` global — so `chan(1)` calls a Map. That is a documented sharp
+/// edge (see `docs/semantics.md`), and this is where a program meets it. A map
+/// is not callable for any other reason either, so the hint costs nothing when
+/// the value is an ordinary one.
+fn module_shaped_hint(value: &HeapValue) -> &'static str {
+    match value {
+        HeapValue::Map(_) => " — an imported module is a map of its members, so call one of them (`m.f(…)`)",
+        _ => "",
     }
 }
 
@@ -139,7 +164,7 @@ impl Executor {
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-            "Call callee is not callable",
+            "this value is not a function",
         )?;
 
         match callable {
