@@ -40,7 +40,24 @@ impl Compiler {
     /// file runs out on the temporaries of the statement that follows the last
     /// binding, not on the binding itself, so a check that comes afterwards
     /// still overflows — which is how the first version of this failed.
-    pub(super) fn top_level_binding_is_cacheable(&self, name: &str) -> bool {
+    pub(super) fn top_level_binding_is_cacheable(&self, name: &str, is_const: bool) -> bool {
+        // A **mutable** name a callable can see lives in its global slot, and
+        // the top-level body must read and write *that* — not a register copy.
+        //
+        // The copy made one name into two variables that agreed only until the
+        // first write on either side: `let n = 0; fn bump() { n = n + 1; }` then
+        // `bump()` left the function's view at 1 and the top level's at 0, and a
+        // top-level `n = 5` was invisible to the function. Both backends did it,
+        // so nothing caught it — it is a language bug, not a divergence.
+        //
+        // A `const` keeps its cache: nothing can write it, so the register and
+        // the global cannot come apart. That is not only an optimisation — the
+        // register is where a machine-integer *width* is recorded, and a
+        // global-only `const PAGE_NX: u64 = 0x8000000000000000` prints as a
+        // negative `i64`.
+        if self.top_level && !is_const && self.user_let_globals.contains(name) {
+            return false;
+        }
         !self.top_level || self.next_reg < TOP_LEVEL_CACHE_LIMIT || !self.global_names.contains_key(name)
     }
 

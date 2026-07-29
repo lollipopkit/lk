@@ -45,8 +45,9 @@ impl Compiler {
                 pattern,
                 type_annotation,
                 value,
+                is_const,
                 ..
-            } => self.lower_let(pattern, type_annotation.as_ref(), value)?,
+            } => self.lower_let(pattern, type_annotation.as_ref(), value, *is_const)?,
             Stmt::Define { name, value, .. } => self.lower_define(name, value)?,
             Stmt::Assign { name, value, .. } => {
                 let watermark = self.next_reg;
@@ -299,7 +300,8 @@ impl Compiler {
         // The general path below still consumes the cache: the literal store
         // becomes a register move instead of a constant load.
         let watermark = self.next_reg;
-        let cacheable = self.top_level_binding_is_cacheable(name);
+        // A `define` is never a `const`.
+        let cacheable = self.top_level_binding_is_cacheable(name, false);
         let slot = if let Some(slot) = self.locals.get(name).copied() {
             if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                 // A fresh binding must not write the old register in place:

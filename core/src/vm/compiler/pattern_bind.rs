@@ -18,6 +18,7 @@ impl Compiler {
         pattern: &Pattern,
         type_annotation: Option<&crate::val::Type>,
         value: &Expr,
+        is_const: bool,
     ) -> Result<()> {
         if let Pattern::Variable(name) = pattern {
             // NOTE: never alias the binding to a shared loop-literal cache
@@ -28,7 +29,7 @@ impl Compiler {
             // loop (`sort_words`' inner scan). The general path still uses
             // the cache: the literal store becomes a register move.
             let watermark = self.next_reg;
-            let cacheable = self.top_level_binding_is_cacheable(name);
+            let cacheable = self.top_level_binding_is_cacheable(name, is_const);
             // The destination stops claiming a width before anything is lowered
             // into it. What lands there then establishes its own — a move
             // carries the source's, arithmetic sets or clears it — and the

@@ -684,3 +684,60 @@ fn a_user_method_named_after_a_builtin_one_is_still_reachable() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[99,1,2,3,4,3]");
 }
+
+/// A receiver with side effects runs **once** under `set`.
+///
+/// `set` lowered its receiver expression twice — once for the write, once for
+/// the answer — so `make().set(0, 9)` called `make` twice, wrote into the first
+/// list and answered the second. Every other mutating method (`push`,
+/// `insert`, `remove_at`, `clear`) lowers the receiver once.
+#[test]
+fn set_evaluates_a_side_effecting_receiver_once() {
+    let result = execute_source(
+        r#"
+        let calls = [];
+        fn make() -> List<Int> {
+            calls.push(1);
+            return [1, 2, 3];
+        }
+        let answered = make().set(0, 9);
+        return [calls.len(), answered.get(0) ?? -1, answered.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,9,3]", "one call, and the answer is the list written to");
+}
+
+/// A top-level `let` a function can see is **one** variable, not two.
+///
+/// It used to be two: the top level kept a register copy while functions read
+/// and wrote the global slot, and the two agreed only until the first write on
+/// either side. `let n = 0; fn bump() { n = n + 1; } bump();` left the
+/// function's view at 1 and the top level's at 0, and a top-level `n = 5` was
+/// invisible to the function. Both backends did it, so no differential test
+/// could see it.
+///
+/// A `const` still keeps its register: nothing can write it, so the copy cannot
+/// come apart — and the register is where a machine-integer width lives.
+#[test]
+fn a_top_level_let_and_its_functions_share_one_variable() {
+    let result = execute_source(
+        r#"
+        let n = 0;
+        fn bump() { n = n + 1; }
+        fn get() -> Int { return n; }
+        bump();
+        bump();
+        let after_calls = [n, get()];
+        n = 5;
+        let after_top_level_write = [n, get()];
+        return [after_calls, after_top_level_write];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[2,2],[5,5]]", "one storage, whichever side writes it");
+}
