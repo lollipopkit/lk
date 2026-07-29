@@ -1,7 +1,6 @@
 use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-#[cfg(feature = "std")]
 use crate::token::token_lexeme;
 use crate::{
     token::{ParseError, Token, Tokenizer},
