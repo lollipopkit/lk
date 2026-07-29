@@ -159,6 +159,20 @@ fn differential_equality_and_unique() {
                 "let a = 1.0;\nlet ys = [1, 2];\nreturn a in ys;\n",
             ),
             new("in_misses", "let ys = [1, 2];\nreturn 1.5 in ys;\n"),
+            // Strings order lexicographically on both backends. The type
+            // checker used to refuse `<` on them outright, so `sort()` was the
+            // only way to ask — and the native lowering, told the VM did not
+            // support it either, rejected the whole function.
+            new(
+                "str_lt_long",
+                "let a = \"aaaaaaaaa\" + \"a\";\nlet z = \"zzzzzzzzz\" + \"z\";\nreturn a < z;\n",
+            ),
+            new(
+                "str_ge_long",
+                "let a = \"aaaaaaaaa\" + \"a\";\nlet z = \"zzzzzzzzz\" + \"z\";\nreturn z >= a;\n",
+            ),
+            new("str_le_equal", "let a = \"mm\";\nreturn a <= \"mm\";\n"),
+            new("str_gt_prefix", "let a = \"abc\";\nreturn a > \"ab\";\n"),
         ],
     );
 }

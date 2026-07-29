@@ -999,13 +999,12 @@ pub(super) fn lower(
                     return Ok(());
                 }
                 (Ty::Str, Ty::Str) => {
-                    // The VM only supports `==`/`!=` on strings (ordered comparisons
-                    // are a runtime error), so reject the rest — falling back rather
-                    // than computing an order the VM would refuse.
-                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
-                        return Err(Unsupported::TypeMismatch { pc });
-                    }
-                    // `str_cmp(a, b)` returns -1/0/1; comparing to 0 realizes `==`/`!=`.
+                    // `str_cmp(a, b)` returns -1/0/1, so comparing it to 0 with the
+                    // *same* operator realizes all six — `==`, `!=` and the four
+                    // orderings alike. Only `==`/`!=` used to get here: the comment
+                    // said "the VM only supports those on strings", which was never
+                    // true (`Executor::number_compare` has always had a string arm)
+                    // — it was the type checker that refused, and it no longer does.
                     let cmp = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(cmp),

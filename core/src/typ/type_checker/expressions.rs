@@ -1271,8 +1271,8 @@ impl TypeChecker {
             ));
         }
 
-        let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "左侧")?;
-        let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "右侧")?;
+        let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "the left operand")?;
+        let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "the right operand")?;
 
         // `/` yields a `Float`, even for two `Int`s.
         //
@@ -1376,9 +1376,15 @@ impl TypeChecker {
                 Some(other.clone()),
                 Some(left_expr.clone()),
             )),
+            // Strings order lexicographically, as they already did everywhere
+            // else: `list.sort()` puts them in that order, the constant folder
+            // folds `"a" < "b"`, and the executor's `number_compare` has had a
+            // string arm all along. Only this rule said no, so the one way to
+            // ask a string which came first was to sort a two-element list.
+            (Type::String, Type::String) => Ok(()),
             _ => {
-                self.ensure_numeric_operand(left_ty, left_expr, "左侧")?;
-                self.ensure_numeric_operand(right_ty, right_expr, "右侧")?;
+                self.ensure_numeric_operand(left_ty, left_expr, "the left operand")?;
+                self.ensure_numeric_operand(right_ty, right_expr, "the right operand")?;
                 Ok(())
             }
         }

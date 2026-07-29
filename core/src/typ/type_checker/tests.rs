@@ -465,3 +465,26 @@ fn machine_integers_refuse_to_mix() {
         );
     }
 }
+
+/// Strings order lexicographically. `list.sort()` has always put them in that
+/// order and the executor has always had a string arm, but this rule refused
+/// `<` on them — so the one way to ask which string came first was to sort a
+/// two-element list.
+#[test]
+fn ordering_accepts_two_strings_and_still_rejects_mixed_operands() {
+    let text = |value: &str| Expr::Literal(LiteralVal::from_str(value));
+    let compare = |left, op, right| Expr::Bin(Box::new(left), op, Box::new(right));
+
+    let mut checker = TypeChecker::new();
+    checker
+        .check_expr(&compare(text("a"), BinOp::Lt, text("b")))
+        .expect("two strings order");
+    checker
+        .check_expr(&compare(text("a"), BinOp::Ge, text("b")))
+        .expect("two strings order");
+
+    let err = checker
+        .check_expr(&compare(Expr::Literal(LiteralVal::Int(1)), BinOp::Lt, text("a")))
+        .expect_err("Int against String");
+    assert!(err.to_string().contains("must be numeric types"), "{err}");
+}

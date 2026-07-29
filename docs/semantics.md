@@ -237,6 +237,20 @@ println(s)                      → Set([<object:80>,<object:82>])
 
 现在只有一份(`RuntimeMapKey::from_value`),两条路都拒绝,错误文本相同。
 
+## 字符串序比较(2026-07-29 裁决)
+
+`"a" < "z"` 可用,按**字节字典序**,长短字符串一视同仁 —— 与 `list.sort()`
+的排序、常量折叠的 `cmp_literal_ordering`、执行器 `number_compare` 的字符串
+分支都是同一条规则。混合类型仍然拒绝(`1 < "a"` 是类型错误)。
+
+此前只有**类型检查器**不许:运行时一直支持,折叠器一直支持,于是问"哪个
+字符串在前"的唯一办法是排一个两元素列表。native 侧那条禁令的注释还写着
+"VM 只支持字符串的 ==/!=" —— 从来不是真的。`lkrt_str_cmp` 返回 -1/0/1,拿
+**同一个**运算符跟 0 比就同时实现了六种,所以放开禁令即可。
+
+差分语料:`differential_equality_and_unique` 的 `str_lt_long` /
+`str_ge_long` / `str_le_equal` / `str_gt_prefix`。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数
