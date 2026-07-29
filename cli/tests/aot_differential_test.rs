@@ -159,6 +159,13 @@ fn differential_equality_and_unique() {
                 "let a = 1.0;\nlet ys = [1, 2];\nreturn a in ys;\n",
             ),
             new("in_misses", "let ys = [1, 2];\nreturn 1.5 in ys;\n"),
+            // A miss is nil on every sequence, not -1: -1 is a valid index (the
+            // last element), so `xs[xs.index_of(v)]` used to answer that
+            // instead of failing.
+            new(
+                "index_of_miss_is_nil",
+                "let xs = [1, 2, 3];\nreturn [xs.index_of(9), xs.index_of(2), \"abc\".index_of(\"z\")];\n",
+            ),
             // Strings order lexicographically on both backends. The type
             // checker used to refuse `<` on them outright, so `sort()` was the
             // only way to ask — and the native lowering, told the VM did not

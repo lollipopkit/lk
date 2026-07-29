@@ -160,8 +160,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         List,
         "index_of",
         &[p("value", "Elem")],
-        "Int",
-        "Position of the first equal element, or -1",
+        "Int?",
+        "Position of the first equal element, or nil",
     ),
     m(
         List,
@@ -343,8 +343,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         Slice,
         "index_of",
         &[p("value", "Elem")],
-        "Int",
-        "Position within the window of the first equal element, or -1",
+        "Int?",
+        "Position within the window of the first equal element, or nil",
     ),
     // A contiguous run of a window is still a window; what `filter` keeps is
     // not contiguous, so it materializes a list.
@@ -412,8 +412,8 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         Bytes,
         "index_of",
         &[p("value", "Int")],
-        "Int",
-        "Position of the first byte equal to `value`, or -1",
+        "Int?",
+        "Position of the first byte equal to `value`, or nil",
     ),
     m(
         Bytes,

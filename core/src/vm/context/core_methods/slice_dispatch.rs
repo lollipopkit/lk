@@ -141,7 +141,7 @@ pub(super) fn dispatch_slice_builtin_method(
             Ok(Some(if method == "contains" {
                 RuntimeVal::Bool(found.is_some())
             } else {
-                RuntimeVal::Int(found.map_or(-1, |index| index as i64))
+                found.map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64))
             }))
         }
         "to_list" => {

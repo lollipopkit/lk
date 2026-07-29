@@ -253,7 +253,7 @@ mod tests {
                 && xs.get(1) == 98 && w.get(1) == 98 && b.get(1) == 98
                 && xs.contains(98) && w.contains(98) && b.contains(98)
                 && xs.index_of(99) == 2 && w.index_of(99) == 2 && b.index_of(99) == 2
-                && xs.index_of(1) == 0 - 1 && w.index_of(1) == 0 - 1 && b.index_of(1) == 0 - 1
+                && xs.index_of(1) == nil && w.index_of(1) == nil && b.index_of(1) == nil
                 && !xs.is_empty() && !w.is_empty() && !b.is_empty()
                 && w.to_list() == xs && b.to_list() == xs;
         "#;
@@ -418,7 +418,7 @@ mod tests {
             let nested = [[1], [2], [1]];
             return ints.contains(2)
                 && ints.index_of(2) == 3
-                && ints.index_of(9) == 0 - 1
+                && ints.index_of(9) == nil
                 && texts.contains("abcdefghij")
                 && texts.index_of("x") == 2
                 && nested.contains([2])

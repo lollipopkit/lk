@@ -71,7 +71,9 @@ pub(super) fn dispatch_bytes_builtin_method(
             let found = u8::try_from(*value)
                 .ok()
                 .and_then(|byte| bytes.iter().position(|candidate| *candidate == byte));
-            Ok(Some(RuntimeVal::Int(found.map_or(-1, |index| index as i64))))
+            Ok(Some(
+                found.map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64)),
+            ))
         }
         "first" => {
             if !positional.is_empty() {

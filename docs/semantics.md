@@ -300,8 +300,8 @@ VM 的语义,补上降低即可。
 `str_index_of_multibyte`、`str_index_of_miss`、
 `str_negative_index_multibyte`、`str_first_last_multibyte`。
 
-**待办**:`List` / `Slice` / `Bytes` 的 `index_of` miss 仍给 -1,和 `String`
-不一致 —— 同一个陷阱(`xs[-1]` 也是合法下标)。
+`List` / `Slice` / `Bytes` 同此:miss 给 nil。差分语料
+`index_of_miss_is_nil`。
 
 ## 错误文本(2026-07-08 裁决)
 

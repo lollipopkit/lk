@@ -30,7 +30,7 @@ exists — they are what a new container type should be checked against:
 |---|---|---|
 | 成员 | `contains(value)` | List / Slice / Bytes / Str / Set |
 | 键成员 | `has(key)` | Map |
-| 位置 | `index_of(needle)` | List / Slice / Bytes / Str |
+| 位置 | `index_of(needle)`,找不到给 nil | List / Slice / Bytes / Str |
 | 读一个 | `get(index)`,越界给 nil | List / Slice / Bytes / Str / Map |
 | 窗口 | `slice(start[, end])`,**起止**不是起点+长度 | List / Slice / Bytes / Str |
 | 前/后 n 个 | `take(n)` / `skip(n)` | List / Slice / Bytes / Str |

@@ -124,8 +124,9 @@ pub(super) fn dispatch_list_builtin_method(
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
-            let index = typed_list_position(list, &positional[0], heap)?.map_or(-1, |index| index as i64);
-            Ok(Some(RuntimeVal::Int(index)))
+            let index = typed_list_position(list, &positional[0], heap)?
+                .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64));
+            Ok(Some(index))
         }
         "is_empty" => {
             if !positional.is_empty() {
