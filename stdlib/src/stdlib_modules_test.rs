@@ -289,6 +289,39 @@ mod tests {
     /// it but not write it back — `base64`, `hex` and `url` next door are all
     /// pairs. Object keys come out sorted (`serde_json::Map` is a `BTreeMap`),
     /// which makes a generated config byte-stable and therefore diffable.
+    /// `..` cancels a *named* component and nothing else.
+    ///
+    /// Two bugs met here. Above a root, a `..` that could not be popped was
+    /// pushed back, so `/../a` normalized to `/../a` — a path that normalizes
+    /// to itself forever, and one no filesystem agrees with (`/..` is `/`).
+    /// And a `..` popped whatever was last, including another `..`, so
+    /// `../..` — two levels up — answered the empty string.
+    #[test]
+    fn test_path_normalize_cancels_only_named_components() -> Result<()> {
+        let out = run(r#"
+            use path;
+            return [
+                path.normalize("/../a"),
+                path.normalize("/a/../.."),
+                path.normalize("/a/../../b"),
+                path.normalize(".."),
+                path.normalize("../.."),
+                path.normalize("a/../../b"),
+                path.normalize("./a/./b"),
+                path.normalize("a/b/../c"),
+            ];
+            "#)?;
+        let list = runtime_list(out.first_return(), out.state.heap());
+        let TypedList::String(values) = list else {
+            panic!("expected a list of strings, got {list:?}");
+        };
+        assert_eq!(
+            values.iter().map(|value| value.as_ref()).collect::<Vec<_>>(),
+            ["/a", "/", "/b", "..", "../..", "../b", "a/b", "a/c"]
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_encoding_stringify_round_trips_and_refuses_what_json_cannot_spell() -> Result<()> {
         let out = run(r#"
