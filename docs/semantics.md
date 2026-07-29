@@ -400,6 +400,11 @@ List/Slice < Map < Set < Object < Callable < Error < 其他):map 和 map 之间
 无界队列现在语言里够不到了,这是有意的:没有上界的队列是一个涨到进程死掉的
 队列。
 
+**`use chan;` 会遮蔽 `chan()` 全局**,因为模块名和构造函数同名。此前这是条
+死路:导入模块之后**没有任何办法**创建 channel。现在模块里有
+`chan.new(capacity[, type])`,和全局 `chan(…)` 共用一份实现 —— 导入之后用
+模块拼写,不导入就用全局。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

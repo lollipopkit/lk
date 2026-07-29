@@ -538,53 +538,12 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     )))))
 }
 
+/// `chan(capacity[, type])` — the bare global, beside `send`/`recv`/`go`.
+///
+/// One implementation with `chan.new(…)`: importing the module shadows this
+/// name, so after `use chan;` the module spelling is the only one there is.
 fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.is_empty() || args.len() > 2 {
-        return Err(anyhow!("chan() expects 1 or 2 arguments: capacity[, type_str]"));
-    }
-    let values = args.as_slice();
-    let capacity = match &values[0] {
-        RuntimeVal::Int(value) => *value,
-        RuntimeVal::Float(value) => *value as i64,
-        other => {
-            return Err(anyhow!(
-                "chan() capacity must be numeric, got {}",
-                runtime_type_name(other, runtime.heap())
-            ));
-        }
-    };
-    let inner_type = if values.len() == 2 {
-        match &values[1] {
-            RuntimeVal::Nil => val::Type::Nil,
-            value => {
-                let text = runtime_string(value, runtime.heap(), "chan() type")?;
-                val::Type::parse(text.as_ref()).unwrap_or(val::Type::Nil)
-            }
-        }
-    } else {
-        val::Type::Nil
-    };
-    // `0` is *unbuffered*, as it is in every channel API a reader has seen —
-    // not unbounded, which is what it used to mean here. A program asking for
-    // the strongest backpressure got none at all, and the queue grew until the
-    // process did. The runtime's mpsc has no true rendezvous form, so `0` takes
-    // the smallest bound it offers; the difference from a rendezvous is one
-    // value in flight, against an unbounded queue as the alternative.
-    if capacity < 0 {
-        return Err(anyhow!("chan() capacity cannot be negative, got {capacity}"));
-    }
-    let cap_opt = Some((capacity as usize).max(1));
-    let channel_id = runtime
-        .async_runtime()
-        .with(|runtime| runtime.create_channel(cap_opt))
-        .map_err(|error| anyhow!("Failed to create channel: {}", error))?;
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(
-        ChannelValue {
-            id: channel_id,
-            capacity: Some(capacity),
-            inner_type,
-        },
-    )))))
+    lk_stdlib_chan::create_channel_value(args, runtime)
 }
 
 /// `send(c, v)` — blocking send. Returns Nil on delivery; raises a
