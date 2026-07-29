@@ -186,6 +186,44 @@ mod tests {
         assert_eq!(t, vec![Token::Str("Unknown\\xEscape".to_string())]);
     }
 
+    /// A character by code point — the only way to write one that cannot be
+    /// typed: a zero-width joiner, a non-breaking space, an astral emoji.
+    /// There was no such escape, and an unknown one is kept verbatim, so
+    /// `"\u{4e2d}"` used to print itself back.
+    #[test]
+    fn braced_unicode_escape() {
+        for (source, expected) in [
+            (r#""\u{4e2d}""#, "\u{4e2d}"),
+            (r#""\u{41}""#, "A"),
+            (r#""\u{1F600}""#, "\u{1F600}"),
+            (r#""a\u{4e2d}b""#, "a\u{4e2d}b"),
+        ] {
+            let tokens = Tokenizer::tokenize(source).expect(source);
+            assert_eq!(tokens, vec![Token::Str(expected.to_string())], "{source}");
+        }
+
+        for source in [
+            r#""\u4e2d""#,      // no braces
+            r#""\u{}""#,        // no digits
+            r#""\u{1234567}""#, // more than six
+            r#""\u{zz}""#,      // not hex
+            r#""\u{D800}""#,    // a surrogate is not a character
+            r#""\u{110000}""#,  // past the last code point
+            r#""\u{4e2d""#,     // unterminated
+        ] {
+            assert!(Tokenizer::tokenize(source).is_err(), "{source} should not lex");
+        }
+    }
+
+    /// An unknown escape keeps its backslash rather than failing, and that is
+    /// load-bearing: a regex pattern is an ordinary string here, so `"\d"` has
+    /// to survive to reach the engine.
+    #[test]
+    fn unknown_escapes_survive_for_regex_patterns() {
+        let tokens = Tokenizer::tokenize(r#""\d+\s*\w""#).expect("lex");
+        assert_eq!(tokens, vec![Token::Str("\\d+\\s*\\w".to_string())]);
+    }
+
     #[test]
     fn string_escape_incomplete() {
         // Test incomplete escape sequence at end of string

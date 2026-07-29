@@ -359,6 +359,37 @@ impl<'a> Tokenizer<'a> {
         Err(anyhow!(self.err("Block comment not closed")))
     }
 
+    /// `u{XXXX}` after a backslash — one to six hex digits naming a Unicode
+    /// scalar value. Leaves `self.idx` just past the closing brace.
+    fn read_braced_unicode_escape(&mut self) -> Result<char> {
+        self.advance_char(); // past 'u'
+        if self.eof() || self.chars[self.idx] != '{' {
+            return Err(anyhow!(
+                self.err("`\\u` must be followed by `{...}`, as in `\\u{4e2d}`")
+            ));
+        }
+        self.advance_char(); // past '{'
+        let mut digits = String::new();
+        while !self.eof() && self.chars[self.idx] != '}' {
+            digits.push(self.chars[self.idx]);
+            self.advance_char();
+        }
+        if self.eof() {
+            return Err(anyhow!(self.err("Unterminated `\\u{...}` escape")));
+        }
+        self.advance_char(); // past '}'
+        if digits.is_empty() || digits.len() > 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(anyhow!(
+                self.err("`\\u{...}` takes one to six hex digits, as in `\\u{4e2d}`")
+            ));
+        }
+        let code = u32::from_str_radix(&digits, 16).expect("checked hex digits");
+        // Surrogates and anything past U+10FFFF are not characters; rejecting
+        // them here is the difference between a clear message and a string that
+        // silently is not what it says.
+        char::from_u32(code).ok_or_else(|| anyhow!(self.err(&alloc::format!("`\\u{{{digits}}}` is not a character"))))
+    }
+
     fn parse_str(&mut self) -> Result<()> {
         // Supports interpolation inside '"' or '\'' using only ${...}
         let mut content = String::new();
@@ -417,8 +448,21 @@ impl<'a> Tokenizer<'a> {
                         '"' => content.push('"'),
                         '$' => content.push('$'),
                         '0' => content.push('\0'),
+                        // `\u{4e2d}` — a character by code point, the only way
+                        // to write one that cannot be typed: a zero-width
+                        // joiner, a non-breaking space, an astral emoji. There
+                        // was none, and an unknown escape is kept verbatim, so
+                        // `"\u{4e2d}"` printed itself back.
+                        'u' => {
+                            let scalar = self.read_braced_unicode_escape()?;
+                            content.push(scalar);
+                            continue;
+                        }
                         _ => {
-                            // For unknown escape sequences, keep the backslash and the character
+                            // An unknown escape keeps its backslash rather than
+                            // failing. That is load-bearing, not laxity: a regex
+                            // pattern is an ordinary string here, and `"\\d"`
+                            // has to survive to reach the engine.
                             content.push('\\');
                             content.push(escaped_char);
                         }
