@@ -842,7 +842,7 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
                 }
             }
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body, .. } => {
             push_generated_statement_origin("expr closure", span.clone(), origins);
             for param in params {
                 push_generated_statement_origin("expr closure_param", span.clone(), origins);

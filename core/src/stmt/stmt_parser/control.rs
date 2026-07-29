@@ -22,6 +22,8 @@ impl<'a> StmtParser<'a> {
         self.expect_token(Token::Semicolon)?;
         let closure = Expr::Closure {
             params: Vec::new(),
+            param_types: Vec::new(),
+            return_type: None,
             body: Box::new(operand),
         };
         Ok(Stmt::Expr(Box::new(Expr::Call(

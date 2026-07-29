@@ -1140,7 +1140,7 @@ mod tests {
         };
         assert_eq!(name, "spawn");
         assert_eq!(args.len(), 1);
-        let Expr::Closure { params, body } = args[0].as_ref() else {
+        let Expr::Closure { params, body, .. } = args[0].as_ref() else {
             panic!("spawn argument must be a closure");
         };
         assert!(params.is_empty());

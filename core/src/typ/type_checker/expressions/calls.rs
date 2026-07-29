@@ -436,9 +436,21 @@ impl TypeChecker {
             // the body is checked against it — `["a"].map(|s| s.bogus())` is a
             // missing method rather than an unknown one.
             let arg_type = match (sig.elementwise_callback == Some(index), arg.as_ref()) {
-                (true, Expr::Closure { params, body }) => {
-                    self.check_closure(params, body, core::slice::from_ref(&sig.elem))?
-                }
+                (
+                    true,
+                    Expr::Closure {
+                        params,
+                        param_types,
+                        return_type,
+                        body,
+                    },
+                ) => self.check_closure(
+                    params,
+                    param_types,
+                    return_type.as_deref(),
+                    body,
+                    core::slice::from_ref(&sig.elem),
+                )?,
                 _ => self.check_expr(arg)?,
             };
             if sig.elementwise_callback == Some(index)

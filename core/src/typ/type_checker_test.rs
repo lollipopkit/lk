@@ -287,6 +287,26 @@ mod tests {
         assert!(check_program("let bad: (Int, Int) -> Int = |x| { return x; };").is_err());
     }
 
+    /// A lambda's own parameter and return types are writable.
+    ///
+    /// It was the one callable in the language whose types could not be written
+    /// down — `Type::Function` has always had both halves, so a lambda's
+    /// parameter type could only be *guessed* from a call site.
+    #[test]
+    fn a_lambda_can_declare_its_own_types() {
+        assert!(check_program("let f = |x: Int| { return x + 1; };").is_ok());
+        assert!(check_program("let g = |a: Int, b: Int| -> Int { return a * b; };").is_ok());
+        assert!(check_program("let h = |s: String| -> Int { return s.len(); };").is_ok());
+        assert!(check_program("let k = |x| -> Int { return x + 1; };").is_ok());
+        assert!(check_program("let m = |xs: List<Int>| -> Int { return xs.len(); };").is_ok());
+        // A comma inside the type does not end the parameter.
+        assert!(check_program("let n = |m: Map<String, Int>, k: String| -> Int { return m.len(); };").is_ok());
+        // The declared return type is checked against, not merely recorded.
+        assert!(check_program("let bad = |x: Int| -> String { return x + 1; };").is_err());
+        // And a declared parameter type is what the body is checked with.
+        assert!(check_program("let bad = |s: String| { return s + 1; };\nlet n: Int = bad(\"a\");").is_err());
+    }
+
     /// A block-bodied closure's `return` is what the closure returns.
     ///
     /// The frame collecting them was popped and discarded, so every such

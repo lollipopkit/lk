@@ -477,7 +477,7 @@ impl ResolverCore {
                     }
                 }
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 // Nested anonymous function
                 let child = self.with_new_function(|this| {
                     for p in params {

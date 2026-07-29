@@ -101,7 +101,7 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
                 }
             }
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body, .. } => {
             let mut nested_bound = bound.clone();
             nested_bound.extend(params.iter().cloned());
             collect_expr_free_vars(body, &mut nested_bound, free);

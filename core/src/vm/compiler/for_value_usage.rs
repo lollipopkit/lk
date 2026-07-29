@@ -143,7 +143,7 @@ fn expr_uses_for_binding_value(expr: &Expr, name: &str) -> bool {
             expr_uses_for_binding_value(value, name)
                 || arms.iter().any(|arm| expr_uses_for_binding_value(&arm.body, name))
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body, .. } => {
             if params.iter().any(|param| param == name) {
                 return false;
             }

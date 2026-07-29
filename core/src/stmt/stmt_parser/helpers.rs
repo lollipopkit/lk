@@ -50,96 +50,26 @@ impl<'a> StmtParser<'a> {
         }
     }
 
+    /// The `: T` of a `let`, a parameter, or a field.
+    ///
+    /// The collecting and rendering live in [`crate::type_syntax`], shared with
+    /// the closure parser — this had been the only copy until a lambda needed
+    /// the same thing in a position that cannot reach this parser.
     pub(super) fn parse_type_annotation(&mut self) -> Result<Type> {
-        let mut type_tokens = Vec::new();
-        let mut paren: i32 = 0;
-        let mut bracket: i32 = 0;
-        let mut brace: i32 = 0;
-        let mut angle: i32 = 0;
-
-        // Collect tokens that make up the type annotation until we hit a token that can't be part of a type
-        while !self.eof() {
-            match &self.tokens[self.pos] {
-                Token::LParen => {
-                    paren += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RParen => {
-                    if paren > 0 {
-                        paren -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::LBracket => {
-                    bracket += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RBracket => {
-                    if bracket > 0 {
-                        bracket -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::LBrace => {
-                    brace += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RBrace => {
-                    if brace > 0 {
-                        brace -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::Lt => {
-                    angle += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::Gt => {
-                    if angle > 0 {
-                        angle -= 1;
-                    }
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::Assign if paren == 0 && bracket == 0 && brace == 0 && angle == 0 => break,
-                Token::Id(_)
-                | Token::Comma
-                | Token::Colon
-                | Token::Assign
-                | Token::FnArrow
-                | Token::Question
-                // `*` starts a pointer type (`*u8`, `*mut u32`). It is the same
-                // token as multiplication, but a type position never contains
-                // one, so there is nothing to disambiguate.
-                | Token::Mul
-                | Token::Pipe => {
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                _ => break,
-            }
-        }
-
-        if type_tokens.is_empty() {
-            return Err(anyhow!(self.err("Expected type annotation")));
-        }
-
-        let type_str = self.tokens_to_type_string(&type_tokens);
-        let parsed_type = Type::parse(&type_str);
-        parsed_type.ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union)
+        else {
+            // Two different reports, told apart by whether anything
+            // type-shaped was there at all — an empty position is a missing
+            // annotation, a non-empty one is a bad type.
+            let spelled = crate::type_syntax::spelling_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union);
+            return Err(anyhow!(if spelled.is_empty() {
+                self.err("Expected type annotation")
+            } else {
+                self.err(&format!("Invalid type: {spelled}"))
+            }));
+        };
+        self.pos = end;
+        Ok(ty)
     }
 
     pub(super) fn parse_inline_type_until_param_delim(&mut self) -> Result<Type> {
@@ -494,6 +424,13 @@ impl<'a> StmtParser<'a> {
         Ok(pattern)
     }
 
+    /// TODO(待删除): the second copy of [`crate::type_syntax::spelling`].
+    ///
+    /// `parse_type_annotation` now goes through the shared one; three positions
+    /// still collect their own tokens with their own stop rules
+    /// (`parse_inline_type_until_param_delim` and the two in `function.rs`) and
+    /// render with this. Give each a `StopAt` variant and this goes away — one
+    /// renderer, or the two will drift.
     pub(super) fn tokens_to_type_string(&self, tokens: &[&Token]) -> String {
         let mut result = String::new();
 

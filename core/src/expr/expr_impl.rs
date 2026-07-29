@@ -159,9 +159,25 @@ pub enum Expr {
     },
     /// Template string: `Hello ${name}!`
     TemplateString(Vec<TemplateStringPart>),
-    /// Closure: |param1, param2| expr
+    /// Closure: `|param1, param2| expr`, optionally annotated —
+    /// `|x: Int, y: Int| -> Int { … }`.
     Closure {
         params: Vec<String>,
+        /// Declared parameter types, positionally; `None` where unannotated.
+        /// Always the same length as `params`.
+        ///
+        /// A lambda used to be the one callable in the language whose types
+        /// could not be written down, even though `Type::Function` has always
+        /// had both halves — so a lambda's parameter type could only ever be
+        /// *guessed* from a call site.
+        param_types: Vec<Option<crate::val::Type>>,
+        /// Declared return type, when written.
+        ///
+        /// Boxed: `Type` is a large enum, and `Expr` is parsed recursively —
+        /// inlining it here grew every parse frame enough to overflow the stack
+        /// at a nesting depth the parser's own guard used to catch first
+        /// (`deeply_nested_match_arms_error_instead_of_overflowing_the_stack`).
+        return_type: Option<Box<crate::val::Type>>,
         body: Box<Expr>,
     },
     /// Expression-level block, primarily for multi-statement closure bodies.
@@ -290,7 +306,7 @@ impl Expr {
                     }
                 }
             }
-            Expr::Closure { params: _, body } => {
+            Expr::Closure { params: _, body, .. } => {
                 body.collect_ctx_names(names);
             }
             Expr::Block(_) | Expr::Try { .. } => {}
@@ -544,10 +560,17 @@ impl Expr {
                 }
                 Expr::TemplateString(folded_parts)
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure {
+                params,
+                param_types,
+                return_type,
+                body,
+            } => {
                 // Closures cannot be folded at compile time due to environment capture
                 Expr::Closure {
                     params: params.clone(),
+                    param_types: param_types.clone(),
+                    return_type: return_type.clone(),
                     body: Box::new(body.fold_constants()),
                 }
             }
@@ -689,7 +712,7 @@ impl Display for Expr {
                 }
                 write!(f, "\"")
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 let params_str = params.join(", ");
                 write!(f, "|{}| {}", params_str, body)
             }

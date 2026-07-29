@@ -71,4 +71,14 @@ accumulate(2);
 assert(total == 23);
 assert(base == 10);
 
+// 9. A lambda may write its own types — parameters, return, or both.
+let typed = |x: Int, y: Int| -> Int { return x * y; };
+assert(typed(3, 4) == 12);
+let only_params = |s: String| { return s.len(); };
+assert(only_params("abcd") == 4);
+let only_return = |x| -> Int { return x + 1; };
+assert(only_return(1) == 2);
+let container_param = |xs: List<Int>| -> Int { return xs.len(); };
+assert(container_param([1, 2, 3]) == 3);
+
 println("closure: all assertions passed");

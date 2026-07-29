@@ -7,6 +7,8 @@ use crate::{
     expr::Expr,
     stmt::{Stmt, StmtParser},
     token::{ParseError, Span, Token},
+    type_syntax::StopAt,
+    val::Type,
 };
 
 /// What a `{ … }` block's final expression means.
@@ -109,21 +111,36 @@ impl<'a> Parser<'a> {
         }
 
         let body = self.parse_expr()?;
+        let param_types = vec![None; params.len()];
         Ok(Expr::Closure {
             params,
+            param_types,
+            return_type: None,
             body: Box::new(body),
         })
     }
 
     /// Parse closure expression: `|param1, param2| expr`.
+    ///
+    /// Each parameter may carry a type, and the whole closure a return type:
+    /// `|x: Int, y: Int| -> Int { … }`. Both are optional and independent — a
+    /// lambda was the one callable in the language whose types could not be
+    /// written down at all, so its parameter types could only be guessed from a
+    /// call site.
+    ///
+    /// A union cannot be written directly in a parameter, because `|` there
+    /// closes the list; it goes through a `type` alias (see
+    /// [`crate::type_syntax`]).
     pub(super) fn parse_closure(&mut self) -> Result<Expr> {
         self.pos += 1;
         let mut params = Vec::new();
+        let mut param_types: Vec<Option<Type>> = Vec::new();
 
         if !self.eof() && self.tokens[self.pos] != Token::Pipe {
             if let Token::Id(param_name) = &self.tokens[self.pos] {
                 params.push(param_name.clone());
                 self.pos += 1;
+                param_types.push(self.parse_closure_param_type()?);
             } else {
                 return Err(anyhow!(
                     self.err("Expected parameter name or '|' after opening '|' in closure")
@@ -135,6 +152,7 @@ impl<'a> Parser<'a> {
                 if let Token::Id(param_name) = &self.tokens[self.pos] {
                     params.push(param_name.clone());
                     self.pos += 1;
+                    param_types.push(self.parse_closure_param_type()?);
                 } else {
                     return Err(anyhow!(self.err("Expected parameter name after comma in closure")));
                 }
@@ -145,6 +163,19 @@ impl<'a> Parser<'a> {
             return Err(anyhow!(self.err("Expected '|' to close parameter list in closure")));
         }
         self.pos += 1;
+
+        // `-> T` before the body. The body is what follows either way, so this
+        // is the only place the arrow can appear.
+        let return_type = if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
+            self.pos += 1;
+            let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureReturn) else {
+                return Err(anyhow!(self.err("Expected a return type after '->' in closure")));
+            };
+            self.pos = end;
+            Some(Box::new(ty))
+        } else {
+            None
+        };
 
         if self.eof() || !self.is_valid_expr_start() {
             return Err(anyhow!(self.err("Expected expression after closure parameters")));
@@ -157,8 +188,23 @@ impl<'a> Parser<'a> {
         };
         Ok(Expr::Closure {
             params,
+            param_types,
+            return_type,
             body: Box::new(body),
         })
+    }
+
+    /// The `: T` after a closure parameter name, when written.
+    fn parse_closure_param_type(&mut self) -> Result<Option<Type>> {
+        if self.eof() || self.tokens[self.pos] != Token::Colon {
+            return Ok(None);
+        }
+        self.pos += 1;
+        let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureParam) else {
+            return Err(anyhow!(self.err("Expected a type after ':' in closure parameter")));
+        };
+        self.pos = end;
+        Ok(Some(ty))
     }
 
     pub(super) fn parse_closure_block_expr(&mut self) -> Result<Expr> {

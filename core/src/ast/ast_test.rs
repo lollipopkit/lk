@@ -637,6 +637,25 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// `Expr` is parsed recursively, so its *size* is part of how deep the
+    /// parser can go before the stack runs out — and the depth guard is only
+    /// useful if it trips first.
+    ///
+    /// Adding a `Type` field to `Expr::Closure` by value (a large enum, inline)
+    /// grew every parse frame enough that
+    /// `deeply_nested_match_arms_error_instead_of_overflowing_the_stack` started
+    /// aborting instead of erroring. Boxing fixed it; this says so out loud, so
+    /// the next field either stays small or is a deliberate decision about the
+    /// depth bound rather than a surprise crash.
+    #[test]
+    fn the_expression_node_stays_small_enough_to_recurse_over() {
+        let size = core::mem::size_of::<crate::expr::Expr>();
+        assert!(
+            size <= 80,
+            "Expr grew to {size} bytes; box the new field or re-tune the parser's depth guard"
+        );
+    }
+
     /// A `match` value is parsed by its own `Parser`; without inheriting the
     /// budget, nesting there would get a fresh allowance each level.
     #[test]

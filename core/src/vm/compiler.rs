@@ -177,7 +177,7 @@ impl Compiler {
             Expr::Call(name, args) => self.lower_named_call(name, args),
             Expr::CallExpr(callee, args) => self.lower_call_expr(callee, args),
             Expr::CallNamed(callee, positional, named) => self.lower_named_arg_call(callee, positional, named),
-            Expr::Closure { params, body } => self.lower_closure(params, body),
+            Expr::Closure { params, body, .. } => self.lower_closure(params, body),
             Expr::Unary(op, inner) => self.lower_unary(op, inner),
             Expr::And(lhs, rhs) => self.lower_short_circuit(lhs, rhs, ShortCircuitKind::And),
             Expr::Or(lhs, rhs) => self.lower_short_circuit(lhs, rhs, ShortCircuitKind::Or),

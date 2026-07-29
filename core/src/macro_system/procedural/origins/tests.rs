@@ -410,6 +410,8 @@ fn generated_remaining_expression_child_role_origins_are_recorded() {
         )))),
         Box::new(Stmt::Expr(Box::new(Expr::Closure {
             params: vec!["current".to_string()],
+            param_types: vec![None],
+            return_type: None,
             body: Box::new(Expr::Var("current".to_string())),
         }))),
         Box::new(Stmt::Expr(Box::new(Expr::Match {

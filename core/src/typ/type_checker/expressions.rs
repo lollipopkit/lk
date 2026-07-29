@@ -881,7 +881,12 @@ impl TypeChecker {
                 }
                 Ok(Type::List(Box::new(Type::Int)))
             }
-            Expr::Closure { params, body } => self.check_closure(params, body, &[]),
+            Expr::Closure {
+                params,
+                param_types,
+                return_type,
+                body,
+            } => self.check_closure(params, param_types, return_type.as_deref(), body, &[]),
             Expr::Match { value, arms } => {
                 // Check the matched value type
                 let value_type = self.check_expr(value)?;
@@ -1797,14 +1802,26 @@ impl TypeChecker {
     /// lambda was typed in isolation as `('T0) -> Any` and that does not unify
     /// with the very annotation written for it, so a lambda could not be
     /// annotated at all while a named `fn` assigned to the same binding fine.
-    pub(crate) fn check_closure(&mut self, params: &[String], body: &Expr, expected_params: &[Type]) -> Result<Type> {
+    pub(crate) fn check_closure(
+        &mut self,
+        params: &[String],
+        declared_param_types: &[Option<Type>],
+        declared_return: Option<&Type>,
+        body: &Expr,
+        expected_params: &[Type],
+    ) -> Result<Type> {
+        // What the closure *says* wins over what the context expects, which
+        // wins over a fresh variable. A declaration is the author stating the
+        // type; a context is an inference about it.
         let param_types: Vec<Type> = params
             .iter()
             .enumerate()
             .map(|(index, _)| {
-                expected_params
+                declared_param_types
                     .get(index)
                     .cloned()
+                    .flatten()
+                    .or_else(|| expected_params.get(index).cloned())
                     .unwrap_or_else(|| self.inference_engine.fresh_type_var())
             })
             .collect();
@@ -1838,14 +1855,36 @@ impl TypeChecker {
         // The body's own type joins in only when it says something: a block
         // ending in a `return` statement types `Any` (there is no tail
         // expression), and letting that in would swallow the union.
-        let ret_type = if collected_returns.is_empty() {
-            body_type
+        let inferred_return = if collected_returns.is_empty() {
+            body_type.clone()
         } else {
-            let mut alternatives = collected_returns;
+            let mut alternatives = collected_returns.clone();
             if body_type != Type::Any {
-                alternatives.push(body_type);
+                alternatives.push(body_type.clone());
             }
             crate::typ::union_of(alternatives)
+        };
+        // A declared return type is checked against, then used: an annotation
+        // that merely renamed the inferred type would state nothing.
+        let ret_type = match declared_return {
+            Some(declared) => {
+                let declared = self.resolve_aliases(declared);
+                let mut actual = collected_returns;
+                if body_type != Type::Any {
+                    actual.push(body_type);
+                }
+                for ty in &actual {
+                    if !self.is_assignable(ty, &declared) {
+                        return Err(anyhow!(
+                            "Return type mismatch in closure: expected {}, got {}",
+                            declared.display(),
+                            ty.display()
+                        ));
+                    }
+                }
+                declared
+            }
+            None => inferred_return,
         };
         Ok(Type::Function {
             params: param_types,

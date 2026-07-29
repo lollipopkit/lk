@@ -173,10 +173,12 @@ impl Stmt {
                         }),
                         Expr::Closure {
                             params: names,
+                            param_types,
+                            return_type,
                             body,
                         },
                     ) if expected_params.len() == names.len() => {
-                        type_checker.check_closure(names, body, expected_params)?
+                        type_checker.check_closure(names, param_types, return_type.as_deref(), body, expected_params)?
                     }
                     _ => value.type_check(type_checker)?,
                 };
