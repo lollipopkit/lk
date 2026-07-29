@@ -307,6 +307,52 @@ mod tests {
         assert!(check_program("let bad = |s: String| { return s + 1; };\nlet n: Int = bad(\"a\");").is_err());
     }
 
+    /// Every context that declares a function type accepts a lambda for it.
+    ///
+    /// A `let` was taught; a struct field was not, so `Handler { run: |x| …  }`
+    /// against `run: (Int) -> Int` was rejected with "got `('T0) -> Any`".
+    /// One helper now answers for all of them.
+    #[test]
+    fn a_declared_function_type_accepts_a_lambda_anywhere() {
+        assert!(check_program("let f: (Int) -> Int = |x| { return x + 1; };").is_ok());
+        assert!(
+            check_program(
+                "struct Handler { run: (Int) -> Int }\nlet h = Handler { run: |x| { return x * 2; } };\nlet n: Int = h.run(4);"
+            )
+            .is_ok()
+        );
+        // And the declaration is still enforced there.
+        assert!(
+            check_program("struct Handler { run: (Int) -> String }\nlet h = Handler { run: |x| { return x * 2; } };")
+                .is_err()
+        );
+    }
+
+    /// A `fn` inside another callable is parsed and then not found by the
+    /// compiler (function indices come from top-level statements only), so it
+    /// used to fail with "Compiler undefined function" — the backend's words for
+    /// a construct the grammar accepted.
+    #[test]
+    fn a_function_cannot_be_declared_inside_another() {
+        let error = check_program("fn outer() -> Int {\n  fn helper(n: Int) -> Int { return n + 1; }\n  return helper(5);\n}")
+            .expect_err("a nested fn is refused");
+        let text = format!("{error:#}");
+        assert!(text.contains("cannot be declared inside another"), "{text}");
+        // The message names both ways to say it instead.
+        assert!(text.contains("top level") && text.contains("closure"), "{text}");
+        // A closure body is a callable body too.
+        assert!(check_program("let f = || { fn helper() -> Int { return 1; } return helper(); };").is_err());
+        // Top level, including mutual recursion, is unaffected — and so are
+        // `impl` methods, which are `fn` declarations at top level.
+        assert!(
+            check_program(
+                "fn is_even(n: Int) -> Bool { if (n == 0) { return true; } return is_odd(n - 1); }\nfn is_odd(n: Int) -> Bool { if (n == 0) { return false; } return is_even(n - 1); }"
+            )
+            .is_ok()
+        );
+        assert!(check_program("struct P { x: Int }\nimpl P {\n  fn get(self) -> Int { return self.x; }\n}").is_ok());
+    }
+
     /// A block-bodied closure's `return` is what the closure returns.
     ///
     /// The frame collecting them was popped and discarded, so every such

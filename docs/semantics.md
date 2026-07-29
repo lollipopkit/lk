@@ -704,6 +704,26 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 函数不能声明在另一个可调用体里面(2026-07-30 裁决)
+
+`fn outer() { fn helper(n) { … } return helper(1); }` 以前**语法上收下**,然后
+编译期报 "Compiler undefined function `helper`" —— 函数下标只从顶层语句收集
+(`collect_function_names`),嵌套的 `fn` 从没拿到过下标。语法接受、后端拒绝,而且
+是用后端的话说的,这是最糟的那种组合。
+
+现在在类型检查里用语言的话拒绝,并且把两条替代路都说出来:挪到顶层,或者
+`let name = |…| …;` 用闭包(需要外层作用域时)。判据是"当前是否在某个可调用体
+里",直接读 return frame —— 每个函数/闭包体开一个,别的都不开,所以不需要第二
+份记账。`impl` 方法不受影响:它们是顶层的 `fn` 声明。
+
+**支持它是一个特性,不是这条修复**:嵌套 `fn` 捕获不了外层(那是 Rust 的规矩),
+所以做法是 hoist 加一个带作用域的名字 —— 见 todos。
+
+顺带:递归因此**只有顶层 `fn` 写得出来**。`let fact = |n| … fact(n-1) …` 报
+"undefined callable"(绑定在自己的初始化式里还不可见),手写 Lua 那套
+`let fact = nil; fact = |n| …;` 过不了类型检查(`fact` 是 Nil,"Cannot call
+non-function type")。这条也在 todos 里。
+
 ## lambda 可以写自己的类型(2026-07-30 补)
 
 `|x: Int, y: Int| -> Int { … }`。此前两者都是**语法错误**,而 `Type::Function`
@@ -717,6 +737,11 @@ impl **后面**也算数:先扫全程序收集,再填。
   它,不然报 "Return type mismatch in closure"。
 - 形参里写不了 union,因为那个位置的 `|` 是参数列表的收尾;括号也不行(带括号
   的类型不在语法里),所以走 `type` 别名 —— 那是同一个类型的第二个拼法。
+
+**每个"声明了函数类型"的上下文都收得下 lambda**(2026-07-30):`let` 教过了,
+结构体字段没教,于是 `Handler { run: |x| … }` 对着 `run: (Int) -> Int` 被拒
+("got `('T0) -> Any`")。现在是**一个** `check_expr_against` 回答所有这类位置 ——
+每个上下文各自教一遍,就等于每个没教到的都在静默拒绝为它写的 lambda。
 
 "哪串 token 是一个类型"这件事以前只在语句 parser 里写了一份,lambda 需要同一
 件事而又到不了那个 parser。现在抽在 `core/src/type_syntax.rs`,两边共用;位置

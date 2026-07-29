@@ -2,7 +2,7 @@ use super::{ForPattern, Program, Stmt};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    expr::{Expr, Pattern},
+    expr::Pattern,
     token::ParseError,
     typ::{
         FunctionSig, NamedParamSig, PendingStrictFunction, PendingStrictParam, StructDef, TraitDef,
@@ -165,23 +165,7 @@ impl Stmt {
                 // binding was accepted. Same narrow bidirectionality as the
                 // machine-int literal rule below, for the same reason: the
                 // alternative is a feature nobody can use.
-                let expr_type = match (type_annotation, value.as_ref()) {
-                    (
-                        Some(Type::Function {
-                            params: expected_params,
-                            ..
-                        }),
-                        Expr::Closure {
-                            params: names,
-                            param_types,
-                            return_type,
-                            body,
-                        },
-                    ) if expected_params.len() == names.len() => {
-                        type_checker.check_closure(names, param_types, return_type.as_deref(), body, expected_params)?
-                    }
-                    _ => value.type_check(type_checker)?,
-                };
+                let expr_type = type_checker.check_expr_against(value, type_annotation.as_ref())?;
                 // Reached: statements below this one may read it. Done after
                 // the value, so `const A = A + 1;` still reports the read.
                 for name in pattern_names(pattern) {
@@ -384,6 +368,22 @@ impl Stmt {
                 body,
                 named_params,
             } => {
+                // A `fn` inside another callable is *parsed*, and then the
+                // compiler cannot find it: function indices are collected from
+                // top-level statements only, so `fn outer() { fn helper() {…}
+                // return helper(1); }` failed with "Compiler undefined function
+                // `helper`" — a construct the grammar accepts and the backend
+                // does not, reported in the backend's words.
+                //
+                // Refused here, in the language's words, with both ways to say
+                // it instead. Supporting it is a feature (a nested `fn` cannot
+                // capture, so it is a hoist plus a scoped name), not this.
+                if type_checker.inside_callable_body() {
+                    return Err(anyhow!(format!(
+                        "a function cannot be declared inside another: move `{name}` to the top level, \
+                         or bind a closure with `let {name} = |…| …;` if it needs the enclosing scope"
+                    )));
+                }
                 type_checker.push_scope();
                 // A body runs after the whole top level, so it may read a
                 // binding declared below it.

@@ -502,7 +502,7 @@ impl TypeChecker {
                     // Provided -> check existence and type
                     for (fname, fexpr) in fields {
                         let expected = schema.get(fname).cloned();
-                        let at = self.check_expr(fexpr)?;
+                        let at = self.check_expr_against(fexpr, expected.as_ref())?;
                         if let Some(expected) = expected {
                             if !self.is_assignable(&at, &expected) {
                                 return Err(Self::type_err(
@@ -650,7 +650,7 @@ impl TypeChecker {
                                 Some(e.as_ref().clone()),
                             ));
                         }
-                        let at = self.check_expr(e)?;
+                        let at = self.check_expr_against(e, schema.get(n))?;
                         if let Some(expected) = schema.get(n)
                             && !self.is_assignable(&at, expected)
                         {
@@ -1802,6 +1802,35 @@ impl TypeChecker {
     /// lambda was typed in isolation as `('T0) -> Any` and that does not unify
     /// with the very annotation written for it, so a lambda could not be
     /// annotated at all while a named `fn` assigned to the same binding fine.
+    /// Types `expr` **against** what the context declares, when that changes
+    /// the answer.
+    ///
+    /// Today one shape needs it: a lambda. Checked in isolation a lambda types
+    /// as `('T0) -> Any`, which does not unify with the function type written
+    /// for it — so every context that declares one had to be taught separately,
+    /// and each that was not silently rejected the lambda written for it. A
+    /// `let` was, a struct field was not.
+    ///
+    /// Everything else is plain `check_expr`: this is a narrow bidirectional
+    /// rule, not a second type checker.
+    pub(crate) fn check_expr_against(&mut self, expr: &Expr, expected: Option<&Type>) -> Result<Type> {
+        if let Some(Type::Function {
+            params: expected_params,
+            ..
+        }) = expected.map(|ty| self.resolve_aliases(ty))
+            && let Expr::Closure {
+                params,
+                param_types,
+                return_type,
+                body,
+            } = expr
+            && expected_params.len() == params.len()
+        {
+            return self.check_closure(params, param_types, return_type.as_deref(), body, &expected_params);
+        }
+        self.check_expr(expr)
+    }
+
     pub(crate) fn check_closure(
         &mut self,
         params: &[String],

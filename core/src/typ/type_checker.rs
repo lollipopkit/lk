@@ -732,6 +732,15 @@ impl TypeChecker {
         self.return_frames.push(Vec::new());
     }
 
+    /// Whether the walk is currently inside a function or closure body.
+    ///
+    /// The return frames answer this exactly — one is open for the duration of
+    /// every callable body and nothing else — so there is no second piece of
+    /// bookkeeping to keep in step.
+    pub fn inside_callable_body(&self) -> bool {
+        !self.return_frames.is_empty()
+    }
+
     /// Closes the innermost frame and yields the return types seen in it.
     pub fn pop_return_frame(&mut self) -> Vec<Type> {
         self.return_frames.pop().unwrap_or_default()
