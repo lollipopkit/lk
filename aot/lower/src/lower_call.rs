@@ -557,3 +557,100 @@ pub(crate) fn lower_user_call(
     }
     Ok(())
 }
+
+/// `CallNamed` — a call written with `name: value` arguments.
+///
+/// The whole opcode had no native lowering, so every named call dropped its
+/// module to the VM. That became load-bearing when `module.Type { … }` started
+/// desugaring to one (`stmt::struct_ctors`), which is how a cross-module struct
+/// literal is built.
+///
+/// It devirtualizes the same way a positional call does, plus one step: the
+/// argument *order*. The window is `[base]` callee, `positional` values, then
+/// `named_count` (name, value) pairs — and every name is a string constant the
+/// compiler emitted, so the permutation into the callee's frame order is a
+/// compile-time fact. `FunctionData::param_names` is that order, and
+/// `positional_param_count` is where the named ones begin.
+///
+/// Rejects rather than guesses when anything is not statically known: a name
+/// that is not a constant, a callee with no name metadata, a missing or
+/// duplicate name, or a parameter with a default the call site omits (the
+/// default expression lives in the callee's body, which the VM evaluates on
+/// entry — there is nothing to read here).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_named_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    callee_idx: usize,
+    base: u8,
+    positional_count: usize,
+    named_count: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let reject = || Unsupported::Opcode {
+        pc,
+        op: Opcode::CallNamed,
+    };
+    let callee = funcs.get(callee_idx).ok_or_else(reject)?;
+    if callee_idx == entry as usize || callee.capture_count != 0 {
+        return Err(reject());
+    }
+    let param_count = callee.param_count as usize;
+    let declared_positional = callee.positional_param_count as usize;
+    if callee.param_names.len() != param_count
+        || positional_count != declared_positional
+        || positional_count + named_count != param_count
+    {
+        return Err(reject());
+    }
+
+    // Frame order: the positional prefix as written, then each named parameter
+    // filled from whichever pair carries its name.
+    let mut args: Vec<Option<(ValueId, Ty)>> = vec![None; param_count];
+    for (i, slot) in args.iter_mut().enumerate().take(positional_count) {
+        *slot = Some(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+    }
+    for pair in 0..named_count {
+        let name_reg = base
+            .wrapping_add(1)
+            .wrapping_add(positional_count as u8)
+            .wrapping_add((pair * 2) as u8);
+        let value_reg = name_reg.wrapping_add(1);
+        let name = ssa
+            .read(name_reg, block, pc)
+            .ok()
+            .and_then(|(v, _)| ssa.const_strs.get(&v).cloned())
+            .or_else(|| ssa.reg_const_str(name_reg, block))
+            .ok_or_else(reject)?;
+        let slot = callee.param_names[declared_positional..]
+            .iter()
+            .position(|param| &**param == name.as_str())
+            .ok_or_else(reject)?
+            + declared_positional;
+        if args[slot].is_some() {
+            return Err(reject());
+        }
+        args[slot] = Some(ssa.read(value_reg, block, pc)?);
+    }
+    let args = args.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
+
+    let (dst, ty) = emit_call_with_args(ssa, insts, funcs, entry, sig, callee_idx, args, Opcode::CallNamed, pc)?;
+    // A struct constructor's result *is* that struct. Provenance otherwise
+    // comes only from a `NewObject`, and a cross-module literal has none here —
+    // the object is built by the other module. Without this, a method on the
+    // result (`types.Pt { … }.norm()`) had an untyped receiver and fell out of
+    // the devirtualizing path.
+    if let Some(struct_name) = callee
+        .debug_name
+        .as_deref()
+        .and_then(lk_core::stmt::struct_ctors::constructed_struct_name)
+    {
+        ssa.struct_types.insert(dst, struct_name.to_string());
+    }
+    ssa.write(base, block, (dst, ty));
+    Ok(())
+}

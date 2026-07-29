@@ -258,13 +258,20 @@ argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 
 这类程序不再可用。它本来连 `fn` 都装不下,所以 `compile_source` 改走模块路径,
 反而更能干。基准 geomean 1.001x → 1.008x,无系统性回退。
 
-**尚未原生降低**:`CallNamed` 整条 opcode 都还没有 AOT 降低,所以用了跨模块
-字面量的程序会回落到 VM(答案正确,只是慢)。这也是这条特性暂时没有进
-`examples/` 的原因 —— coverage 门禁要求每个 example 全原生降低,而往
-`AOT_COVERAGE_ALLOW` 里加一条会破坏"那张表是空的"这个来之不易的性质。补上
-`CallNamed` 的降低会同时解锁语言里**所有**具名调用:callee 静态已知、每个
-实参名都是常量,所以排列在编译期就能算出来(`FunctionData::param_names` 给的
-就是槽序)。
+**原生降低已补齐**(同日):`CallNamed` 整条 opcode 此前没有 AOT 降低,所以
+每一个具名调用都会把模块拖回 VM。现在它和位置调用一样 devirtualize,多一步是
+实参**顺序** —— 每个名字都是编译器发出的常量,所以排列是编译期事实
+(`FunctionData::param_names` 给槽序,`positional_param_count` 给分界)。
+构造函数的**返回值**也带上了类型出身,否则
+`types.Pt { … }.x` 之后的方法调用又会因为接收者无类型而掉出去。
+
+顺带把 `emit_trait_call` 改名成 `emit_call_with_args`:它并不特属 trait,而是
+"实参已按帧序排好"的那个发射器 —— trait 分发把 `self` 放在最前,具名调用按名字
+排列,两者要的是同一件事。
+
+仍不降低的是**跨模块 trait 方法**(`types.make(3,4).norm()`):AOT 的 trait
+环境只扫主模块,导入模块里注册的 impl 不在其中。与构造方式无关 —— 用老的
+构造函数写法一样不降低。
 
 ## 模块与 IO
 

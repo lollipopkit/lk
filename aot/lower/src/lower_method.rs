@@ -174,7 +174,18 @@ pub(crate) fn lower_trait_method_k(
         for i in 0..argc {
             call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
         }
-        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, call_args, pc).map(Some);
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            call_args,
+            Opcode::CallMethodK,
+            pc,
+        )
+        .map(Some);
     }
     if receiver_ty == Ty::Dyn
         && argc == 0
@@ -220,10 +231,17 @@ pub(crate) fn lower_trait_method_k(
     Ok(None)
 }
 
-/// Emits a devirtualized trait-impl call (`self` is the first argument),
-/// refining the callee's signature through the shared parameter lattice.
+/// Emits a devirtualized call to `fidx` with arguments **already in frame
+/// order**, refining the callee's signature through the shared parameter
+/// lattice.
+///
+/// The window-order readers (`lower_user_call`) cannot serve a call whose
+/// arguments are not laid out in parameter order: trait dispatch puts `self`
+/// first, and a named call (`lower_named_call`) permutes by name. `label` is
+/// the opcode a rejection should name, since that is the only thing the two
+/// callers do not share.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_trait_call(
+pub(crate) fn emit_call_with_args(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     funcs: &[FunctionData],
@@ -231,6 +249,7 @@ pub(crate) fn emit_trait_call(
     sig: &mut SigInfer,
     fidx: usize,
     call_args: Vec<(ValueId, Ty)>,
+    label: Opcode,
     pc: usize,
 ) -> Result<(ValueId, Ty), Unsupported> {
     if fidx >= funcs.len()
@@ -238,10 +257,7 @@ pub(crate) fn emit_trait_call(
         || funcs[fidx].param_count as usize != call_args.len()
         || funcs[fidx].capture_count != 0
     {
-        return Err(Unsupported::Opcode {
-            pc,
-            op: Opcode::CallMethodK,
-        });
+        return Err(Unsupported::Opcode { pc, op: label });
     }
     if sig.specialized.get(fidx).copied().unwrap_or(false) {
         sig.conflict = true;
@@ -301,7 +317,17 @@ pub(crate) fn apply_display_show(
             .impls
             .get(&(type_name, crate::trait_env::IMPLICIT_METHOD_HOOKS[0].to_string()))
     {
-        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, vec![(v, ty)], pc);
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            vec![(v, ty)],
+            Opcode::CallMethodK,
+            pc,
+        );
     }
     Ok((v, ty))
 }

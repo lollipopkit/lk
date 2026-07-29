@@ -898,6 +898,15 @@ fn differential_trait_dispatch_contract() {
             // dangling callee and the module fails MIR validation, so this
             // pins both halves at once: an uncalled `unused` alongside a
             // `show` that only `"${…}"` reaches.
+            // A named call devirtualizes like a positional one, plus the
+            // argument *order*: every name is a constant, so the permutation
+            // into the callee's frame order is a compile-time fact. The whole
+            // opcode had no lowering, which mattered once `module.Type { … }`
+            // started desugaring to one.
+            new(
+                "named_call_permutes_arguments",
+                "fn mk({x: Int, y: Int}) -> Int { return x * 10 + y; }\nfn pos(a: Int, {b: Int}) -> Int { return a * 100 + b; }\nprintln(mk(y: 2, x: 3));\nprintln(mk(x: 1, y: 9));\nprintln(pos(7, b: 4));\nreturn 0;\n",
+            ),
             new(
                 "trait_show_hook_and_uncalled",
                 "trait Show { fn show(self) -> String; }\nstruct R { w: Int }\nimpl Show for R { fn show(self) -> String { return \"R!\"; } }\ntrait Extra { fn unused(self, s: String) -> Int; }\nimpl Extra for R { fn unused(self, s: String) -> Int { return s.len(); } }\nlet r = R { w: 3 };\nprintln(\"${r}\");\nreturn 0;\n",

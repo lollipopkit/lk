@@ -34,4 +34,11 @@ assert(f30 == 832040);
 use { iterative } from "../general/fib";
 assert(iterative(10) == 55);
 
+// 8. Construct a type the imported module declares — the module builds it, so
+// the value carries that module's type identity.
+use "../general/point";
+let pt = point.Pt { x: 3, y: 4 };
+assert(pt.x == 3);
+assert(point.manhattan(pt) == 7);
+
 println("use_forms: all assertions passed");

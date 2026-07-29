@@ -85,6 +85,34 @@ pub(super) fn lower(
             ssa.builtin_regs
                 .insert((block, instr.a()), GlobalRef::Closure(fidx as u32, captures));
         }
+        // `abx(CallNamed, call_base, (named_count << 7) | positional_count)`:
+        // the callee sits at `call_base`, the positional arguments follow it,
+        // then `named_count` (name, value) pairs. The callee is resolved the
+        // same way `Call` does; the arguments are permuted into frame order by
+        // name (see `lower_named_call`).
+        Opcode::CallNamed => {
+            let base = instr.a();
+            let payload = instr.bx();
+            let positional_count = (payload & 0x7F) as usize;
+            let named_count = (payload >> 7) as usize;
+            let callee_idx = match ssa.builtin_ref_at(base, block) {
+                Some(GlobalRef::Lambda(fidx)) | Some(GlobalRef::UserFn(fidx)) => fidx as usize,
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            };
+            lower_named_call(
+                ssa,
+                insts,
+                funcs,
+                entry,
+                sig,
+                callee_idx,
+                base,
+                positional_count,
+                named_count,
+                block,
+                pc,
+            )?;
+        }
         Opcode::Call => {
             // Register-window call: `a` = window base (the callee slot), `c` =
             // positional count, args at `[a+1, a+1+c)`. Only calls whose callee

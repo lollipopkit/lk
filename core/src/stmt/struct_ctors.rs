@@ -42,6 +42,17 @@ pub fn constructor_name(struct_name: &str) -> String {
     alloc::format!("{struct_name}$new")
 }
 
+/// The struct a function constructs, if its name is a constructor's.
+///
+/// The inverse of [`constructor_name`], and the only place the `$new` spelling
+/// is decoded. Three things need it and none of them may spell it themselves:
+/// the type checker (so a field error says *field*, not "named argument"), the
+/// AOT lowering (so the call's result carries the struct's type identity, which
+/// is what makes a method on it devirtualize), and this module.
+pub fn constructed_struct_name(function_name: &str) -> Option<&str> {
+    function_name.strip_suffix("$new")
+}
+
 /// Adds a constructor function after every top-level `struct` declaration.
 pub fn add_struct_constructors(statements: &mut Vec<Box<Stmt>>) {
     let mut out: Vec<Box<Stmt>> = Vec::with_capacity(statements.len());

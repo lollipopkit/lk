@@ -75,7 +75,9 @@ pub(crate) fn lower_inst(
             string::lower(ctx, block, insts, instr, pc)
         }
 
-        CallMethodK | CallDirect | LoadFunction | MakeClosure | Call => call::lower(ctx, block, insts, instr, pc),
+        CallMethodK | CallDirect | CallNamed | LoadFunction | MakeClosure | Call => {
+            call::lower(ctx, block, insts, instr, pc)
+        }
 
         LoadCapture | LoadCellVal | StoreCellVal | SetGlobal | GetGlobal => global::lower(ctx, block, insts, instr, pc),
 

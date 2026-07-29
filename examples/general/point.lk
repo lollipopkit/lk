@@ -1,0 +1,6 @@
+// A module that declares a type is the one that builds it: `point.Pt { … }` is
+// sugar for a call to the constructor sitting beside the declaration, so the
+// value carries this module's type identity (see docs/semantics.md).
+struct Pt { x: Int, y: Int }
+
+fn manhattan(p: Pt) -> Int { return p.x + p.y; }

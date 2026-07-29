@@ -2371,9 +2371,7 @@ fn constructed_struct_name(callee: &Expr) -> Option<String> {
     let Expr::Literal(name) = field.as_ref() else {
         return None;
     };
-    name.as_str()?
-        .strip_suffix("$new")
-        .map(alloc::string::ToString::to_string)
+    crate::stmt::struct_ctors::constructed_struct_name(name.as_str()?).map(alloc::string::ToString::to_string)
 }
 
 fn missing_named_message(constructed: Option<&str>, name: &str) -> String {
