@@ -877,9 +877,7 @@ fn innermost_visible_first(
         // block (top level) and so encloses everything.
         let sees_cursor = match (block, cursor_block) {
             (None, _) => true,
-            (Some(declared), Some(at_cursor)) => {
-                declared.0 <= at_cursor.0 && at_cursor.1 <= declared.1
-            }
+            (Some(declared), Some(at_cursor)) => declared.0 <= at_cursor.0 && at_cursor.1 <= declared.1,
             (Some(_), None) => false,
         };
         if declared_before && sees_cursor {

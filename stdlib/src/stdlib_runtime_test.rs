@@ -163,13 +163,7 @@ mod tests {
     /// `substring`'s third parameter was documented as `end` while it is a
     /// length, and `byte_at` was called `byte` here and answered -1 there.
     /// Every one of them was found by comparing, not by reading.
-    ///
-    /// The two spellings have drifted apart in *name* since: the methods
-    /// `find`/`substring` are gone in favour of `index_of`/`slice`, and the
-    /// module still spells them the old way. The pairs below compare across
-    /// that gap on purpose — they are what will catch the module rename when it
-    /// lands. TODO: rename `string.find`/`string.substring` to
-    /// `index_of`/`slice` and make these lines symmetric again.
+
     #[test]
     fn the_string_module_is_a_spelling_of_the_string_methods() -> Result<()> {
         let source = r#"
@@ -190,10 +184,10 @@ mod tests {
                 if (s.contains("b") != string.contains(s, "b")) { mismatch.push("contains"); }
                 if (s.starts_with("a") != string.starts_with(s, "a")) { mismatch.push("starts_with"); }
                 if (s.ends_with("c") != string.ends_with(s, "c")) { mismatch.push("ends_with"); }
-                if (s.index_of("b") != string.find(s, "b")) { mismatch.push("index_of"); }
-                if (s.index_of("zz") != string.find(s, "zz")) { mismatch.push("index_of-miss"); }
+                if (s.index_of("b") != string.index_of(s, "b")) { mismatch.push("index_of"); }
+                if (s.index_of("zz") != string.index_of(s, "zz")) { mismatch.push("index_of-miss"); }
                 if (s.repeat(2) != string.repeat(s, 2)) { mismatch.push("repeat"); }
-                if (s.slice(1, 3) != string.substring(s, 1, 2)) { mismatch.push("slice"); }
+                if (s.slice(1, 3) != string.slice(s, 1, 3)) { mismatch.push("slice"); }
                 if (s.replace("X", "-") != string.replace(s, "X", "-")) { mismatch.push("replace"); }
                 if (s.byte_at(0) != string.byte_at(s, 0)) { mismatch.push("byte_at"); }
                 if (s.byte_at(99) != string.byte_at(s, 99)) { mismatch.push("byte_at-oob"); }

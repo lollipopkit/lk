@@ -62,9 +62,9 @@ exists — they are what a new container type should be checked against:
 
 `slice` 取**起止**是硬规则。曾经 `String` 只有 `substring(start, length)`,
 于是 `xs.slice(1, 3)` 和 `s.substring(1, 3)` 从同样的数字里切出不同的
-窗口 —— 同形的调用,不同的语义,是陷阱不是特性。方法 `substring` 与
-`find` 已删(语料一并迁移);模块拼写 `string.substring` / `string.find`
-还在,待改名成 `slice` / `index_of`。
+窗口 —— 同形的调用,不同的语义,是陷阱不是特性。`substring` 与 `find` 两
+种拼写(方法与模块函数)都已删除,统一为 `slice` 与 `index_of`;模块的
+`string.index_of` 多一个可选的起始位置,那是方法形式没地方放的东西。
 
 `Set.has` 也已删:它是 `contains` 的纯别名。`Map.has` 留着 —— 见上面
 那条,它问的是键,不是同义词。
@@ -181,23 +181,19 @@ nothing and only gives the caller a way to be explicit.
 
 ### Why the rule earns its keep
 
-These three operations are siblings, and the same `(2, 3)` means three things:
+These operations are siblings, and the same `(2, 3)` used to mean two things:
 
 ```lk
-"abcdef".substring(2, 3)        // "cde"  — the third argument is a *length*
+"abcdef".substring(2, 3)        // "cde"  — the third argument was a *length*
 [1,2,3,4,5,6].slice(2, 3)       // [3]    — the third argument is an *end*
 bytes.slice(b, 2, 3)            // "c"    — the third argument is an *end*
 ```
 
-No amount of care at the call site distinguishes `substring(s, 2, 3)` from
-`slice(xs, 2, 3)`; only the declaration knows, and only a name carries the
-declaration to where the code is read. `substring(s, start: 2, length: 3)`
-cannot be misread.
-
-(That `substring` counts a length while its two siblings take an end is a
-separate question — a real inconsistency, and changing it would change what
-existing programs compute. Naming the parameter makes the current answer
-legible; it does not decide the larger question.)
+No amount of care at the call site distinguished `substring(s, 2, 3)` from
+`slice(xs, 2, 3)`; only the declaration knew. `substring` is gone — every
+window in the language now takes a start and an *end* — but the rule stands for
+the arguments that remain unlike each other: `string.slice(s, start: 2, end: 5)`
+and `bytes.slice(b, 0, end: 2)` cannot be misread, and the names cost nothing.
 
 ## Examples
 

@@ -200,10 +200,7 @@ fn differential_equality_and_unique() {
                 "str_index_of_multibyte",
                 "let s = \"héllo wörld\";\nreturn s.index_of(\"wörld\");\n",
             ),
-            new(
-                "str_index_of_miss",
-                "let s = \"héllo\";\nreturn s.index_of(\"zz\");\n",
-            ),
+            new("str_index_of_miss", "let s = \"héllo\";\nreturn s.index_of(\"zz\");\n"),
             new(
                 "str_negative_index_multibyte",
                 "let s = \"中文abc\";\nreturn s[-1] + s[-5];\n",

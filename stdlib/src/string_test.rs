@@ -104,11 +104,11 @@ mod tests {
                 "{name} should have fixed positional arity"
             );
         }
-        // `substring` joins these: a named parameter does not occupy a
+        // `slice` joins these: a named parameter does not occupy a
         // positional slot, so a call using one supplies fewer arguments than
         // the declaration lists, and a fixed arity would reject it before the
-        // export ran (`substring(s, start: 2, length: 3)`).
-        for name in ["replace", "find", "format", "substring"] {
+        // export ran (`slice(s, start: 2, end: 5)`).
+        for name in ["replace", "index_of", "format", "slice"] {
             let (arity, function) = string_native(name)?;
             assert!(matches!(function, NativeFunction::Plain(_)));
             assert_eq!(arity, NativeEntry::VARIADIC);
@@ -130,9 +130,9 @@ mod tests {
         let source = r#"
             use string;
             use bytes;
-            let all_positional = string.substring("hello", 1, 2);
-            let all_named = string.substring("hello", start: 1, length: 2);
-            let mixed = string.substring("hello", 1, length: 2);
+            let all_positional = string.slice("hello", 1, 3);
+            let all_named = string.slice("hello", start: 1, end: 3);
+            let mixed = string.slice("hello", 1, end: 3);
             let sliced = bytes.slice(bytes.from_list([1, 2, 3]), 0, end: 2);
             let window = if sliced.len() == 2 { "two" } else { "wrong" };
             return [all_positional, all_named, mixed, window];
@@ -210,13 +210,13 @@ mod tests {
     }
 
     #[test]
-    fn test_string_substring_out_of_range_is_empty() -> Result<()> {
+    fn test_string_slice_out_of_range_is_empty() -> Result<()> {
         // Clamped, not an error — the same as everywhere else a position runs
         // past the end in this language: `s[1..99]` answers `"bc"`,
         // `xs[0..99]` answers the whole list, `xs.get(99)` answers nil. This
         // was the module form's own convention (it raised) while the method
         // form clamped, so the two disagreed about the same call.
-        let result = execute_string("use string; return string.substring(\"abc\", 10, 1);")?;
+        let result = execute_string("use string; return string.slice(\"abc\", 10, 11);")?;
         assert_eq!(
             result.first_return(),
             &RuntimeVal::ShortStr(ShortStr::new("").expect("empty"))
@@ -238,9 +238,9 @@ mod tests {
             let s = "héllo wörld";
             return [
                 s.len() == string.len(s),
-                s.index_of("wörld") == string.find(s, "wörld"),
-                s.index_of("zz") == string.find(s, "zz"),
-                s.slice(2, 5) == string.substring(s, 2, 3),
+                s.index_of("wörld") == string.index_of(s, "wörld"),
+                s.index_of("zz") == string.index_of(s, "zz"),
+                s.slice(2, 5) == string.slice(s, 2, 5),
                 s.slice(0, s.len()) == s,
                 s.slice(s.index_of("wörld"), s.index_of("wörld") + 5) == "wörld",
                 s.len() == 11,

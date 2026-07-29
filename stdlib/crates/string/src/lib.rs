@@ -120,21 +120,32 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    // `length`, not `end`: the third argument is a count of characters, which
-    // is what the body has always done (`util::text::substring(.., start,
-    // length)`) and what the method form declares. The name said `end`, so
-    // hover and completion told the reader to write `substring(s, 2, 5)` for
-    // the substring the language spells `substring(s, 2, 3)`.
-    #[stdlib_export(params(text: String, start: Int, length: Int), named(start, length), returns = String)]
-    fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    /// `s.slice(start[, end])`, spelled as a function.
+    ///
+    /// **Start and end**, not start and length. This was `substring(s, start,
+    /// length)` — the one place in the language where a window was given a
+    /// count, so `xs.slice(1, 3)` and `substring(s, 1, 3)` cut different
+    /// windows out of the same two numbers. The method form is gone; this is
+    /// what it became.
+    ///
+    /// Character positions, and never a panic: byte slicing halted on a
+    /// multi-byte boundary, which on an MCU is a halt rather than a message.
+    /// Out of range clamps.
+    #[stdlib_export(params(text: String, start: Int, end?: Int), named(start, end), returns = String)]
+    fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() != 2 && args.len() != 3 {
+            bail!("slice() takes 2 or 3 arguments: string, start[, end]");
+        }
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
-        let start = usize_arg(&values[1], "substring() second argument")?;
-        let length = usize_arg(&values[2], "substring() third argument")?;
-        // Character positions, and never a panic: byte slicing halted on a
-        // multi-byte boundary, which on an MCU means a halt rather than a
-        // message. Out of range yields an empty string, as the method form did.
-        let text = lk_core::util::text::substring(&value, start, length);
+        let value = runtime_string_arg(&values[0], runtime.heap(), "slice() first argument")?;
+        let start = usize_arg(&values[1], "slice() second argument")?;
+        let total = lk_core::util::text::char_len(&value);
+        let end = match values.get(2) {
+            Some(RuntimeVal::Nil) | None => total,
+            Some(_) => usize_arg(&values[2], "slice() third argument")?,
+        };
+        let end = end.min(total);
+        let text = lk_core::util::text::substring(&value, start, end.saturating_sub(start));
         Ok(runtime_string_value(text, runtime.heap_mut()))
     }
 
@@ -224,21 +235,27 @@ impl StringModule {
         ))
     }
 
+    /// `s.index_of(needle)`, spelled as a function, plus an optional position
+    /// to start looking from — which the method form has no room for.
+    ///
+    /// This was `find`. The sequence surface calls it `index_of` everywhere
+    /// else, and a module function that is a spelling of a method should not
+    /// need a second name.
     #[stdlib_export(params(text: String, needle: String, start?: Int), returns = Int?)]
-    fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    fn index_of(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
-            bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
+            bail!("index_of() takes 2 or 3 arguments: string, needle[, start]");
         }
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "find() first argument")?;
-        let pattern = runtime_string_arg(&values[1], runtime.heap(), "find() second argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "index_of() first argument")?;
+        let pattern = runtime_string_arg(&values[1], runtime.heap(), "index_of() second argument")?;
         let start = if values.len() == 3 {
-            usize_arg(&values[2], "find() third argument")?
+            usize_arg(&values[2], "index_of() third argument")?
         } else {
             0
         };
         // Character positions in and out, so the answer can be handed straight
-        // to `substring`. `start` past the end simply finds nothing.
+        // to `slice`. `start` past the end simply finds nothing.
         Ok(
             lk_core::util::text::find_char_index_from(&value, pattern.as_ref(), start)
                 .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64)),
