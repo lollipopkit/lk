@@ -27,7 +27,11 @@ impl TaskModule {
         let value = runtime
             .async_runtime()
             .with(|rt| rt.block_on(rt.join_task(task.id)))
-            .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+            // The cause, unwrapped: a task that raised `modulo by zero` has to
+            // say that and not `Failed to await task: modulo by zero`, or the
+            // same failure reads differently depending on whether it crossed a
+            // task boundary. See the error-text ruling in `docs/semantics.md`.
+            ?;
         value.into_value(runtime.heap_mut())
     }
 
@@ -42,15 +46,23 @@ impl TaskModule {
         }
     }
 
-    #[stdlib_export(name = "join_all", params(...tasks: Task), returns = List)]
+    /// Awaits several tasks and answers their values, in the order given.
+    ///
+    /// Takes either the tasks themselves or **one list of them**. The list form
+    /// is the point: tasks are collected in a loop, the language has no spread
+    /// operator, and variadic-only meant there was no way at all to join a
+    /// number of tasks the program did not know when it was written — which is
+    /// what `join_all` is for.
+    #[stdlib_export(name = "join_all", params(...tasks: Any), returns = List)]
     fn join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args.as_slice() {
+        let tasks = match args.as_slice() {
+            [single] => task_list_arg(single, runtime.heap()),
+            many => many.to_vec(),
+        };
+        let mut values = Vec::with_capacity(tasks.len());
+        for arg in &tasks {
             let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
-            let value = runtime
-                .async_runtime()
-                .with(|rt| rt.block_on(rt.join_task(task.id)))
-                .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+            let value = runtime.async_runtime().with(|rt| rt.block_on(rt.join_task(task.id)))?;
             values.push(value.into_value(runtime.heap_mut())?);
         }
         let list = crate::typed_list_from_values(values, runtime.heap());
@@ -103,6 +115,22 @@ impl TaskModule {
                 })
             })
             .map_err(|err| anyhow!("Failed to sleep: {err}"))
+    }
+}
+
+/// The elements of a list argument, or the argument itself when it is not one.
+///
+/// Lets `join_all` take `[t1, t2]` as well as `t1, t2` without a second export.
+fn task_list_arg(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+    let RuntimeVal::Obj(handle) = value else {
+        return vec![*value];
+    };
+    match heap.get(*handle) {
+        // Only a mixed list can hold tasks; a typed one (`List<Int>`, …)
+        // cannot, so it is handed on whole and reported as the wrong argument
+        // rather than dissolved into a row of nils.
+        Some(HeapValue::List(lk_core::val::TypedList::Mixed(values))) => values.clone(),
+        _ => vec![*value],
     }
 }
 

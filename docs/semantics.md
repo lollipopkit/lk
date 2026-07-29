@@ -392,6 +392,10 @@ List/Slice < Map < Set < Object < Callable < Error < 其他):map 和 map 之间
 失败不再加 `"native `{name}` failed: "` 前缀(曾有,`map_native_error` 处
 移除),与 `error(v)` 一等值对称;调用点归因由 traceback 承担,不进消息。
 
+**跨 task 边界也不包装**(2026-07-29 补):`task.await` / `task.join_all` 曾
+加 `"Failed to await task: "` 前缀,于是同一个失败在 task 里 raise 和在原地
+raise 读出来是两个字符串 —— 而程序是可能按消息分支的。
+
 **算术失败的文本两端逐字一致**(2026-07-29 补):除零、取模零、移位越界是
 程序能 `catch` 并据以分支的东西,所以这几条手工对齐。此前 `a % b`(b=0)
 VM 说 `ModInt divisor is zero`、native 说 `Division by zero` —— 两个不同的
