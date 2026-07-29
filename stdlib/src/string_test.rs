@@ -238,13 +238,13 @@ mod tests {
             let s = "héllo wörld";
             return [
                 s.len() == string.len(s),
-                s.find("wörld") == string.find(s, "wörld"),
-                s.find("zz") == string.find(s, "zz"),
-                s.substring(2, 3) == string.substring(s, 2, 3),
-                s.substring(0, s.len()) == s,
-                s.substring(s.find("wörld"), 5) == "wörld",
+                s.index_of("wörld") == string.find(s, "wörld"),
+                s.index_of("zz") == string.find(s, "zz"),
+                s.slice(2, 5) == string.substring(s, 2, 3),
+                s.slice(0, s.len()) == s,
+                s.slice(s.index_of("wörld"), s.index_of("wörld") + 5) == "wörld",
                 s.len() == 11,
-                s.find("zz") == nil,
+                s.index_of("zz") == nil,
             ];
         "#;
         let result = execute_string(source)?;

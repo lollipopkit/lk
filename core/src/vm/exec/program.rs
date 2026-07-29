@@ -943,17 +943,16 @@ mod tests {
     /// `List`, `Slice` and `Bytes` were unified on `first`/`last`/`get`/
     /// `slice`/`take`/`skip`/`index_of`; `String` — a sequence of characters,
     /// which is what `len()` counts and `[i]` indexes — was left out. It had
-    /// `substring(start, length)` and `find` instead, and `substring` is the
-    /// reason this is more than tidiness: it takes a *length* where every
+    /// `substring(start, length)` and `find` instead, and `substring` was the
+    /// reason this was more than tidiness: it took a *length* where every
     /// `slice` takes an *end*, so `xs.slice(1, 3)` and `s.substring(1, 3)`
-    /// cut different windows from the same numbers.
+    /// cut different windows from the same numbers. Both are gone now.
     #[test]
     fn a_string_reads_like_every_other_sequence() {
         let source = "let s = \"h\u{e9}llo\";\n\
                       return [\n\
                         s.slice(1, 3), s.take(2), s.skip(2),\n\
                         s.first(), s.last(), s.get(1),\n\
-                        s.substring(1, 3),\n\
                       ];\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -984,9 +983,6 @@ mod tests {
         assert_eq!(text(&items[3]), "h");
         assert_eq!(text(&items[4]), "o");
         assert_eq!(text(&items[5]), "é");
-        // …and `substring` still counts a *length*, which is why it is on its
-        // way out.
-        assert_eq!(text(&items[6]), "éll");
     }
 
     /// `==`, `in`, and the constant folder answer the same question the same

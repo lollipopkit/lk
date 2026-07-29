@@ -276,6 +276,33 @@ list 没有 —— 而 `docs/stdlib.md` 的方法表里写着它。签名表里�
 
 三个 `clear` 都还不能原生降低,行为一致,不算新洞。
 
+## 字符串的读取面按字符(2026-07-29 裁决)
+
+`len()` 数字符、`s[i]` 取字符,所以 `slice` / `take` / `skip` / `first` /
+`last` / `index_of` / `s[-i]` 全按字符。native 侧 `str.slice_chars` 一直就是
+VM 的语义,补上降低即可。
+
+修掉的两处两端不一致:
+
+- **负下标从字节长度往回数**(两端都是,lkrt 的注释还把它当"VM 的 quirk"
+  照抄了)。`"中文abc"` 五个字符九个字节,于是 `[-1]` 问的是第 8 个字符 →
+  nil,`[-5]` 答 `"c"`。VM 里这条规则还抄了三份,其中两份靠 `usize` 下溢
+  碰巧对。现在收在 `index_string_at` 一处,按字符回绕。
+- **已删的 `substring` / `find` 方法**原生降到 `lkrt_str_substring` /
+  `lkrt_str_find`,两者按**字节**;miss 时 native 给 -1 而 VM 给 nil。多字节
+  文本上两端答案不同,而差分语料全是 ASCII,所以没人发现。方法删了,两个
+  byte 版 helper 也删了。
+
+`index_of` miss 给 **nil** 不给 -1:-1 是合法下标(最后一个字符),
+`s[s.index_of(x)]` 会静悄悄答出最后一个字符而不是失败。
+
+差分语料:`str_slice_multibyte`、`str_take_skip_multibyte`、
+`str_index_of_multibyte`、`str_index_of_miss`、
+`str_negative_index_multibyte`、`str_first_last_multibyte`。
+
+**待办**:`List` / `Slice` / `Bytes` 的 `index_of` miss 仍给 -1,和 `String`
+不一致 —— 同一个陷阱(`xs[-1]` 也是合法下标)。
+
 ## 错误文本(2026-07-08 裁决)
 
 `catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数

@@ -44,7 +44,7 @@ assert_eq(my_set.len(), 2);
 my_set.add("c");
 assert_eq(my_set.len(), 3);
 my_set.delete("a");
-assert(!my_set.has("a"));
+assert(!my_set.contains("a"));
 
 // List methods remain available without importing a list module.
 assert_eq(xs.first(), 3);

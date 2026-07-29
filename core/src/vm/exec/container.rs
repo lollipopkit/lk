@@ -961,7 +961,32 @@ impl Executor {
         }
     }
 
-    fn index_string_at(&self, value: &str, index: usize) -> Result<RuntimeVal> {
+    /// `s[index]` — one character, or nil outside.
+    ///
+    /// Takes the raw index so the negative-counts-from-the-end rule lives in
+    /// one place. It counted back from the *byte* length in all three callers,
+    /// which is the same number only for ASCII: `"中文abc"` has five characters
+    /// and nine bytes, so `[-1]` asked for character 8 and got nil while `[-5]`
+    /// answered `"c"`. `len()` counts characters and `[i]` indexes characters;
+    /// `[-i]` now does too. Two of those three callers also let `len + index`
+    /// underflow into a huge `usize` and relied on the lookup missing.
+    fn index_string_at(&self, value: &str, index: i64) -> Result<RuntimeVal> {
+        let index = if index < 0 {
+            // For ASCII the byte length *is* the character count, so the cheap
+            // one is exact there.
+            let len = if value.is_ascii() {
+                value.len() as i64
+            } else {
+                value.chars().count() as i64
+            };
+            let wrapped = len + index;
+            if wrapped < 0 {
+                return Ok(RuntimeVal::Nil);
+            }
+            wrapped as usize
+        } else {
+            index as usize
+        };
         if value.is_ascii() {
             let Some(byte) = value.as_bytes().get(index).copied() else {
                 return Ok(RuntimeVal::Nil);

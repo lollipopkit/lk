@@ -62,8 +62,12 @@ exists — they are what a new container type should be checked against:
 
 `slice` 取**起止**是硬规则。曾经 `String` 只有 `substring(start, length)`,
 于是 `xs.slice(1, 3)` 和 `s.substring(1, 3)` 从同样的数字里切出不同的
-窗口 —— 同形的调用,不同的语义,是陷阱不是特性。`substring` 与 `find`
-仍在,标了 `TODO(remove)`。
+窗口 —— 同形的调用,不同的语义,是陷阱不是特性。方法 `substring` 与
+`find` 已删(语料一并迁移);模块拼写 `string.substring` / `string.find`
+还在,待改名成 `slice` / `index_of`。
+
+`Set.has` 也已删:它是 `contains` 的纯别名。`Map.has` 留着 —— 见上面
+那条,它问的是键,不是同义词。
 
 方法的**元数以 `core/src/typ/builtin_method_sig.rs` 的声明为准**:
 分发前按它校验,所以实现里再写一份 arity 守卫是够不到的。三次漂移

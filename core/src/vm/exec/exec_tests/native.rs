@@ -910,7 +910,7 @@ fn execute_source_uses_builtin_set_constructor_methods_and_iteration() {
         for value in s {
             total += value;
         }
-        return [s.len(), s.has(2), added, duplicate, removed, 3 in s, total, typeof(s)];
+        return [s.len(), s.contains(2), added, duplicate, removed, 3 in s, total, typeof(s)];
         "#,
     )
     .expect("execute source");

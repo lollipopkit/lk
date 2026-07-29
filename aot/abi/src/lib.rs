@@ -413,8 +413,7 @@ macro_rules! for_each_abi_fn {
             ("str", "lower", lkrt_str_lower, WritesHost, [StrPtr], StrPtr);
             ("str", "upper", lkrt_str_upper, WritesHost, [StrPtr], StrPtr);
             ("str", "trim", lkrt_str_trim, WritesHost, [StrPtr], StrPtr);
-            ("str", "find", lkrt_str_find, Pure, [StrPtr, StrPtr], I64);
-            ("str", "substring", lkrt_str_substring, WritesHost, [StrPtr, I64, I64], StrPtr);
+            ("str", "index_of", lkrt_str_index_of, WritesHost, [StrPtr, StrPtr], DynVal);
             ("str", "reverse", lkrt_str_reverse, WritesHost, [StrPtr], StrPtr);
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);

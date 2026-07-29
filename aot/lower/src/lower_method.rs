@@ -1261,15 +1261,91 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        // `s.find(needle)` — byte index or -1 (the VM's `str::find`).
-        (Ty::Str, "find", [(needle, Ty::Str)]) => {
+        // The read surface every sequence shares, in *characters* — the unit
+        // `len()` counts and `[i]` indexes.
+        //
+        // Only `substring(start, length)` and `find` used to lower, and both
+        // called byte-indexed helpers while the VM counted characters, so the
+        // two backends disagreed on any text with a multi-byte character in it.
+        // Those two methods are gone; these are what replaced them, and
+        // `str.slice_chars` has had the VM's exact semantics all along.
+        (Ty::Str, "index_of", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("str", "find"),
+                callee: AbiRef::new("str", "index_of"),
                 args: vec![receiver, *needle],
             });
-            (dst, Ty::I64)
+            (dst, Ty::Dyn)
+        }
+        (Ty::Str, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "take", [(count, Ty::I64)]) => {
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, zero, *count],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "skip", [(count, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, *count, end],
+            });
+            (dst, Ty::Str)
+        }
+        // `first`/`last` are `[0]` and `[-1]`, which `char_at` already is —
+        // including the nil an empty string answers.
+        (Ty::Str, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "char_at"),
+                args: vec![receiver, index],
+            });
+            (dst, Ty::Dyn)
         }
         // Fresh-string unary transforms (VM core_methods semantics: `lower`/
         // `upper` are Unicode `to_lowercase`/`to_uppercase`, `reverse` is

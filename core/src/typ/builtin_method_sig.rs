@@ -513,8 +513,6 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Bool",
         "Whether `value` is a member",
     ),
-    // TODO(remove): alias of `contains`, kept until the corpus and docs move.
-    m(Set, "has", &[p("value", "Elem")], "Bool", "Whether `value` is a member"),
     m(
         Set,
         "add",
@@ -575,13 +573,6 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Bool",
         "Whether `needle` occurs",
     ),
-    m(
-        Str,
-        "find",
-        &[p("needle", "String")],
-        "Int?",
-        "Character position of the first occurrence, or nil",
-    ),
     // The read surface every other sequence has. `slice` in particular reads
     // the same as `List`/`Slice`/`Bytes` — start and end, not start and length
     // — because `xs.slice(1, 3)` and `s.substring(1, 3)` taking different
@@ -622,14 +613,6 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         &[p("count", "Int")],
         "String",
         "Everything after the first `count` characters",
-    ),
-    // TODO(remove): superseded by `slice` above — kept until the corpus moves.
-    m(
-        Str,
-        "substring",
-        &[p("start", "Int"), p("length", "Int")],
-        "String",
-        "`length` characters from character `start`, clamped",
     ),
     m(
         Str,

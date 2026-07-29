@@ -204,10 +204,7 @@ impl Executor {
                 let value = *value;
                 let idx_val = self.read_unchecked(key_reg);
                 let idx = match idx_val {
-                    RuntimeVal::Int(n) => {
-                        let len = value.as_str().len() as i64;
-                        if *n < 0 { (len + *n) as usize } else { *n as usize }
-                    }
+                    RuntimeVal::Int(n) => *n,
                     _ => bail!("String index must be Int"),
                 };
                 self.index_string_at(value.as_str(), idx)
@@ -275,16 +272,7 @@ impl Executor {
                 if let RuntimeVal::Int(n) = key_val
                     && let Some(HeapValue::String(value)) = self.state.heap.get(handle)
                 {
-                    let index = if *n < 0 {
-                        let index = value.len() as i64 + *n;
-                        if index < 0 {
-                            return Ok(RuntimeVal::Nil);
-                        }
-                        index as usize
-                    } else {
-                        *n as usize
-                    };
-                    return self.index_string_at(value, index);
+                    return self.index_string_at(value, *n);
                 }
             }
         }
@@ -603,10 +591,7 @@ impl Executor {
             HeapValue::String(value) => {
                 let idx_val = self.read(key_reg)?;
                 let idx = match &idx_val {
-                    RuntimeVal::Int(n) => {
-                        let len = value.len() as i64;
-                        if *n < 0 { (len + *n) as usize } else { *n as usize }
-                    }
+                    RuntimeVal::Int(n) => *n,
                     _ => bail!("String index must be Int"),
                 };
                 self.index_string_at(value, idx)

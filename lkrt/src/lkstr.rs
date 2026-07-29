@@ -311,38 +311,6 @@ pub unsafe extern "C" fn lkrt_str_trim(s: *const c_char) -> *mut c_char {
     arena_c_string(CString::new(view(s).trim()).unwrap_or_default())
 }
 
-/// `s.find(needle)` — *byte* index of the first match, `-1` when absent
-/// (the VM returns the Rust `str::find` byte position).
-///
-/// # Safety
-/// Both pointers must be valid C strings, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_find(s: *const c_char, needle: *const c_char) -> i64 {
-    view(s).find(view(needle)).map_or(-1, |pos| pos as i64)
-}
-
-/// `s.substring(start, length)` — *byte*-indexed (the VM slices bytes here,
-/// unlike the char-based range slice): the end clamps to the byte length,
-/// `end <= start` yields the empty string, and a non-boundary index is the
-/// VM's panic — flush-and-abort.
-///
-/// # Safety
-/// `s` must be a valid C string, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_substring(s: *const c_char, start: i64, length: i64) -> *mut c_char {
-    let text = view(s);
-    let start = start as usize;
-    let end = start.saturating_add(length as usize).min(text.len());
-    if end <= start {
-        return arena_c_string(CString::default());
-    }
-    let Some(sliced) = text.get(start..end) else {
-        crate::rt_eprintln!("string.substring() index is not a char boundary");
-        crate::panic::raise_str("runtime error");
-    };
-    arena_c_string(CString::new(sliced).unwrap_or_default())
-}
-
 /// `s.reverse()` — char-wise reversal.
 ///
 /// # Safety
@@ -382,6 +350,29 @@ pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char,
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_byte_len(s: *const c_char) -> i64 {
     view(s).len() as i64
+}
+
+/// `s.index_of(needle)` — the *character* position of the first occurrence, or
+/// nil.
+///
+/// Characters, not bytes, because that is what `s.len()` counts and `s[i]`
+/// indexes — an answer in bytes could not be handed back to either. Nil rather
+/// than -1 for a miss, because -1 is a valid index into a string (it is the
+/// last character), so `s[s.index_of(x)]` would quietly answer that instead of
+/// failing.
+///
+/// This replaces `lkrt_str_find`, which reported a byte offset and -1, and so
+/// disagreed with the VM twice over.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_index_of(s: *const c_char, needle: *const c_char) -> crate::lkdyn::LkDyn {
+    let text = view(s);
+    match text.find(view(needle)) {
+        Some(byte) => crate::lkdyn::lkrt_dyn_from_i64(text[..byte].chars().count() as i64),
+        None => crate::lkdyn::LkDyn::NIL,
+    }
 }
 
 /// `string.strip_prefix(s, prefix)` — the stripped remainder, or nil (a
@@ -544,15 +535,26 @@ pub unsafe extern "C" fn lkrt_str_byte_at(s: *const c_char, index: i64) -> crate
 }
 
 /// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,
-/// exactly the VM's `index_string_at`). A negative index counts back from
-/// the *byte* length (the VM's quirk — exact for ASCII).
+/// exactly the VM's `index_string_at`). A negative index counts back from the
+/// *character* count, like `s.len()` and like `s[i]` — it used to count back
+/// from the byte length on both sides, so `"中文abc"[-1]` answered nil.
 ///
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate::lkdyn::LkDyn {
     let text = view(s);
-    let idx = if index < 0 { text.len() as i64 + index } else { index };
+    let idx = if index < 0 {
+        // For ASCII the byte length *is* the character count.
+        let len = if text.is_ascii() {
+            text.len() as i64
+        } else {
+            text.chars().count() as i64
+        };
+        len + index
+    } else {
+        index
+    };
     if idx < 0 {
         return crate::lkdyn::LkDyn::NIL;
     }

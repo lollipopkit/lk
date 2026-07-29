@@ -173,6 +173,38 @@ fn differential_equality_and_unique() {
             ),
             new("str_le_equal", "let a = \"mm\";\nreturn a <= \"mm\";\n"),
             new("str_gt_prefix", "let a = \"abc\";\nreturn a > \"ab\";\n"),
+            // The String read surface, on text with multi-byte characters in
+            // it. Only `substring`/`find` used to lower, both to byte-indexed
+            // helpers, so this is exactly where the two backends disagreed —
+            // and nothing compared them, because the corpus was ASCII.
+            new(
+                "str_slice_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.slice(1, 4);\n",
+            ),
+            new(
+                "str_slice_open_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.slice(6);\n",
+            ),
+            new(
+                "str_take_skip_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.take(3) + s.skip(9);\n",
+            ),
+            new(
+                "str_index_of_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.index_of(\"wörld\");\n",
+            ),
+            new(
+                "str_index_of_miss",
+                "let s = \"héllo\";\nreturn s.index_of(\"zz\");\n",
+            ),
+            new(
+                "str_negative_index_multibyte",
+                "let s = \"中文abc\";\nreturn s[-1] + s[-5];\n",
+            ),
+            new(
+                "str_first_last_multibyte",
+                "let s = \"中文abc\";\nreturn [s.first(), s.last(), \"\".first()];\n",
+            ),
         ],
     );
 }

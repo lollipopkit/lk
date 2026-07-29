@@ -17,7 +17,7 @@ let url = "https://example.com";
 assert(url.starts_with("https"));
 assert(url.ends_with(".com"));
 assert(url.contains("example"));
-assert("the quick brown fox".find("quick") == 4);
+assert("the quick brown fox".index_of("quick") == 4);
 
 // 5. Replace
 assert("hello world".replace("world", "LK") == "hello LK");
@@ -28,7 +28,7 @@ assert(parts == ["red", "green", "blue"]);
 assert(parts.join(" | ") == "red | green | blue");
 
 // 7. Substring
-assert("abcdef".substring(1, 3) == "bcd");
+assert("abcdef".slice(1, 4) == "bcd");
 
 // 8. Reverse and repeat
 assert("stressed".reverse() == "desserts");

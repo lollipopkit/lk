@@ -561,11 +561,11 @@ fn dispatch_set_builtin_method(
             };
             Ok(Some(RuntimeVal::Bool(is_empty)))
         }
-        "has" | "contains" => {
+        "contains" => {
             if positional.len() != 1 {
                 bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
             }
-            let key = runtime_map_key_from_value(&positional[0], heap, "set.has() value")?;
+            let key = runtime_map_key_from_value(&positional[0], heap, "set.contains() value")?;
             let found = matches!(heap.get(handle), Some(HeapValue::Set(values)) if values.contains(&key));
             Ok(Some(RuntimeVal::Bool(found)))
         }
@@ -818,20 +818,6 @@ fn dispatch_string_builtin_method(
             }
             Ok(Some(make_string_val(&s.to_uppercase(), heap)))
         }
-        "find" => {
-            if positional.len() != 1 {
-                bail!("string.find() expects 1 argument (needle), got {}", positional.len());
-            }
-            let needle = extract_string_detached(&positional[0], heap, "string.find() needle")?;
-            // A character index, and `nil` when absent. It used to answer a
-            // *byte* offset and `-1`: the offset could not be handed back to
-            // `substring` (which counts characters), and `-1` is itself a valid
-            // index, so a missed search went wrong quietly instead of loudly.
-            match crate::util::text::find_char_index(s, needle.as_str()) {
-                Some(index) => Ok(Some(RuntimeVal::Int(index as i64))),
-                None => Ok(Some(RuntimeVal::Nil)),
-            }
-        }
         // The read surface `List` / `Slice` / `Bytes` share. A `String` is a
         // sequence of characters — that is what `len()` counts and what `[i]`
         // indexes — and was the one sequence type without them.
@@ -917,28 +903,6 @@ fn dispatch_string_builtin_method(
             let total = crate::util::text::char_len(s);
             let start = (*count).max(0) as usize;
             let text = crate::util::text::substring(s, start, total.saturating_sub(start));
-            Ok(Some(make_string_val(text, heap)))
-        }
-        // TODO(remove): `substring(start, length)` and `find` predate the
-        // sequence read surface above. `slice(start, end)` and `index_of` say
-        // the same things the way every other sequence says them; keep these
-        // two until the corpus and docs have moved off them.
-        "substring" => {
-            if positional.len() != 2 {
-                bail!(
-                    "string.substring() expects 2 arguments (start, length), got {}",
-                    positional.len()
-                );
-            }
-            let RuntimeVal::Int(start) = &positional[0] else {
-                bail!("string.substring() start must be Int");
-            };
-            let RuntimeVal::Int(length) = &positional[1] else {
-                bail!("string.substring() length must be Int");
-            };
-            // Character positions. Byte slicing panicked on a multi-byte
-            // boundary — `"héllo".substring(2, 3)` took the process down.
-            let text = crate::util::text::substring(s, *start as usize, *length as usize);
             Ok(Some(make_string_val(text, heap)))
         }
         "reverse" => {
