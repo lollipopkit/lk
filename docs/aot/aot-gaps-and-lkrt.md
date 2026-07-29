@@ -259,3 +259,25 @@ str where a i64 is required` —— 而 `B::base` 在那个程序里**从来没�
 `debug_name`,所有关于它们的 AOT 报错都是光秃秃的 `an operand at pc 1 …`;
 现在它们叫 `Type::method`(`compile_impl_method_function_indexed`)。**是这个
 名字直接指出了真凶**——在那之前我一直在错的函数上找。
+
+## 10. 已落地:bundle 把依赖的 `impl` 也搬过来(2026-07-30)
+
+编译时 bundle(`use "../general/fib"`)把依赖的**函数**、globals、常量都搬进了
+合并 artifact,唯独没搬 `type_info.impls`。于是合并出来的 artifact 手里有一个
+导入 `impl` 的**函数体**,却没有"它们实现了什么"这条记录 —— AOT 的 trait 环境
+(`trait_env_prescan`,读的就是 `type_info.impls`)看不见它们,所以**每一个**
+跨模块方法调用都掉出原生子集,而同样的代码写在定义方模块里降低得好好的。
+
+现在 `impl` 声明跟着搬,方法索引用同一张 remap 重写。一个类型在两个 bundle
+模块里同名实现会**报错而不是择一** —— VM 靠 `TypeScope` 把它们分得开,bundle
+分不开,按这个 bundler 其余地方的规矩:说出原因,不要替人选。
+
+配合上一条(构造函数返回值带类型出身),`types.Pt { x: 3, y: 4 }.norm()` 现在
+全原生。`examples/syntax/use_forms.lk` 覆盖了它,coverage 57 → 58。
+
+### 仍然开着的两个,都**不是**跨模块特有的
+
+- **函数返回值没有结构体出身**:`make(3, 4).norm()` 不降低 —— 同一个模块里也
+  不降低。`FunctionData` 不带声明的返回类型,`Ty::MapStrDyn` 也不含类型名,所以
+  接收者无类型可用。
+- **结构体在模板串里显示**:`"${p}"` 不降低,本地同样。

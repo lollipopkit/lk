@@ -3,4 +3,12 @@
 // value carries this module's type identity (see docs/semantics.md).
 struct Pt { x: Int, y: Int }
 
+trait Norm {
+  fn norm(self) -> Int;
+}
+
+impl Norm for Pt {
+  fn norm(self) -> Int { return self.x + self.y; }
+}
+
 fn manhattan(p: Pt) -> Int { return p.x + p.y; }

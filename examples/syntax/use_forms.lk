@@ -40,5 +40,7 @@ use "../general/point";
 let pt = point.Pt { x: 3, y: 4 };
 assert(pt.x == 3);
 assert(point.manhattan(pt) == 7);
+// A trait the imported module implements dispatches on it too.
+assert(pt.norm() == 7);
 
 println("use_forms: all assertions passed");

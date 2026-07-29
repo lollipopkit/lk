@@ -1435,6 +1435,44 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
             let at = remap[index].expect("every non-entry function was numbered") - base;
             placed[at as usize] = Some(function);
         }
+        // The dep's `impl` blocks come across too, with their method indices
+        // rewritten by the same remap.
+        //
+        // Without this the merged artifact had the *functions* of an imported
+        // `impl` but no record that they implement anything, so the AOT's trait
+        // environment (`trait_env_prescan`, which reads `type_info.impls`) could
+        // not see them: `types.make(3, 4).norm()` fell out of the native subset
+        // — every cross-module method call did — while the same code inside the
+        // defining module lowered fine.
+        //
+        // A type declared in two bundled modules under one name would now share
+        // a dispatch key. The VM keeps them apart by `TypeScope`, so this
+        // refuses rather than resolving, by the rule the rest of this bundler
+        // follows.
+        for decl in &dep.module.type_info.impls {
+            let mut rewritten = decl.clone();
+            for method in &mut rewritten.methods {
+                method.function = remap
+                    .get(method.function as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling impl method"))?;
+            }
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .impls
+                .iter()
+                .find(|other| other.type_name == rewritten.type_name && other.trait_name == rewritten.trait_name)
+                && existing.methods != rewritten.methods
+            {
+                anyhow::bail!(
+                    "bundled import '{import_path}': type `{}` is implemented in more than one module —                      the VM keeps them apart by declaring module, the bundle cannot",
+                    rewritten.type_name
+                );
+            }
+            merged.module.type_info.impls.push(rewritten);
+        }
         let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for (name, fidx) in pairs {
             let merged_fidx = remap
