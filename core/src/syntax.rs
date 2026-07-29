@@ -95,6 +95,10 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     // because nothing downstream should know it existed. It is a rewrite of the
     // program's *shape*, not a runtime mechanism — see `stmt::defer`.
     crate::stmt::defer::desugar_defers(&mut program.statements).map_err(ParseError::new)?;
+    // A trait's default method bodies are copied into the impls that left them
+    // out — here, for the same reason `defer` is erased here: after macros
+    // (which may write a trait or an impl) and before anything that dispatches.
+    crate::stmt::trait_defaults::apply_trait_defaults(&mut program.statements);
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,

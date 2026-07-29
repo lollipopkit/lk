@@ -224,6 +224,7 @@ fn generated_statement_shape_origins_are_recorded() {
         body,
     };
     let trait_stmt = Stmt::Trait {
+        default_methods: Vec::new(),
         name: "Reader".to_string(),
         methods: vec![(
             "read".to_string(),

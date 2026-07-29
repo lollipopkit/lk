@@ -1010,6 +1010,13 @@ impl<'a> Parser<'a> {
         }
 
         loop {
+            // The token stream can end here — a struct literal inside a string
+            // interpolation is cut at the first `}`, so `"${R {}}"` arrives as
+            // `R {` and nothing more. Reading past the end panicked the parser;
+            // an unterminated literal is a syntax error like any other.
+            if self.eof() {
+                return Err(anyhow!(self.err("Unexpected end in struct literal fields")));
+            }
             if self.tokens[self.pos] == Token::Range {
                 if update_base.is_some() {
                     return Err(anyhow!(self.err("Duplicate struct update base")));
@@ -1468,6 +1475,13 @@ impl<'a> Parser<'a> {
         let mut current_literal = String::new();
         let mut in_expr = false;
         let mut expr_start = 0usize; // byte offset into `content`
+        // Braces nest inside `${…}`, and the lexer already balances them when
+        // it decides where the interpolation ends (`Tokenizer::read_string`).
+        // This scan did not, so it cut at the *first* `}` — `"${R {}}"`
+        // reached the parser as `R {`, and the struct-literal parser then read
+        // past the end of its token stream and panicked. Two scanners of one
+        // syntax, disagreeing.
+        let mut expr_depth = 0usize;
 
         // Use char_indices so `byte_pos` is always a valid byte boundary for slicing.
         let chars: Vec<(usize, char)> = content.char_indices().collect();
@@ -1477,6 +1491,16 @@ impl<'a> Parser<'a> {
             let (byte_pos, c) = chars[i];
 
             if in_expr {
+                if c == '{' {
+                    expr_depth += 1;
+                    i += 1;
+                    continue;
+                }
+                if c == '}' && expr_depth > 0 {
+                    expr_depth -= 1;
+                    i += 1;
+                    continue;
+                }
                 if c == '}' {
                     // End of ${...} expression — byte_pos is the correct slice bound.
                     let expr_content = &content[expr_start..byte_pos];

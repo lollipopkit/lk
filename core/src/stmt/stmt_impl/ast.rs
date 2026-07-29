@@ -180,6 +180,15 @@ pub enum Stmt {
         name: String,
         /// Method signatures indexed by method name
         methods: Vec<(String, Type)>,
+        /// Methods the trait wrote a *body* for, as the `Stmt::Function` an
+        /// `impl` block would have held.
+        ///
+        /// A type that implements the trait and does not write the method gets
+        /// this one, copied in by `stmt::trait_defaults` — so dispatch, the
+        /// type checker and the AOT lowering never learn that defaults exist.
+        /// Storing the whole function is what makes the copy exact: a signature
+        /// alone loses the parameter *names* the body reads.
+        default_methods: Vec<Stmt>,
     },
     /// impl Trait for Type { fn method(...) { body } }
     Impl {

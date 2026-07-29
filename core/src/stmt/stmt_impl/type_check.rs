@@ -91,7 +91,7 @@ impl Stmt {
                 type_checker.registry_mut().register_struct(sd);
                 Ok(())
             }
-            Stmt::Trait { name, methods } => {
+            Stmt::Trait { name, methods, .. } => {
                 // Register trait with method signatures
                 let mut map = HashMap::with_capacity(methods.len());
                 for (m, ty) in methods.iter() {
@@ -1033,7 +1033,7 @@ impl Program {
                         fields,
                     });
                 }
-                Stmt::Trait { name, methods } => {
+                Stmt::Trait { name, methods, .. } => {
                     type_checker.registry_mut().register_trait(TraitDef {
                         name: name.clone(),
                         methods: methods.iter().cloned().collect(),

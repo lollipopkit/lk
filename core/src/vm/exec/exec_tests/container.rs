@@ -804,3 +804,63 @@ fn a_block_is_a_scope_in_every_construct() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, "[1,1,1,1,106,1]");
 }
+
+/// A trait method may carry a body: implementors that do not write it get it.
+///
+/// Without defaults every implementor repeated the same method — the language
+/// forcing on its users exactly the "N copies kept in sync by hand" shape the
+/// implementation spends its time removing. The body is copied per implementing
+/// type before anything dispatches (`stmt::trait_defaults`), so `self` is that
+/// type and nothing downstream knows defaults exist.
+#[test]
+fn a_trait_method_may_have_a_default_body() {
+    let result = execute_source(
+        r#"
+        trait Greet {
+            fn name(self) -> String;
+            fn hi(self) -> String { return "hi ${self.name()}"; }
+        }
+        struct P { n: String }
+        impl Greet for P { fn name(self) -> String { return self.n; } }
+        struct Q { n: String }
+        impl Greet for Q {
+            fn name(self) -> String { return self.n; }
+            fn hi(self) -> String { return "yo ${self.n}"; }
+        }
+        // The trait may also be declared *after* the impl that uses it.
+        impl Late for R { fn base(self) -> Int { return 7; } }
+        struct R {}
+        trait Late {
+            fn base(self) -> Int;
+            fn twice(self) -> Int { return self.base() * 2; }
+        }
+        return [P { n: "a" }.hi(), Q { n: "b" }.hi(), "${R {}.twice()}"];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, r#"["hi a","yo b","14"]"#);
+}
+
+/// Braces nest inside `${…}`.
+///
+/// The lexer balanced them when deciding where an interpolation ends; the
+/// parser's own scan of the same content did not, and cut at the first `}`. So
+/// `"${R {}}"` reached the struct-literal parser as `R {`, which read past the
+/// end of its token stream and **panicked** — a parser must answer with an
+/// error, never a panic.
+#[test]
+fn a_template_interpolation_balances_its_braces() {
+    let result = execute_source(
+        r#"
+        struct R { v: Int }
+        let m = {"a": 1};
+        return ["${R { v: 3 }}", "${m}", "${ {"k": 2} }", "${R { v: 3 }.v}"];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, r#"["R{v:3}","{\"a\":1}","{\"k\":2}","3"]"#);
+}

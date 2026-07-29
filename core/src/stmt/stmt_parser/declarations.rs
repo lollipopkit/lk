@@ -104,14 +104,52 @@ impl<'a> StmtParser<'a> {
         self.expect_token(Token::LBrace)?;
 
         let mut methods: Vec<(String, Type)> = Vec::new();
+        let mut default_methods: Vec<Stmt> = Vec::new();
 
         // 允许空 trait
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
-            return Ok(Stmt::Trait { name, methods });
+            return Ok(Stmt::Trait {
+                name,
+                methods,
+                default_methods,
+            });
         }
 
         while !self.eof() && self.tokens[self.pos] != Token::RBrace {
+            // A method with a body is a **default**: implementors that do not
+            // write it get this one. It parses as the ordinary function an
+            // `impl` block would hold, so the signature below is read back off
+            // the parsed node rather than parsed twice.
+            if let Some(method) = self.try_parse_trait_default_method()? {
+                let Stmt::Function {
+                    name: mname,
+                    param_types,
+                    named_params,
+                    return_type,
+                    ..
+                } = &method
+                else {
+                    return Err(anyhow!(self.err("Expected a method in trait")));
+                };
+                methods.push((
+                    mname.clone(),
+                    Type::Function {
+                        params: param_types.iter().map(|ty| ty.clone().unwrap_or(Type::Any)).collect(),
+                        named_params: named_params
+                            .iter()
+                            .map(|named| crate::val::FunctionNamedParamType {
+                                name: named.name.clone(),
+                                ty: named.type_annotation.clone().unwrap_or(Type::Any),
+                                has_default: named.default.is_some(),
+                            })
+                            .collect(),
+                        return_type: Box::new(return_type.clone().unwrap_or(Type::Any)),
+                    },
+                ));
+                default_methods.push(method);
+                continue;
+            }
             // 每个方法声明以 fn 开始
             self.expect_token(Token::Fn)?;
 
@@ -175,7 +213,73 @@ impl<'a> StmtParser<'a> {
         }
 
         self.expect_token(Token::RBrace)?;
-        Ok(Stmt::Trait { name, methods })
+        Ok(Stmt::Trait {
+            name,
+            methods,
+            default_methods,
+        })
+    }
+
+    /// A trait method written with a body, or `None` when the next declaration
+    /// is a bare signature.
+    ///
+    /// Deciding needs a look-ahead: the signature and the default start
+    /// identically and only diverge at the `;` or `{` after the return type.
+    /// Scanning for it is cheaper than parsing twice, and it keeps the two
+    /// forms from having two parsers.
+    fn try_parse_trait_default_method(&mut self) -> Result<Option<Stmt>> {
+        if self.eof() || self.tokens[self.pos] != Token::Fn {
+            return Ok(None);
+        }
+        if !self.trait_method_has_body() {
+            return Ok(None);
+        }
+        Ok(Some(self.parse_function_stmt()?))
+    }
+
+    /// Whether the `fn` at the cursor is followed by a body rather than a `;`.
+    ///
+    /// Walks to the end of the parameter list by paren depth, then past an
+    /// optional return type, and reports which of `{` / `;` comes first. A
+    /// return type may itself contain braces (`Map<String, Int>` does not, but
+    /// a closure type can), so the scan tracks every bracket kind.
+    fn trait_method_has_body(&self) -> bool {
+        let mut index = self.pos + 1; // past `fn`
+        // method name
+        if index < self.tokens.len() && matches!(self.tokens[index], Token::Id(_)) {
+            index += 1;
+        }
+        if index >= self.tokens.len() || self.tokens[index] != Token::LParen {
+            return false;
+        }
+        let mut depth = 0usize;
+        while index < self.tokens.len() {
+            match self.tokens[index] {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        // Past the parameter list: whichever of `{` and `;` comes first decides.
+        let mut nesting = 0usize;
+        while index < self.tokens.len() {
+            match self.tokens[index] {
+                Token::LBracket | Token::LParen => nesting += 1,
+                Token::RBracket | Token::RParen => nesting = nesting.saturating_sub(1),
+                Token::LBrace if nesting == 0 => return true,
+                Token::Semicolon if nesting == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     /// `impl Trait for Type { … }`, or `impl Type { … }` for methods that

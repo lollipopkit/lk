@@ -92,7 +92,7 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
             collect_generated_expr_origins_from_stmt(body, span, &mut origins);
             origins
         }
-        Stmt::Trait { name, methods } => {
+        Stmt::Trait { name, methods, .. } => {
             let mut origins = vec![AstGeneratedMemberOrigin {
                 label: format!("trait {name}"),
                 span: span.clone(),
@@ -500,7 +500,7 @@ fn collect_generated_expr_origins_from_stmt(
             push_generated_statement_origin("stmt type_alias_target", span.clone(), origins);
             collect_generated_type_origins(target, span, origins);
         }
-        Stmt::Trait { name, methods } => {
+        Stmt::Trait { name, methods, .. } => {
             origins.push(AstGeneratedMemberOrigin {
                 label: format!("trait {name}"),
                 span: span.clone(),

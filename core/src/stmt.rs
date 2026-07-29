@@ -5,6 +5,7 @@ pub mod defer;
 pub mod import;
 mod stmt_impl;
 pub mod stmt_parser;
+pub mod trait_defaults;
 
 #[cfg(test)]
 mod attribute_test;

@@ -569,6 +569,25 @@ impl Methods for Point { fn norm2(self) -> Int { … } }
 固有块放它自己的东西。trait impl 的一致性检查不变(缺方法、签名不符、arity
 不符都照报);固有 impl 没有承诺,所以不检查。
 
+**trait 方法可以带默认实现**(2026-07-30 补):
+
+```lk
+trait Greet {
+    fn name(self) -> String;
+    fn hi(self) -> String { return "hi ${self.name()}"; }   // 默认
+}
+```
+
+没写 `hi` 的实现者拿到这一份,写了的覆盖它。实现方式是**按实现类型逐份复制**
+(`stmt::trait_defaults`,在宏之后、任何分发之前),因为分发本来就按目标类型
+索引,而默认体里的 `self` 就是那个实现类型 —— 复制既是最简单的降低也是正确的
+那个,类型检查器、VM 编译器、AOT 降低都不需要知道"默认"这回事。trait 写在
+impl **后面**也算数:先扫全程序收集,再填。
+
+此前 trait 只能写签名,于是每个实现者都得把同一段方法抄一遍 —— 语言逼着用户
+干实现里一直在消灭的那件事(一个概念 N 份拷贝,靠记性同步)。而且那时报错是
+把 token 流倒出来:`Invalid type: String { Return "hi" Semicolon}} Struct P …`。
+
 **trait impl 里不能出现 trait 没声明的方法**(同日补)。此前能 —— 而且不得
 不能:`impl Type { … }` 是语法错误,方法只能住在 trait impl 里,于是程序声明
 一个空 trait 把所有东西挂上去。现在类型能带自己的方法了,trait impl 里多出来

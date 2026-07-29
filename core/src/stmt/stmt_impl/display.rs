@@ -125,7 +125,7 @@ impl Display for Stmt {
             Stmt::TypeAlias { name, target } => {
                 write!(f, "type {} = {};", name, target.display())
             }
-            Stmt::Trait { name, methods } => {
+            Stmt::Trait { name, methods, .. } => {
                 write!(f, "trait {} {{", name)?;
                 for (i, (m, ty)) in methods.iter().enumerate() {
                     if i > 0 {

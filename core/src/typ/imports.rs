@@ -172,7 +172,7 @@ fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
                     fields,
                 });
             }
-            Stmt::Trait { name, methods } => {
+            Stmt::Trait { name, methods, .. } => {
                 checker.registry_mut().register_trait(TraitDef {
                     name: name.clone(),
                     methods: methods.iter().cloned().collect(),

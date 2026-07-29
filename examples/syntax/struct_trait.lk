@@ -62,4 +62,17 @@ let shapes = [Rect { w: 3, h: 4 }, Circle { r: 10 }];
 let areas = shapes.map(|s| s.area());
 assert(areas == [12, 300]);
 
+// 7. Trait method with a default body: implementors that do not write it get it
+trait Scaled {
+  fn base(self) -> Int;
+  fn factor(self) -> Int { return 2; }               // the default
+}
+impl Scaled for Rect { fn base(self) -> Int { return self.w; } }
+impl Scaled for Circle {
+  fn base(self) -> Int { return self.r; }
+  fn factor(self) -> Int { return 100; }             // overrides the default
+}
+assert(r.base() * r.factor() == 20);
+assert(c.base() * c.factor() == 500);
+
 println("struct_trait: all assertions passed");

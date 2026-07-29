@@ -90,7 +90,7 @@ impl Compiler {
                 });
             }
             Stmt::Import(_) | Stmt::TypeAlias { .. } => {}
-            Stmt::Trait { name, methods } => self.lower_trait_decl(name, methods)?,
+            Stmt::Trait { name, methods, .. } => self.lower_trait_decl(name, methods)?,
             Stmt::Impl {
                 trait_name,
                 target_type,
