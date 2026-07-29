@@ -70,6 +70,19 @@ fn crosses_as_word(ty: Ty) -> bool {
     matches!(
         ty,
         Ty::I64
+            // A `Bool` is 0/1 — a machine word, and leaving it out is what made
+            // `fn probe(c: Bool) { let r = try { … } catch e { … }; }` reject
+            // while the same function with an `Int` parameter lowered. The body
+            // was handed the flag as `I64` and rejected on reading it, so a
+            // `try` inside any function taking a bool dropped its module to the
+            // VM.
+            //
+            // `F64` is *not* here even though it is eight bytes wide: the
+            // trampoline marshals through integer registers, so a float has to
+            // be bit-cast on both sides rather than simply passed. Adding it
+            // without that compiled and then **segfaulted** — the honest
+            // failure is the body rejecting, which is what `I64` produces.
+            | Ty::Bool
             | Ty::Str
             | Ty::ListI64
             | Ty::ListF64

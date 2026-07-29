@@ -46,6 +46,18 @@
 //!    machine words, and a handle *is* a machine word; declaring them all `I64`
 //!    rejected a body that merely looked at a list the parent owned.
 //!
+//!    Same for a **`Bool`** (2026-07-30): 0/1 is a machine word too, and its
+//!    absence from `crosses_as_word` meant a `try` inside *any* function taking
+//!    a bool dropped the module to the VM — while the identical function with an
+//!    `Int` parameter lowered. That is what the note on file as "the `try`
+//!    expression's value cannot lower" actually was.
+//!
+//!    **`F64` is still out**, and not by omission: the trampoline marshals
+//!    through integer registers, so a float needs a bit-cast on both sides
+//!    rather than a pass-through. Adding it to the list compiled and then
+//!    *segfaulted*; the honest failure is the body rejecting on read, which is
+//!    what `I64` produces.
+//!
 //! 3. **What a body rebound is reported by the body.** Reading the `a` field as
 //!    "the register this instruction writes" is not true of every opcode —
 //!    `log.push(2)` is `ListPush a=log`, where `a` is the receiver. The body

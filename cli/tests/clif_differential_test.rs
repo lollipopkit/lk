@@ -1319,6 +1319,29 @@ fn try_catch_differential() {
                 "body_mutates_then_raises",
                 "fn boom() { error(\"x\"); return 0; }\nlet log = [1];\ntry {\n  log.push(2);\n  boom();\n  log.push(3);\n} catch e {\n  log.push(9);\n}\nreturn log.len();\n",
             ),
+            // A `Bool` parameter in scope. It is 0/1 — a machine word — but was
+            // missing from the trampoline's word list, so the body got it as
+            // `I64` and rejected on reading it: a `try` inside *any* function
+            // taking a bool dropped its module to the VM, while the same
+            // function with an `Int` parameter lowered.
+            new(
+                "body_reads_bool_param",
+                "fn probe(c: Bool) -> Int {\n  let r = try { if c { error(\"boom\"); } 7 } catch e { -1 };\n  return r;\n}\nprintln(probe(false));\nprintln(probe(true));\nreturn 0;\n",
+            ),
+            // The `try`-as-expression shape that was on file as unlowerable:
+            // a call, then a value-producing region, then both used.
+            new(
+                "value_region_after_a_call",
+                "fn compute() -> Int { return 10; }\nfn probe(c: Bool) -> Int {\n  let q = compute();\n  let r = try { if c { error(\"boom\"); } 7 } catch e { -1 };\n  return q + r;\n}\nprintln(probe(false));\nprintln(probe(true));\nreturn 0;\n",
+            ),
+            // A `Float` parameter still falls back — the trampoline marshals
+            // through integer registers, so a float needs a bit-cast on both
+            // sides. Adding it to the word list compiled and then *segfaulted*;
+            // this pins the answer either way.
+            new(
+                "body_with_float_param_in_scope",
+                "fn probe(f: Float) -> Int {\n  let r = try { if f > 1.0 { error(\"boom\"); } 7 } catch e { -1 };\n  return r;\n}\nprintln(probe(0.5));\nprintln(probe(2.0));\nreturn 0;\n",
+            ),
             // A container the body only *reads*. It travels in as a parameter,
             // which needs the trampoline's argument buffer to carry a handle —
             // a pointer is a machine word, and declaring every input `I64`
