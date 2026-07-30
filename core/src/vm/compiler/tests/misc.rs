@@ -1553,21 +1553,35 @@ fn every_call_lands_in_exactly_one_bucket() {
     );
 }
 
+/// A method call whose receiver is a top-level `:=` global, read from inside a
+/// function, dispatches as a *method*.
+///
+/// It used to compile to `GetIndex` keyed by the string `"len"`, because the
+/// "is this a module object or user data?" check consulted a `let`-only set.
+/// The program then failed at run time with `register 2 expected Int, got
+/// String` — for `let xs = [1,2]` beside it, the identical code worked.
 #[test]
-fn tmp_dump_global_receiver_method() {
+fn method_call_on_define_global_inside_function_dispatches_as_method() {
     let program = crate::syntax::parse_program_source(
         "xs := [1,2];\nfn h() { return xs.len(); }\nreturn h();",
         crate::syntax::ParseOptions::default(),
     )
     .expect("parse");
-    let module =
-        crate::vm::Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), Vec::<String>::new())
-            .expect("compile");
-    for (index, function) in module.functions.iter().enumerate() {
-        println!("=== function {index} ({} regs) ===", function.register_count);
-        for (pc, instr) in function.code.iter().enumerate() {
-            println!("  {pc:3}  {:?}", instr);
-        }
-    }
-    panic!("dump");
+    let module = crate::vm::Compiler::compile_module(&program).expect("compile");
+    let body = module
+        .functions
+        .iter()
+        .find(|function| function.debug_name.as_deref() == Some("h"))
+        .expect("compiled `h`");
+
+    assert!(
+        body.code.iter().any(|instr| instr.opcode() == Opcode::Len),
+        "expected a Len opcode in {:?}",
+        body.code
+    );
+    assert!(
+        !body.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        "the method name must not become an index key: {:?}",
+        body.code
+    );
 }

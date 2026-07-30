@@ -34,7 +34,8 @@ pub use imports::import_runtime_export;
 pub use program::test_support;
 pub use program::{
     ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, ProgramExec, call_module_function_with_ctx,
-    call_module_function_with_ctx_keep_state, compile_program_module_with_ctx, execute_compiled_module_with_ctx,
+    call_module_function_with_ctx_keep_state, compile_program_module_with_ctx,
+    compile_program_module_with_ctx_and_data_globals, execute_compiled_module_with_ctx,
     execute_module_artifact_with_ctx, execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
     execute_program_with_ctx_and_gc_threshold, execute_program_with_ctx_and_limits, execute_source,
 };

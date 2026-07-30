@@ -70,6 +70,21 @@ pub fn execute_program(program: &Program) -> Result<ProgramResult> {
 }
 
 pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<Arc<crate::vm::Module>> {
+    compile_program_module_with_ctx_and_data_globals::<&str>(program, ctx, &[])
+}
+
+/// As [`compile_program_module_with_ctx`], naming the context globals that hold
+/// *user data* rather than an imported module object.
+///
+/// A plain program has none: everything it did not declare itself came from an
+/// import. The REPL is the exception — its `xs` from an earlier line arrives as
+/// a context global, and without this it compiles `xs.len()` as a module-member
+/// read (see `Compiler::compile_module_with_natives_and_globals_and_data`).
+pub fn compile_program_module_with_ctx_and_data_globals<S: AsRef<str>>(
+    program: &Program,
+    ctx: &mut VmContext,
+    data_globals: &[S],
+) -> Result<Arc<crate::vm::Module>> {
     let imports = collect_program_imports(program);
     let resolver = ctx.resolver().clone();
     execute_imports(&imports, resolver.as_ref(), ctx)?;
@@ -79,7 +94,12 @@ pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -
         external_globals.push(name.clone());
     }
 
-    let mut module = Compiler::compile_module_with_natives_and_globals(program, Vec::new(), external_globals)?;
+    let mut module = Compiler::compile_module_with_natives_and_globals_and_data(
+        program,
+        Vec::new(),
+        external_globals,
+        data_globals.iter().map(|name| name.as_ref()),
+    )?;
     // The compiler has no idea which file it is compiling; the loader does, and
     // it put that on the context before handing the program over. Stamping here
     // is what gives this module's declared types an identity distinct from an

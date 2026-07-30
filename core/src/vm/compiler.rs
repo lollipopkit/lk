@@ -92,6 +92,11 @@ pub struct Compiler {
     /// Top-level `let` names visible to callables: user-data globals, not
     /// module objects — method calls on them dispatch as methods.
     user_let_globals: Rc<HashSet<String>>,
+    /// Every top-level name bound to user data (`let` / `const` / `:=`), plus
+    /// whatever the host declares as data (the REPL's own bindings). Used only
+    /// to tell a value apart from an imported module object at a method call;
+    /// unlike [`Self::user_let_globals`] it does not affect register caching.
+    top_level_data_globals: Rc<HashSet<String>>,
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
@@ -820,6 +825,7 @@ impl Compiler {
             false,
         );
         compiler.user_let_globals = self.user_let_globals.clone();
+        compiler.top_level_data_globals = self.top_level_data_globals.clone();
         compiler.capture_names = capture_names;
         compiler.capture_cells = capture_cells;
         compiler.capture_machine_widths = capture_widths;

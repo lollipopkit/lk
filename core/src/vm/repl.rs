@@ -11,7 +11,7 @@ use crate::{
     stmt::{Program, Stmt},
     typ::TypeChecker,
     val::RuntimeVal,
-    vm::{Module, RuntimeExport, RuntimeModuleState, VmContext, execute_program_with_ctx},
+    vm::{Module, RuntimeExport, RuntimeModuleState, VmContext},
 };
 
 /// Persistent VM state for interactive REPL execution.
@@ -48,7 +48,17 @@ impl ReplVmSession {
         program.type_check(&mut next_type_checker)?;
 
         let (runtime_program, declared_names) = repl_runtime_program(program, &self.persistent_names)?;
-        let result = execute_program_with_ctx(&runtime_program, &mut self.ctx)?;
+        // The session's own bindings are user data, not module objects: without
+        // saying so, `xs` from an earlier line is indistinguishable from an
+        // imported `math`, and `xs.len()` compiles to an index read keyed by
+        // `"len"` (`compile_program_module_with_ctx_and_data_globals`).
+        let data_globals = self.persistent_names.iter().cloned().collect::<Vec<_>>();
+        let module = crate::vm::compile_program_module_with_ctx_and_data_globals(
+            &runtime_program,
+            &mut self.ctx,
+            &data_globals,
+        )?;
+        let result = crate::vm::execute_compiled_module_with_ctx(module, &mut self.ctx)?;
 
         self.type_checker = next_type_checker;
         self.persistent_names.extend(declared_names);
@@ -271,6 +281,20 @@ mod tests {
         let result = execute(&mut session, "let c = a + b; return c;").expect("use destructured names");
 
         assert_eq!(result.returns, vec![RuntimeVal::Int(3)]);
+    }
+
+    /// A binding from an earlier input is an *external* global to the module
+    /// compiled for this one — indistinguishable from an imported `math` unless
+    /// the session says otherwise. Without that, `xs.len()` compiled to an
+    /// index read keyed by `"len"` and every method call on a REPL binding
+    /// failed: `xs.push(1)`, `s.upper()`, `m.get(k)`.
+    #[test]
+    fn repl_method_call_on_earlier_binding_dispatches_as_method() {
+        let mut session = new_session();
+        execute(&mut session, "xs := [1, 2];").expect("define list");
+        let result = execute(&mut session, "return xs.len();").expect("method call across inputs");
+
+        assert_eq!(result.returns, vec![RuntimeVal::Int(2)]);
     }
 
     #[test]

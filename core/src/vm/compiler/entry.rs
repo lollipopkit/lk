@@ -16,8 +16,8 @@ use super::{
     collect_function_inline_bodies, collect_function_machine_returns, collect_function_names,
     collect_function_signatures, collect_function_visible_let_names, collect_global_names_with_external,
     collect_impl_method_names, collect_native_names, collect_struct_field_machine_widths,
-    collect_top_level_machine_widths, export_name_from_attributes, extern_name_from_attributes, function_frame_params,
-    global_slots_from_names, item_without_attributes,
+    collect_top_level_data_global_names, collect_top_level_machine_widths, export_name_from_attributes,
+    extern_name_from_attributes, function_frame_params, global_slots_from_names, item_without_attributes,
 };
 
 impl Compiler {
@@ -51,12 +51,48 @@ impl Compiler {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        Self::compile_module_with_natives_and_globals_and_data(
+            program,
+            natives,
+            external_globals,
+            core::iter::empty::<&str>(),
+        )
+    }
+
+    /// As [`Self::compile_module_with_natives_and_globals`], with the subset of
+    /// `external_globals` that hold *user data* rather than imported module
+    /// objects.
+    ///
+    /// Only a host that keeps bindings alive across compilations knows this —
+    /// in-tree that is the REPL, whose `xs` from a previous line is an external
+    /// global indistinguishable from `math` without being told. Getting it
+    /// wrong is not a missed optimisation: `xs.len()` compiles to an index read
+    /// keyed by the string `"len"` and fails at run time.
+    pub fn compile_module_with_natives_and_globals_and_data<I, S, D, T>(
+        program: &Program,
+        natives: Vec<NativeEntry>,
+        external_globals: I,
+        external_data_globals: D,
+    ) -> Result<Module>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        D: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let external_data_globals = external_data_globals
+            .into_iter()
+            .map(|name| name.as_ref().to_owned())
+            .collect::<Vec<_>>();
         let function_names = Rc::new(collect_function_names(program)?);
         let function_signatures = Rc::new(collect_function_signatures(program)?);
         let function_bodies = Rc::new(collect_function_inline_bodies(program)?);
         let native_names = Rc::new(collect_native_names(&natives)?);
         let global_names = Rc::new(collect_global_names_with_external(program, external_globals)?);
         let user_let_globals = Rc::new(collect_function_visible_let_names(program));
+        let mut data_globals = collect_top_level_data_global_names(program);
+        data_globals.extend(external_data_globals);
+        let data_globals = Rc::new(data_globals);
         let machine_returns = Rc::new(collect_function_machine_returns(program));
         let struct_widths = Rc::new(collect_struct_field_machine_widths(program));
         let impl_methods = Rc::new(collect_impl_method_names(program));
@@ -81,6 +117,7 @@ impl Compiler {
             true,
         );
         entry.user_let_globals = user_let_globals.clone();
+        entry.top_level_data_globals = data_globals.clone();
         entry.function_machine_returns = machine_returns.clone();
         entry.struct_field_machine_widths = struct_widths.clone();
         entry.impl_method_names = impl_methods.clone();
@@ -115,6 +152,7 @@ impl Compiler {
                     native_names.clone(),
                     global_names.clone(),
                     user_let_globals.clone(),
+                    data_globals.clone(),
                     machine_returns.clone(),
                     struct_widths.clone(),
                     impl_methods.clone(),
@@ -239,6 +277,7 @@ impl Compiler {
         native_names: Rc<HashMap<String, u32>>,
         global_names: Rc<HashMap<String, u32>>,
         user_let_globals: Rc<HashSet<String>>,
+        top_level_data_globals: Rc<HashSet<String>>,
         machine_returns: Rc<HashMap<String, crate::val::IntKind>>,
         struct_widths: Rc<HashMap<String, HashMap<String, crate::val::IntKind>>>,
         impl_methods: Rc<HashSet<String>>,
@@ -259,6 +298,7 @@ impl Compiler {
             false,
         );
         compiler.user_let_globals = user_let_globals;
+        compiler.top_level_data_globals = top_level_data_globals;
         compiler.function_machine_returns = machine_returns;
         compiler.struct_field_machine_widths = struct_widths;
         compiler.impl_method_names = impl_methods;

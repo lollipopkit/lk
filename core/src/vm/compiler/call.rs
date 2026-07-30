@@ -204,15 +204,22 @@ impl Compiler {
         let Expr::Var(name) = target else {
             return false;
         };
-        // A top-level `let` occupies a global slot but holds user data:
+        // A top-level `let`/`:=` occupies a global slot but holds user data:
         // `names.len()` inside a function must dispatch as a method, not as a
         // module-member property read (which would index the list/map value
         // with the method name).
+        //
+        // This used to consult `user_let_globals`, which is `let`-only and
+        // additionally filtered to names some function mentions — so `xs := …`
+        // read from a function body dispatched as a module member and failed
+        // with "register N expected Int, got String". `top_level_data_globals`
+        // is the unfiltered set, and the REPL adds its live bindings to it.
         self.global_names.contains_key(name)
             && !self.locals.contains_key(name)
             && !self.function_names.contains_key(name)
             && !self.native_names.contains_key(name)
             && !self.user_let_globals.contains(name)
+            && !self.top_level_data_globals.contains(name)
     }
 
     fn is_stdlib_module_method(&self, target: &Expr, module: &str, method: &str, actual_method: &str) -> bool {

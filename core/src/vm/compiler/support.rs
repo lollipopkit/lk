@@ -584,6 +584,41 @@ fn collect_global_name_from_top_level_stmt(
     }
 }
 
+/// Every top-level name this program binds to *user data* — `let`, `const` and
+/// `:=` alike.
+///
+/// Deliberately not folded into [`collect_function_visible_let_names`]: that
+/// set also decides whether a top-level global may be cached in a register
+/// (`Compiler::can_cache_global`), so widening it would slow down every
+/// `:=` script. This set answers a different question — "is this name a value
+/// this program declared, or an imported module object?" — which is all
+/// method dispatch needs (`is_external_global_access_target`). Getting the two
+/// confused is why `xs := [1,2]` followed by `fn h() { xs.len() }` compiled
+/// `xs.len` into an *index* read with the string `"len"` as the key.
+pub(super) fn collect_top_level_data_global_names(program: &Program) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in &program.statements {
+        collect_top_level_data_global_name(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_top_level_data_global_name(stmt: &Stmt, names: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Attributed { item, .. } => collect_top_level_data_global_name(item, names),
+        Stmt::Define { name, .. } => {
+            names.insert(name.clone());
+        }
+        Stmt::Let {
+            pattern: Pattern::Variable(name),
+            ..
+        } => {
+            names.insert(name.clone());
+        }
+        _ => {}
+    }
+}
+
 fn collect_top_level_let_names(program: &Program) -> HashSet<String> {
     let mut names = HashSet::new();
     for stmt in &program.statements {
