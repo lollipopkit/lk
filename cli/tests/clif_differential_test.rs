@@ -1532,6 +1532,77 @@ fn reverse_and_index_of_cover_every_list_carrier() {
     );
 }
 
+/// `sort` on the `Float` and `String` carriers — and the NaN that made writing
+/// it find a panic on *both* backends.
+///
+/// `sort` existed for `Int` alone. The obvious extension is wrong in a way that
+/// does not show on ordinary data: the VM's float comparator was
+/// `partial_cmp(..).unwrap_or(Equal)`, which is not a total order once a NaN is
+/// present (the NaN reads equal to every value while those values stay ordered),
+/// and Rust's `sort_by` detects that and panics. So `[NaN, …].sort()` aborted the
+/// interpreter — a Rust panic, so `try` could not catch it — and whether it fired
+/// depended on the data: 601 elements went through, 60 did not.
+///
+/// Both sides now order the NaN (`val::compare_floats`, mirrored by lkrt's
+/// `compare_floats`): all NaNs equal, every NaN above every number, `-0.0` and
+/// `0.0` still equal because `==` says so. The boxed carrier has no `sort`
+/// lowering on purpose — its order spans kinds, which is a mirror that wants its
+/// own conformance test.
+#[test]
+fn sort_covers_the_float_and_string_carriers_including_nan() {
+    let nan_list = (0..60)
+        .map(|i| {
+            if i % 4 == 0 {
+                "nan".to_string()
+            } else {
+                format!("{}.5", 60 - i)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    run_differential(
+        "list_sort",
+        &[
+            new(
+                "sort_each_carrier",
+                "println([3, 1, 2].sort());\nprintln([3.5, 1.5, 2.5].sort());\n\
+                 println([\"b\", \"a\", \"C\", \"aa\", \"\"].sort());\n\
+                 println([].sort());\nprintln([1.5].sort());\nreturn 0;\n",
+            ),
+            // Non-mutating, like `reverse`.
+            new(
+                "sort_leaves_the_receiver",
+                "let a = [2.5, 1.5];\nprintln(a.sort());\nprintln(a);\nreturn 0;\n",
+            ),
+            // Byte order, so uppercase sorts before lowercase and a multi-byte
+            // character sorts by its UTF-8 bytes.
+            new(
+                "string_order_is_by_bytes",
+                "println([\"é\", \"e\", \"z\", \"Z\"].sort());\nprintln([\"ab\", \"a\", \"b\"].sort());\nreturn 0;\n",
+            ),
+            new(
+                "negative_zero_stays_equal_to_zero",
+                "println([-0.0, 0.0, -1.5].sort());\nprintln([0.0, -0.0].sort());\n\
+                 println(-0.0 == 0.0);\nreturn 0;\n",
+            ),
+            generated(
+                "a_nan_no_longer_aborts_either_backend",
+                format!(
+                    "let z = 0.0;\nlet nan = z / z;\nlet xs = [{nan_list}];\n\
+                     let sorted = xs.sort();\nprintln(sorted.len());\nprintln(sorted);\nreturn 0;\n"
+                ),
+            ),
+            new(
+                "nan_sorts_above_every_number",
+                "let z = 0.0;\nlet nan = z / z;\n\
+                 println([nan, 1.0].sort());\nprintln([1.0, nan].sort());\nprintln([nan, nan].sort());\n\
+                 println([nan, 1.0, -1.0].sort());\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `pop` / `insert` / `remove_at` on every list carrier, plus `first` / `last`
 /// on the boxed one. Pinned to pure Cranelift.
 ///

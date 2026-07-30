@@ -427,6 +427,8 @@ macro_rules! for_each_abi_fn {
             // `slice_h` block below. (`i64_slice` above stays a copy: `xs[1..5]`
             // is a range index, which the VM materializes.)
             ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "f64_sort", lkrt_lklist_f64_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "str_sort", lkrt_lklist_str_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "f64_reverse", lkrt_lklist_f64_reverse, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "str_reverse", lkrt_lklist_str_reverse, WritesHost, [Ptr], Ptr, Constructs);

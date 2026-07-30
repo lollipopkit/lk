@@ -662,14 +662,25 @@ pub(crate) fn lower_method_dispatch(
         }
         // `xs.sort()` / `xs.reverse()` — fresh copies (the VM sorts/reverses
         // a snapshot; the receiver is untouched).
-        (Ty::ListI64, "sort", []) => {
+        // `sort` is per carrier because its *order* is per carrier — see
+        // `list_sort!` in lkrt, where the `f64` comparator is not a total order
+        // once a NaN is present and the answer is therefore an artifact of which
+        // sort call is used. The boxed carrier is absent on purpose: its order is
+        // `compare_runtime_values` across kinds, which is a mirror worth its own
+        // conformance test rather than a copy.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "sort", []) => {
+            let callee = match receiver_ty {
+                Ty::ListI64 => "i64_sort",
+                Ty::ListF64 => "f64_sort",
+                _ => "str_sort",
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_sort"),
+                callee: AbiRef::new("list_h", callee),
                 args: vec![receiver],
             });
-            (dst, Ty::ListI64)
+            (dst, receiver_ty)
         }
         // `reverse` does not look at the element, so it is one arm over the
         // carriers rather than four written one at a time — which is how it came

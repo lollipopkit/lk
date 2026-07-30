@@ -21,6 +21,34 @@
 | `let a = 9223372036854775807; return a + 1;` | `-9223372036854775808` | 成功 | Int 溢出**回绕**,不 raise;两端一致(2026-07-29 核对) |
 | `math.abs(-9223372036854775808)` | `-9223372036854775808` | 成功 | 同一条回绕规则 —— 没有正的 `Int::MIN`。此前 `i64::abs` panic,进程 abort |
 
+### 排序里的 NaN:有序,不是"和一切相等"(2026-07-30 裁决)
+
+| 程序 | 期望 stdout | 说明 |
+|------|-------------|------|
+| `let z = 0.0; let n = z / z; return [n, 1.0].sort();` | `[1,NaN]` | NaN 大于每一个数,一个排好的列表读起来是升序的数后面跟着 NaN |
+| `let z = 0.0; let n = z / z; return [n, n].sort();` | `[NaN,NaN]` | NaN 之间相等 |
+| `return [0.0, -0.0].sort();` | `[0,-0]` | `-0.0` 与 `0.0` **仍然相等**(所以稳定排序保留输入序)—— `==` 说它们相等,`sort` 不该另立一条规矩 |
+
+之前两个执行器的浮点比较器都是 `partial_cmp(..).unwrap_or(Equal)`,也就是
+"NaN 和一切相等"。那**不是全序**(NaN == 1.0 且 NaN == 2.0,而 1.0 < 2.0,
+不传递),而 Rust 的 `sort_by` 会检测到并 panic:
+
+    user-provided comparison function does not correctly implement a total order
+
+于是含 NaN 的 `xs.sort()` 会让解释器 Rust panic(`try` 抓不到),native 侧
+abort。**打不打得中取决于数据**:601 个元素的列表过去了,60 个的没过 —— 这是最
+糟的那种可达。混合列表同样中招,因为 `compare_runtime_values` 的三个涉及 Float
+的分支用的是同一个比较器。
+
+现在两端共用一条**全序**规则(`val::compare_floats`,lkrt 侧 `compare_floats`
+镜像):NaN 之间相等、每个 NaN 大于每个数、`-0.0 == 0.0`。没有用
+`f64::total_cmp`,因为它会把 `-0.0` 和 `0.0` 分开,那样 `sort` 就和 `==` 对同两个
+值有两种说法。
+
+装箱载体(混合列表)的 `sort` **不做原生降低**:它的序跨类型,要镜像的是两张
+kind rank 表 + 深度受限的递归列表比较 + slice 视图 —— 那种规模的镜像该配自己的
+一致性测试(见 `lkrt/src/vm_mirror.rs` 为 map/set 做的那样),不是抄一份。
+
 注:`/` 产 Float 是整数中点必须写成 `math.floor((lo + hi) / 2)` 的原因
 (VM 侧 lower 为 `MidInt`)。更一般地,`math.floor(a / b)` **就是**整数除法
 ——语言里没有别的写法——所以它 lower 为单条 `FloorDivInt`(向下取整,

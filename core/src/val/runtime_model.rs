@@ -1744,3 +1744,75 @@ fn copy_numeric_list<T: Copy>(values: &[T], wrap: impl Fn(T) -> RuntimeVal) -> V
     mixed.extend(values.iter().copied().map(wrap));
     mixed
 }
+
+/// Ascending order over floats that is *total*, which `partial_cmp` is not.
+///
+/// `sort_by` may panic — "user-provided comparison function does not correctly
+/// implement a total order" — and `partial_cmp(..).unwrap_or(Equal)` earns it: a
+/// NaN reads equal to every value while those values stay ordered among
+/// themselves, so the relation is not transitive. `xs.sort()` on a float list
+/// holding a NaN therefore aborted the interpreter with a Rust panic, which `try`
+/// cannot catch. Whether it fired depended on the data: 601 elements went
+/// through, 60 did not, which is the worst kind of reachable.
+///
+/// So NaN is *ordered* rather than equal-to-everything: all NaNs compare equal to
+/// each other and greater than every number, and a sorted list reads as ascending
+/// values with the not-a-numbers gathered at the end.
+///
+/// `-0.0` and `0.0` stay equal here, where `f64::total_cmp` would separate them —
+/// `==` in the language says they are equal, and `sort` disagreeing with `==`
+/// about two values would be a second rule to remember for no gain.
+///
+/// `lkrt`'s `list_sort!` mirrors this for the native backend.
+pub fn compare_floats(left: f64, right: f64) -> core::cmp::Ordering {
+    match left.partial_cmp(&right) {
+        Some(ordering) => ordering,
+        // Unordered, so at least one side is NaN.
+        None => match (left.is_nan(), right.is_nan()) {
+            (true, true) => core::cmp::Ordering::Equal,
+            (true, false) => core::cmp::Ordering::Greater,
+            (false, true) => core::cmp::Ordering::Less,
+            // `partial_cmp` answers `None` only for a NaN, so this cannot happen;
+            // it is spelled out so the relation stays total if that ever changes.
+            (false, false) => core::cmp::Ordering::Equal,
+        },
+    }
+}
+
+#[cfg(test)]
+mod compare_floats_tests {
+    use super::compare_floats;
+    // `alloc`, not the std prelude: this crate also builds without an OS.
+    use alloc::vec::Vec;
+    use core::cmp::Ordering;
+
+    /// The property `sort_by` needs: transitivity across the NaN.
+    ///
+    /// `partial_cmp(..).unwrap_or(Equal)` fails exactly here — NaN == 1.0 and
+    /// NaN == 2.0 while 1.0 < 2.0 — and Rust's sort notices and panics.
+    #[test]
+    fn the_order_is_total_across_nan() {
+        let nan = f64::NAN;
+        assert_eq!(compare_floats(nan, nan), Ordering::Equal);
+        assert_eq!(compare_floats(nan, 1.0), Ordering::Greater);
+        assert_eq!(compare_floats(1.0, nan), Ordering::Less);
+        assert_eq!(compare_floats(nan, f64::INFINITY), Ordering::Greater);
+        // Zeroes stay equal, unlike `total_cmp`.
+        assert_eq!(compare_floats(-0.0, 0.0), Ordering::Equal);
+        assert_eq!(compare_floats(1.0, 2.0), Ordering::Less);
+
+        // And a sort over the values that used to abort now completes.
+        let mut values: Vec<f64> = (0..60)
+            .map(|i| if i % 4 == 0 { f64::NAN } else { f64::from(60 - i) })
+            .collect();
+        values.sort_by(|left, right| compare_floats(*left, *right));
+        assert!(
+            values[..45].windows(2).all(|pair| pair[0] <= pair[1]),
+            "the numbers come out ascending: {values:?}"
+        );
+        assert!(
+            values[45..].iter().all(|value| value.is_nan()),
+            "and the NaNs are gathered at the end: {values:?}"
+        );
+    }
+}

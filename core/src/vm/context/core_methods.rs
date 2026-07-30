@@ -1058,7 +1058,7 @@ pub(super) fn typed_list_sorted(list: &TypedList, heap: &HeapStore) -> TypedList
         }
         TypedList::Float(values) => {
             let mut out = values.to_vec();
-            out.sort_by(|left, right| left.partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal));
+            out.sort_by(|left, right| crate::val::compare_floats(*left, *right));
             TypedList::Float(out)
         }
         TypedList::Bool(values) => {
@@ -1288,15 +1288,12 @@ fn compare_runtime_values_at(
         (RuntimeVal::Nil, RuntimeVal::Nil) => core::cmp::Ordering::Equal,
         (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left.cmp(right),
         (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left.cmp(right),
-        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => {
-            left.partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal)
-        }
-        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => {
-            (*left as f64).partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal)
-        }
-        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => {
-            left.partial_cmp(&(*right as f64)).unwrap_or(core::cmp::Ordering::Equal)
-        }
+        // Every float-involving arm goes through the total order: a mixed list
+        // sorts with this comparator too, so a NaN anywhere in it had the same
+        // panic as a float list.
+        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => crate::val::compare_floats(*left, *right),
+        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => crate::val::compare_floats(*left as f64, *right),
+        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => crate::val::compare_floats(*left, *right as f64),
         _ => match (runtime_value_text(left, heap), runtime_value_text(right, heap)) {
             // Two strings, wherever each of them lives.
             (Some(left), Some(right)) => left.cmp(right),

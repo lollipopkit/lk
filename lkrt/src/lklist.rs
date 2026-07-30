@@ -1238,22 +1238,97 @@ pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, 
     crate::state::arena_handle(values[start..end].to_vec())
 }
 
-/// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the
-/// receiver is untouched; integer order equals `compare_runtime_values`).
+/// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the receiver
+/// is untouched).
 ///
-/// # Safety
-/// `handle` must be a live `i64` list handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_sort(handle: *mut c_void) -> *mut c_void {
-    let mut values: Vec<i64> = if handle.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { (*(handle as *mut Vec<i64>)).clone() }
-    };
-    values.sort_unstable();
-    crate::state::arena_handle(values)
+/// Unlike `reverse`, this *is* about the element, and each carrier's order has
+/// to be the one `typed_list_sorted` uses — not merely "ascending":
+///
+/// * `i64`: `sort_unstable`, which is what the VM calls. `compare_runtime_values`
+///   on two `Int`s *is* `i64`'s `Ord`, and equal integers are indistinguishable,
+///   so the algorithm cannot show.
+/// * `f64`: [`compare_floats`], which is a *total* order. The obvious mirror of
+///   the VM — `partial_cmp().unwrap_or(Equal)` — is not one, and Rust's `sort_by`
+///   detects that and panics; writing this arm is what found it, on both
+///   backends. See [`compare_floats`].
+/// * `str`: `sort_by` on the bytes, which is what `Arc<str>`'s `Ord` does in the
+///   VM. LK strings hold no interior NUL, so the C representation compares the
+///   same bytes.
+///
+/// The boxed carrier is deliberately absent: its order is
+/// `compare_runtime_values` across *kinds*, which needs two rank tables, a
+/// depth-limited recursive list comparison, and the slice view — a mirror of
+/// that size wants its own conformance test (see `vm_mirror`), not a copy.
+/// The VM's `val::compare_floats`, mirrored: a *total* ascending order over
+/// floats.
+///
+/// `partial_cmp(..).unwrap_or(Equal)` is not one — a NaN reads equal to every
+/// value while those values stay ordered — and Rust's `sort_by` detects that and
+/// panics ("user-provided comparison function does not correctly implement a
+/// total order"). In lkrt a panic is an abort, so `[NaN, 5.0, 1.0, …].sort()`
+/// killed the process; in the VM it killed the interpreter. Both sides now order
+/// NaN instead: all NaNs equal, every NaN greater than every number, `-0.0` and
+/// `0.0` still equal (which is what `==` says).
+fn compare_floats(left: f64, right: f64) -> core::cmp::Ordering {
+    match left.partial_cmp(&right) {
+        Some(ordering) => ordering,
+        None => match (left.is_nan(), right.is_nan()) {
+            (true, true) => core::cmp::Ordering::Equal,
+            (true, false) => core::cmp::Ordering::Greater,
+            (false, true) => core::cmp::Ordering::Less,
+            (false, false) => core::cmp::Ordering::Equal,
+        },
+    }
 }
+
+macro_rules! list_sort {
+    ($name:ident, $elem:ty, $sort:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            let mut values: Vec<$elem> = if handle.is_null() {
+                Vec::new()
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { (*(handle as *mut Vec<$elem>)).clone() }
+            };
+            let sort: fn(&mut Vec<$elem>) = $sort;
+            sort(&mut values);
+            crate::state::arena_handle(values)
+        }
+    };
+}
+
+list_sort!(
+    lkrt_lklist_i64_sort,
+    i64,
+    |values| values.sort_unstable(),
+    "`sort()` on a `List<i64>`."
+);
+list_sort!(
+    lkrt_lklist_f64_sort,
+    f64,
+    |values| values.sort_by(|left, right| compare_floats(*left, *right)),
+    "`sort()` on a `List<f64>`."
+);
+list_sort!(
+    lkrt_lklist_str_sort,
+    *const c_char,
+    |values| values.sort_by(|left, right| {
+        // A null element cannot occur in a live `str` list; ordering it first
+        // keeps the comparator total rather than reaching for `CStr` on null.
+        match (left.is_null(), right.is_null()) {
+            (true, true) => core::cmp::Ordering::Equal,
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            (false, false) => unsafe { CStr::from_ptr(*left).to_bytes().cmp(CStr::from_ptr(*right).to_bytes()) },
+        }
+    }),
+    "`sort()` on a `List<str>`."
+);
 
 /// `xs.reverse()` — a fresh reversed copy (non-mutating, like the VM).
 ///
