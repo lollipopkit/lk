@@ -594,6 +594,47 @@ fn display_joined(parts: impl Iterator<Item = String>) -> *mut c_char {
     crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
 }
 
+/// `xs.clear()` — empties the list in place, and answers nothing.
+///
+/// The VM's `clear` evaluates to the list, but the *helper* does not hand it
+/// back: a pointer-returning ABI entry has to be `Constructs` (a fresh handle
+/// the scope-drop pass may release) or `Retained`, and this is neither — it
+/// would be the caller's own list, which that pass would then free. The lowering
+/// already holds the receiver and uses it as the expression's value, so there is
+/// nothing to return. `pointer_returning_entries_are_not_marked_borrowed` is
+/// the test that says so.
+///
+/// One macro over every carrier rather than one function per element type: the
+/// operation does not depend on the element at all, and writing it four times is
+/// how three of the four end up missing. (`pop` / `insert` / `remove_at` do
+/// depend on the element — they are the next piece of work, tracked separately.)
+macro_rules! list_clear {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            unsafe { (*(handle as *mut Vec<$elem>)).clear() };
+        }
+    };
+}
+
+list_clear!(lkrt_lklist_i64_clear, i64, "`clear()` on a `List<i64>`.");
+list_clear!(lkrt_lklist_f64_clear, f64, "`clear()` on a `List<f64>`.");
+list_clear!(
+    lkrt_lklist_str_clear,
+    *const c_char,
+    "`clear()` on a `List<str>`. The element pointers are arena-owned, so \
+     dropping them is not a leak this crate can do anything about (see the \
+     module header's ownership note)."
+);
+
 /// Appends `value` to the list.
 ///
 /// # Safety

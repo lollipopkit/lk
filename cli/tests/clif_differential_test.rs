@@ -1418,6 +1418,41 @@ fn try_catch_differential() {
     );
 }
 
+/// `xs.clear()` on every list carrier, pinned to pure Cranelift.
+///
+/// One of the four mutating list methods that lowered for *no* carrier at all
+/// (`pop` / `insert` / `remove_at` are the others). `clear` goes first because
+/// it does not look at the element type — so it lands as one macro over all four
+/// carriers rather than as four functions, three of which would have been
+/// forgotten. That is the shape this file keeps recording: an operation whose
+/// carriers were filled in one at a time and then not finished.
+///
+/// It answers the receiver, which is what the VM's `clear` returns — the same
+/// handle, now empty. Pinning the *handle* matters: a copy would print the same
+/// thing and leave the original untouched.
+#[test]
+fn clear_covers_every_list_carrier() {
+    run_differential(
+        "list_clear",
+        &[
+            new(
+                "each_carrier",
+                "println([1, 2, 3].clear());\nprintln([1.5, 2.5].clear());\nprintln([\"x\", \"y\"].clear());\nprintln([1, \"s\"].clear());\nprintln([].clear());\nreturn 0;\n",
+            ),
+            // The receiver is the same list, so the binding sees it emptied.
+            new(
+                "clears_in_place",
+                "let a = [1, 2, 3];\nlet same = a.clear();\nprintln(a);\nprintln(a.len());\nprintln(same);\nprintln(a.is_empty());\nreturn 0;\n",
+            ),
+            new(
+                "clear_then_reuse",
+                "let a = [1, 2];\na.clear();\na.push(9);\nprintln(a);\nprintln(a.len());\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `slice` and `contains` on the non-`Int` list carriers, pinned to pure
 /// Cranelift.
 ///

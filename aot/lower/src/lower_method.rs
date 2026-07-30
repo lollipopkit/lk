@@ -734,6 +734,25 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::SliceI64)
         }
+        // `clear()` returns the receiver, which is what the VM's `clear` gives
+        // back — the same handle, now empty. Every carrier at once: the
+        // operation does not look at the element type.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "clear", []) => {
+            let helper = match receiver_ty {
+                Ty::ListI64 => "i64_clear",
+                Ty::ListF64 => "f64_clear",
+                Ty::ListStr => "str_clear",
+                _ => "dyn_clear",
+            };
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver],
+            });
+            // The value *is* the receiver — the helper returns nothing on
+            // purpose (see `lklist::list_clear!`).
+            (receiver, receiver_ty)
+        }
         // The other element types slice through `*_slice_from`, which has been
         // in the ABI all along — only the dispatch table stopped at `i64`. Same
         // shape as `chain`: the runtime could do it, nothing asked.

@@ -341,6 +341,12 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil, Borrowed);
+            // `clear()` on every carrier: the operation does not depend on the
+            // element type, so all four rows land together.
+            ("list_h", "i64_clear", lkrt_lklist_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "f64_clear", lkrt_lklist_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "str_clear", lkrt_lklist_str_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "dyn_clear", lkrt_lklist_dyn_clear, WritesHost, [Ptr], Nil, Borrowed);
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
             // none of these are Pure.

@@ -1071,6 +1071,20 @@ pub extern "C" fn lkrt_lklist_dyn_new() -> *mut c_void {
     arena_handle(Vec::<LkDyn>::new())
 }
 
+/// `xs.clear()` on a boxed list — empties in place, answering nothing (see
+/// `lklist::list_clear!` for why the handle is not returned).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_clear(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
+    unsafe { (*(handle as *mut Vec<LkDyn>)).clear() };
+}
+
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
