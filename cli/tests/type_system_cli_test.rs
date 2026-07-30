@@ -83,6 +83,56 @@ fn a_stdlib_member_that_does_not_exist_is_refused_at_check_time() -> Result<(), 
     Ok(())
 }
 
+/// A user module's namespace answers the same way a standard library module's
+/// does.
+///
+/// `use * as lib from "./lib.lk"; lib.nothere()` type-checked and died with "nil
+/// is not a function" — the same hole as a stdlib member, one layer over, and
+/// the checker had the namespace's exports the whole time (it already reports
+/// the *arity* of a member that does exist).
+#[test]
+fn a_namespace_member_that_does_not_exist_is_refused_at_check_time() -> Result<(), Box<dyn Error>> {
+    let dir = tempdir()?;
+    fs::write(dir.path().join("lib.lk"), "fn hi() { return 1; }\n")?;
+    let script_path = dir.path().join("main.lk");
+    fs::write(
+        &script_path,
+        "use * as lib from \"./lib.lk\";\nlet r = lib.nothere();\n",
+    )?;
+
+    let mut cmd = Command::cargo_bin("lk")?;
+    cmd.args(["check", script_path.to_str().unwrap()]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("`lib` has no member `nothere`"));
+    Ok(())
+}
+
+/// A *local* named after the namespace takes the name back.
+///
+/// The predicate here is `has_local_binding`, deliberately not the
+/// `lookup_binding` the standard-library check uses — that one counts a
+/// namespace as a binding, which is exactly what disqualifies the library
+/// reading of `math.f()` and exactly the opposite of what this check wants.
+/// Using the wrong one made this check silently never fire.
+#[test]
+fn a_local_named_after_a_namespace_is_an_ordinary_value() -> Result<(), Box<dyn Error>> {
+    let dir = tempdir()?;
+    fs::write(dir.path().join("lib.lk"), "fn hi() { return 1; }\n")?;
+    let script_path = dir.path().join("main.lk");
+    fs::write(
+        &script_path,
+        "use * as lib from \"./lib.lk\";\n\
+         fn main() {\n  let lib = {\"anything\": 1};\n  println(\"${lib.anything}\");\n}\n\
+         main();\nprintln(\"${lib.hi()}\");\n",
+    )?;
+
+    let mut cmd = Command::cargo_bin("lk")?;
+    cmd.args(["check", script_path.to_str().unwrap()]);
+    cmd.assert().success();
+    Ok(())
+}
+
 /// …and everything that is not that keeps working.
 ///
 /// A dotted call is `a.b.c()` for *any* `a`, so the check has to know when it is

@@ -42,6 +42,29 @@ impl TypeChecker {
             return Ok(*return_type);
         }
 
+        // The same namespace, a name it does not export. A namespace knows
+        // everything it has, so this is a mistake here rather than "nil is not a
+        // function" at run time — the sentence `lk check` already gives for a
+        // standard library module's missing member, now for the other kind of
+        // module too.
+        //
+        // Only when the namespace exists *and* nothing shadows it: a local bound
+        // to that name is an ordinary value with fields.
+        if let Expr::Access(base, field) = func
+            && let Expr::Var(namespace) = base.as_ref()
+            && let Some(member) = super::stdlib::segment_name(field)
+            && self.is_imported_namespace(namespace)
+            && !self.has_local_binding(namespace)
+            && self.imported_member_type(namespace, member).is_none()
+        {
+            return Err(Self::type_err(
+                &format!("`{namespace}` has no member `{member}`"),
+                None,
+                None,
+                Some(func.clone()),
+            ));
+        }
+
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
             if let Expr::Literal(field_val) = field_expr.as_ref()

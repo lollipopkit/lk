@@ -300,6 +300,27 @@ impl TypeChecker {
         self.imported_members.get(namespace)?.get(member).cloned()
     }
 
+    /// Whether this name is a namespace bound by `use * as name from "…"`.
+    ///
+    /// Asked before saying "no such member": a namespace knows everything it
+    /// exports, so a name it does not have is a mistake — the same one
+    /// `has no member` reports for a standard library module. Without it
+    /// `lib.nothere()` type-checked and died with "nil is not a function".
+    pub(crate) fn is_imported_namespace(&self, name: &str) -> bool {
+        self.imported_members.contains_key(name)
+    }
+
+    /// Whether a *local* shadows this name.
+    ///
+    /// Deliberately not [`Self::lookup_binding`], which counts a namespace as a
+    /// binding: that is what disqualifies the standard-library reading of
+    /// `math.f()`, and it is the opposite of what the namespace check wants —
+    /// there the namespace is the thing being asked about, and only a local can
+    /// take the name away from it.
+    pub(crate) fn has_local_binding(&self, name: &str) -> bool {
+        self.lookup_local(name).is_some()
+    }
+
     /// Each function's inferred return type, by name.
     ///
     /// The signatures are already here — an editor showing `-> String` after a
