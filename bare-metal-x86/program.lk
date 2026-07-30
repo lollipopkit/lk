@@ -666,6 +666,17 @@ fn repaint_cells(base: Int, left: Int, top: Int, width: Int, height: Int) {
 // are not the handler mask interrupts around it: the two would otherwise
 // interleave on the cursor.
 fn put_char(base: Int, ascii: Int) {
+    // `as Int` on a parameter already declared `Int` is not redundant here, and
+    // the reason is a property of the lowering rather than of this function: a
+    // parameter's type is *observed* from its call sites, and one call site
+    // passing a boxed value widens it for every other one. This has several —
+    // `console_byte` is `#[export]`ed (called from C, so nothing proves the
+    // argument came from LK) and the queue read comes out of shared memory —
+    // so the cast is put once, here, instead of at each of them.
+    //
+    // Without it the arithmetic on `ascii` stops lowering, which on this target
+    // is a hard failure rather than a fallback to the VM.
+    let ascii = ascii as Int;
     let column = shared_read(SHARED_CURSOR_COL);
     let row = shared_read(SHARED_CURSOR_ROW);
     // Erase the cursor before anything moves it, so the block never gets left
