@@ -886,7 +886,12 @@ impl Compiler {
     pub(super) fn materialize_list(&mut self, values: Vec<u16>) -> Result<u16> {
         let len = values.len();
         if len > u8::MAX as usize {
-            bail!("Compiler list literal has {} elements, max {}", len, u8::MAX);
+            // Not a list literal, whatever the old message said: this packs an
+            // argument list for the `__lk_call_method` helper, and the values
+            // are already in registers — so unlike `lower_list` there is no
+            // build-empty-and-push route available here, because 256 live
+            // argument registers have already overflowed the same operand.
+            bail!("Compiler call has {} arguments, max {}", len, u8::MAX);
         }
 
         let base = self.alloc_regs(len)?;

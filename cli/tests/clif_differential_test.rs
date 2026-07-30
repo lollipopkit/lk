@@ -42,6 +42,16 @@ const fn new(name: &'static str, source: &'static str) -> Case {
     Case { name, source }
 }
 
+/// A case whose program is generated rather than written out — a 400-element
+/// literal is not something to paste into a test file. The leak lives as long
+/// as the test process, which is what `&'static str` here means anyway.
+fn generated(name: &'static str, source: String) -> Case {
+    Case {
+        name,
+        source: Box::leak(source.into_boxed_str()),
+    }
+}
+
 /// Compile each case through Cranelift (forced, no fallback), run it, run the
 /// same source under the VM, and require identical stdout and identical
 /// success/failure.
@@ -1447,6 +1457,88 @@ fn clear_covers_every_list_carrier() {
             new(
                 "clear_then_reuse",
                 "let a = [1, 2];\na.clear();\na.push(9);\nprintln(a);\nprintln(a.len());\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
+/// Container literals past the instruction's operand ceiling.
+///
+/// `NewList` names its element window as (u8 base, u8 len) and `NewMap` names
+/// twice as many registers, so the compiler refused a literal over 255 elements
+/// or 127 entries — with a compiler-internal message, and *only* when constant
+/// folding did not apply. An all-literal `[0, …, 399]` became a heap constant
+/// and compiled; changing one element to a variable made the same list a
+/// compile error. 255 was the operand width, never a rule about lists.
+///
+/// Long literals now build empty and push the tail one element at a time
+/// through a scratch register that is handed straight back — holding all of
+/// them at once hits the same ceiling from the register side, which is what the
+/// first attempt here did (`dst` landed at 256).
+///
+/// Pinned against the VM because the interesting parts are not the length: the
+/// boundary elements either side of 255, left-to-right evaluation order of
+/// element expressions that have side effects, element type widening across the
+/// boundary, and a duplicate map key still resolving last-wins when the two
+/// writes take different routes.
+#[test]
+fn long_container_literals_lower_and_agree() {
+    let elements = (0..399).map(|i| (i * 2).to_string()).collect::<Vec<_>>().join(", ");
+    let entries = (0..200)
+        .map(|i| format!("\"k{i}\": {}", i * 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let duplicates = (0..130)
+        .map(|i| format!("\"d{i}\": {i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mixed = (0..300)
+        .map(|i| if i % 2 == 0 { i.to_string() } else { format!("\"{i}\"") })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tapped = (0..300).map(|i| format!("tap({i})")).collect::<Vec<_>>().join(", ");
+    run_differential(
+        "long_literals",
+        &[
+            generated(
+                "list_past_the_window",
+                format!(
+                    "let x = 7;\nlet a = [{elements}, x];\n\
+                     println(\"${{a.len()}} ${{a[0]}} ${{a[254]}} ${{a[255]}} ${{a[256]}} ${{a[398]}} ${{a[399]}}\");\nreturn 0;\n"
+                ),
+            ),
+            generated(
+                "map_past_the_window",
+                format!(
+                    "let x = 7;\nlet m = {{{entries}, \"kx\": x}};\n\
+                     println(\"${{m.len()}} ${{m[\"k0\"]}} ${{m[\"k126\"]}} ${{m[\"k127\"]}} ${{m[\"k199\"]}} ${{m[\"kx\"]}}\");\nreturn 0;\n"
+                ),
+            ),
+            // The last write wins whether it lands inside `NewMap` or in a
+            // `SetIndex` after it.
+            generated(
+                "duplicate_key_past_the_window",
+                format!(
+                    "let d = {{{duplicates}, \"d0\": 999}};\nprintln(\"${{d.len()}} ${{d[\"d0\"]}}\");\nreturn 0;\n"
+                ),
+            ),
+            // A list whose elements stop being one type across the boundary.
+            generated(
+                "mixed_elements_past_the_window",
+                format!(
+                    "let s = \"z\";\nlet m = [{mixed}, s];\n\
+                     println(\"${{m.len()}} ${{m[0]}} ${{m[1]}} ${{m[299]}} ${{m[300]}}\");\nreturn 0;\n"
+                ),
+            ),
+            // Element expressions are evaluated left to right, and the tail is
+            // no exception.
+            generated(
+                "evaluation_order_past_the_window",
+                format!(
+                    "let log = [];\nfn tap(v) {{ log.push(v); return v; }}\nlet b = [{tapped}];\n\
+                     println(\"${{b.len()}} ${{log.len()}} ${{log[0]}} ${{log[299]}} ${{b[299]}}\");\nreturn 0;\n"
+                ),
             ),
         ],
         NativePath::PureCranelift,

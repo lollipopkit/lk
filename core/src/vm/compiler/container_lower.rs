@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 use crate::{
     expr::Expr,
     val::LiteralVal,
-    vm::analysis::{PerfContainerBuildFact, PerfContainerFact, PerfValueKind},
+    vm::analysis::{PerfContainerBuildFact, PerfContainerFact, PerfContainerMoveFact, PerfValueKind},
 };
 
 use super::{
@@ -23,12 +23,20 @@ impl Compiler {
             self.set_register_list_fact(dst, list_fact_from_exprs(elements));
             return Ok(dst);
         }
+        // `NewList` names its element window as (u8 base, u8 len), so a longer
+        // literal is not one instruction — and 256 live registers would not fit
+        // the same operand anyway. This used to `bail!`, and only when constant
+        // folding did not apply: an all-constant literal of any length becomes a
+        // heap constant above, so `[0, …, 399]` compiled and `[0, …, 398, x]`
+        // did not. 255 was the opcode's operand width, never a rule about lists.
+        // A literal that fits keeps the window path exactly as it was; a longer
+        // one builds empty and pushes everything, because the window competes
+        // with `dst` for the same 256 registers — a 255-element window leaves
+        // `dst` at 256, which the operand cannot name either.
         let len = elements.len();
-        if len > u8::MAX as usize {
-            bail!("Compiler list literal has {} elements, max {}", len, u8::MAX);
-        }
-        let base = self.alloc_regs(len)?;
-        for (offset, element) in elements.iter().enumerate() {
+        let window = if len > u8::MAX as usize { 0 } else { len };
+        let base = self.alloc_regs(window)?;
+        for (offset, element) in elements[..window].iter().enumerate() {
             self.lower_expr_to_register(base + offset as u16, element, "list element")?;
         }
         let dst = self.alloc_reg();
@@ -37,7 +45,7 @@ impl Compiler {
             Opcode::NewList,
             checked_u8("list dst", dst)?,
             checked_u8("list base", base)?,
-            checked_u8("list len", len as u16)?,
+            checked_u8("list len", window as u16)?,
         ));
         self.function.performance.set_container_build_fact(
             pc,
@@ -46,6 +54,29 @@ impl Compiler {
                 move_values: true,
             },
         );
+        // The tail goes in one element at a time, each through a scratch
+        // register that is handed straight back — holding all of them at once
+        // is what runs into the register ceiling from the other side.
+        for element in &elements[window..] {
+            let watermark = self.next_reg;
+            let scratch = self.alloc_reg();
+            self.lower_expr_to_register(scratch, element, "list element")?;
+            let push_pc = self.function.code.len();
+            self.emit(Instr::abc(
+                Opcode::ListPush,
+                checked_u8("list dst", dst)?,
+                checked_u8("list element", scratch)?,
+                0,
+            ));
+            self.function.performance.set_container_move_fact(
+                push_pc,
+                PerfContainerMoveFact {
+                    move_key: false,
+                    move_value: true,
+                },
+            );
+            self.next_reg = self.live_register_floor().max(watermark);
+        }
         self.set_register_list_fact(dst, list_fact_from_exprs(elements));
         Ok(dst)
     }
@@ -58,15 +89,20 @@ impl Compiler {
             self.set_register_map_fact(dst, map_fact_from_exprs(entries));
             return Ok(dst);
         }
+        // Same ceiling as `lower_list`, one bit tighter: `NewMap` names its
+        // key/value window as (u8 base, u8 len) and each entry costs two
+        // registers, so a literal past 127 entries builds empty and sets the
+        // rest. It used to `bail!`, and — like the list — only when constant
+        // folding did not apply, so `{"a": 1, …}` of any length compiled until
+        // one value stopped being a literal.
         let len = entries.len();
-        if len > i8::MAX as usize {
-            bail!("Compiler map literal has {} entries, max {}", len, i8::MAX);
-        }
+        let window = if len > i8::MAX as usize { 0 } else { len };
         let base = self.alloc_regs(
-            len.checked_mul(2)
+            window
+                .checked_mul(2)
                 .ok_or_else(|| anyhow!("Compiler map entry overflow"))?,
         )?;
-        for (offset, (key, value)) in entries.iter().enumerate() {
+        for (offset, (key, value)) in entries[..window].iter().enumerate() {
             let key_dst = base + (offset as u16 * 2);
             self.lower_expr_to_register(key_dst, key, "map key")?;
             self.lower_expr_to_register(key_dst + 1, value, "map value")?;
@@ -77,7 +113,7 @@ impl Compiler {
             Opcode::NewMap,
             checked_u8("map dst", dst)?,
             checked_u8("map base", base)?,
-            checked_u8("map len", len as u16)?,
+            checked_u8("map len", window as u16)?,
         ));
         self.function.performance.set_container_build_fact(
             pc,
@@ -86,6 +122,31 @@ impl Compiler {
                 move_values: true,
             },
         );
+        // The tail, one entry at a time through two scratch registers that are
+        // handed back. A later duplicate key overwrites an earlier one here just
+        // as it does inside `NewMap`, so the route does not change the answer.
+        for (key, value) in &entries[window..] {
+            let watermark = self.next_reg;
+            let key_reg = self.alloc_reg();
+            self.lower_expr_to_register(key_reg, key, "map key")?;
+            let value_reg = self.alloc_reg();
+            self.lower_expr_to_register(value_reg, value, "map value")?;
+            let set_pc = self.function.code.len();
+            self.emit(Instr::abc(
+                Opcode::SetIndex,
+                checked_u8("map dst", dst)?,
+                checked_u8("map key", key_reg)?,
+                checked_u8("map value", value_reg)?,
+            ));
+            self.function.performance.set_container_move_fact(
+                set_pc,
+                PerfContainerMoveFact {
+                    move_key: true,
+                    move_value: true,
+                },
+            );
+            self.next_reg = self.live_register_floor().max(watermark);
+        }
         self.set_register_map_fact(dst, map_fact_from_exprs(entries));
         Ok(dst)
     }
