@@ -53,17 +53,46 @@ pub fn constructed_struct_name(function_name: &str) -> Option<&str> {
     function_name.strip_suffix("$new")
 }
 
+/// Registers the generated constructor needs beyond one per field: the type
+/// name `NewObject` reads, the object being built, and the scratch each field
+/// value passes through.
+const CONSTRUCTOR_OVERHEAD_REGISTERS: usize = 3;
+
+/// The widest struct that can have a constructor, and therefore exist.
+pub const MAX_STRUCT_FIELDS: usize = (u8::MAX as usize + 1) - CONSTRUCTOR_OVERHEAD_REGISTERS;
+
 /// Adds a constructor function after every top-level `struct` declaration.
-pub fn add_struct_constructors(statements: &mut Vec<Box<Stmt>>) {
+///
+/// The constructor takes one *named parameter* per field, and parameters are
+/// locals — so the width of a struct is bounded by the register file, and the
+/// bound belongs here rather than wherever the generated body happens to run
+/// out. A 254-field `struct` used to compile to "this function needs more than
+/// 256 registers … split the body into smaller functions", pointing at a body
+/// the program does not contain and offering advice that cannot be followed:
+/// the declaration is one statement and emits no code of its own.
+pub fn add_struct_constructors(statements: &mut Vec<Box<Stmt>>) -> Result<(), String> {
     let mut out: Vec<Box<Stmt>> = Vec::with_capacity(statements.len());
     for stmt in statements.drain(..) {
-        let ctor = struct_declaration(&stmt).map(|(name, fields)| constructor_for(name, fields));
+        let ctor = match struct_declaration(&stmt) {
+            Some((name, fields)) if fields.len() > MAX_STRUCT_FIELDS => {
+                return Err(alloc::format!(
+                    "struct `{name}` has {} fields, and {MAX_STRUCT_FIELDS} is the most one can have: \
+                     building it takes a generated constructor with one parameter per field, and a \
+                     function's parameters share the same 256 registers as its temporaries. Split the \
+                     type, or hold this many values in a map",
+                    fields.len()
+                ));
+            }
+            Some((name, fields)) => Some(constructor_for(name, fields)),
+            None => None,
+        };
         out.push(stmt);
         if let Some(ctor) = ctor {
             out.push(Box::new(ctor));
         }
     }
     *statements = out;
+    Ok(())
 }
 
 /// A struct declaration's name and fields, as the AST holds them.

@@ -102,7 +102,7 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     // A constructor beside every `struct`, so the module that owns a type is
     // the one that builds it — see `stmt::struct_ctors` for why that is the
     // whole trick.
-    crate::stmt::struct_ctors::add_struct_constructors(&mut program.statements);
+    crate::stmt::struct_ctors::add_struct_constructors(&mut program.statements).map_err(ParseError::new)?;
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,

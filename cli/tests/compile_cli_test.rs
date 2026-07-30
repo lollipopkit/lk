@@ -1306,3 +1306,36 @@ fn a_struct_literal_is_not_capped_at_an_unreachable_field_count() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "199 0");
 }
+
+/// Too many fields is reported as too many fields.
+///
+/// A `struct` declaration emits no code of its own, but every one gets a
+/// generated constructor taking one *named parameter* per field — and parameters
+/// are locals. So a 254-field struct failed with "this function needs more than
+/// 256 registers … split the body into smaller functions": a body the program
+/// does not contain, and advice that cannot be followed, for a limit that is
+/// real and worth stating plainly.
+#[test]
+fn a_struct_too_wide_to_construct_says_so() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("too_wide.lk");
+    let fields = (0..254).map(|i| format!("f{i}: Int")).collect::<Vec<_>>().join(", ");
+    std::fs::write(&path, format!("struct TooWide {{ {fields} }}\n")).expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run lk check");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(stderr.contains("struct `TooWide` has 254 fields"), "{stderr}");
+    assert!(stderr.contains("253 is the most one can have"), "{stderr}");
+    // The register message named the wrong thing entirely.
+    assert!(!stderr.contains("split the body into smaller functions"), "{stderr}");
+}
