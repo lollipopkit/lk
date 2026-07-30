@@ -552,7 +552,21 @@ pub fn lower_bundled(
         // hides behind its caller's transient ret-type check).
         if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
             for (fi, err) in &failures {
-                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}");
+                let at = match (err_pc(err), funcs.get(*fi)) {
+                    (Some(pc), Some(f)) => match f.code.get(pc).and_then(|raw| Instr::try_from_raw(*raw).ok()) {
+                        Some(instr) => format!(
+                            " [{:?} a={} b={} c={}]",
+                            instr.opcode(),
+                            instr.a(),
+                            instr.b(),
+                            instr.c()
+                        ),
+                        None => format!(" [pc {pc} out of range: fn has {} instrs]", f.code.len()),
+                    },
+                    (Some(pc), None) => format!(" [fn{fi} not in table of {}; pc {pc}]", funcs.len()),
+                    _ => String::new(),
+                };
+                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}{at}");
             }
         }
         let first_error = name_failure(&failures[0], &funcs);
@@ -669,6 +683,28 @@ pub fn lower_bundled(
 /// outlined `try` body, a lambda — keeps the bare blocker rather than being
 /// given a made-up name: `fn41` is not more informative than the pc already is,
 /// and it reads like something the reader could go and look up.
+/// The bytecode offset a blocker is about, for the debug listing above.
+///
+/// Local and private: it exists because the listing has a use for it, not as a
+/// general accessor waiting for one.
+fn err_pc(err: &Unsupported) -> Option<usize> {
+    match err {
+        Unsupported::In { inner, .. } => err_pc(inner),
+        Unsupported::ContainerGlobalBoxed { pc, .. }
+        | Unsupported::BadInstr { pc }
+        | Unsupported::Opcode { pc, .. }
+        | Unsupported::TryRegion { pc, .. }
+        | Unsupported::UnresolvedGlobal { pc, .. }
+        | Unsupported::BadConst { pc }
+        | Unsupported::UndefinedOperand { pc, .. }
+        | Unsupported::TypeMismatch { pc }
+        | Unsupported::OperandType { pc, .. }
+        | Unsupported::NonBoolCondition { pc }
+        | Unsupported::BadTarget { pc } => Some(*pc),
+        _ => None,
+    }
+}
+
 fn name_failure(failure: &(usize, Unsupported), funcs: &[FunctionData]) -> Unsupported {
     let (fi, err) = failure;
     match funcs.get(*fi).and_then(|f| f.debug_name.clone()) {
