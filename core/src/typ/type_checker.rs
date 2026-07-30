@@ -82,6 +82,28 @@ impl core::fmt::Display for TypeError {
         if let (Some(expected), Some(actual)) = (&self.expected, &self.actual) {
             write!(f, " (expected {}, got {})", expected.display(), actual.display())?;
         }
+        // `TypeError` carries three things that say *where*: the offending
+        // expression, the function it was an argument to, and the statement's
+        // span. None of them were rendered, so `Argument 1 has the wrong type
+        // (expected Int, got Int?)` was the whole message — and in a
+        // four-thousand-line program that is not a diagnostic. Finding the one
+        // real instance of it took a bisect script that then got fooled by
+        // forward references.
+        //
+        // The expression is printed rather than the span because it is the field
+        // that is actually populated on this path: `Stmt::Expr` (a bare call
+        // statement, which is where the argument checks live) is the one
+        // statement variant carrying no span at all. Naming that is a separate
+        // piece of work; printing what we have is not blocked on it.
+        if let Some(func) = &self.function_name {
+            write!(f, " in `{func}`")?;
+        }
+        if let Some(expr) = &self.expr {
+            write!(f, " at `{expr}`")?;
+        }
+        if let Some(span) = &self.span {
+            write!(f, " ({})", span.start)?;
+        }
         Ok(())
     }
 }

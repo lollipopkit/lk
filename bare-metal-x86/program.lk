@@ -769,7 +769,10 @@ fn scroll_view() {
 fn text_bytes(text: String) -> List<Int> {
     let out: List<Int> = [];
     for index in 0..text.len() {
-        out.push(text.byte_at(index));
+        // In range by construction (`0..text.len()`), so the `Int?` that
+        // `byte_at` answers for a past-the-end read is unwrapped here rather
+        // than carried into a `List<Int>`.
+        out.push(text.byte_at(index)!);
     }
     return out;
 }
@@ -799,7 +802,7 @@ fn emit_text(base: Int, text: String) {
     // that never ran, a sleep that took a tenth of the time it asked for.
     let irq = lock();
     for index in 0..text.len() {
-        let code = text.byte_at(index);
+        let code = text.byte_at(index)!;
         uart_putc(code);
         put_char(base, code);
     }

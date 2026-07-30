@@ -53,7 +53,10 @@ fn uart_putc(byte: Int) {
 // used to be an array of ASCII numbers because there was no such read.
 fn uart_text(text: String) {
     for index in 0..text.len() {
-        uart_putc(text.byte_at(index));
+        // `!`, because the index is `0..text.len()`: in range by construction.
+        // `byte_at` answers `Int?` since a position past the end is nil, and
+        // this is where the program says it knows better.
+        uart_putc(text.byte_at(index)!);
     }
 }
 
