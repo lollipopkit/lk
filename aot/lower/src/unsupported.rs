@@ -37,6 +37,21 @@ pub enum Unsupported {
         pc: usize,
         op: Opcode,
     },
+    /// A **call shape** the lowering does not cover, carrying *why*.
+    ///
+    /// These sites used to say `Unsupported::Opcode { pc, op: Opcode::Call }`
+    /// with the opcode written in by hand, because the helper that refuses does
+    /// not have the instruction. The message then named an opcode the program
+    /// need not contain: eight of the twelve blockers in the x86 bare-metal
+    /// kernel reported `opcode Call (at pc N)` where pc N held a
+    /// `CallMethodK`. A reader who went to look found something else there.
+    ///
+    /// Same shape and same reason as [`Unsupported::TryRegion`]: the answer is
+    /// always a specific property of one call, never "calls are unsupported".
+    CallShape {
+        pc: usize,
+        reason: &'static str,
+    },
     /// A `try` region whose shape would change meaning if the body were called
     /// instead of run in place. Carries *why*, because "opcode TryBegin is not
     /// natively lowerable" is what this replaces: it named a feature where the
@@ -149,6 +164,9 @@ impl Unsupported {
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
+            }
+            Unsupported::CallShape { pc, reason } => {
+                format!("the call at pc {pc} is not natively lowerable: {reason}")
             }
             Unsupported::TryRegion { pc, reason } => {
                 format!("the try region at pc {pc} cannot be outlined: {reason}")

@@ -25,7 +25,10 @@ pub(crate) fn lower_module_call(
         match name {
             "from_list" | "collect" => {
                 if argc != 1 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
                 if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
@@ -36,7 +39,10 @@ pub(crate) fn lower_module_call(
             }
             "range" => {
                 if argc != 2 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
                 let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
@@ -64,7 +70,10 @@ pub(crate) fn lower_module_call(
     }
     if module == "iter" && name == "range" {
         if !(1..=3).contains(&argc) {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let (start, end) = if argc == 1 {
             let zero = ssa.new_val();
@@ -109,7 +118,10 @@ pub(crate) fn lower_module_call(
     // Float and takes the generic path (it has no ABI row, so it falls back).
     if module == "string" && name == "to_int" {
         if !(1..=2).contains(&argc) {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let text = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::Str, pc)?;
         let radix = if argc == 2 {
@@ -136,7 +148,10 @@ pub(crate) fn lower_module_call(
     // `Float` rounds via the lkrt helper (`f64::xxx() as i64`).
     if module == "math" && matches!(name, "floor" | "ceil" | "round") {
         if argc != 1 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
         match ty {
@@ -164,7 +179,10 @@ pub(crate) fn lower_module_call(
     // Float → fabs via select on the float compare.
     if module == "math" && name == "abs" {
         if argc != 1 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
         if !matches!(ty, Ty::I64 | Ty::F64) {
@@ -218,7 +236,10 @@ pub(crate) fn lower_module_call(
         match name {
             "stdin" | "stdout" | "stderr" => {
                 if argc != 0 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let handle = match name {
                     "stdin" => 0,
@@ -235,7 +256,10 @@ pub(crate) fn lower_module_call(
             }
             "write" | "writeln" => {
                 if argc != 2 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
                 let data = ssa.read_typed(base.wrapping_add(2), block, Ty::Str, pc)?;
@@ -255,7 +279,10 @@ pub(crate) fn lower_module_call(
             }
             "flush" => {
                 if argc != 1 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
                 insts.push(Inst::Call {
@@ -273,7 +300,10 @@ pub(crate) fn lower_module_call(
             }
             "read_to_string" => {
                 if argc != 1 {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this stdlib module function",
+                    });
                 }
                 let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
                 let dst = ssa.new_val();
@@ -285,14 +315,22 @@ pub(crate) fn lower_module_call(
                 ssa.write(base, block, (dst, Ty::Str));
                 return Ok(());
             }
-            _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+            _ => {
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this stdlib module function",
+                });
+            }
         }
     }
     // `datetime.add`/`sub` are plain Int arithmetic (`timestamp ± seconds`);
     // `is_weekend` returns the helper's 0/1 as a `Bool`.
     if module == "datetime" && matches!(name, "add" | "sub") {
         if argc != 2 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let ts = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
         let secs = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
@@ -308,7 +346,10 @@ pub(crate) fn lower_module_call(
     }
     if module == "datetime" && name == "is_weekend" {
         if argc != 1 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let ts = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
         let wide = ssa.new_val();
@@ -338,7 +379,10 @@ pub(crate) fn lower_module_call(
     // out of the subset.
     if module == "time" && name == "since" {
         if argc != 2 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
         let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
@@ -356,7 +400,10 @@ pub(crate) fn lower_module_call(
     // the VM's `min_max`); same-type scalar pairs lower to a select.
     if module == "math" && matches!(name, "min" | "max") {
         if argc != 2 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let (l, lty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
         let (r, rty) = read_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
@@ -385,7 +432,10 @@ pub(crate) fn lower_module_call(
     // `math.sign` keeps its argument's numeric flavor (the module's two arms).
     if module == "math" && name == "sign" {
         if argc != 1 {
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
         }
         let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
         let sign_fn = match ty {
@@ -484,10 +534,16 @@ pub(crate) fn lower_module_call(
         return Ok(());
     }
     let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "no native lowering for this stdlib module function",
+        });
     };
     if argc != param_tys.len() {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "no native lowering for this stdlib module function",
+        });
     }
     let mut args = Vec::with_capacity(argc);
     for (i, want) in param_tys.iter().enumerate() {

@@ -21,12 +21,18 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::CallMethod => {
             // Dispatched by the caller before reaching here.
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this builtin in this argument shape",
+            });
         }
         Builtin::TryCall => {
             // Dispatched by the caller before reaching here (it needs the
             // function table and the signature lattice).
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this builtin in this argument shape",
+            });
         }
         Builtin::ErrorRaise => {
             // `error(v)`: raise the boxed value to the nearest `try` frame
@@ -34,7 +40,10 @@ pub(crate) fn lower_builtin_call(
             // the VM's uncaught behaviour). The statement's result register
             // is never observed on the raise path; nil keeps SSA total.
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
             let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
@@ -53,7 +62,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::U64ToFloat => {
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let value = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let dst = ssa.new_val();
@@ -67,7 +79,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::U64Str => {
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let value = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let dst = ssa.new_val();
@@ -81,7 +96,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::LtU | Builtin::DivU | Builtin::ModU => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
@@ -127,7 +145,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::Shl | Builtin::Shr | Builtin::ShrU => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
@@ -152,7 +173,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::BitAnd | Builtin::BitOr => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
@@ -173,7 +197,10 @@ pub(crate) fn lower_builtin_call(
         Builtin::BitNot => {
             // `~x` = `x xor -1` (two's complement bitwise not).
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let v = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let minus_one = ssa.new_val();
@@ -195,7 +222,10 @@ pub(crate) fn lower_builtin_call(
             // `chan(capacity[, type])` — the type string is a VM checker
             // hint, dropped natively. The channel value is its i64 id.
             if !(1..=2).contains(&argc) {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let cap = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let dst = ssa.new_val();
@@ -209,7 +239,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::ChanSend => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
             let (v, ty) = ssa.read(base.wrapping_add(2), block, pc)?;
@@ -229,7 +262,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::ChanRecv => {
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
             let dst = ssa.new_val();
@@ -243,18 +279,27 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::Spawn => {
             // Dispatched by the caller (needs the function table/signatures).
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this builtin in this argument shape",
+            });
         }
         Builtin::MergeFields | Builtin::MakeStruct => {
             // Dispatched by the caller (struct provenance needs `sig`).
-            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this builtin in this argument shape",
+            });
         }
         Builtin::SelectBlock => {
             // Four parallel lists + the default flag; every list normalizes
             // to a dyn list, the result is the VM's exact
             // `[is_default, index, payload]` shape.
             if argc != 5 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let mut lists = Vec::with_capacity(4);
             for i in 0..4 {
@@ -311,7 +356,12 @@ pub(crate) fn lower_builtin_call(
                     });
                     dst
                 }
-                _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+                _ => {
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "no native lowering for this builtin in this argument shape",
+                    });
+                }
             };
             ssa.write(base, block, (result, Ty::Set));
             return Ok(());
@@ -358,7 +408,10 @@ pub(crate) fn lower_builtin_call(
             // built eagerly (dead on the success path) so no extra control
             // flow is needed.
             if !(2..=3).contains(&argc) {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let negated = builtin == Builtin::AssertNe;
             let (lv, lty) = ssa.read(base.wrapping_add(1), block, pc)?;
@@ -513,10 +566,16 @@ pub(crate) fn lower_builtin_call(
             // disagrees is not a build error but a call with the wrong number
             // of arguments, or a result quietly overwritten with nil below.
             let Some(abi) = lk_aot_abi::find("cpu", entry) else {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             };
             if argc != abi.params.len() {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let mut call_args = Vec::with_capacity(argc);
             for index in 0..argc {
@@ -549,11 +608,17 @@ pub(crate) fn lower_builtin_call(
             // The name has to be a literal: a relocation is a name resolved at
             // link time, and a kernel has no symbol table to look one up in.
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let (name_value, _) = ssa.read(base.wrapping_add(1), block, pc)?;
             let Some(symbol) = ssa.const_strs.get(&name_value).cloned() else {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             };
             let dst = ssa.new_val();
             insts.push(Inst::SymbolAddr { dst, symbol });
@@ -562,7 +627,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::CallAddress2 => {
             if argc != 3 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let callee = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let first = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
@@ -581,7 +649,10 @@ pub(crate) fn lower_builtin_call(
             // just an address, and the type checker has already established
             // that this argument is a pointer of the matching width.
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             // `read_scalar`, not a bare read: an address that came out of a
             // container arrives as a `Maybe` carrier, and MMIO is a scalar
@@ -607,7 +678,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::VolatileWrite(bits) => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             // Both operands through `read_scalar` — see the read arm above.
             // Iterating a list and writing each element is the ordinary shape
@@ -622,7 +696,10 @@ pub(crate) fn lower_builtin_call(
             // `port_in_uN(port)`. Same shape as the MMIO read: one opaque call,
             // whose result the VM leaves at the call-window base.
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let dst = ssa.new_val();
@@ -636,7 +713,10 @@ pub(crate) fn lower_builtin_call(
         }
         Builtin::PortOut(bits) => {
             if argc != 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
@@ -652,7 +732,10 @@ pub(crate) fn lower_builtin_call(
             // type. Maybe carriers select between the scalar name and `Nil` at
             // runtime (a missing map key is `Nil` in the VM).
             if argc != 1 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
             let scalar_name = |ty: Ty| match ty {
@@ -703,7 +786,10 @@ pub(crate) fn lower_builtin_call(
             // widens directly; a boxed condition evaluates the VM's
             // truthiness (`assert_truthy` = `!(Nil | Bool(false))`).
             if argc == 0 || argc > 2 {
-                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "no native lowering for this builtin in this argument shape",
+                });
             }
             let wide = match ssa.read(base.wrapping_add(1), block, pc)? {
                 (v, Ty::Dyn) => {

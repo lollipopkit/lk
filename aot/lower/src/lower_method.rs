@@ -22,11 +22,19 @@ pub(crate) fn lower_method_call(
             .or_else(|| ssa.reg_const_str(name_reg, block))
     };
     let Some(name) = name else {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "no native lowering for this method on this receiver type",
+        });
     };
     let args = match ssa.builtin_regs.get(&(block, base.wrapping_add(3))) {
         Some(GlobalRef::ArgList(elems)) => elems.clone(),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this method on this receiver type",
+            });
+        }
     };
     let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
     ssa.write(base, block, result);
@@ -1653,7 +1661,12 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this method on this receiver type",
+            });
+        }
     };
     let _ = globals;
     let _ = block;

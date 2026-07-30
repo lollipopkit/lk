@@ -554,13 +554,29 @@ pub fn lower_bundled(
             for (fi, err) in &failures {
                 let at = match (err_pc(err), funcs.get(*fi)) {
                     (Some(pc), Some(f)) => match f.code.get(pc).and_then(|raw| Instr::try_from_raw(*raw).ok()) {
-                        Some(instr) => format!(
-                            " [{:?} a={} b={} c={}]",
-                            instr.opcode(),
-                            instr.a(),
-                            instr.b(),
-                            instr.c()
-                        ),
+                        Some(instr) => {
+                            // A method call's name lives in the constant pool,
+                            // so "no lowering for this method" can say which
+                            // one. Without it the listing named a shape and left
+                            // the reader to look the index up by hand.
+                            let name = match instr.opcode() {
+                                Opcode::CallMethodK => f.consts.strings.get(instr.b() as usize),
+                                Opcode::GetFieldK | Opcode::SetFieldK => f.consts.strings.get(instr.c() as usize),
+                                _ => None,
+                            };
+                            match name {
+                                Some(name) => {
+                                    format!(" [{:?} `{name}` a={} c={}]", instr.opcode(), instr.a(), instr.c())
+                                }
+                                None => format!(
+                                    " [{:?} a={} b={} c={}]",
+                                    instr.opcode(),
+                                    instr.a(),
+                                    instr.b(),
+                                    instr.c()
+                                ),
+                            }
+                        }
                         None => format!(" [pc {pc} out of range: fn has {} instrs]", f.code.len()),
                     },
                     (Some(pc), None) => format!(" [fn{fi} not in table of {}; pc {pc}]", funcs.len()),
@@ -693,6 +709,7 @@ fn err_pc(err: &Unsupported) -> Option<usize> {
         Unsupported::ContainerGlobalBoxed { pc, .. }
         | Unsupported::BadInstr { pc }
         | Unsupported::Opcode { pc, .. }
+        | Unsupported::CallShape { pc, .. }
         | Unsupported::TryRegion { pc, .. }
         | Unsupported::UnresolvedGlobal { pc, .. }
         | Unsupported::BadConst { pc }

@@ -19,13 +19,21 @@ pub(crate) fn lower_spawn(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 1 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a spawned callee must be a statically known function with scalar arguments",
+        });
     }
     let arg_reg = base.wrapping_add(1);
     let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
         Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
         Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "a spawned callee must be a statically known function with scalar arguments",
+            });
+        }
     };
     if fidx >= funcs.len()
         || fidx == entry as usize
@@ -33,7 +41,10 @@ pub(crate) fn lower_spawn(
         || caps.len() != funcs[fidx].capture_count as usize
         || caps.len() > 4
     {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a spawned callee must be a statically known function with scalar arguments",
+        });
     }
     sig.spawned_isolate.insert(fidx as u32);
     // Snapshot the captures into the argument block, boxed.
@@ -56,7 +67,12 @@ pub(crate) fn lower_spawn(
                 // ordinary closure call (`inst::call`) resolves these; `spawn`, a
                 // `try` region and an erased-closure environment refuse, so the
                 // program falls back rather than losing the write-back.
-                ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+                ClosureCapture::CellParam(_) => {
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "a spawned callee must be a statically known function with scalar arguments",
+                    });
+                }
                 // A static reference: the slot exists only to keep the ABI arity,
                 // so it carries a dead `0`.
                 ClosureCapture::StaticRef => {
@@ -129,7 +145,10 @@ pub(crate) fn lower_merge_fields(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 2 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a field merge needs two map operands",
+        });
     }
     let (bv, bty) = ssa.read(base.wrapping_add(1), block, pc)?;
     let (ov, oty) = ssa.read(base.wrapping_add(2), block, pc)?;
@@ -182,7 +201,10 @@ pub(crate) fn lower_make_struct(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 2 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a struct construction needs a constant type name and a map of fields",
+        });
     }
     let name_reg = base.wrapping_add(1);
     let type_name = {
@@ -190,7 +212,10 @@ pub(crate) fn lower_make_struct(
         nv.and_then(|v| ssa.const_strs.get(&v).cloned())
             .or_else(|| ssa.reg_const_str(name_reg, block))
     }
-    .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?;
+    .ok_or(Unsupported::CallShape {
+        pc,
+        reason: "a struct construction needs a constant type name and a map of fields",
+    })?;
     let (fv, fty) = ssa.read(base.wrapping_add(2), block, pc)?;
     let fields = to_dyn_map_handle(ssa, insts, fv, fty, pc)?;
     let dst = ssa.new_val();
@@ -237,20 +262,31 @@ pub(crate) fn lower_try_call(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 1 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "the protected call's callee or argument shape is outside the subset",
+        });
     }
     let arg_reg = base.wrapping_add(1);
     let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
         Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
         Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "the protected call's callee or argument shape is outside the subset",
+            });
+        }
     };
     if fidx >= funcs.len()
         || fidx == entry as usize
         || funcs[fidx].param_count != 0
         || caps.len() != funcs[fidx].capture_count as usize
     {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "the protected call's callee or argument shape is outside the subset",
+        });
     }
     let mut args = Vec::with_capacity(caps.len());
     let mut cell_writebacks: Vec<(u32, ValueId)> = Vec::new();
@@ -275,7 +311,12 @@ pub(crate) fn lower_try_call(
             // ordinary closure call (`inst::call`) resolves these; `spawn`, a
             // `try` region and an erased-closure environment refuse, so the
             // program falls back rather than losing the write-back.
-            ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+            ClosureCapture::CellParam(_) => {
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "the protected call's callee or argument shape is outside the subset",
+                });
+            }
             // A static reference: the slot exists only to keep the ABI arity,
             // so it carries a dead `0`.
             ClosureCapture::StaticRef => {
@@ -514,7 +555,10 @@ pub(crate) fn lower_user_call(
             // arguments, in parameter order.
             Some(_) => {
                 let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(arg_reg, block) else {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "the callee does not resolve to a statically known function",
+                    });
                 };
                 for capture in &caps {
                     let (v, ty) = match capture {
@@ -526,7 +570,12 @@ pub(crate) fn lower_user_call(
                         // ordinary closure call (`inst::call`) resolves these; `spawn`, a
                         // `try` region and an erased-closure environment refuse, so the
                         // program falls back rather than losing the write-back.
-                        ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+                        ClosureCapture::CellParam(_) => {
+                            return Err(Unsupported::CallShape {
+                                pc,
+                                reason: "the callee does not resolve to a statically known function",
+                            });
+                        }
                         // A static reference: the slot exists only to keep the ABI arity,
                         // so it carries a dead `0`.
                         ClosureCapture::StaticRef => {
