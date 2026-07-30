@@ -285,6 +285,31 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("math", "sqrt", AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64),
     abi_row("math", "sin", AbiRef::new("math", "sin"), &[Ty::F64], Ty::F64),
     abi_row("math", "cos", AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64),
+    abi_row("math", "tan", AbiRef::new("math", "tan"), &[Ty::F64], Ty::F64),
+    // `asin`/`acos` reject outside `-1..=1`, the log family rejects
+    // non-positive: the guards live in the helpers so both back ends raise the
+    // stdlib module's own sentence.
+    abi_row("math", "asin", AbiRef::new("math", "asin"), &[Ty::F64], Ty::F64),
+    abi_row("math", "acos", AbiRef::new("math", "acos"), &[Ty::F64], Ty::F64),
+    abi_row("math", "atan", AbiRef::new("math", "atan"), &[Ty::F64], Ty::F64),
+    abi_row(
+        "math",
+        "atan2",
+        AbiRef::new("math", "atan2"),
+        &[Ty::F64, Ty::F64],
+        Ty::F64,
+    ),
+    abi_row("math", "log", AbiRef::new("math", "log"), &[Ty::F64], Ty::F64),
+    abi_row("math", "log10", AbiRef::new("math", "log10"), &[Ty::F64], Ty::F64),
+    abi_row("math", "log2", AbiRef::new("math", "log2"), &[Ty::F64], Ty::F64),
+    // `clamp` is `Int`-only in the module schema, so no f64 promotion here.
+    abi_row(
+        "math",
+        "clamp",
+        AbiRef::new("math", "clamp_i64"),
+        &[Ty::I64, Ty::I64, Ty::I64],
+        Ty::I64,
+    ),
     abi_row("math", "exp", AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64),
     abi_row("math", "pow", AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64),
     abi_row(

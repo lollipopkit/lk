@@ -114,9 +114,11 @@ pub use host::{
     lkrt_datetime_now, lkrt_datetime_parse, lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set,
     lkrt_fs_canonicalize, lkrt_fs_exists, lkrt_fs_metadata_is_dir, lkrt_fs_metadata_is_file, lkrt_fs_metadata_len,
     lkrt_fs_metadata_readonly, lkrt_fs_read, lkrt_fs_read_dir_list, lkrt_fs_read_to_string, lkrt_fs_temp_dir,
-    lkrt_fs_write_bytes, lkrt_fs_write_str, lkrt_math_ceil, lkrt_math_cos, lkrt_math_exp, lkrt_math_floor,
-    lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt, lkrt_os_arch, lkrt_os_clock, lkrt_os_epoch,
-    lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
+    lkrt_fs_write_bytes, lkrt_fs_write_str, lkrt_math_acos, lkrt_math_asin, lkrt_math_atan, lkrt_math_atan2,
+    lkrt_math_ceil, lkrt_math_clamp_i64, lkrt_math_cos, lkrt_math_exp, lkrt_math_floor, lkrt_math_log, lkrt_math_log2,
+    lkrt_math_log10, lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt, lkrt_math_tan, lkrt_os_arch,
+    lkrt_os_clock, lkrt_os_epoch, lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd,
+    lkrt_time_now_ms, lkrt_time_sleep_ms,
 };
 #[cfg(feature = "std")]
 pub use host::{

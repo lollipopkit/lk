@@ -248,12 +248,17 @@ pub extern "C" fn lkrt_math_round(value: f64) -> i64 {
 }
 
 /// `math.sqrt(Number)` — the stdlib module rejects negative arguments loudly,
-/// so the guard aborts (matching the VM's fatal error), never returns NaN.
+/// so the guard raises (matching the VM's error), never returns NaN.
+///
+/// The message goes to `raise_str`, not to stderr. It used to do both, the wrong
+/// way round: the real reason was printed and `"runtime error"` was raised, so
+/// `try { math.sqrt(-1.0) } catch e { e }` evaluated to `"runtime error"`
+/// compiled and to `"sqrt() argument must be non-negative"` interpreted — and a
+/// caught error's text *is* the program's output.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_math_sqrt(value: f64) -> f64 {
     if value < 0.0 {
-        eprintln!("lkrt error: sqrt() argument must be non-negative");
-        crate::panic::raise_str("runtime error");
+        crate::panic::raise_str("sqrt() argument must be non-negative");
     }
     value.sqrt()
 }
@@ -268,6 +273,89 @@ pub extern "C" fn lkrt_math_sin(value: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_math_cos(value: f64) -> f64 {
     value.cos()
+}
+
+/// `math.tan(Number)` → Float.
+///
+/// `sin` and `cos` were native and `tan` was not — the same class of function,
+/// split for no reason a program can see.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_tan(value: f64) -> f64 {
+    value.tan()
+}
+
+/// The domain guards the stdlib module states, raising *its* words.
+macro_rules! math_domain {
+    ($name:ident, $call:ident, $ok:expr, $message:literal, $doc:literal) => {
+        #[doc = $doc]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(value: f64) -> f64 {
+            let ok: fn(f64) -> bool = $ok;
+            if !ok(value) {
+                crate::panic::raise_str($message);
+            }
+            value.$call()
+        }
+    };
+}
+
+math_domain!(
+    lkrt_math_asin,
+    asin,
+    |v| (-1.0..=1.0).contains(&v),
+    "asin() argument must be between -1 and 1",
+    "`math.asin(Number)` → Float; outside `-1..=1` is the module's loud error."
+);
+math_domain!(
+    lkrt_math_acos,
+    acos,
+    |v| (-1.0..=1.0).contains(&v),
+    "acos() argument must be between -1 and 1",
+    "`math.acos(Number)` → Float; outside `-1..=1` is the module's loud error."
+);
+math_domain!(
+    lkrt_math_log,
+    ln,
+    |v| v > 0.0,
+    "log() argument must be positive",
+    "`math.log(Number)` → natural log; a non-positive argument raises."
+);
+math_domain!(
+    lkrt_math_log10,
+    log10,
+    |v| v > 0.0,
+    "log10() argument must be positive",
+    "`math.log10(Number)` → Float; a non-positive argument raises."
+);
+math_domain!(
+    lkrt_math_log2,
+    log2,
+    |v| v > 0.0,
+    "log2() argument must be positive",
+    "`math.log2(Number)` → Float; a non-positive argument raises."
+);
+
+/// `math.atan(Number)` → Float. Total, so no guard.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_atan(value: f64) -> f64 {
+    value.atan()
+}
+
+/// `math.atan2(y, x)` → Float. Total, including `atan2(0, 0)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+
+/// `math.clamp(value, low, high)` on `Int` — the module's only arity.
+///
+/// The module rejects an inverted range loudly rather than picking a side.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_clamp_i64(value: i64, low: i64, high: i64) -> i64 {
+    if low > high {
+        crate::panic::raise_str("clamp() requires 'min' to be less than or equal to 'max'");
+    }
+    value.clamp(low, high)
 }
 
 /// `math.exp(Number)` → Float.
@@ -327,15 +415,17 @@ pub extern "C" fn lkrt_path_sep() -> *mut c_char {
     crate::lkstr::arena_c_string(alloc::ffi::CString::new(std::path::MAIN_SEPARATOR_STR).unwrap_or_default())
 }
 
-/// The stdlib datetime module's `utc_datetime`: aborts on an out-of-range
-/// timestamp (the VM's loud `invalid timestamp` error).
-fn datetime_utc(timestamp: i64, context: &str) -> chrono::DateTime<chrono::Utc> {
+/// The stdlib datetime module's `utc_datetime`: raises on an out-of-range
+/// timestamp, with the module's own words.
+///
+/// `invalid timestamp` and nothing else — the same reason the caught value has
+/// to be the message: this used to print `lkrt error: {context}: invalid
+/// timestamp` and raise `"runtime error"`, so a catching program saw neither the
+/// reason nor the same text the VM gives it.
+fn datetime_utc(timestamp: i64) -> chrono::DateTime<chrono::Utc> {
     match chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0) {
         Some(dt) => dt,
-        None => {
-            eprintln!("lkrt error: {context}: invalid timestamp");
-            crate::panic::raise_str("runtime error");
-        }
+        None => crate::panic::raise_str("invalid timestamp"),
     }
 }
 
@@ -354,9 +444,7 @@ pub extern "C" fn lkrt_datetime_now() -> i64 {
 pub unsafe extern "C" fn lkrt_datetime_format(timestamp: i64, format: *const c_char) -> *mut c_char {
     raising(|| {
         let format = c_str(format, "datetime.format format")?;
-        let formatted = datetime_utc(timestamp, "datetime.format")
-            .format(format.as_str())
-            .to_string();
+        let formatted = datetime_utc(timestamp).format(format.as_str()).to_string();
         owned_c_string(formatted)
     })
 }
@@ -381,7 +469,7 @@ pub unsafe extern "C" fn lkrt_datetime_parse(value: *const c_char, format: *cons
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_datetime_day_of_week(timestamp: i64) -> i64 {
     use chrono::Datelike;
-    match datetime_utc(timestamp, "datetime.day_of_week").weekday() {
+    match datetime_utc(timestamp).weekday() {
         chrono::Weekday::Sun => 0,
         chrono::Weekday::Mon => 1,
         chrono::Weekday::Tue => 2,
@@ -396,7 +484,7 @@ pub extern "C" fn lkrt_datetime_day_of_week(timestamp: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_datetime_day_of_year(timestamp: i64) -> i64 {
     use chrono::Datelike;
-    i64::from(datetime_utc(timestamp, "datetime.day_of_year").ordinal())
+    i64::from(datetime_utc(timestamp).ordinal())
 }
 
 /// `datetime.is_weekend(timestamp)` — 1 for Sat/Sun, else 0 (the lowering
@@ -405,7 +493,7 @@ pub extern "C" fn lkrt_datetime_day_of_year(timestamp: i64) -> i64 {
 pub extern "C" fn lkrt_datetime_is_weekend(timestamp: i64) -> i64 {
     use chrono::Datelike;
     i64::from(matches!(
-        datetime_utc(timestamp, "datetime.is_weekend").weekday(),
+        datetime_utc(timestamp).weekday(),
         chrono::Weekday::Sat | chrono::Weekday::Sun
     ))
 }

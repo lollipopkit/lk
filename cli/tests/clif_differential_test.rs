@@ -4297,3 +4297,52 @@ fn set_values_is_the_iteration_order_and_lowers() {
         ],
     );
 }
+
+/// `math` answers the same values *and* the same errors on both ends.
+///
+/// Nine of the module's twenty functions did not lower: `tan` while `sin` and
+/// `cos` did, the whole inverse and logarithm families, and `clamp`. The split
+/// was not a rule — it was where someone stopped.
+///
+/// The domain guards matter more than the values. `math.sqrt(-1.0)` used to
+/// print its real reason to *stderr* and raise `"runtime error"`, so
+/// `try { math.sqrt(-1.0) } catch e { e }` was `"sqrt() argument must be
+/// non-negative"` interpreted and `"runtime error"` compiled — and a caught
+/// error's text is the program's output, not a diagnostic. Every guard added
+/// here raises the stdlib module's own sentence, and this test is what pins
+/// them word for word.
+#[test]
+fn math_agrees_on_values_and_on_domain_errors() {
+    run_clif_differential(
+        "math_surface",
+        &[
+            new(
+                "the_whole_module_lowers",
+                "use math;\nlet n = 2.0;\nprintln(math.tan(0.0));\nprintln(math.asin(0.5));\n\
+                 println(math.acos(0.5));\nprintln(math.atan(1.0));\nprintln(math.atan2(1.0, n));\n\
+                 println(math.log(1.0));\nprintln(math.log10(100.0));\nprintln(math.log2(8.0));\n\
+                 println(math.clamp(5, 1, 3));\nprintln(math.clamp(0, 1, 3));\n\
+                 println(math.clamp(2, 1, 3));\nreturn 0;\n",
+            ),
+            // The words, not just the fact that it raised.
+            new(
+                "a_domain_error_carries_the_modules_own_words",
+                "use math;\n\
+                 println(try { math.sqrt(-1.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.asin(2.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.acos(-2.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.log(0.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.log10(-1.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.log2(0.0); \"no\" } catch e { \"${e}\" });\n\
+                 println(try { math.clamp(5, 3, 1); \"no\" } catch e { \"${e}\" });\nreturn 0;\n",
+            ),
+            // Edges the two ends could disagree on quietly.
+            new(
+                "edges_of_the_domains",
+                "use math;\nprintln(math.asin(1.0));\nprintln(math.acos(-1.0));\n\
+                 println(math.log(1.0));\nprintln(math.atan2(0.0, 0.0));\n\
+                 println(math.sqrt(0.0));\nprintln(math.clamp(1, 1, 1));\nreturn 0;\n",
+            ),
+        ],
+    );
+}

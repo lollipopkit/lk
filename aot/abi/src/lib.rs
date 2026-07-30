@@ -316,6 +316,19 @@ macro_rules! for_each_abi_fn {
             ("math", "sqrt", lkrt_math_sqrt, ReadsHost, [F64], F64);
             ("math", "sin", lkrt_math_sin, Pure, [F64], F64);
             ("math", "cos", lkrt_math_cos, Pure, [F64], F64);
+            // `sin`/`cos` were native and `tan` was not; the inverse and log
+            // families were absent entirely. Their domain guards raise the
+            // stdlib module's own words, because a caught error's text is the
+            // program's output.
+            ("math", "tan", lkrt_math_tan, Pure, [F64], F64);
+            ("math", "asin", lkrt_math_asin, Pure, [F64], F64);
+            ("math", "acos", lkrt_math_acos, Pure, [F64], F64);
+            ("math", "atan", lkrt_math_atan, Pure, [F64], F64);
+            ("math", "atan2", lkrt_math_atan2, Pure, [F64, F64], F64);
+            ("math", "log", lkrt_math_log, Pure, [F64], F64);
+            ("math", "log10", lkrt_math_log10, Pure, [F64], F64);
+            ("math", "log2", lkrt_math_log2, Pure, [F64], F64);
+            ("math", "clamp_i64", lkrt_math_clamp_i64, Pure, [I64, I64, I64], I64);
             ("math", "exp", lkrt_math_exp, Pure, [F64], F64);
             ("math", "pow", lkrt_math_pow, Pure, [F64, F64], F64);
             ("math", "hypot", lkrt_math_hypot, Pure, [F64, F64], F64);
