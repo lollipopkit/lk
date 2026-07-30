@@ -157,6 +157,10 @@ pub use lklist::{
     lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
 };
 pub use lkmap::{
+    lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_i64_display, lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display,
+    lkrt_lkmap_str_i64_display,
+};
+pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,
     lkrt_lkmap_i64_i64_get_pair, lkrt_lkmap_i64_i64_len, lkrt_lkmap_i64_i64_new, lkrt_lkmap_i64_i64_set,
     lkrt_lkmap_str_dyn_get, lkrt_lkmap_str_dyn_has, lkrt_lkmap_str_dyn_len, lkrt_lkmap_str_dyn_merge,
@@ -172,7 +176,6 @@ pub use lkmap::{
     lkrt_lkmap_str_f64_to_dyn, lkrt_lkmap_str_f64_values, lkrt_lkmap_str_i64_delete, lkrt_lkmap_str_i64_iter_pairs,
     lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_to_dyn, lkrt_lkmap_str_i64_values,
 };
-pub use lkmap::{lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display, lkrt_lkmap_str_i64_display};
 pub use lkset::{
     lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
     lkrt_lkset_has, lkrt_lkset_len, lkrt_lkset_new,

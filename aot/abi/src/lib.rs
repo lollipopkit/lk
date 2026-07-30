@@ -414,6 +414,8 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_i64_display", lkrt_lkmap_str_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             ("map_h", "str_f64_display", lkrt_lkmap_str_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             ("map_h", "str_bool_display", lkrt_lkmap_str_bool_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "i64_i64_display", lkrt_lkmap_i64_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "i64_f64_display", lkrt_lkmap_i64_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // `{ ..rest }`: a fresh handle with one key removed (chained per key).
             ("map_h", "str_i64_without", lkrt_lkmap_str_i64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
             ("map_h", "str_f64_without", lkrt_lkmap_str_f64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);

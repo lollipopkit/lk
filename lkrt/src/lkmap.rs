@@ -36,9 +36,9 @@ pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher
 /// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
 pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
 type StrI64Map = FxMap<String, i64>;
-type I64I64Map = FxMap<i64, i64>;
+type I64I64Map = FxMap<crate::vm_mirror::IntKey, i64>;
 type StrF64Map = FxMap<String, f64>;
-type I64F64Map = FxMap<i64, f64>;
+type I64F64Map = FxMap<crate::vm_mirror::IntKey, f64>;
 
 /// Insert-or-update without allocating when the key is already present: the
 /// common map workload pattern is repeated updates of existing keys, and
@@ -493,6 +493,20 @@ map_display!(
     "`Map<str, f64>` display."
 );
 map_display!(
+    lkrt_lkmap_i64_i64_display,
+    I64I64Map,
+    |k: &crate::vm_mirror::IntKey| k.0.to_string(),
+    |v: &i64| v.to_string(),
+    "`Map<i64, i64>` display."
+);
+map_display!(
+    lkrt_lkmap_i64_f64_display,
+    I64F64Map,
+    |k: &crate::vm_mirror::IntKey| k.0.to_string(),
+    |v: &f64| v.to_string(),
+    "`Map<i64, f64>` display."
+);
+map_display!(
     lkrt_lkmap_str_bool_display,
     StrI64Map,
     |k: &String| format!("{k:?}"),
@@ -516,7 +530,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_i64_set(handle: *mut c_void, key: i64, v
         return;
     }
     // SAFETY: `handle` addresses an `I64I64Map` from `lkrt_lkmap_i64_i64_new`.
-    unsafe { (*(handle as *mut I64I64Map)).insert(key, value) };
+    unsafe { (*(handle as *mut I64I64Map)).insert(crate::vm_mirror::IntKey(key), value) };
 }
 
 /// Returns the number of entries.
@@ -543,7 +557,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_i64_get_pair(handle: *mut c_void, key: i
     }
     // SAFETY: as above.
     let map = unsafe { &*(handle as *mut I64I64Map) };
-    match map.get(&key) {
+    match map.get(&crate::vm_mirror::IntKey(key)) {
         Some(&value) => LkMaybeI64 { value, present: 1 },
         None => LkMaybeI64 { value: 0, present: 0 },
     }
@@ -657,7 +671,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_set(handle: *mut c_void, key: i64, v
         return;
     }
     // SAFETY: `handle` addresses an `I64F64Map` from `lkrt_lkmap_i64_f64_new`.
-    unsafe { (*(handle as *mut I64F64Map)).insert(key, value) };
+    unsafe { (*(handle as *mut I64F64Map)).insert(crate::vm_mirror::IntKey(key), value) };
 }
 
 /// Returns the number of entries.
@@ -684,7 +698,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_pair(handle: *mut c_void, key: i
     }
     // SAFETY: as above.
     let map = unsafe { &*(handle as *mut I64F64Map) };
-    match map.get(&key) {
+    match map.get(&crate::vm_mirror::IntKey(key)) {
         Some(&value) => LkMaybeF64 { value, present: 1 },
         None => LkMaybeF64 { value: 0.0, present: 0 },
     }

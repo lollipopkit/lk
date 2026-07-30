@@ -1095,6 +1095,28 @@ pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)
     }
 }
 
+/// The same, for an **int**-keyed literal — where the shaping is different in
+/// the way that matters: a non-string key makes [`typed_map_from_entries`]
+/// return `Mixed`, which *is* the stage-1 table. There is no stage 2, so a
+/// native carrier has to be built by replaying the same insertion sequence
+/// rather than by iterating stage 1 into a second table.
+pub fn typed_map_iteration_int_keys(entries: impl Iterator<Item = (i64, i64)>) -> Vec<i64> {
+    let mut stage1 = fast_hash_map_new();
+    for (key, value) in entries {
+        stage1.insert(RuntimeMapKey::Int(key), RuntimeVal::Int(value));
+    }
+    match typed_map_from_entries(stage1) {
+        TypedMap::Mixed(map) => map
+            .keys()
+            .map(|k| match k {
+                RuntimeMapKey::Int(i) => *i,
+                other => unreachable!("int literal keys stay Int, got {other:?}"),
+            })
+            .collect(),
+        other => unreachable!("an int-keyed literal always shapes to Mixed, got {other:?}"),
+    }
+}
+
 pub(crate) fn typed_map_from_entries(entries: FastHashMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
     if entries.is_empty() {
         return TypedMap::Mixed(entries);

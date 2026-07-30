@@ -611,16 +611,25 @@ ArgList 那一半视图(`NewList` 同时也是方法调用的实参窗口),读�
 列表本身。补了装箱之外,还给 `NewList` 加了一条兜底:非空却没有任何一条臂物化出句柄,
 是**回落**,不是静默拆包。覆盖率一个没掉。
 
-**四、还没通的:整数键。** VM 对非字符串键**不做第二阶段** ——
-`typed_map_from_entries` 直接返回 `Mixed`,那就是 stage-1 那张表 —— 而
+**四、整数键:一条潜伏的错答案,顺手挖出来修掉。** VM 对非字符串键**不做第二阶段**
+—— `typed_map_from_entries` 直接返回 `Mixed`,那就是 stage-1 那张表 —— 而
 `lit_finish_i64_i64` / `i64_f64` 又 rehash 进 `FxMap<i64, _>`:哈希不是一回事
 (`i64` 对 `RtKey::Int(i64)`),插入序也不是。`{1: 1.5, 2: 2.5}` VM 迭代 `2,1`,
 native 迭代 `1,2`。
 
-今天没人看得见 —— 整数键 map 的 display 和 `.keys()` 都不降低 —— 所以它是**潜伏**的,
-而给它发一个 display 正是让它变成活的那一步。所以整数键的显示继续拒绝,理由写在
-`to_display_str` 里,不再靠记。要通就得让载体按 `RtKey::Int` 哈希、单阶段重放,
-`vm_mirror` 的一致性测试也要跟着从只覆盖字符串键扩到整数键。
+它当时没人看得见(整数键 map 的 display 和 `.keys()` 都不降低),所以是**潜伏**的 ——
+但"潜伏"的意思是:下一个给整数键 map 降低迭代的人会拿到一个错答案,而且没有任何东西
+会告诉他。所以修的是载体,不是绕开它:
+
+- `vm_mirror::IntKey` 按 `RtKey::Int` 哈希(判别式写死成常量而不是现构一个 32 字节的
+  枚举,`int_key_hashes_like_the_mirror_enum` 负责说这两个是同一个);
+- `LitBuilder` 除了 stage-1 表还记一条**字面量序**。这不是冗余:字符串键有 stage 2,
+  所以它的 finisher 迭代表;非字符串键**没有** stage 2,它的 finisher 必须重放字面量的
+  插入序列 —— 在那里迭代表就等于多跑了一个 VM 没跑过的阶段。
+- `int_lit_protocol_matches_vm_iteration_order` 拿 `lk-core` 的
+  `typed_map_iteration_int_keys` 逐条比对,五组键(含 64 个键、逼出多次扩容)。
+
+于是整数键的 display 也进了子集,字面量和逐个赋值两条路都钉在差分里。
 
 ## 18. `task.join_all`(2026-07-30)
 

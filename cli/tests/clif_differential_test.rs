@@ -1453,13 +1453,21 @@ fn a_computed_map_literal_lowers_and_a_typed_map_displays() {
                 "heterogeneous_values_box",
                 "let a = 5;\nlet s = \"v\";\nlet f = 1.5;\nprintln({\"i\": a, \"s\": s, \"f\": f, \"n\": nil});\nreturn 0;\n",
             ),
-            // Int keys build and read back natively; *displaying* one stays
-            // out (the mirror's stage-2 rehash does not match the VM's
-            // single-stage `Mixed` table — see `to_display_str`), so this
-            // reads values rather than printing the map.
+            // Int keys, whose order is the *stage-1* table's: the VM runs no
+            // stage 2 for a non-string key, so the native carrier is keyed by
+            // `vm_mirror::IntKey` (hashing as `RtKey::Int`) and filled in
+            // literal order. Rehashing into an `FxMap<i64, _>`, which is what
+            // it used to do, made `{1: 1.5, 2: 2.5}` come out `1,2` against
+            // the VM's `2,1`.
             new(
                 "int_keys",
-                "let a = 5;\nlet m = {1: a, 3: a + 1};\nprintln(m[1] ?? 0);\nprintln(m[3] ?? 0);\nprintln(m.len());\nreturn 0;\n",
+                "let a = 5;\nlet m = {1: a, 3: a + 1};\nprintln(m);\nprintln(m[1] ?? 0);\nprintln({1: 1.5, 2: 2.5});\nprintln({7: 1, 2: 2, 9: 3, 4: 4, 1: 5});\nprintln({-3: 1.5, 7: 2.5, 0: 0.5});\nreturn 0;\n",
+            ),
+            // The same, built by runtime stores rather than a literal: the
+            // insertion sequence is the program's, and both sides replay it.
+            new(
+                "int_keys_stored_one_by_one",
+                "let m = {10: 1};\nlet i = 0;\nwhile i < 20 {\n  m[i * 7] = i;\n  i = i + 1;\n}\nprintln(m);\nprintln(m.len());\nreturn 0;\n",
             ),
             // Enough keys to force several table growths, so the order is a
             // real check rather than one small map's coincidence.

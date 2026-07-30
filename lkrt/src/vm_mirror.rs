@@ -103,7 +103,7 @@ fn key_str(key: &RtKey) -> &str {
 /// pairs, in the given order (the decoders' path: serde's document/sorted
 /// order plays the VM's stage-1 insertion order).
 pub(crate) fn str_dyn_map_mirrored(pairs: Vec<(String, LkDyn)>) -> *mut c_void {
-    let mut stage1: LitBuilder = LitBuilder::default();
+    let mut stage1: FxMap<RtKey, LkDyn> = FxMap::default();
     for (key, value) in pairs {
         let rt_key = if key.len() <= 7 {
             let mut data = [0u8; 7];
@@ -124,9 +124,50 @@ pub(crate) fn str_dyn_map_mirrored(pairs: Vec<(String, LkDyn)>) -> *mut c_void {
     arena_handle(out)
 }
 
+/// A map key that is an `i64`, hashing exactly as [`RtKey::Int`] does.
+///
+/// The int-keyed carriers are keyed by this rather than by a bare `i64`
+/// because the VM never re-keys them: `typed_map_from_entries` returns
+/// `Mixed` for a non-string key, and `Mixed` *is* the stage-1
+/// `FastHashMap<RuntimeMapKey, RuntimeVal>`. A native `FxMap<i64, _>` hashes
+/// the key differently (no discriminant) and is filled by a second insertion
+/// sequence, so it iterates in a different order — `{1: 1.5, 2: 2.5}` came out
+/// `2,1` in the VM and `1,2` natively.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IntKey(pub(crate) i64);
+
+/// `RtKey`'s derived `Hash` writes the discriminant first. `Int` is the third
+/// variant, and a repr-less enum's discriminant is an `isize`.
+///
+/// Written out rather than delegating to `RtKey::Int(k).hash(state)` so a map
+/// lookup does not build the (String-carrying, 32-byte) enum;
+/// `int_key_hashes_like_the_mirror_enum` is what keeps the two in agreement.
+const RTKEY_INT_DISCRIMINANT: isize = 2;
+
+impl core::hash::Hash for IntKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        RTKEY_INT_DISCRIMINANT.hash(state);
+        self.0.hash(state);
+    }
+}
+
 /// Stage-1 literal builder: the mirror of the VM's
-/// `FastHashMap<RuntimeMapKey, RuntimeVal>` (values ride along boxed).
-type LitBuilder = FxMap<RtKey, LkDyn>;
+/// `FastHashMap<RuntimeMapKey, RuntimeVal>` (values ride along boxed), plus
+/// the order the entries were written in.
+///
+/// The order log is not redundant with the table. A *string*-keyed literal
+/// gets a stage 2 in the VM — iterate stage 1, insert into a fresh typed map —
+/// so its finishers replay that by iterating the table. A non-string-keyed one
+/// gets no stage 2 at all, so its finisher has to replay the *literal*
+/// insertion sequence instead; iterating the table there would be a second
+/// stage the VM never ran.
+#[derive(Default)]
+struct LitBuilder {
+    stage1: FxMap<RtKey, LkDyn>,
+    /// First-occurrence order. A repeated key updates its value in place and
+    /// keeps its original position, which is what the table does too.
+    order: Vec<RtKey>,
+}
 
 /// Starts a map-literal build (VM stage 1, zero capacity).
 #[unsafe(no_mangle)]
@@ -141,13 +182,26 @@ pub extern "C" fn lkrt_lkmap_lit_new() -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkmap_lit_set(builder: *mut c_void, key: LkDyn, value: LkDyn) {
     // SAFETY: `builder` addresses a `LitBuilder` from `lkrt_lkmap_lit_new`.
-    let map = unsafe { &mut *(builder as *mut LitBuilder) };
-    map.insert(key_from_dyn(key), value);
+    let lit = unsafe { &mut *(builder as *mut LitBuilder) };
+    let key = key_from_dyn(key);
+    if lit.stage1.insert(key.clone(), value).is_none() {
+        lit.order.push(key);
+    }
 }
 
-fn builder<'a>(handle: *mut c_void) -> &'a LitBuilder {
+fn builder<'a>(handle: *mut c_void) -> &'a FxMap<RtKey, LkDyn> {
     // SAFETY: callers pass a live `LitBuilder` handle.
-    unsafe { &*(handle as *mut LitBuilder) }
+    &unsafe { &*(handle as *mut LitBuilder) }.stage1
+}
+
+/// The literal's entries in *written* order — the replay a non-string key
+/// needs. See [`LitBuilder`].
+fn literal_order<'a>(handle: *mut c_void) -> impl Iterator<Item = (&'a RtKey, &'a LkDyn)> {
+    // SAFETY: callers pass a live `LitBuilder` handle.
+    let lit = unsafe { &*(handle as *mut LitBuilder) };
+    lit.order
+        .iter()
+        .map(|k| (k, lit.stage1.get(k).expect("order entry is in the table")))
 }
 
 /// Finishes into `Map<str, i64>` (VM stage 2: iterate stage 1 in its hash
@@ -220,15 +274,15 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_dyn(handle: *mut c_void) -> *
 /// As [`lkrt_lkmap_lit_finish_str_i64`], with `Int` keys and values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_i64(handle: *mut c_void) -> *mut c_void {
-    let mut out: FxMap<i64, i64> = FxMap::default();
-    for (key, value) in builder(handle) {
+    let mut out: FxMap<IntKey, i64> = FxMap::default();
+    for (key, value) in literal_order(handle) {
         let RtKey::Int(k) = key else {
             crate::panic::raise_str("runtime error")
         };
         if value.tag != DYN_I64 {
             crate::panic::raise_str("runtime error");
         }
-        out.insert(*k, value.payload);
+        out.insert(IntKey(*k), value.payload);
     }
     arena_handle(out)
 }
@@ -239,15 +293,15 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_i64(handle: *mut c_void) -> *
 /// As [`lkrt_lkmap_lit_finish_str_i64`], with `Int` keys, `F64` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_f64(handle: *mut c_void) -> *mut c_void {
-    let mut out: FxMap<i64, f64> = FxMap::default();
-    for (key, value) in builder(handle) {
+    let mut out: FxMap<IntKey, f64> = FxMap::default();
+    for (key, value) in literal_order(handle) {
         let RtKey::Int(k) = key else {
             crate::panic::raise_str("runtime error")
         };
         if value.tag != DYN_F64 {
             crate::panic::raise_str("runtime error");
         }
-        out.insert(*k, f64::from_bits(value.payload as u64));
+        out.insert(IntKey(*k), f64::from_bits(value.payload as u64));
     }
     arena_handle(out)
 }
@@ -303,5 +357,63 @@ mod tests {
         );
         let _ = RuntimeMapKey::Nil;
         let _ = RuntimeVal::Nil;
+    }
+
+    fn fx_hash(value: impl core::hash::Hash) -> u64 {
+        use core::hash::BuildHasher;
+        rustc_hash::FxBuildHasher.hash_one(value)
+    }
+
+    /// [`IntKey`] exists to hash exactly like [`RtKey::Int`], and it writes the
+    /// discriminant out by hand rather than building the enum. This is what
+    /// says the hand-written version is the same one — including the
+    /// assumption that a repr-less enum's discriminant hashes as an `isize`.
+    #[test]
+    fn int_key_hashes_like_the_mirror_enum() {
+        for k in [0i64, 1, -1, 2, 42, -9999, i64::MAX, i64::MIN] {
+            assert_eq!(
+                fx_hash(IntKey(k)),
+                fx_hash(RtKey::Int(k)),
+                "IntKey({k}) must hash as RtKey::Int({k})"
+            );
+        }
+    }
+
+    /// The int-keyed counterpart of the load-bearing check above, and the one
+    /// that would have caught the divergence: the VM runs *no* stage 2 for a
+    /// non-string key (`typed_map_from_entries` hands back the stage-1 table),
+    /// so the finisher replays the literal insertion sequence instead of
+    /// iterating stage 1. Rehashing into an `FxMap<i64, _>` — which is what it
+    /// used to do — made `{1: 1.5, 2: 2.5}` iterate `1,2` against the VM's
+    /// `2,1`.
+    #[test]
+    fn int_lit_protocol_matches_vm_iteration_order() {
+        use lk_core::val::typed_map_iteration_int_keys;
+
+        // Small literals (where the divergence first showed) and a large one
+        // that forces several table growths.
+        for keys in [
+            vec![1i64, 2],
+            vec![1, 3],
+            vec![1, 2, 5, 9],
+            vec![-3, 7, 0, 12, -100],
+            (0..64).map(|i| i * 7 - 13).collect::<Vec<_>>(),
+        ] {
+            let vm_order = typed_map_iteration_int_keys(keys.iter().map(|&k| (k, k * 2)));
+
+            let builder_handle = lkrt_lkmap_lit_new();
+            for &k in &keys {
+                unsafe { lkrt_lkmap_lit_set(builder_handle, lkrt_dyn_from_i64(k), lkrt_dyn_from_i64(k * 2)) };
+            }
+            let map_handle = unsafe { lkrt_lkmap_lit_finish_i64_i64(builder_handle) };
+            // SAFETY: just built by the finisher above.
+            let native = unsafe { &*(map_handle as *mut FxMap<IntKey, i64>) };
+            let native_order: Vec<i64> = native.keys().map(|k| k.0).collect();
+
+            assert_eq!(
+                native_order, vm_order,
+                "int-keyed iteration order drifted from the VM's typed_map_from_entries for {keys:?}"
+            );
+        }
     }
 }
