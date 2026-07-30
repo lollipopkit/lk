@@ -718,6 +718,30 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## `url` 的 component 一对要能往返(2026-07-30 裁决)
+
+```lk
+url.encode_component("a b&c=d")   // 以前:"a+b%26c%3Dd"
+url.decode_component(那个)         // 以前:"a+b&c=d" —— 不等于原串
+```
+
+编码用的是 **form** 编码(空格变 `+`,`form_urlencoded::byte_serialize`),解码只
+撤 `%XX`。一对的两个方向得先**互相**同意,再谈和别的东西同意 —— 这和 datetime 的
+`format`/`parse` 不往返(见那条)是同一个形状。
+
+裁决:**component 就按 component 编码**,空格是 `%20`,`+` 是字面的 `+` —— 也就是
+`encodeURIComponent` / `decodeURIComponent` 的规矩。未保留集取
+`A-Za-z0-9-_.!~*'()`。form 编码是 query body 要的东西,而 `query_stringify` /
+`query_parse` 本来就是那一对(两端都走 `form_urlencoded`),不受影响。
+
+编码器因此改成**手写**的,和本来就手写的解码器并排放着:一对的两个方向应该是**一份
+实现的两个方向**,而不是两个 crate 的两种约定。
+
+`base64.encode` / `hex.encode` / `url.encode_component` / `url.decode_component`
+同时有了原生实现(lkrt 用**与 stdlib 同一个 crate**,所以文本逐字节相同,和
+`datetime`/`json` 的理由一样)。`base64.decode` / `hex.decode` 给的是 `Bytes`,原生
+还没有那个承载类型,继续回落 —— 表里没有行的成员是普通回落,不是错答案。
+
 ## 子模块经父模块访问也要原生降低(2026-07-30)
 
 `encoding.json.parse(s)` 和 `use { json } from encoding; json.parse(s)` 是同一个

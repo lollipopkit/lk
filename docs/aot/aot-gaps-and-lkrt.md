@@ -422,3 +422,18 @@ cell 时,子的需求**往上传**:调用点把它记到父身上并请求重试
 
 `spawn`、`try` 区域、以及被擦除的闭包环境这三处还不解析 `CellParam`,标了
 TODO —— 它们拒绝,于是程序回落,而不是丢掉写回。
+
+## 14. `base64` / `hex` / `url`(2026-07-30)
+
+`String -> String` 的那半边有了原生实现:`base64.encode`、`hex.encode`、
+`url.encode_component`、`url.decode_component`。lkrt 用**与 stdlib 模块同一个
+crate**(`base64`、`hex`),所以文本逐字节相同 —— 和 `datetime` 用 chrono、
+`json` 用 serde_json 是同一个理由。
+
+`url.encode_component` 是先修了才镜像的:它和 `decode_component` 不往返(编码是 form
+编码、解码只撤 `%XX`),见 `docs/semantics.md`。所以 lkrt 里那份是手写的百分号编码,
+和 stdlib 里手写的那份同一套未保留集。
+
+`base64.decode` / `hex.decode` 给 `Bytes`,原生没有那个承载类型(见 §13 之前的
+Bytes 一节 / todos),继续回落。
+

@@ -368,6 +368,31 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
     abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),
+    // The `String -> String` half of `base64`/`hex`/`url`. The `decode` halves
+    // answer `Bytes`, which has no native carrier yet, so they keep falling back
+    // — a member with no row is an ordinary fallback, not a wrong answer.
+    abi_row(
+        "base64",
+        "encode",
+        AbiRef::new("base64", "encode"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
+    abi_row("hex", "encode", AbiRef::new("hex", "encode"), &[Ty::Str], Ty::Str),
+    abi_row(
+        "url",
+        "encode_component",
+        AbiRef::new("url", "encode_component"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
+    abi_row(
+        "url",
+        "decode_component",
+        AbiRef::new("url", "decode_component"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
     abi_row("yaml", "parse", AbiRef::new("yaml", "parse"), &[Ty::Str], Ty::Dyn),
     abi_row("toml", "parse", AbiRef::new("toml", "parse"), &[Ty::Str], Ty::Dyn),
     // `net` submodules + `bytes` (the lkrt tcp family predates this).

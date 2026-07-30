@@ -1486,6 +1486,35 @@ fn a_closure_may_assign_to_its_capture() {
     );
 }
 
+/// `base64` / `hex` / `url` text, pinned to pure Cranelift.
+///
+/// lkrt uses the same crates the stdlib module does, so the bytes are identical
+/// rather than merely equivalent — and the `url` pair is the one that had to be
+/// fixed before it could be mirrored: the encoder was form-encoding (a space
+/// became `+`) while the decoder only undid `%XX`, so it did not round-trip.
+#[test]
+fn text_codecs_lower_natively() {
+    run_differential(
+        "text_codec",
+        &[
+            new(
+                "base64_and_hex_encode",
+                "use encoding;\nprintln(encoding.base64.encode(\"hi\"));\nprintln(encoding.hex.encode(\"hi\"));\nreturn 0;\n",
+            ),
+            new(
+                "url_component_round_trip",
+                "use encoding;\nlet s = \"a b&c=d\";\nlet e = encoding.url.encode_component(s);\nprintln(e);\nprintln(encoding.url.decode_component(e));\nprintln(encoding.url.decode_component(e) == s);\nreturn 0;\n",
+            ),
+            // A malformed escape raises, catchably, with the same three messages.
+            new(
+                "url_decode_raises_on_a_bad_escape",
+                "use encoding;\ntry { println(encoding.url.decode_component(\"%\")); } catch e { println(\"caught1\"); }\ntry { println(encoding.url.decode_component(\"%zz\")); } catch e { println(\"caught2\"); }\nprintln(encoding.url.decode_component(\"%41\"));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A submodule reached through its parent, pinned to pure Cranelift.
 ///
 /// `encoding.json.parse(s)` compiles to a `CallMethodK` whose *receiver* is the

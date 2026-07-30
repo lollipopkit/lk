@@ -213,6 +213,14 @@ macro_rules! for_each_abi_fn {
             ("json", "parse", lkrt_json_parse, WritesHost, [StrPtr], DynVal);
             ("yaml", "parse", lkrt_yaml_parse, WritesHost, [StrPtr], DynVal);
             ("toml", "parse", lkrt_toml_parse, WritesHost, [StrPtr], DynVal);
+            // `base64`/`hex`/`url`: the same crates the stdlib module uses, so
+            // the text is byte-identical. `WritesHost` like every other
+            // arena-allocating string producer. `url.decode_component` raises on
+            // a malformed escape.
+            ("base64", "encode", lkrt_base64_encode, WritesHost, [StrPtr], StrPtr);
+            ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
+            ("url", "encode_component", lkrt_url_encode_component, WritesHost, [StrPtr], StrPtr);
+            ("url", "decode_component", lkrt_url_decode_component, WritesHost, [StrPtr], StrPtr);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);

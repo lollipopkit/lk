@@ -44,6 +44,7 @@ mod arith;
 mod chan;
 mod cpu;
 mod encoding;
+mod textcodec;
 #[cfg(feature = "std")]
 mod host;
 #[cfg(feature = "std")]
@@ -87,6 +88,7 @@ pub use cpu::{
 // rest of them, because it *is* one of them: `isr.rs` holds both directions of
 // the same obstacle — a vector that cannot be an operand, answered by a table.
 pub use encoding::lkrt_json_parse;
+pub use textcodec::{lkrt_base64_encode, lkrt_hex_encode, lkrt_url_decode_component, lkrt_url_encode_component};
 #[cfg(feature = "std")]
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
 pub use isr::lkrt_cpu_raise_interrupt;

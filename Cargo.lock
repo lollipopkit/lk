@@ -1639,9 +1639,11 @@ dependencies = [
 name = "lkrt"
 version = "0.1.3"
 dependencies = [
+ "base64",
  "cc",
  "chrono",
  "hashbrown 0.15.5",
+ "hex",
  "lk-aot-abi",
  "lk-core",
  "rustc-hash",

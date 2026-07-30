@@ -28,6 +28,10 @@ hashbrown = { version = "0.15", default-features = false, features = ["default-h
 # there instead. Uncontended on a single core, so the hot path stays cheap.
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Same crates the stdlib `encoding` module uses, so base64/hex text is
+# byte-identical to the VM's.
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
 serde_yaml = { version = "0.9", optional = true }
 toml = { version = "1", optional = true }
 # Same crate the stdlib datetime module uses, so native formatting/weekday

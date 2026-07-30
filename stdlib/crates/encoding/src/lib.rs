@@ -222,7 +222,7 @@ impl UrlEncodingModule {
             "encoding.url.encode_component value",
         )?;
         Ok(runtime_string_value(
-            &url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>(),
+            &percent_encode_component(value.as_ref()),
             runtime.heap_mut(),
         ))
     }
@@ -270,6 +270,38 @@ impl UrlEncodingModule {
         }
         Ok(runtime_string_value(&serializer.finish(), runtime.heap_mut()))
     }
+}
+
+/// Percent-encodes a URI **component**: everything outside the unreserved set
+/// becomes `%XX`.
+///
+/// The other direction of [`percent_decode_component`], written here rather than
+/// taken from a crate so the pair is one implementation's two directions. It used
+/// to be `form_urlencoded::byte_serialize`, which is *form* encoding — a space
+/// becomes `+` — while the decoder only ever undid `%XX`. So the pair did not
+/// round-trip: `decode_component(encode_component("a b"))` was `"a+b"`.
+///
+/// Form encoding is what a query body wants, and `query_stringify` /
+/// `query_parse` are that pair; they use `form_urlencoded` on both sides and are
+/// unaffected. A *component* keeps `+` as the literal `+` it is, which is also
+/// what `encodeURIComponent` / `decodeURIComponent` do.
+///
+/// The unreserved set is `encodeURIComponent`'s: `A-Za-z0-9-_.!~*'()`.
+#[cfg(feature = "std")]
+fn percent_encode_component(value: &str) -> String {
+    fn unreserved(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')')
+    }
+    let mut out = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if unreserved(byte) {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push_str(&alloc::format!("{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Only used by the `url` child, which is std-only.
@@ -320,5 +352,34 @@ fn string_map_arg(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str
             })
             .collect(),
         _ => bail!("{context} expects string map"),
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod component_tests {
+    use super::{percent_decode_component, percent_encode_component};
+
+    /// The pair's two directions have to agree with each other before they agree
+    /// with anything else. They did not: the encoder was `form_urlencoded`'s
+    /// *form* encoding (a space becomes `+`) while the decoder only ever undid
+    /// `%XX`, so `decode(encode("a b"))` was `"a+b"`.
+    #[test]
+    fn a_component_round_trips() {
+        for original in ["a b&c=d", "", "plain", "+literal+", "100%", "héllo", "a/b?c#d", "~*'()!-_."] {
+            let encoded = percent_encode_component(original);
+            let decoded = percent_decode_component(&encoded).expect("own output decodes");
+            assert_eq!(decoded, original, "round trip of {original:?} through {encoded:?}");
+        }
+    }
+
+    /// A space is `%20`, and `+` is the literal `+` — `encodeURIComponent`'s
+    /// rule. Form encoding is what a query body wants, and `query_stringify` /
+    /// `query_parse` are that pair, on `form_urlencoded` at both ends.
+    #[test]
+    fn a_component_is_not_form_encoded() {
+        assert_eq!(percent_encode_component("a b"), "a%20b");
+        assert_eq!(percent_decode_component("a+b").expect("valid"), "a+b");
+        // The unreserved set survives untouched.
+        assert_eq!(percent_encode_component("aZ09-_.!~*'()"), "aZ09-_.!~*'()");
     }
 }
