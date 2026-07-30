@@ -158,6 +158,14 @@ pub struct TypeChecker {
     /// `fn f() -> Int { if c { let r: Int = 7; return r; } … }` inferred `r` as a
     /// fresh type variable and rejected valid code.
     return_frames: Vec<Vec<Type>>,
+    /// The declared return type of each open frame, when the callable wrote one.
+    ///
+    /// Pushed and popped in lockstep with `return_frames` — a `return`'s value
+    /// has to be checked *against* the declaration, not merely compared with it
+    /// afterwards, because a lambda typed in isolation does not match the
+    /// function type written for it (`fn make() -> (Int) -> Int { return |x| …
+    /// }` was rejected).
+    declared_returns: Vec<Option<Type>>,
 }
 
 impl Default for TypeChecker {
@@ -243,6 +251,7 @@ impl TypeChecker {
             imported_members: HashMap::new(),
             observations: None,
             return_frames: Vec::new(),
+            declared_returns: Vec::new(),
         }
     }
 
@@ -728,11 +737,38 @@ impl TypeChecker {
     }
 
     /// Opens a return-collection frame for a function or closure body.
-    pub fn push_return_frame(&mut self) {
+    pub fn push_return_frame(&mut self, declared: Option<Type>) {
         self.return_frames.push(Vec::new());
+        self.declared_returns.push(declared);
     }
 
-    /// Whether the walk is currently inside a function or closure body.
+    /// The declared return type of the innermost open frame.
+    pub fn declared_return(&self) -> Option<Type> {
+        self.declared_returns.last().cloned().flatten()
+    }
+
+    /// The kind of declaration already bound to `name` at the top level, if any.
+    ///
+    /// A `fn` and a type declaration are **hoisted**: mutual recursion works, so
+    /// a `fn` is visible before the line it is written on. Source order
+    /// therefore does not apply to them, and "a `let` shadows it" has no
+    /// coherent meaning — which showed as `fn pick() {…}` then `let pick = …;`
+    /// resolving to the `let` *in either order*, silently. Two `fn`s of one name
+    /// were already refused; this is the same collision.
+    pub fn top_level_declaration_kind(&self, name: &str) -> Option<&'static str> {
+        if self.get_function_sig(name).is_some() {
+            return Some("function");
+        }
+        if self.registry.get_struct(name).is_some() {
+            return Some("struct");
+        }
+        if self.registry.get_type_alias(name).is_some() {
+            return Some("type alias");
+        }
+        None
+    }
+
+    /// Whether the walk is currently inside a function or closure body.    /// Whether the walk is currently inside a function or closure body.
     ///
     /// The return frames answer this exactly — one is open for the duration of
     /// every callable body and nothing else — so there is no second piece of
@@ -743,6 +779,7 @@ impl TypeChecker {
 
     /// Closes the innermost frame and yields the return types seen in it.
     pub fn pop_return_frame(&mut self) -> Vec<Type> {
+        self.declared_returns.pop();
         self.return_frames.pop().unwrap_or_default()
     }
 

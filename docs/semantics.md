@@ -704,6 +704,29 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 顶层 `let` 不能占用声明已经绑走的名字(2026-07-30 裁决)
+
+```lk
+fn pick() -> String { return "fn"; }
+let pick = || { return "let"; };      // 以前:静默地是 let 那个
+```
+
+两行**调换顺序也一样**是 `let` 赢。原因是 `fn` 和类型声明是被 **hoist** 的 ——
+相互递归能写,说明一个 `fn` 在它那一行之前就可见了 —— 所以源码顺序对它们不适用,
+"`let` 遮蔽了它"这句话没有连贯含义。两个同名 `fn` 早就是报错的
+("Compiler duplicate function"),`fn` + `let` 却静默。
+
+现在拒绝,并说清为什么:"`pick` is already declared as a function in this module:
+a function is visible before the line it is written on, so a `let` of the same
+name cannot shadow it — rename one of them"。覆盖 `fn`、`struct`、`type` 别名。
+
+**两个 `let` 仍然是正常遮蔽**(两者都是顺序敏感的),**可调用体里面的 `let` 也是**
+—— 局部量在自己作用域内顺序敏感,而声明在作用域外面。
+
+这条不是假想的:它正是 `examples/syntax/closure.lk` 里一个死掉的 `fn apply` 挨着
+一个活的 `let apply` 的来由 —— VM 跑得通(两条断言碰巧都被 lambda 那版满足),
+native 拒绝,而没有任何东西说过一句话。
+
 ## 函数不能声明在另一个可调用体里面(2026-07-30 裁决)
 
 `fn outer() { fn helper(n) { … } return helper(1); }` 以前**语法上收下**,然后
@@ -745,10 +768,19 @@ itself; write a recursive function as a top-level `fn fact(…)`"。判据是"�
 - 形参里写不了 union,因为那个位置的 `|` 是参数列表的收尾;括号也不行(带括号
   的类型不在语法里),所以走 `type` 别名 —— 那是同一个类型的第二个拼法。
 
-**每个"声明了函数类型"的上下文都收得下 lambda**(2026-07-30):`let` 教过了,
-结构体字段没教,于是 `Handler { run: |x| … }` 对着 `run: (Int) -> Int` 被拒
-("got `('T0) -> Any`")。现在是**一个** `check_expr_against` 回答所有这类位置 ——
-每个上下文各自教一遍,就等于每个没教到的都在静默拒绝为它写的 lambda。
+**每个"声明了函数类型"的位置都收得下 lambda**(2026-07-30):一条规矩落在多个
+地方,漏掉的那些就静默拒绝为它写的 lambda。清出来的有七处 —— `let`、结构体字段、
+`fn` 形参(报 "got `('T1) -> Int`")、命名实参、声明的返回类型(报 "Return type
+mismatch")、`List<(Int) -> Int>` 的元素、`Map` 的值。现在是**一个**
+`check_expr_against` 回答所有这些位置。
+
+它会往聚合字面量里**分发**期望(`[|x| …]` 对 `List<(Int) -> Int>`),但只在那个
+位置真的坐着一个 lambda 时才走这条路 —— 否则普通通路的推断原样保留(混类型列表
+字面量是 `Tuple`,那条规矩不是这个 helper 该推翻的)。`Optional` 收下它的载荷,
+括号不是类型层面的构造。
+
+**期望流进去只是一半,答案还得回查**:无条件返回声明的类型是一句断言而不是描述,
+它一度让 `let fs: List<(Int) -> String> = [|x| { return x + 1; }];` 通过。
 
 "哪串 token 是一个类型"这件事以前只在语句 parser 里写了一份,lambda 需要同一
 件事而又到不了那个 parser。现在抽在 `core/src/type_syntax.rs`,两边共用;位置

@@ -1802,6 +1802,39 @@ impl TypeChecker {
     /// lambda was typed in isolation as `('T0) -> Any` and that does not unify
     /// with the very annotation written for it, so a lambda could not be
     /// annotated at all while a named `fn` assigned to the same binding fine.
+    /// One element of an aggregate, checked against the declared element type.
+    ///
+    /// The expectation flowing in is only half of it: the answer still has to be
+    /// *checked*. Returning the declared type unconditionally is a claim rather
+    /// than a description, and it let `let fs: List<(Int) -> String> = [|x| {
+    /// return x + 1; }];` through.
+    fn check_element_against(&mut self, expr: &Expr, expected: &Type, what: &str) -> Result<()> {
+        let actual = self.check_expr_against(expr, Some(expected))?;
+        if self.is_assignable(&actual, expected) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            &alloc::format!("{what} has the wrong type"),
+            Some(expected.clone()),
+            Some(actual),
+            Some(expr.clone()),
+        ))
+    }
+
+    /// Whether a lambda sits at this position (through parentheses).
+    ///
+    /// The gate on distributing an expectation into an aggregate: without a
+    /// lambda there is nothing bidirectionality can change, and the plain path
+    /// keeps its own inference (a mixed list literal is a `Tuple`, which is not
+    /// this helper's rule to overturn).
+    fn holds_closure(expr: &Expr) -> bool {
+        match expr {
+            Expr::Closure { .. } => true,
+            Expr::Paren(inner) => Self::holds_closure(inner),
+            _ => false,
+        }
+    }
+
     /// Types `expr` **against** what the context declares, when that changes
     /// the answer.
     ///
@@ -1814,21 +1847,49 @@ impl TypeChecker {
     /// Everything else is plain `check_expr`: this is a narrow bidirectional
     /// rule, not a second type checker.
     pub(crate) fn check_expr_against(&mut self, expr: &Expr, expected: Option<&Type>) -> Result<Type> {
-        if let Some(Type::Function {
-            params: expected_params,
-            ..
-        }) = expected.map(|ty| self.resolve_aliases(ty))
-            && let Expr::Closure {
-                params,
-                param_types,
-                return_type,
-                body,
-            } = expr
-            && expected_params.len() == params.len()
-        {
-            return self.check_closure(params, param_types, return_type.as_deref(), body, &expected_params);
+        let Some(resolved) = expected.map(|ty| self.resolve_aliases(ty)) else {
+            return self.check_expr(expr);
+        };
+        match (&resolved, expr) {
+            (
+                Type::Function {
+                    params: expected_params,
+                    ..
+                },
+                Expr::Closure {
+                    params,
+                    param_types,
+                    return_type,
+                    body,
+                },
+            ) if expected_params.len() == params.len() => {
+                self.check_closure(params, param_types, return_type.as_deref(), body, expected_params)
+            }
+            // Parentheses are not a type-level construct.
+            (_, Expr::Paren(inner)) => self.check_expr_against(inner, expected),
+            // Distributed into an aggregate literal, but *only* when a lambda is
+            // actually sitting there: `[|x| …]` against `List<(Int) -> Int>`.
+            // Otherwise the plain path keeps its inference exactly — a list
+            // literal of mixed types is a `Tuple`, and that rule is not this
+            // helper's business.
+            (Type::List(elem), Expr::List(items)) if items.iter().any(|item| Self::holds_closure(item)) => {
+                for item in items {
+                    self.check_element_against(item, elem, "list element")?;
+                }
+                Ok(Type::List(elem.clone()))
+            }
+            (Type::Map(key, value), Expr::Map(pairs)) if pairs.iter().any(|(_, v)| Self::holds_closure(v)) => {
+                for (k, v) in pairs {
+                    self.check_expr(k)?;
+                    self.check_element_against(v, value, "map value")?;
+                }
+                Ok(Type::Map(key.clone(), value.clone()))
+            }
+            // An optional accepts its payload, so the payload's expectation is
+            // what a lambda written there has to meet.
+            (Type::Optional(inner), _) => self.check_expr_against(expr, Some(inner)),
+            _ => self.check_expr(expr),
         }
-        self.check_expr(expr)
     }
 
     pub(crate) fn check_closure(
@@ -1865,7 +1926,7 @@ impl TypeChecker {
         // return frame: a `return` inside a closure body belongs to the
         // closure, and must not be collected as a return of the enclosing
         // function (whose declared type it would then have to satisfy).
-        self.push_return_frame();
+        self.push_return_frame(declared_return.cloned());
         // Like a named function's body: a closure runs when it is called,
         // which is after the top level has finished, so it may read a binding
         // declared below it.

@@ -92,4 +92,15 @@ let record = |amount| {
 record(5);
 assert(ledger == 10);
 
+// 11. A declared function type reaches the lambda written for it, wherever it
+// is declared: a parameter, a return type, an aggregate's element.
+fn call_with(g: (Int) -> Int, v: Int) -> Int { return g(v); }
+assert(call_with(|x| { return x + 1; }, 5) == 6);
+
+fn adder() -> (Int) -> Int { return |x| { return x + 100; }; }
+assert(adder()(1) == 101);
+
+// (A closure *inside* a container is checked the same way, but does not lower
+// natively yet, so it stays out of this file — the AOT coverage gate reads it.)
+
 println("closure: all assertions passed");

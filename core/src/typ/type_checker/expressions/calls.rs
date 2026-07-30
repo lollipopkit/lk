@@ -36,7 +36,7 @@ impl TypeChecker {
                 ));
             }
             for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
-                let arg_type = self.check_expr(arg)?;
+                let arg_type = self.check_expr_against(arg, Some(param_type))?;
                 self.check_argument(param_type, &arg_type, index, arg)?;
             }
             return Ok(*return_type);
@@ -75,7 +75,7 @@ impl TypeChecker {
                         ));
                     }
                     for (index, (param_type, arg)) in remaining_params.iter().zip(args.iter()).enumerate() {
-                        let arg_type = self.check_expr(arg)?;
+                        let arg_type = self.check_expr_against(arg, Some(param_type))?;
                         // +1: the receiver occupies position 0 of the
                         // signature, so the caller's first argument is the
                         // second parameter.
@@ -293,7 +293,7 @@ impl TypeChecker {
             // call has been checked.
             let mut bindings: HashMap<String, Type> = HashMap::new();
             for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
-                let arg_type = self.check_expr(arg)?;
+                let arg_type = self.check_expr_against(arg, Some(param_type))?;
                 bind_instance_variables(param_type, &self.resolve_aliases(&arg_type), &mut bindings);
                 let declared = annotated
                     .as_ref()
@@ -309,7 +309,7 @@ impl TypeChecker {
             for (index, decl) in named_params.iter().enumerate() {
                 if index < supplied_named {
                     let arg = &args[params.len() + index];
-                    let arg_type = self.check_expr(arg)?;
+                    let arg_type = self.check_expr_against(arg, Some(&decl.ty))?;
                     // A named parameter's declaration always carries a type or
                     // a default, so unlike a positional one there is nothing
                     // inferred to mistake for a claim.

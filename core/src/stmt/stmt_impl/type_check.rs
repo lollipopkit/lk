@@ -166,6 +166,34 @@ impl Stmt {
                 // machine-int literal rule below, for the same reason: the
                 // alternative is a feature nobody can use.
                 let expr_type = type_checker.check_expr_against(value, type_annotation.as_ref())?;
+                // A `let` at the top level may not take a name a *declaration*
+                // already binds. A `fn` or a type declaration is hoisted, so
+                // source order does not apply to it and "the `let` shadows it"
+                // has no coherent meaning — it showed as `fn pick() {…}` then
+                // `let pick = …;` resolving to the `let` in *either* order,
+                // silently. Two `fn`s of one name were already refused; this is
+                // the same collision, and it is the mistake that put a dead
+                // `fn apply` next to a live `let apply` in `closure.lk`.
+                //
+                // Inside a callable body it *is* ordinary shadowing: the local
+                // is order-sensitive within its scope and the declaration is
+                // outside it.
+                if !type_checker.inside_callable_body() {
+                    for name in pattern_names(pattern) {
+                        if let Some(kind) = type_checker.top_level_declaration_kind(&name) {
+                            let error_msg = format!(
+                                "`{name}` is already declared as a {kind} in this module: a {kind} is visible \
+                                 before the line it is written on, so a `let` of the same name cannot shadow it — \
+                                 rename one of them"
+                            );
+                            return if let Some(span) = span {
+                                Err(anyhow!(ParseError::with_span(error_msg, span.clone())))
+                            } else {
+                                Err(anyhow!(error_msg))
+                            };
+                        }
+                    }
+                }
                 // Reached: statements below this one may read it. Done after
                 // the value, so `const A = A + 1;` still reports the read.
                 for name in pattern_names(pattern) {
@@ -511,7 +539,7 @@ impl Stmt {
                 // Popped on both paths, like the closure case: propagating the
                 // body's error through `?` before popping would leave a dead frame
                 // on the stack for an enclosing function's returns to land in.
-                type_checker.push_return_frame();
+                type_checker.push_return_frame(return_was_annotated.then(|| return_placeholder.clone()));
                 let body_checked = body.type_check(type_checker);
                 let collected_returns = type_checker.pop_return_frame();
                 body_checked?;
@@ -842,7 +870,14 @@ impl Stmt {
                 // the only point at which the returned expression's scope is still
                 // live (see `TypeChecker::push_return_frame`).
                 let ty = match value {
-                    Some(expr) => expr.type_check(type_checker)?,
+                    // Against the declaration, not merely compared with it
+                    // afterwards: a lambda typed in isolation does not match the
+                    // function type written for it, so
+                    // `fn make() -> (Int) -> Int { return |x| … }` was rejected.
+                    Some(expr) => {
+                        let declared = type_checker.declared_return();
+                        type_checker.check_expr_against(expr, declared.as_ref())?
+                    }
                     None => Type::Nil,
                 };
                 type_checker.record_return(ty);

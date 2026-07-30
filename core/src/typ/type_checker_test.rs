@@ -328,6 +328,67 @@ mod tests {
         );
     }
 
+    /// Every position that declares a function type — not just the two that
+    /// were taught first.
+    ///
+    /// Each context had to be taught separately, so each that was not silently
+    /// rejected the lambda written for it: a `fn` parameter said "got `('T1) ->
+    /// Int`", a declared return type said "Return type mismatch", and a
+    /// `List<(Int) -> Int>` annotation refused a list of lambdas.
+    #[test]
+    fn a_lambda_reaches_every_position_that_declares_its_type() {
+        // A parameter.
+        assert!(
+            check_program("fn apply(g: (Int) -> Int, v: Int) -> Int { return g(v); }\nlet n: Int = apply(|x| { return x + 1; }, 5);")
+                .is_ok()
+        );
+        // A declared return type.
+        assert!(check_program("fn make() -> (Int) -> Int { return |x| { return x + 1; }; }").is_ok());
+        // An aggregate's element or value type.
+        assert!(check_program("let fs: List<(Int) -> Int> = [|x| { return x + 1; }];").is_ok());
+        assert!(check_program("let m: Map<String, (Int) -> Int> = {\"a\": |x| { return x + 1; }};").is_ok());
+        // Assignment to an already-declared binding.
+        assert!(check_program("let f: (Int) -> Int = |x| { return x + 1; };\nf = |x| { return x * 2; };").is_ok());
+
+        // Every one of them still *checks*: the expectation flowing in is half
+        // of it, the answer is checked against the declaration too.
+        assert!(check_program("fn apply(g: (Int) -> String, v: Int) -> String { return g(v); }\nlet s = apply(|x| { return x + 1; }, 5);").is_err());
+        assert!(check_program("fn make() -> (Int) -> String { return |x| { return x + 1; }; }").is_err());
+        assert!(check_program("let fs: List<(Int) -> String> = [|x| { return x + 1; }];").is_err());
+        assert!(check_program("let m: Map<String, (Int) -> String> = {\"a\": |x| { return x + 1; }};").is_err());
+        // A mismatched arity is not a lambda this expectation applies to.
+        assert!(check_program("fn apply(g: (Int, Int) -> Int, v: Int) -> Int { return g(v, v); }\nlet n = apply(|x| { return x + 1; }, 5);").is_err());
+    }
+
+    /// A top-level `let` may not take a name a declaration already binds.
+    ///
+    /// A `fn` and a type declaration are hoisted — mutual recursion works, so a
+    /// `fn` is visible before its line — and the `let` won *in either order*,
+    /// silently. That is the mistake that put a dead `fn apply` beside a live
+    /// `let apply` in `examples/syntax/closure.lk`.
+    #[test]
+    fn a_top_level_let_cannot_take_a_declared_name() {
+        for source in [
+            "fn pick() -> String { return \"fn\"; }\nlet pick = || { return \"let\"; };",
+            // Also the other way round: order does not make it coherent.
+            "let pick = || { return \"let\"; };\nfn pick() -> String { return \"fn\"; }",
+            "fn pick() -> String { return \"fn\"; }\nlet pick = 42;",
+            "struct P { x: Int }\nlet P = 1;",
+            "type Alias = Int;\nlet Alias = 1;",
+        ] {
+            let error = check_program(source).expect_err(&alloc::format!("collision accepted:\n{source}"));
+            let text = alloc::format!("{error:#}");
+            assert!(text.contains("is already declared as a"), "{text}");
+        }
+
+        // Two `let`s *are* coherent shadowing: both are order-sensitive.
+        assert!(check_program("let x = 1;\nlet x = 2;").is_ok());
+        // And inside a callable body it is ordinary shadowing — the local is
+        // order-sensitive within its scope, the declaration is outside it.
+        assert!(check_program("fn pick() -> Int { return 1; }\nfn use_it() -> Int { let pick = 2; return pick; }").is_ok());
+        assert!(check_program("fn pick() -> Int { return 1; }\nlet f = || { let pick = 2; return pick; };").is_ok());
+    }
+
     /// A `fn` inside another callable is parsed and then not found by the
     /// compiler (function indices come from top-level statements only), so it
     /// used to fail with "Compiler undefined function" — the backend's words for
