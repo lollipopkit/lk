@@ -3,7 +3,9 @@
 // Run: lk examples/syntax/unsupported.lk
 
 // ── 1. Match variable binding ──
-let r = match 99 { n => n, _ => 0 };
+// A binding pattern already matches every value, so a `_` arm after it would
+// be dead code — and is now refused.
+let r = match 99 { n => n };
 println("1. match var = {} (expected: 99)", r);
 
 // ── 2. Match destructuring ──

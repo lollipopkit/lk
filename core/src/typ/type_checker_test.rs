@@ -360,6 +360,35 @@ mod tests {
         assert!(check_program("fn apply(g: (Int, Int) -> Int, v: Int) -> Int { return g(v, v); }\nlet n = apply(|x| { return x + 1; }, 5);").is_err());
     }
 
+    /// An arm an earlier catch-all shadows can never run.
+    ///
+    /// You wrote a case you believe happens, and it does not — silently, with
+    /// nothing ever saying the branch is dead. Refused rather than warned about
+    /// because the checker has no warning channel, and a loud refusal is what
+    /// the language does elsewhere for the same shape of mistake.
+    #[test]
+    fn a_match_arm_after_a_catch_all_is_refused() {
+        for source in [
+            "let n = 1;\nlet r = match n { _ => \"any\", 1 => \"one\" };",
+            // A *binding* is a catch-all too — this is the one that was sitting
+            // in `examples/syntax/unsupported.lk`.
+            "let r = match 99 { n => n, _ => 0 };",
+            // So is an or-pattern with a total alternative.
+            "let n = 1;\nlet r = match n { 1 | _ => \"a\", 2 => \"b\" };",
+        ] {
+            let error = check_program(source).expect_err(&alloc::format!("dead arm accepted:\n{source}"));
+            assert!(format!("{error:#}").contains("can never run"), "{error:#}");
+        }
+
+        // A *guarded* catch-all is conditional, so it dominates nothing — the
+        // same distinction the fall-through detection draws.
+        assert!(check_program("let n = 1;\nlet r = match n { x if x > 0 => \"pos\", _ => \"other\" };").is_ok());
+        // And a catch-all as the last arm is the ordinary shape.
+        assert!(check_program("let n = 1;\nlet r = match n { 1 => \"one\", _ => \"other\" };").is_ok());
+        // A destructuring pattern matches only some values.
+        assert!(check_program("let pt = [10, 20];\nlet r = match pt { [x, y] => x + y, _ => 0 };").is_ok());
+    }
+
     /// A top-level `let` may not take a name a declaration already binds.
     ///
     /// A `fn` and a type declaration are hoisted — mutual recursion works, so a

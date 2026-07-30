@@ -900,6 +900,24 @@ impl TypeChecker {
                     ));
                 }
 
+                // An arm after an unguarded catch-all can never run. You wrote
+                // a case you believe happens, and it does not — silently, so
+                // nothing ever says the branch is dead. LK refuses rather than
+                // warns because it has no warning channel, and a loud refusal is
+                // what it does elsewhere for the same shape of mistake (a
+                // zero-step range, a `let` over a declared name).
+                //
+                // A *guarded* catch-all is conditional, so it dominates nothing
+                // — the same distinction the fall-through detection draws.
+                if let Some(dead) = first_arm_after_catch_all(arms) {
+                    return Err(Self::type_err(
+                        "this match arm can never run: an earlier arm matches every value",
+                        None,
+                        None,
+                        Some(dead.clone()),
+                    ));
+                }
+
                 // Check all arms have compatible types
                 let mut result_type: Option<Type> = None;
                 for arm in arms {
@@ -2504,6 +2522,35 @@ pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Ty
     }
 }
 
+/// The body of the first arm that an earlier unguarded catch-all shadows.
+///
+/// Shares its notion of "catch-all" with [`matches_every_value`] — one rule
+/// about which patterns match everything, so a pattern that starts counting as
+/// total cannot be total for the type and non-shadowing for reachability.
+fn first_arm_after_catch_all(arms: &[crate::expr::MatchArm]) -> Option<&Expr> {
+    let mut seen_catch_all = false;
+    for arm in arms {
+        if seen_catch_all {
+            return Some(arm.body.as_ref());
+        }
+        if is_unguarded_catch_all(&arm.pattern) {
+            seen_catch_all = true;
+        }
+    }
+    None
+}
+
+/// A pattern that matches every value, with no guard to make it conditional.
+fn is_unguarded_catch_all(pattern: &crate::expr::Pattern) -> bool {
+    use crate::expr::Pattern;
+    match pattern {
+        Pattern::Wildcard | Pattern::Variable(_) => true,
+        // An or-pattern is total when any alternative is.
+        Pattern::Or(alternatives) => alternatives.iter().any(is_unguarded_catch_all),
+        _ => false,
+    }
+}
+
 /// Does some arm of `arms` match every value of `value_type`?
 ///
 /// Deliberately an under-approximation: it answers `true` only for the two
@@ -2517,14 +2564,11 @@ pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Ty
 fn matches_every_value(arms: &[crate::expr::MatchArm], value_type: &Type) -> bool {
     use crate::expr::Pattern;
 
-    fn is_catch_all(pattern: &Pattern) -> bool {
-        matches!(pattern, Pattern::Wildcard | Pattern::Variable(_))
-    }
     fn is_bool_literal(pattern: &Pattern, wanted: bool) -> bool {
         matches!(pattern, Pattern::Literal(LiteralVal::Bool(value)) if *value == wanted)
     }
 
-    if arms.iter().any(|arm| is_catch_all(&arm.pattern)) {
+    if arms.iter().any(|arm| is_unguarded_catch_all(&arm.pattern)) {
         return true;
     }
     if *value_type == Type::Bool {
