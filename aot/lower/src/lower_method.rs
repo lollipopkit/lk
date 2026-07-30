@@ -128,15 +128,39 @@ pub(crate) fn lower_method_call_k(
     // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
     // handled before the generic argument reads, because the lambda register
     // carries a `GlobalRef::Lambda`, not an SSA value.
-    if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
+    //
+    // `Bytes` joins by *becoming* an `Int` list first. Its elements are byte
+    // values, so `to_i64_list` loses nothing, and the channel below then answers
+    // the same shapes the VM does: `map` and `reduce` are already list-shaped
+    // there, and only `filter` has to come back — the VM keeps a filtered
+    // `Bytes` as `Bytes`, because filtering removes elements without changing
+    // any. Without this the three closure methods were the last of the fourteen
+    // still dropping their module to the VM.
+    let hof_receiver = if receiver_ty == Ty::Bytes && matches!(name.as_str(), "map" | "filter" | "reduce") {
+        let listed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(listed),
+            callee: AbiRef::new("bytes_h", "to_i64_list"),
+            args: vec![receiver],
+        });
+        Some(listed)
+    } else {
+        None
+    };
+    let hof_ty = if hof_receiver.is_some() {
+        Ty::ListI64
+    } else {
+        receiver_ty
+    };
+    if matches!(hof_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
         && let Some(result) = lower_list_hof_k(
             ssa,
             insts,
             funcs,
             entry,
             sig,
-            receiver,
-            receiver_ty,
+            hof_receiver.unwrap_or(receiver),
+            hof_ty,
             &name,
             base,
             argc,
@@ -144,6 +168,18 @@ pub(crate) fn lower_method_call_k(
             pc,
         )?
     {
+        let result = match (hof_receiver, name.as_str()) {
+            (Some(_), "filter") => {
+                let bytes = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(bytes),
+                    callee: AbiRef::new("bytes_h", "from_i64_list"),
+                    args: vec![result.0],
+                });
+                (bytes, Ty::Bytes)
+            }
+            _ => result,
+        };
         ssa.write(base, block, result);
         return Ok(());
     }
@@ -1091,6 +1127,23 @@ pub(crate) fn lower_method_dispatch(
                 rhs: zero,
             });
             (b, Ty::Bool)
+        }
+        // `s.values()` is the members in iteration order — the same list `for x
+        // in s` walks, which `set.iter` already builds. It was the one Set method
+        // with no arm, so a function using it dropped to the VM while the `for`
+        // loop over the same set stayed native.
+        //
+        // The order is a hash order, so this rides the mirror discipline that
+        // makes set iteration lowerable at all (`set_iteration_order_matches_the_vm`,
+        // and the single `RtKey` behind it).
+        (Ty::Set, "values", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "iter"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
         }
         (Ty::Set, "clear", []) => {
             insts.push(Inst::Call {

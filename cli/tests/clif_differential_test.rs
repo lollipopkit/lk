@@ -4246,6 +4246,18 @@ fn bytes_answers_its_whole_method_surface_natively() {
                  println(b.first());\nprintln(b.last());\nprintln(b.take(3));\n\
                  println(b.index_of(97));\nreturn 0;\n",
             ),
+            // `map`/`filter`/`reduce` reach the callback channel by *becoming* an
+            // `Int` list first — byte values lose nothing in the conversion. The
+            // shapes differ on the way back and that asymmetry is the VM's:
+            // `map` may produce anything so it answers a list, `filter` only
+            // removes so it answers `Bytes`, `reduce` answers a scalar.
+            new(
+                "closures_over_bytes_keep_the_vm_result_shapes",
+                "let b = \"abc\".bytes();\nprintln(b.map(|v| v + 1));\nprintln(b.filter(|v| v > 97));\n\
+                 println(b.reduce(0, |a, x| a + x));\nprintln(b.filter(|v| false));\n\
+                 println(b.map(|v| v * 2).len());\nprintln(\"\".bytes().map(|v| v));\n\
+                 println(\"\".bytes().reduce(7, |a, x| a + x));\nreturn 0;\n",
+            ),
             // A count is not a position: negative raises, on both ends, with the
             // same words.
             new(
@@ -4253,6 +4265,34 @@ fn bytes_answers_its_whole_method_surface_natively() {
                 "let b = \"abc\".bytes();\n\
                  println(try { b.take(-1); \"no\" } catch e { \"caught: ${e}\" });\n\
                  println(try { b.skip(-2); \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
+/// `s.values()` is the members in iteration order, and it lowers.
+///
+/// It was the one Set method with no arm, so a function calling it dropped to
+/// the VM while a `for` loop over the same set stayed native — two ways of
+/// asking for the same sequence, one of them native. `set.iter` already builds
+/// exactly that list; the order is a hash order, so this rides the same mirror
+/// discipline that makes set iteration lowerable at all.
+#[test]
+fn set_values_is_the_iteration_order_and_lowers() {
+    run_clif_differential(
+        "set_values",
+        &[
+            new(
+                "values_agrees_with_iteration",
+                "let s = Set([5, 1, 9, 3, 7, 2]);\nlet out = [];\nfor x in s { out.push(x); }\n\
+                 println(s.values() == out);\nprintln(s.values().len());\n\
+                 println(Set([]).values());\nreturn 0;\n",
+            ),
+            // Mixed kinds, because the order spans them.
+            new(
+                "values_over_mixed_members",
+                "let s = Set([1, \"a\", true, nil]);\nprintln(s.values().len());\n\
+                 println(s.values().contains(\"a\"));\nprintln(s.values().contains(1));\nreturn 0;\n",
             ),
         ],
     );
