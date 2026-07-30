@@ -1270,6 +1270,28 @@ pub(super) fn lower(
                         args: vec![handle, index, value],
                     });
                 }
+                // The other two carriers, so that `xs[i] = v` does not depend
+                // on the list's internal representation: `Int` and `Float` had
+                // arms here, `Str` and the boxed carrier did not, and the same
+                // two lines therefore stayed native or did not for a reason no
+                // program can observe.
+                Ty::ListStr => {
+                    let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "str_set"),
+                        args: vec![handle, index, value],
+                    });
+                }
+                Ty::ListDyn => {
+                    let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                    let value = crate::dyn_box::to_dyn_any(ssa, insts, cv, cty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_set"),
+                        args: vec![handle, index, value],
+                    });
+                }
                 Ty::MapI64I64 => {
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
                     insts.push(Inst::Call {

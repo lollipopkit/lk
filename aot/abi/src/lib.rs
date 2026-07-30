@@ -407,6 +407,11 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             ("list_h", "f64_at", lkrt_lklist_f64_at, ReadsHost, [Ptr, I64], F64, Borrowed);
             ("list_h", "f64_set", lkrt_lklist_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            // `str_set` completes the carrier set: `xs[i] = v` lowered on `Int`
+            // and `Float` only, so the same two lines stayed native or did not
+            // depending on the list's representation. (`dyn_set` was already
+            // declared further down — it had a row and no lowering using it.)
+            ("list_h", "str_set", lkrt_lklist_str_set, WritesHost, [Ptr, I64, StrPtr], Nil, Borrowed);
             ("list_h", "f64_contains", lkrt_lklist_f64_contains, ReadsHost, [Ptr, F64], I64, Borrowed);
             // String-element list handle (elements are interned string-constant pointers).
             ("list_h", "str_new", lkrt_lklist_str_new, WritesHost, [], Ptr, Constructs);

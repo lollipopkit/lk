@@ -625,32 +625,7 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, receiver_ty)
         }
-        // `concat` with any dyn-list side: both sides normalize to dyn lists
-        // (typed sides convert element-wise, cold path) and chain.
-        (Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "concat", [(other, oty)])
-            if receiver_ty == Ty::ListDyn || *oty == Ty::ListDyn || *oty == Ty::Dyn =>
-        {
-            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
-            let rhs = match *oty {
-                Ty::Dyn => {
-                    let unboxed = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(unboxed),
-                        callee: AbiRef::new("dyn", "as_list"),
-                        args: vec![*other],
-                    });
-                    unboxed
-                }
-                oty => to_dyn_list_handle(ssa, insts, *other, oty, pc)?,
-            };
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_chain"),
-                args: vec![lhs, rhs],
-            });
-            (dst, Ty::ListDyn)
-        }
+
         (Ty::ListI64, "unique", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1301,17 +1276,6 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, out)
         }
-        // `xs.concat(ys)` — same semantics as chain (the VM implements both
-        // as lhs ++ rhs into a fresh list).
-        (Ty::ListI64, "concat", [(other, Ty::ListI64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_chain"),
-                args: vec![receiver, *other],
-            });
-            (dst, Ty::ListI64)
-        }
         // `xs.join(sep)` → one string, on every carrier that has one.
         //
         // The numeric arms were absent on purpose: the VM raised "list must
@@ -1358,9 +1322,16 @@ pub(crate) fn lower_method_dispatch(
         // x86 kernel that one shape was eleven of the eighteen blockers.
         //
         // One operation, one rule: this mirrors `inst::scalar`'s `list_chain`.
+        //
+        // `concat` is the same operation under a second name, and it used to have
+        // its own two narrower arms — one for `ListI64 ++ ListI64`, one for
+        // "either side is boxed". So `xs.chain(ys)` lowered on all four carriers
+        // while `xs.concat(ys)` lowered on two, and which spelling a program used
+        // decided whether it stayed native. Both arms were subsumed by this one;
+        // deleting them is the fix, not adding two more.
         (
             Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
-            "chain",
+            "chain" | "concat",
             [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn)],
         ) => {
             // A boxed argument is ordinary here: a callee's return type is

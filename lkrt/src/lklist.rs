@@ -952,6 +952,28 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
     values[index] = value;
 }
 
+/// Stores `value` at `index` in a `str` list; the same index rule as
+/// [`lkrt_lklist_i64_set`].
+///
+/// The carrier had `at` but no `set`, so `xs[i] = s` and `xs.set(i, s)` on a
+/// string list dropped the whole module to the VM while the same two lines on an
+/// `Int` list stayed native — a difference in the list's internal representation
+/// deciding the fate of a program that cannot see it.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_str_new`], or null;
+/// `value` a valid string-constant pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_set(handle: *mut c_void, index: i64, value: *const c_char) {
+    if handle.is_null() {
+        crate::panic::raise_str("runtime error");
+    }
+    // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+    let values = unsafe { &mut *(handle as *mut Vec<*const c_char>) };
+    let index = store_index_or_raise(index, values.len());
+    values[index] = value;
+}
+
 /// Stores `value` at `index` in an `f64` list; aborts on an invalid index (see
 /// [`lkrt_lklist_i64_set`]).
 ///

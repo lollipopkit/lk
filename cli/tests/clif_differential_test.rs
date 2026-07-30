@@ -4161,3 +4161,49 @@ fn clear_lowers_on_every_map_carrier() {
         ],
     );
 }
+
+/// Which spelling you use, and which carrier the list happens to have, do not
+/// decide whether a program stays native.
+///
+/// A full sweep of the 29 declared list methods against the four carriers left
+/// two holes after the earlier round:
+///
+/// * `concat` — the same operation as `chain` under a second name, with its own
+///   two narrower arms. `xs.chain(ys)` lowered on all four carriers and
+///   `xs.concat(ys)` on two, so the choice of word decided the outcome. Both
+///   narrow arms were subsumed by the general one; deleting them is the fix.
+/// * `xs[i] = v` — `Int` and `Float` had arms, `Str` and the boxed carrier did
+///   not, and `xs.set(i, v)` is the same opcode, so both spellings fell together.
+///
+/// The out-of-bounds store is included because it is the one place these can
+/// disagree loudly: the VM halts, and every carrier's helper has to halt with
+/// the same words.
+#[test]
+fn concat_and_index_assignment_do_not_depend_on_the_carrier() {
+    run_clif_differential(
+        "list_carrier_parity_2",
+        &[
+            new(
+                "concat_agrees_with_chain_on_every_carrier",
+                "let n = 3;\nlet i = [1, n];\nlet f = [1.5, 2.5];\nlet s = [\"a\", \"b\"];\n\
+                 println(i.concat(i) == i.chain(i));\nprintln(f.concat(f) == f.chain(f));\n\
+                 println(s.concat(s) == s.chain(s));\nprintln(s.concat(s));\n\
+                 println(f.concat(f));\nreturn 0;\n",
+            ),
+            new(
+                "index_assignment_on_every_carrier",
+                "let n = 3;\nlet i = [1, 2, n];\nlet f = [1.5, 2.5];\nlet s = [\"a\", \"b\"];\n\
+                 i[0] = 9;\nf[1] = 9.5;\ns[0] = \"z\";\ns.set(1, \"y\");\n\
+                 println(i);\nprintln(f);\nprintln(s);\n\
+                 s[-1] = \"tail\";\nprintln(s);\nreturn 0;\n",
+            ),
+            // A store past the end halts on both ends, with the same words.
+            new(
+                "a_store_out_of_bounds_halts_the_same_way",
+                "let s = [\"a\"];\nprintln(try { s[5] = \"x\"; \"no\" } catch e { \"caught: ${e}\" });\n\
+                 println(try { s[-9] = \"x\"; \"no\" } catch e { \"caught: ${e}\" });\n\
+                 println(s);\nreturn 0;\n",
+            ),
+        ],
+    );
+}
