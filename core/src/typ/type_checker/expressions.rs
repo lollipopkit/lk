@@ -1194,6 +1194,12 @@ impl TypeChecker {
     /// `flags << 3` is what people write, and requiring `3 as u32` there is the
     /// ceremony that gets fixed widths abandoned.
     fn check_shift_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        /// Which argument a side names, so the error can quote the operand the
+        /// reader wrote rather than the desugared builtin call.
+        fn ty_expr_for<'a>(which: &str, args: &'a [Box<Expr>]) -> &'a Expr {
+            if which == "left" { &args[0] } else { &args[1] }
+        }
+
         let arity = match func {
             "__lk_shl" | "__lk_shr" | "__lk_shr_u" | "__lk_bit_and" | "__lk_bit_or" | "__lk_bit_xor" => 2,
             "__lk_bit_not" => 1,
@@ -1203,10 +1209,51 @@ impl TypeChecker {
             return Ok(None);
         }
         let left = self.check_expr(&args[0])?;
-        if arity == 2 {
-            let _ = self.check_expr(&args[1])?;
-        }
+        let right = if arity == 2 {
+            Some(self.check_expr(&args[1])?)
+        } else {
+            None
+        };
         let resolved = self.resolve_aliases(&left);
+        // A bit operation on a non-integer is an error, not "not my business".
+        //
+        // This used to check the left operand's *shape* and return `None` for
+        // anything that was not a machine int — and `None` means "no opinion",
+        // so the caller typed the call dynamically and said nothing. The right
+        // operand was not looked at at all (`let _ = ...`).
+        //
+        // What that let through: `(bdf / 0x800) & 0x1f`. In LK `/` always yields
+        // a `Float` (docs/semantics.md), so that is a Float meeting `&` — the VM
+        // raises at runtime (`bit_arg` requires an Int) and the AOT refuses to
+        // lower it, while `lk check` passed it in silence. Three behaviours for
+        // one program, and it had been sitting in seven functions of the x86
+        // PCI driver.
+        //
+        // `Any` and an unresolved variable stay permissive: those are the
+        // dynamic and inference paths, where the answer is not known yet.
+        for (which, ty) in [Some(("left", &left)), right.as_ref().map(|r| ("right", r))]
+            .into_iter()
+            .flatten()
+        {
+            let resolved = self.resolve_aliases(ty);
+            // `Boxed<T>` unwraps first: a boxed value is the dynamic escape hatch
+            // just as `Any` is, and `1 << 12` types as `Box<Any>` today (the
+            // shift builtin only claims a type for a *machine* int left
+            // operand). Rejecting that shape was a false positive, and the
+            // `shift/with_mask` differential is what said so.
+            let mut probe = &resolved;
+            while let Type::Boxed(inner) = probe {
+                probe = inner;
+            }
+            if !matches!(probe, Type::Int | Type::MachineInt(_) | Type::Any | Type::Variable(_)) {
+                return Err(Self::type_err(
+                    &alloc::format!("the {which} operand of a bit operation must be an Int"),
+                    Some(Type::Int),
+                    Some(probe.clone()),
+                    Some(ty_expr_for(which, args).clone()),
+                ));
+            }
+        }
         Ok(match resolved {
             Type::MachineInt(_) => Some(resolved),
             _ => None,

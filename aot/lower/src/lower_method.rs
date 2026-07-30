@@ -1180,9 +1180,26 @@ pub(crate) fn lower_method_dispatch(
         (
             Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
             "chain",
-            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)],
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn)],
         ) => {
-            let other_ty = args[0].1;
+            // A boxed argument is ordinary here: a callee's return type is
+            // *observed*, and a long `a.chain(b).chain(c)…` chain can see one of
+            // its operands as `Dyn` before the fixpoint has settled. Unboxing
+            // through the tag guard is the same loud failure the VM gives for a
+            // non-list, so nothing is guessed.
+            let mut other_ty = args[0].1;
+            let other = &if other_ty == Ty::Dyn {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![*other],
+                });
+                other_ty = Ty::ListDyn;
+                dst
+            } else {
+                *other
+            };
             let (helper, out_ty) = match (receiver_ty, other_ty) {
                 (Ty::ListI64, Ty::ListI64) => ("i64_chain", Ty::ListI64),
                 (Ty::ListF64, Ty::ListF64) => ("f64_chain", Ty::ListF64),

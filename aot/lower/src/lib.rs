@@ -582,7 +582,15 @@ pub fn lower_bundled(
                     (Some(pc), None) => format!(" [fn{fi} not in table of {}; pc {pc}]", funcs.len()),
                     _ => String::new(),
                 };
-                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}{at}");
+                // The name, not only the index: `name_failure` already resolves
+                // it for the *first* error, so the listing had it available and
+                // did not use it. Eleven identically-worded failures turned out
+                // to be one method only once they could be told apart.
+                let name = funcs
+                    .get(*fi)
+                    .and_then(|f| f.debug_name.as_deref())
+                    .map_or(String::new(), |n| format!(" `{n}`"));
+                eprintln!("lk-aot-lower: final-pass failure: fn{fi}{name}: {err:?}{at}");
             }
         }
         let first_error = name_failure(&failures[0], &funcs);

@@ -37,15 +37,15 @@ fn pci_bdf(bus: Int, device: Int, function: Int) -> Int {
 }
 
 fn pci_bdf_bus(bdf: Int) -> Int {
-    return (bdf / 0x10000) & 0xff;
+    return (bdf >> 16) & 0xff;
 }
 
 fn pci_bdf_device(bdf: Int) -> Int {
-    return (bdf / 0x800) & 0x1f;
+    return (bdf >> 11) & 0x1f;
 }
 
 fn pci_bdf_function(bdf: Int) -> Int {
-    return (bdf / 0x100) & 0x07;
+    return (bdf >> 8) & 0x07;
 }
 
 // The enable bit, the BDF, and a dword-aligned offset.
@@ -74,12 +74,12 @@ fn pci_write(bdf: Int, offset: Int, value: Int) {
 // doing it inline and one of them getting the shift wrong.
 fn pci_read_u16(bdf: Int, offset: Int) -> Int {
     let dword = pci_read(bdf, offset);
-    return (dword / pci_shift_of(offset, 2)) & 0xffff;
+    return (dword >> pci_shift_of(offset, 2)) & 0xffff;
 }
 
 fn pci_read_u8(bdf: Int, offset: Int) -> Int {
     let dword = pci_read(bdf, offset);
-    return (dword / pci_shift_of(offset, 3)) & 0xff;
+    return (dword >> pci_shift_of(offset, 3)) & 0xff;
 }
 
 // How much to divide a dword by to bring `offset`'s field down to bit 0.
@@ -89,11 +89,18 @@ fn pci_read_u8(bdf: Int, offset: Int) -> Int {
 // cases. `mask` is the count of low offset bits that matter — 2 for a word
 // (offset 0 or 2), 3 for a byte (0..3).
 fn pci_shift_of(offset: Int, mask: Int) -> Int {
+    // A shift *amount*, which is what the name says. It used to return the
+    // power of two to divide by (1 / 0x100 / 0x10000 / 0x1000000) and the call
+    // sites divided — but `/` in LK always yields a `Float`
+    // (docs/semantics.md), so the `&` that followed met a Float. The
+    // interpreter raised at runtime, the AOT refused to lower it, and
+    // `lk check` said nothing until the bit operations learned to require an
+    // Int.
     let byte = offset & mask;
-    if (byte == 0) { return 1; }
-    if (byte == 1) { return 0x100; }
-    if (byte == 2) { return 0x10000; }
-    return 0x1000000;
+    if (byte == 0) { return 0; }
+    if (byte == 1) { return 8; }
+    if (byte == 2) { return 16; }
+    return 24;
 }
 
 fn pci_vendor(bdf: Int) -> Int {
@@ -101,17 +108,17 @@ fn pci_vendor(bdf: Int) -> Int {
 }
 
 fn pci_device_id(bdf: Int) -> Int {
-    return (pci_read(bdf, PCI_REG_ID) / 0x10000) & 0xffff;
+    return (pci_read(bdf, PCI_REG_ID) >> 16) & 0xffff;
 }
 
 // The class code is the top byte of the dword at 0x08; the subclass is the one
 // under it.
 fn pci_class(bdf: Int) -> Int {
-    return (pci_read(bdf, PCI_REG_CLASS) / 0x1000000) & 0xff;
+    return (pci_read(bdf, PCI_REG_CLASS) >> 24) & 0xff;
 }
 
 fn pci_subclass(bdf: Int) -> Int {
-    return (pci_read(bdf, PCI_REG_CLASS) / 0x10000) & 0xff;
+    return (pci_read(bdf, PCI_REG_CLASS) >> 16) & 0xff;
 }
 
 fn pci_present(bdf: Int) -> Bool {
