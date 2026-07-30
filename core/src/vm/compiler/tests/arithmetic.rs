@@ -390,12 +390,14 @@ fn compiler_does_not_let_a_machine_width_outlive_its_value() {
 /// interpolation. Fixing one and testing the other would have looked green, so the
 /// count below spans both.
 ///
-/// A *condition* (`if (1 + f(x) > 0)`) is deliberately absent: it still evaluates
-/// the operand three times, through a different mechanism — the condition path
-/// tries five fused branch shapes in turn, and each helper lowers an operand
-/// before checking a register fact, so every rejected attempt leaves its
-/// instructions in the stream. That is its own defect with its own fix; writing
-/// its current count into this test would pin a wrong answer as expected.
+/// A *condition* (`if (1 + f(x) > 0)`) had a third mechanism for the same
+/// wrongness and is counted here too: the condition path tries fused branch
+/// shapes in turn, and each helper lowered an operand before checking a register
+/// fact, so every rejected attempt left its instructions in the stream — three
+/// evaluations, one per attempt that looked and declined. The attempts are now
+/// restricted to operands that are free to lower twice
+/// (`is_free_to_lower_twice`), which is what makes speculation-by-lowering sound
+/// at all.
 ///
 /// Pinned to a *number*, not to the other backend, because **no differential
 /// test can see this**: both backends lower from this bytecode, so both doubled
@@ -408,10 +410,14 @@ fn a_commuted_immediate_evaluates_its_operand_once() {
         let calls = 0;
         fn side(x) { calls = calls + 1; return x; }
         fn through_return() { return 1 + side(1); }
+        fn through_condition() { if (1 + side(1) > 0) { return 0; } return 0; }
+        fn through_while() { while (1 + side(1) > 99) { return 0; } return 0; }
         let through_let = 1 + side(1);
         let through_element = [2 * side(1)];
         let through_template = "${1 + side(1)}";
         through_return();
+        through_condition();
+        through_while();
         return calls;
         "#,
     )
@@ -420,9 +426,9 @@ fn a_commuted_immediate_evaluates_its_operand_once() {
     let result = crate::vm::execute_module(&module).expect("run module");
     assert_eq!(
         result.returns,
-        vec![crate::val::RuntimeVal::Int(4)],
-        "four `side` calls are written, so four must run — the doubling made this 5 or more \
-         depending on the position"
+        vec![crate::val::RuntimeVal::Int(6)],
+        "six `side` calls are written, so six must run — the doubling made this 7, 9, 12 or more \
+         depending on which positions were involved"
     );
 
     // The same claim on the instruction stream, where it is a property of the
@@ -440,8 +446,8 @@ fn a_commuted_immediate_evaluates_its_operand_once() {
         .count();
     assert_eq!(
         emitted,
-        4,
-        "three `side` operands plus the one call to the helper: {:?}",
+        6,
+        "three `side` operands in the entry plus the three calls to the helpers: {:?}",
         entry.code.iter().map(|i| i.opcode()).collect::<Vec<_>>()
     );
 }

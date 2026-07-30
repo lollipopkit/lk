@@ -370,16 +370,26 @@ impl Compiler {
                 if let Some(value) = self.lower_unsigned_bin(lhs, op, rhs)? {
                     return Ok(vec![self.emit_branch_placeholder(Opcode::BrFalse, value)?]);
                 }
-                if let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)? {
+                // Each fused shape below lowers an operand to decide, and leaves
+                // those instructions behind when it declines — so they are only
+                // tried over operands that are free to lower twice. See
+                // [`Self::is_free_to_lower_twice`]: `if (a > b)` and
+                // `if (x % 2 == 0)` still fuse, `if (1 + f(x) > 0)` no longer
+                // calls `f` three times.
+                let speculate = Self::is_free_to_lower_twice(lhs) && Self::is_free_to_lower_twice(rhs);
+                if speculate
+                    && let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)?
+                {
                     return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
                 }
-                if let Some((opcode, value)) = self.lower_zero_branch_operands(lhs, op, rhs)? {
+                if speculate && let Some((opcode, value)) = self.lower_zero_branch_operands(lhs, op, rhs)? {
                     return Ok(vec![self.emit_branch_placeholder(opcode, value)?]);
                 }
-                if let Some((opcode, value, immediate)) = self.lower_i4_branch_operands(lhs, op, rhs)? {
+                if speculate && let Some((opcode, value, immediate)) = self.lower_i4_branch_operands(lhs, op, rhs)? {
                     return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
                 }
-                if ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
+                if speculate
+                    && ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
                     && let Some((opcode, lhs, rhs)) = self.lower_compare_test_immediate_operands(lhs, op, rhs)?
                 {
                     return Ok(vec![
@@ -429,6 +439,36 @@ impl Compiler {
         }
         self.emit_compare_test_pair_immediate_placeholder(first_reg, first_value, second_reg, second_value)
             .map(Some)
+    }
+
+    /// Whether lowering this expression twice is observably the same as once.
+    ///
+    /// The fused compare-and-branch shapes below cannot decide without a
+    /// register fact (`value_kind`), so each lowers its operand and *then* asks —
+    /// and a helper that declines answers `None` with its instructions already in
+    /// the stream. The next attempt lowers the expression again, so an operand
+    /// with a side effect runs once per attempt that looked and declined:
+    /// `if (1 + f(x) > 0)` called `f` three times. Worse, the attempts do not
+    /// even agree on *which* subexpression is the operand — the `%`-against-zero
+    /// form takes `x` out of `x % k` while the next form takes `x % k` whole — so
+    /// there is no single register to hand along.
+    ///
+    /// What makes the speculation sound is this: only speculate over operands
+    /// that are free to lower twice. A name, a literal, and arithmetic over them
+    /// re-lower to at most a dead `Move`/`LoadInt` on the path that declines,
+    /// which is what that path already costs; a call re-lowers to a *call*.
+    ///
+    /// Deliberately a whitelist. A new `Expr` variant is not free until someone
+    /// says it is, and the cost of being wrong here is a program that runs its
+    /// operand twice — the exact bug this exists to prevent.
+    fn is_free_to_lower_twice(expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(_) | Expr::Literal(_) => true,
+            Expr::Paren(inner) | Expr::Unsafe(inner) | Expr::Cast(inner, _) => Self::is_free_to_lower_twice(inner),
+            Expr::Unary(_, inner) => Self::is_free_to_lower_twice(inner),
+            Expr::Bin(lhs, _, rhs) => Self::is_free_to_lower_twice(lhs) && Self::is_free_to_lower_twice(rhs),
+            _ => false,
+        }
     }
 
     pub(super) fn lower_compare_test_immediate_operands(
