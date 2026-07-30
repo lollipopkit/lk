@@ -327,6 +327,18 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &[Ty::Str],
         Ty::Dyn,
     ),
+    // `fs.metadata` and `env.vars` answer string-keyed maps of mixed values —
+    // `Ty::MapStrDyn`, built on the lkrt side through the same two-stage
+    // construction the VM uses, because a map's iteration order is what
+    // `println` prints.
+    abi_row(
+        "fs",
+        "metadata",
+        AbiRef::new("fs", "metadata_map"),
+        &[Ty::Str],
+        Ty::MapStrDyn,
+    ),
+    abi_row("env", "vars", AbiRef::new("env", "vars_map"), &[], Ty::MapStrDyn),
     abi_row("fs", "is_file", AbiRef::new("fs", "is_file"), &[Ty::Str], Ty::Bool),
     abi_row("fs", "is_dir", AbiRef::new("fs", "is_dir"), &[Ty::Str], Ty::Bool),
     abi_row(
@@ -1063,9 +1075,10 @@ mod tests {
     /// differential is blind to losing any of it — and half of these rows were
     /// missing for exactly that reason, with the lkrt side already written.
     ///
-    /// `fs.metadata` answers a four-key `Map`, which is a value the ABI has no
-    /// way to hand back in one call; the four `fs.metadata_*` lkrt helpers
-    /// answer the fields individually and nothing composes them yet.
+    /// `fs.metadata` answers a four-key `Map`, which needed the map carrier
+    /// (`Ty::MapStrDyn`) and the mirrored construction — a map's iteration
+    /// order is what `println` prints, so handing back a natively-built map is
+    /// only correct if it rehashes the way the VM's does.
     #[test]
     fn the_fs_module_lowers_its_scalar_members() {
         for member in [
@@ -1085,6 +1098,7 @@ mod tests {
             "rename",
             "copy",
             "temp_dir",
+            "metadata",
         ] {
             assert!(
                 module_call_abi_rows("fs", member).next().is_some(),
@@ -1092,10 +1106,6 @@ mod tests {
                  else reports this"
             );
         }
-        assert!(
-            module_call_abi_rows("fs", "metadata").next().is_none(),
-            "fs.metadata gained a row; say here how a Map return travels through the ABI"
-        );
     }
 
     #[test]

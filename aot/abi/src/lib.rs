@@ -316,6 +316,8 @@ macro_rules! for_each_abi_fn {
             ("fs", "metadata_is_dir", lkrt_fs_metadata_is_dir, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_readonly", lkrt_fs_metadata_readonly, ReadsHost, [StrPtr], I64);
             ("fs", "canonicalize", lkrt_fs_canonicalize, ReadsHost, [StrPtr], DynVal);
+            ("fs", "metadata_map", lkrt_fs_metadata_map, WritesHost, [StrPtr], Ptr);
+            ("env", "vars_map", lkrt_env_vars_map, WritesHost, [], Ptr);
             ("fs", "is_file", lkrt_fs_is_file, ReadsHost, [StrPtr], I64);
             ("fs", "is_dir", lkrt_fs_is_dir, ReadsHost, [StrPtr], I64);
             ("fs", "append_str", lkrt_fs_append_str, WritesHost, [StrPtr, StrPtr], I64);

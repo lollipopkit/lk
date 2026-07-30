@@ -4547,7 +4547,12 @@ fn fs_members_answer_the_same_on_both_ends() {
                  let c = try { fs.write(d + \"/x/y\", \"a\") } catch e { e };\nprintln(c);\n\
                  let f = try { fs.rename(d, d + \"2\") } catch e { e };\nprintln(f);\n\
                  println(fs.exists(d));\nprintln(env.has(\"PATH\"));\n\
-                 println(env.has(\"LK_NO_SUCH_VAR_XYZ\"));\nreturn 0;\n",
+                 println(env.has(\"LK_NO_SUCH_VAR_XYZ\"));\n\
+                 let m = fs.temp_dir() + \"/lk_diff_fs_meta.txt\";\n\
+                 fs.write(m, \"0123456789\");\nprintln(fs.metadata(m));\n\
+                 fs.remove_file(m);\n\
+                 let vars = env.vars();\nprintln(vars[\"PATH\"] == env.get_or(\"PATH\", \"\"));\n\
+                 println(vars.len() > 3);\nreturn 0;\n",
             ),
         ],
     );

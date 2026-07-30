@@ -91,6 +91,61 @@ pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
 
 /// `fs.is_file(path)` / `fs.is_dir(path)` — `Path::is_file`/`is_dir`, which
 /// answer false rather than raising for a path that does not exist.
+/// `fs.metadata(path)` — the stdlib module's four-key map, built through the
+/// VM's own two-stage construction so it *iterates* the same way.
+///
+/// The keys go in in the module's order (`len`, `is_file`, `is_dir`,
+/// `readonly`) and `str_dyn_map_mirrored` replays the same rehash the VM does,
+/// because a map's iteration order is what `println` prints.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_metadata_map(path: *const c_char) -> *mut core::ffi::c_void {
+    raising(|| {
+        let path = c_str(path, "fs.metadata path")?;
+        let meta = fs::metadata(path.as_str()).map_err(|err| format!("failed to stat '{path}': {err}"))?;
+        let pairs = alloc::vec![
+            (
+                alloc::string::String::from("len"),
+                crate::lkdyn::lkrt_dyn_from_i64(meta.len() as i64)
+            ),
+            (
+                alloc::string::String::from("is_file"),
+                crate::lkdyn::lkrt_dyn_from_bool(i64::from(meta.is_file()))
+            ),
+            (
+                alloc::string::String::from("is_dir"),
+                crate::lkdyn::lkrt_dyn_from_bool(i64::from(meta.is_dir()))
+            ),
+            (
+                alloc::string::String::from("readonly"),
+                crate::lkdyn::lkrt_dyn_from_bool(i64::from(meta.permissions().readonly()))
+            ),
+        ];
+        Ok(crate::vm_mirror::str_dyn_map_mirrored(pairs))
+    })
+}
+
+/// `env.vars()` — every environment variable, in `std::env::vars_os` order,
+/// through the same mirrored construction.
+///
+/// Lossy conversion on both sides: the stdlib module calls `to_string_lossy` on
+/// key and value, so a non-UTF-8 variable is U+FFFD there and here.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_env_vars_map() -> *mut core::ffi::c_void {
+    raising(|| {
+        let mut pairs = Vec::new();
+        {
+            let _env = env_lock();
+            for (key, value) in std::env::vars_os() {
+                let key = key.to_string_lossy().into_owned();
+                let value = value.to_string_lossy().into_owned();
+                let value = owned_c_string(value)?;
+                pairs.push((key, crate::lkdyn::lkrt_dyn_from_str(value)));
+            }
+        }
+        Ok(crate::vm_mirror::str_dyn_map_mirrored(pairs))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_is_file(path: *const c_char) -> i64 {
     raising(|| {
