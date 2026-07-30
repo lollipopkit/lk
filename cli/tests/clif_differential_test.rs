@@ -1418,6 +1418,49 @@ fn try_catch_differential() {
     );
 }
 
+/// Integer and float edge values, pinned to pure Cranelift.
+///
+/// `i64::MIN % -1` **panicked the interpreter**. Integer division overflow is a
+/// panic in Rust — in release too, because the hardware traps — so `%` on those
+/// operands aborted the process, which no `try` can catch and no differential
+/// can compare: the VM side produces no output to diff against. The native side
+/// answered `0`. Both `%` (three sites) and `math.floor`'s integer division now
+/// wrap, which is what the rest of the language's integer arithmetic already
+/// did and what the native side already computed.
+#[test]
+fn integer_and_float_edges_agree() {
+    run_differential(
+        "numeric_edges",
+        &[
+            // The crash, and its floor-division sibling.
+            new(
+                "division_overflow_wraps",
+                "let mn = -9223372036854775808;\nlet d = -1;\nprintln(mn % d);\nuse math;\nprintln(math.floor(mn / d));\nprintln(mn / d);\nreturn 0;\n",
+            ),
+            new(
+                "int_wrapping",
+                "let mx = 9223372036854775807;\nlet mn = -9223372036854775808;\nprintln(mx + 1);\nprintln(mn - 1);\nprintln(mx * 2);\nprintln(-mn);\nprintln(0 - mn);\nreturn 0;\n",
+            ),
+            new(
+                "signed_remainder_and_floor",
+                "use math;\nprintln(7 % -3);\nprintln(-7 % 3);\nprintln(math.floor(7 / -3));\nprintln(math.floor(-7 / 3));\nreturn 0;\n",
+            ),
+            // Zero, signed zero, the infinities and NaN — including that NaN is
+            // not equal to itself and that both zeroes compare equal.
+            new(
+                "float_specials",
+                "let z = 0.0;\nlet nz = -0.0;\nprintln(z == nz);\nprintln(1.0 / z);\nprintln(-1.0 / z);\nprintln(z / z);\nprintln(z / z == z / z);\nprintln(\"${z} ${nz} ${1.0 / z} ${z / z}\");\nprintln(1e300 * 1e300);\nreturn 0;\n",
+            ),
+            // A float past the integer range, and NaN, cast to Int.
+            new(
+                "float_to_int_casts",
+                "let big = 1e19;\nlet nan = 0.0 / 0.0;\nprintln(big as Int);\nprintln(-big as Int);\nprintln(nan as Int);\nprintln(9223372036854775807 as Float);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Struct update syntax with a typed-map overlay, pinned to pure Cranelift.
 ///
 /// The sixth instance of one mistake: `to_dyn_map_handle` converted a typed map

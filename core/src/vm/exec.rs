@@ -433,7 +433,15 @@ impl Executor {
                     }
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
-                            let value = *lhs % rhs;
+                            // `wrapping_rem`, not `%`: integer division overflow
+                            // (`i64::MIN % -1`) *panics* in Rust — in release
+                            // too, because the hardware traps — and a panic is
+                            // an abort no `try` can see. The rest of the
+                            // language's integer arithmetic already wraps at
+                            // `i64::MIN`, and so does the native side
+                            // (`lkrt_i64_mod_checked`), which answered `0` here
+                            // while the interpreter took the process down.
+                            let value = lhs.wrapping_rem(rhs);
                             self.state.stack[dst] = RuntimeVal::Int(value);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
@@ -603,7 +611,8 @@ impl Executor {
                     match (lhs, rhs) {
                         (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            let value = *l % *r;
+                            // Wrapping, as in `ModIntI` above.
+                            let value = l.wrapping_rem(*r);
                             self.state.stack[dst] = RuntimeVal::Int(value);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
@@ -656,7 +665,12 @@ impl Executor {
                     match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
                         (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("division by zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            self.state.stack[dst] = RuntimeVal::Int(l.div_euclid(*r));
+                            // `div_euclid` panics on `i64::MIN / -1` for the
+                            // same reason `%` does. The wrapping answer is
+                            // `i64::MIN` (negating it overflows back to
+                            // itself), which is what the native side computes.
+                            let quotient = l.checked_div_euclid(*r).unwrap_or_else(|| l.wrapping_neg());
+                            self.state.stack[dst] = RuntimeVal::Int(quotient);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }

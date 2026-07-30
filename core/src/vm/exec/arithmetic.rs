@@ -129,8 +129,9 @@ fn operator_symbol(opcode: Opcode) -> Option<&'static str> {
         Opcode::MulInt | Opcode::MulIntI | Opcode::MulFloat => "*",
         Opcode::DivInt | Opcode::DivFloat => "/",
         Opcode::ModInt | Opcode::ModIntI => "%",
-        Opcode::MidInt => "//",
-        Opcode::FloorDivInt => "//",
+        // Not an operator: `//` is a *comment* in LK. Both are fused forms of
+        // `math.floor(a / b)`, so that is what the program wrote.
+        Opcode::MidInt | Opcode::FloorDivInt => "math.floor",
         // The comparisons had the same problem and never got the same fix:
         // `1 < "a"` reported `CmpLtInt expected Int, Float, or String`, naming
         // the compiler's typed guess. A program only ever writes the operator.
@@ -322,7 +323,8 @@ impl Executor {
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
             // As `dynamic_div`: only `Int % Int` has no answer.
             (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs % rhs),
+            // Wrapping: `i64::MIN % -1` panics with `%` (see `ModIntI`).
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.wrapping_rem(*rhs)),
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 % *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs % *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
