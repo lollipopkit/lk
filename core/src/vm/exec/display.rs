@@ -157,11 +157,13 @@ fn runtime_display_set(values: &RuntimeSet) -> Result<String> {
     let mut out = String::from("Set(");
     out.push('[');
     let mut first = true;
-    let mut entries = values.entries().map(runtime_display_map_key).collect::<Vec<_>>();
-    entries.sort();
+    // Sorted by *member*, not by rendered text. See
+    // `RuntimeMapKey::display_order` for what the text sort produced.
+    let mut entries = values.entries().collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.display_order(b));
     for key in entries {
         push_display_sep(&mut out, &mut first);
-        out.push_str(&key);
+        out.push_str(&runtime_display_map_key(key));
     }
     out.push(']');
     out.push(')');

@@ -110,6 +110,30 @@ pub unsafe extern "C" fn lkrt_lkset_from_i64_list(handle: *mut c_void) -> *mut c
     crate::state::arena_handle(set)
 }
 
+/// `Set(list)` over a `List<Dyn>` handle — the boxed spelling.
+///
+/// Needed because a *constant* list is `List<Dyn>` as soon as its elements are
+/// not one uniform type, and "one uniform type" splits strings by length:
+/// `["ab", "aaaaaaaaaa"]` is a short string and a long one, so
+/// `Set(["ab", "aaaaaaaaaa"])` had no arm while `Set(["ab", "z"])` did. Each
+/// element goes through the same `key_from_dyn` the `add` path uses, so a
+/// member the VM refuses (a float, a container) raises here too.
+///
+/// # Safety
+/// `handle` must be a live `List<Dyn>` handle, or null (→ empty set).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkset_from_dyn_list(handle: *mut c_void) -> *mut c_void {
+    let mut set = LkSet::default();
+    if !handle.is_null() {
+        // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
+        let items = unsafe { &*(handle as *mut Vec<LkDyn>) };
+        for &item in items {
+            set.insert(key_from_dyn(item));
+        }
+    }
+    crate::state::arena_handle(set)
+}
+
 /// `set.has(v)` / `set.contains(v)` → 0/1.
 ///
 /// # Safety
@@ -156,6 +180,89 @@ pub unsafe extern "C" fn lkrt_lkset_len(handle: *mut c_void) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkset_clear(handle: *mut c_void) {
     set_mut(handle).clear();
+}
+
+/// The mirror of `RuntimeMapKey::display_order`: nil, then Bool, then Int by
+/// value, then String by content.
+///
+/// A set's display order is the one container order that needs **no** mirror
+/// discipline, because it is not the hash order — it is imposed, and imposed on
+/// the members' *values*. So this is content comparison on both sides, and
+/// nothing about hashers or table layout can drift it apart. (Iteration order,
+/// `for x in s`, is a different question and still the hash order's.)
+fn display_order(a: &RtKey, b: &RtKey) -> core::cmp::Ordering {
+    fn kind(key: &RtKey) -> u8 {
+        match key {
+            RtKey::Nil => 0,
+            RtKey::Bool(_) => 1,
+            RtKey::Int(_) => 2,
+            RtKey::Str(_) => 3,
+        }
+    }
+    kind(a).cmp(&kind(b)).then_with(|| match (a, b) {
+        (RtKey::Bool(x), RtKey::Bool(y)) => x.cmp(y),
+        (RtKey::Int(x), RtKey::Int(y)) => x.cmp(y),
+        (RtKey::Str(x), RtKey::Str(y)) => x.cmp(y),
+        _ => core::cmp::Ordering::Equal,
+    })
+}
+
+/// One member as `Set(…)` renders it: a string quoted with Rust's `{:?}` (the
+/// VM's `quote_string`), everything else bare.
+fn member_text(key: &RtKey) -> String {
+    match key {
+        RtKey::Nil => "nil".to_string(),
+        RtKey::Bool(v) => v.to_string(),
+        RtKey::Int(v) => v.to_string(),
+        RtKey::Str(v) => format!("{v:?}"),
+    }
+}
+
+/// `println(s)` → `Set([1,2,3])`, sorted by member.
+///
+/// # Safety
+/// `handle` must be a live `Set` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkset_display(handle: *mut c_void) -> *mut c_char {
+    let empty = LkSet::default();
+    // SAFETY: caller passes a live `LkSet` handle.
+    let set: &LkSet = if handle.is_null() {
+        &empty
+    } else {
+        unsafe { &*(handle as *mut LkSet) }
+    };
+    let mut members: Vec<&RtKey> = set.iter().collect();
+    members.sort_by(|a, b| display_order(a, b));
+    let mut out = String::from("Set([");
+    for (i, key) in members.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&member_text(key));
+    }
+    out.push_str("])");
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
+}
+
+/// `a == b` → 0/1: same size and every member of `a` present in `b`.
+///
+/// Order-free, like the VM's — a set is its member set.
+///
+/// # Safety
+/// Both handles must be live `Set` handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkset_eq(a: *mut c_void, b: *mut c_void) -> i64 {
+    let empty = LkSet::default();
+    // SAFETY: caller passes live `LkSet` handles.
+    let borrow = |h: *mut c_void| -> &LkSet {
+        if h.is_null() {
+            &empty
+        } else {
+            unsafe { &*(h as *mut LkSet) }
+        }
+    };
+    let (x, y) = (borrow(a), borrow(b));
+    i64::from(x.len() == y.len() && x.iter().all(|k| y.contains(k)))
 }
 
 #[cfg(test)]

@@ -633,11 +633,14 @@ macro_rules! for_each_abi_fn {
             ("set", "new", lkrt_lkset_new, WritesHost, [], Ptr, Constructs);
             ("set", "from_str_list", lkrt_lkset_from_str_list, WritesHost, [Ptr], Ptr, Constructs);
             ("set", "from_i64_list", lkrt_lkset_from_i64_list, WritesHost, [Ptr], Ptr, Constructs);
+            ("set", "from_dyn_list", lkrt_lkset_from_dyn_list, WritesHost, [Ptr], Ptr, Constructs);
             ("set", "has", lkrt_lkset_has, ReadsHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "add", lkrt_lkset_add, WritesHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "delete", lkrt_lkset_delete, WritesHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64, Borrowed);
             ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("set", "display", lkrt_lkset_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("set", "eq", lkrt_lkset_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);

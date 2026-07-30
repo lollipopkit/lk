@@ -1364,6 +1364,41 @@ impl RuntimeMapKey {
             _ => None,
         }
     }
+
+    /// The order a `Set` displays its members in: nil, then Bool, then Int by
+    /// value, then String by content.
+    ///
+    /// A stable order is the point — a set's hash iteration order is not
+    /// portable, so displaying one has to impose something. The display code
+    /// imposed it on the *rendered text* instead of the members, which made
+    /// `Set([1, 2, 10, 20, 3])` print `Set([1,10,2,20,3])` and
+    /// `Set([-1, -2, 5])` print `Set([-1,-2,5])`: an order that is neither
+    /// insertion, nor value, nor anything a reader can use.
+    ///
+    /// Not `derive(Ord)` either, and that is the reason this is a function
+    /// rather than one: the derive compares *variants*, so a string of 8 bytes
+    /// (`String`) would sort after every string of 7 (`ShortStr`) —
+    /// `Set(["ab", "aaaaaaaaaa"])` would come out `"ab"` first. A string's
+    /// representation is not part of its value anywhere else in the language,
+    /// and it is not here.
+    pub fn display_order(&self, other: &Self) -> core::cmp::Ordering {
+        fn kind(key: &RuntimeMapKey) -> u8 {
+            match key {
+                RuntimeMapKey::Nil => 0,
+                RuntimeMapKey::Bool(_) => 1,
+                RuntimeMapKey::Int(_) => 2,
+                RuntimeMapKey::ShortStr(_) | RuntimeMapKey::String(_) => 3,
+            }
+        }
+        kind(self).cmp(&kind(other)).then_with(|| match (self, other) {
+            (Self::Bool(a), Self::Bool(b)) => a.cmp(b),
+            (Self::Int(a), Self::Int(b)) => a.cmp(b),
+            _ => match (self.as_str(), other.as_str()) {
+                (Some(a), Some(b)) => a.cmp(b),
+                _ => core::cmp::Ordering::Equal,
+            },
+        })
+    }
 }
 
 #[cfg(test)]

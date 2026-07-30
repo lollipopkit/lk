@@ -952,6 +952,25 @@ pub(super) fn lower(
                     });
                     (false, eq, one)
                 }
+                // A `Set` is its member set: same size, every member present.
+                // Order-free, so nothing here depends on iteration order.
+                (Ty::Set, Ty::Set) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("set", "eq"),
+                        args: vec![lv, rv],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
                 // `Bytes` compares by content, the VM's rule (unlike a struct,
                 // which compared by handle until that was fixed).
                 (Ty::Bytes, Ty::Bytes) => {

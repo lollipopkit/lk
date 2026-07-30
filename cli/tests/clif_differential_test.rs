@@ -1418,6 +1418,58 @@ fn try_catch_differential() {
     );
 }
 
+/// `Set` display and `==`, pinned to pure Cranelift.
+///
+/// A set displays sorted, because its hash iteration order is not something to
+/// show. It sorted the *rendered text* rather than the members, so
+/// `Set([1, 2, 10, 20, 3])` printed `Set([1,10,2,20,3])` — an order that is
+/// neither insertion, nor value, nor anything a reader can use. That is fixed
+/// in the VM (`RuntimeMapKey::display_order`) and mirrored natively.
+///
+/// Mirrored is the easy word here: the display order is *imposed*, not the hash
+/// order, and imposed on the members' values — so both sides compare content
+/// and no hasher or layout can drift them apart. This is the one container
+/// display that needs no mirror discipline.
+#[test]
+fn sets_display_sorted_and_compare_natively() {
+    run_differential(
+        "set_display_eq",
+        &[
+            // The shape that was wrong: numbers whose decimal texts sort
+            // differently from their values, and negatives.
+            new(
+                "numbers_sort_by_value",
+                "println(Set([1, 2, 10, 20, 3]));\nprintln(Set([-1, -2, 5]));\nprintln(Set([100, 99, 9]));\nreturn 0;\n",
+            ),
+            // Strings sort lexicographically across the 7-byte short/long
+            // split, which a variant-order comparison would get wrong.
+            new(
+                "strings_sort_by_content",
+                "println(Set([\"ab\", \"aaaaaaaaaa\", \"z\"]));\nprintln(Set([\"b\", \"a\"]));\nreturn 0;\n",
+            ),
+            // Kinds group before values compare.
+            new(
+                "mixed_kinds_group",
+                "let s = Set([]);\ns.add(nil);\ns.add(true);\ns.add(1);\ns.add(\"a\");\ns.add(false);\ns.add(-5);\nprintln(s);\nprintln(s.len());\nreturn 0;\n",
+            ),
+            new(
+                "empty_and_duplicates",
+                "println(Set([]));\nprintln(Set([1, 1, 2]));\nprintln(Set([1, 1, 2]).len());\nreturn 0;\n",
+            ),
+            new(
+                "equality_is_order_free",
+                "println(Set([1, 2]) == Set([2, 1]));\nprintln(Set([1, 2]) == Set([1, 3]));\nprintln(Set([1]) == Set([1, 2]));\nprintln(Set([]) == Set([]));\nreturn 0;\n",
+            ),
+            // In a template and after a mutation.
+            new(
+                "template_and_mutation",
+                "let s = Set([3, 1]);\nprintln(\"s=${s}\");\ns.add(2);\ns.delete(3);\nprintln(s);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `==` over maps and structs, pinned to pure Cranelift.
 ///
 /// Every *list* pairing compared natively; no *map* pairing did, not even

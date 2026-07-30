@@ -297,6 +297,10 @@ pub(crate) fn lower_builtin_call(
                     let from = match list_ty {
                         Ty::ListStr => "from_str_list",
                         Ty::ListI64 => "from_i64_list",
+                        // A constant list is `List<Dyn>` as soon as its
+                        // elements are not one uniform type — and strings split
+                        // by length, so `["ab", "aaaaaaaaaa"]` is not uniform.
+                        Ty::ListDyn => "from_dyn_list",
                         _ => return Err(Unsupported::TypeMismatch { pc }),
                     };
                     let dst = ssa.new_val();

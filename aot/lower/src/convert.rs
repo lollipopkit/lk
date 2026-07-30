@@ -290,6 +290,25 @@ pub(crate) fn to_display_str(
             });
             Ok((dst, true))
         }
+        // `Set([1,2,3])`, sorted by member.
+        //
+        // This is the one container display that needs no mirror discipline:
+        // a set's *display* order is not its hash order, it is imposed — and
+        // imposed on the members' values, so both sides just compare content.
+        // (`RuntimeMapKey::display_order` is the rule; it used to sort the
+        // rendered text, which is why `Set([1, 2, 10])` printed `1,10,2`.)
+        Ty::Set => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "display"),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         // `Bytes([104,105])` — rendered inside lkrt with the VM's exact
         // separators. A container, so the scalar-only display contexts reject it
         // like they reject a list.
