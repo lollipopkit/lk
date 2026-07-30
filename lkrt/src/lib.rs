@@ -48,6 +48,7 @@ mod arith;
 mod chan;
 mod cpu;
 mod encoding;
+mod hash;
 #[cfg(feature = "std")]
 mod host;
 #[cfg(feature = "std")]
@@ -95,6 +96,10 @@ pub use cpu::{
 pub use encoding::lkrt_json_parse;
 #[cfg(feature = "std")]
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
+pub use hash::{
+    lkrt_hash_crc32_bytes, lkrt_hash_crc32_str, lkrt_hash_fnv64_bytes, lkrt_hash_fnv64_str, lkrt_hash_sha1_bytes,
+    lkrt_hash_sha1_str, lkrt_hash_sha256_bytes, lkrt_hash_sha256_str,
+};
 pub use isr::lkrt_cpu_raise_interrupt;
 pub use lkbytes::{
     lkrt_lkbytes_concat, lkrt_lkbytes_contains, lkrt_lkbytes_eq, lkrt_lkbytes_from_i64_list, lkrt_lkbytes_from_str,
@@ -103,8 +108,8 @@ pub use lkbytes::{
     lkrt_lkbytes_utf8_lossy,
 };
 pub use textcodec::{
-    lkrt_base64_decode, lkrt_base64_encode, lkrt_hex_decode, lkrt_hex_encode, lkrt_url_decode_component,
-    lkrt_url_encode_component,
+    lkrt_base64_decode, lkrt_base64_encode, lkrt_base64_encode_bytes, lkrt_hex_decode, lkrt_hex_encode,
+    lkrt_hex_encode_bytes, lkrt_url_decode_component, lkrt_url_encode_component,
 };
 // Re-exported at the crate root because the ABI conformance macro checks
 // signatures as `crate::$symbol`.

@@ -1642,6 +1642,7 @@ dependencies = [
  "base64",
  "cc",
  "chrono",
+ "crc32fast",
  "hashbrown 0.15.5",
  "hex",
  "lk-aot-abi",
@@ -1649,6 +1650,8 @@ dependencies = [
  "rustc-hash",
  "serde_json",
  "serde_yaml",
+ "sha1",
+ "sha2",
  "spin",
  "toml",
 ]

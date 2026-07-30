@@ -255,6 +255,17 @@ macro_rules! for_each_abi_fn {
             ("hex", "decode", lkrt_hex_decode, WritesHost, [StrPtr], Ptr);
             ("base64", "encode", lkrt_base64_encode, WritesHost, [StrPtr], StrPtr);
             ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
+            ("base64", "encode_bytes", lkrt_base64_encode_bytes, WritesHost, [Ptr], StrPtr);
+            ("hex", "encode_bytes", lkrt_hex_encode_bytes, WritesHost, [Ptr], StrPtr);
+            // `hash`, both carriers of each member (`Bytes | String`).
+            ("hash", "sha256_str", lkrt_hash_sha256_str, Pure, [StrPtr], StrPtr);
+            ("hash", "sha1_str", lkrt_hash_sha1_str, Pure, [StrPtr], StrPtr);
+            ("hash", "crc32_str", lkrt_hash_crc32_str, Pure, [StrPtr], I64);
+            ("hash", "fnv64_str", lkrt_hash_fnv64_str, Pure, [StrPtr], I64);
+            ("hash", "sha256_bytes", lkrt_hash_sha256_bytes, ReadsHost, [Ptr], StrPtr);
+            ("hash", "sha1_bytes", lkrt_hash_sha1_bytes, ReadsHost, [Ptr], StrPtr);
+            ("hash", "crc32_bytes", lkrt_hash_crc32_bytes, ReadsHost, [Ptr], I64);
+            ("hash", "fnv64_bytes", lkrt_hash_fnv64_bytes, ReadsHost, [Ptr], I64);
             ("url", "encode_component", lkrt_url_encode_component, WritesHost, [StrPtr], StrPtr);
             ("url", "decode_component", lkrt_url_decode_component, WritesHost, [StrPtr], StrPtr);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);

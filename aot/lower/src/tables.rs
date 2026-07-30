@@ -101,6 +101,11 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         bare_global: true,
         submodule_of: None,
     },
+    ModuleRow {
+        name: "hash",
+        bare_global: true,
+        submodule_of: None,
+    },
     // The submodule *parents*. They have no typed members of their own, but the
     // name has to bind for `encoding.json.parse(s)` to reach the submodule at
     // all — without these rows the chain stopped at the first dot and the whole
@@ -458,11 +463,56 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
     abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),
-    // The `String -> String` half of `base64`/`hex`/`url`. The `decode` halves
-    // answer `Bytes`, which has no native carrier yet, so they keep falling back
-    // — a member with no row is an ordinary fallback, not a wrong answer.
+    // `base64`/`hex`/`url`. `encode` takes `Bytes | String` in the language, so
+    // it is two rows — the second used to be missing, and
+    // `base64.encode(bytes.from_string("hi"))` therefore ran on the bridge while
+    // the same call on a string ran native.
     abi_row("base64", "encode", AbiRef::new("base64", "encode"), &[Ty::Str], Ty::Str),
+    abi_row(
+        "base64",
+        "encode",
+        AbiRef::new("base64", "encode_bytes"),
+        &[Ty::Bytes],
+        Ty::Str,
+    ),
     abi_row("hex", "encode", AbiRef::new("hex", "encode"), &[Ty::Str], Ty::Str),
+    abi_row(
+        "hex",
+        "encode",
+        AbiRef::new("hex", "encode_bytes"),
+        &[Ty::Bytes],
+        Ty::Str,
+    ),
+    // `hash`, both carriers of every member. The digests come from the same
+    // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
+    // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
+    // what keeps the two spellings equal.
+    abi_row("hash", "sha256", AbiRef::new("hash", "sha256_str"), &[Ty::Str], Ty::Str),
+    abi_row(
+        "hash",
+        "sha256",
+        AbiRef::new("hash", "sha256_bytes"),
+        &[Ty::Bytes],
+        Ty::Str,
+    ),
+    abi_row("hash", "sha1", AbiRef::new("hash", "sha1_str"), &[Ty::Str], Ty::Str),
+    abi_row("hash", "sha1", AbiRef::new("hash", "sha1_bytes"), &[Ty::Bytes], Ty::Str),
+    abi_row("hash", "crc32", AbiRef::new("hash", "crc32_str"), &[Ty::Str], Ty::I64),
+    abi_row(
+        "hash",
+        "crc32",
+        AbiRef::new("hash", "crc32_bytes"),
+        &[Ty::Bytes],
+        Ty::I64,
+    ),
+    abi_row("hash", "fnv64", AbiRef::new("hash", "fnv64_str"), &[Ty::Str], Ty::I64),
+    abi_row(
+        "hash",
+        "fnv64",
+        AbiRef::new("hash", "fnv64_bytes"),
+        &[Ty::Bytes],
+        Ty::I64,
+    ),
     abi_row(
         "url",
         "encode_component",
@@ -586,11 +636,33 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     ),
 ];
 
-pub(crate) fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], Ty)> {
+/// Every row for one member, in table order.
+///
+/// A stdlib member may accept more than one carrier — `hash.sha256(data)` and
+/// `base64.encode(data)` each take `Bytes | String`, and a `Bytes` is a
+/// different native argument than a `Str`, so it is a different row. The
+/// caller ([`lower_module_call`]) picks by the argument types it actually has.
+///
+/// Before this existed the table was keyed by name alone, so a two-carrier
+/// member got whichever row was written first and the other carrier fell back
+/// silently: `base64.encode(bytes.from_string("hi"))` ran on the bridge while
+/// the same call on a string ran native. That is the same "one operation, N
+/// carriers, only some of them finished" shape the list methods had.
+pub(crate) fn module_call_abi_rows<'a>(
+    module: &'a str,
+    name: &'a str,
+) -> impl Iterator<Item = &'static ModuleAbiRow> + 'a {
     MODULE_ABI
         .iter()
-        .find(|row| row.module == module && row.member == name)
-        .map(|row| (row.abi, row.args, row.ret))
+        .filter(move |row| row.module == module && row.member == name)
+}
+
+/// Whether a row's declared parameter type accepts an argument the lowering
+/// actually holds — the same three rules [`lower_module_call`] then applies
+/// when it materialises the argument: exact, `Dyn` takes anything (it boxes),
+/// and `F64` takes an `I64` (the stdlib's `number_arg` promotion).
+pub(crate) fn abi_param_accepts(want: Ty, got: Ty) -> bool {
+    want == got || want == Ty::Dyn || (want == Ty::F64 && got == Ty::I64)
 }
 
 /// Method-name roles across the lowering — the single source of truth the
@@ -743,6 +815,32 @@ mod tests {
     /// the crate underneath (`std::path`, as it already shares base64/hex/
     /// chrono), never to re-type LK-level logic. Both stay on the bridge until
     /// there is a shared implementation to point at.
+    /// Every carrier of a `Bytes | String` member has a row.
+    ///
+    /// One member, two argument types, and for a long time only the first one
+    /// written had a row — so `base64.encode(text)` ran native and
+    /// `base64.encode(bytes)` ran on the bridge, which nothing reported. Same
+    /// shape the list methods had across their carriers.
+    #[test]
+    fn both_carriers_of_every_bytes_or_string_member_lower() {
+        for (module, member) in [
+            ("hash", "sha256"),
+            ("hash", "sha1"),
+            ("hash", "crc32"),
+            ("hash", "fnv64"),
+            ("base64", "encode"),
+            ("hex", "encode"),
+        ] {
+            for want in [Ty::Str, Ty::Bytes] {
+                assert!(
+                    module_call_abi_rows(module, member).any(|row| row.args == [want]),
+                    "{module}.{member} has no row for its {want:?} carrier — that carrier \
+                     silently falls back to the hybrid bridge"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_path_module_lowers_exactly_its_fixed_arity_members() {
         for member in [
@@ -757,14 +855,14 @@ mod tests {
             "delimiter",
         ] {
             assert!(
-                module_call_abi("path", member).is_some(),
+                module_call_abi_rows("path", member).next().is_some(),
                 "path.{member} lost its native lowering — it now runs on the hybrid bridge, \
                  which no differential test can detect"
             );
         }
         for member in ["join", "normalize"] {
             assert!(
-                module_call_abi("path", member).is_none(),
+                module_call_abi_rows("path", member).next().is_none(),
                 "path.{member} gained a native lowering; if that is intended, say here what \
                  it shares its implementation with"
             );

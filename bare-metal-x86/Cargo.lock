@@ -297,11 +297,14 @@ version = "0.1.3"
 dependencies = [
  "base64",
  "cc",
+ "crc32fast",
  "hashbrown",
  "hex",
  "lk-aot-abi",
  "rustc-hash",
  "serde_json",
+ "sha1",
+ "sha2",
  "spin",
 ]
 

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Lowers a `module.method(args)` call whose member [`module_call_abi`] maps to
+/// Lowers a `module.method(args)` call whose member [`module_call_abi_rows`] maps to
 /// a typed lkrt ABI entry. Arity and argument types must match the schema
 /// exactly; the result (or nil) is written to the call-window base register.
 #[allow(clippy::too_many_arguments)]
@@ -533,18 +533,39 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (dst, Ty::Bytes));
         return Ok(());
     }
-    let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
+    // A member may have one row per carrier (`hash.sha256` takes `Bytes |
+    // String`), so the arity filter comes first and the argument types choose
+    // among what is left. The peek is `ssa.read`, which is the same read the
+    // materialisation below performs — it adds no instruction, so a candidate
+    // that loses leaves nothing behind in the stream.
+    let candidates: Vec<&ModuleAbiRow> = module_call_abi_rows(module, name)
+        .filter(|row| row.args.len() == argc)
+        .collect();
+    let Some(&first) = candidates.first() else {
         return Err(Unsupported::CallShape {
             pc,
             reason: "no native lowering for this stdlib module function",
         });
     };
-    if argc != param_tys.len() {
-        return Err(Unsupported::CallShape {
-            pc,
-            reason: "no native lowering for this stdlib module function",
-        });
-    }
+    let row = if candidates.len() == 1 {
+        first
+    } else {
+        candidates
+            .iter()
+            .copied()
+            .find(|row| {
+                row.args.iter().enumerate().all(|(i, want)| {
+                    let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+                    ssa.read(arg_reg, block, pc)
+                        .is_ok_and(|(_, got)| abi_param_accepts(*want, got))
+                })
+            })
+            // No row matches: take the first and let the materialisation below
+            // report the mismatch, so the failure reads the same as it does for
+            // a single-row member.
+            .unwrap_or(first)
+    };
+    let (callee, param_tys, ret_ty) = (row.abi, row.args, row.ret);
     let mut args = Vec::with_capacity(argc);
     for (i, want) in param_tys.iter().enumerate() {
         let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);

@@ -53,6 +53,28 @@ pub unsafe extern "C" fn lkrt_hex_encode(data: *const c_char) -> *mut c_char {
     out(hex::encode(view(data).as_bytes()))
 }
 
+/// `encoding.base64.encode(bytes)` — the `Bytes` carrier of the same member.
+///
+/// Both carriers exist because the language's `encode` takes `Bytes | String`;
+/// a string is encoded as its UTF-8 bytes, which is the one the `*const
+/// c_char` entry point above already does.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_base64_encode_bytes(handle: *mut core::ffi::c_void) -> *mut c_char {
+    out(base64::engine::general_purpose::STANDARD.encode(crate::lkbytes::bytes_slice(handle)))
+}
+
+/// `encoding.hex.encode(bytes)`.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_hex_encode_bytes(handle: *mut core::ffi::c_void) -> *mut c_char {
+    out(hex::encode(crate::lkbytes::bytes_slice(handle)))
+}
+
 /// `encoding.base64.decode(text)` — raises on malformed input.
 ///
 /// # Safety

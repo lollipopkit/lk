@@ -112,7 +112,7 @@ pub(crate) enum GlobalRef {
     /// constant string key), which produces [`GlobalRef::ModuleFn`].
     Module(String),
     /// A member function resolved from `module.name`, callable when
-    /// [`module_call_abi`] maps it to a typed lkrt ABI entry.
+    /// [`module_call_abi_rows`] maps it to a typed lkrt ABI entry.
     ModuleFn(String, String),
     /// A compile-time-bundled file module (`use "path"` → `GetGlobal` of the
     /// file-stem binding); the payload indexes `SigInfer::imports.bundles`.

@@ -4437,3 +4437,35 @@ fn path_members_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `hash` answers the same digest natively, on both carriers.
+///
+/// `sha256`/`sha1`/`crc32` come from the same crates the stdlib module uses, so
+/// this mostly pins the *hex rendering* and the string→UTF-8-bytes rule. The
+/// case that carries real weight is `fnv64`: no crate in either graph provides
+/// FNV-1a, so its loop and its two constants exist twice, and a transcription
+/// slip in either one is invisible until something compares the numbers.
+#[test]
+fn hash_members_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "hash_members",
+        &[
+            new(
+                "string_carrier",
+                "use hash;\nlet z = \"\";\nprintln(hash.sha256(\"hello\" + z));\n\
+                 println(hash.sha1(\"hello\"));\nprintln(hash.crc32(\"hello\"));\n\
+                 println(hash.fnv64(\"hello\"));\nprintln(hash.fnv64(\"\"));\n\
+                 println(hash.crc32(\"\"));\nprintln(hash.fnv64(\"abc\"));\n\
+                 println(hash.sha256(\"\"));\nprintln(hash.fnv64(\"中文\"));\nreturn 0;\n",
+            ),
+            new(
+                "bytes_carrier",
+                "use hash;\nuse bytes;\nuse encoding;\nlet b = bytes.from_string(\"hello\");\n\
+                 println(hash.sha256(b));\nprintln(hash.sha1(b));\nprintln(hash.crc32(b));\n\
+                 println(hash.fnv64(b));\nprintln(encoding.base64.encode(b));\n\
+                 println(encoding.hex.encode(b));\nprintln(encoding.base64.encode(\"hello\"));\n\
+                 return 0;\n",
+            ),
+        ],
+    );
+}
