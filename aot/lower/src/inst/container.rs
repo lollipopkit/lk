@@ -1209,6 +1209,24 @@ pub(super) fn lower(
             // For a **map**, the store always inserts-or-updates. An unsupported
             // container/key/value combination rejects (falls back).
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
+            // A `Float` key is the VM's loud "cannot be used as a key" error,
+            // and it is known *here*: no map carrier accepts one, so the store
+            // can only raise. Emitting the raise keeps the rest of the program
+            // native — refusing sent the whole thing back to the VM to produce
+            // the same error.
+            let map_ty = matches!(
+                list_ty,
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+            );
+            if map_ty && ssa.read(instr.b(), block, pc).map(|(_, t)| t) == Ok(Ty::F64) {
+                let msg = materialize_key(ssa, insts, globals, "Float cannot be a map key or set member");
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "raise_msg"),
+                    args: vec![msg],
+                });
+                return Ok(());
+            }
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {

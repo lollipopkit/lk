@@ -194,7 +194,7 @@ pub extern "C" fn lkrt_assert(cond: i64) {
     if cond == 0 {
         // Catchable in the VM (a try around a failing assert recovers):
         // raise to the nearest frame, exit 1 when uncaught.
-        crate::panic::raise_str("Assertion failed");
+        crate::panic::raise_str("assertion failed");
     }
 }
 
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn lkrt_assert_msg(cond: i64, message: *const c_char) {
             // SAFETY: non-null message pointers are NUL-terminated per the ABI.
             unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
         };
-        crate::panic::raise_str(&format!("Assertion failed: {text}"));
+        crate::panic::raise_str(&format!("assertion failed: {text}"));
     }
 }
 

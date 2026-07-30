@@ -1418,6 +1418,63 @@ fn try_catch_differential() {
     );
 }
 
+/// A **caught** error's message, pinned to pure Cranelift.
+///
+/// The loud-failure contract compares success and stdout, not the text of a
+/// failure — and that is right for an *uncaught* one, whose text is the host's
+/// wrapper. It says nothing about a caught one, and there the message **is**
+/// stdout: `catch e { println(e) }` prints it.
+///
+/// They did not match. `assert` differed by a capital letter; every dynamic
+/// type error said `runtime type error` where the VM names the operator and
+/// both operand kinds; a list store past the end said `runtime error` where the
+/// VM says `list index 9 out of bounds`; `Set.add(1.5)` lost the `set.add()
+/// value:` prefix.
+///
+/// The wording is the VM's, warts included — a string of 8 bytes reports as
+/// `Object` because the VM formats a value's *representation* rather than its
+/// type. That is filed as its own (VM-side) fix; mirroring it here is what
+/// makes the two backends agree in the meantime.
+#[test]
+fn a_caught_errors_message_matches() {
+    run_differential(
+        "caught_error_text",
+        &[
+            new(
+                "dynamic_type_errors_name_their_operands",
+                "let xs = [1, \"a\"];\nlet out = try {\n  let a = xs[0]!;\n  let b = xs[1]!;\n  println(a - b);\n  \"no-raise\"\n} catch e {\n  \"caught: ${e}\"\n};\nprintln(out);\nreturn 0;\n",
+            ),
+            new(
+                "unary_minus_and_not",
+                "let xs = [\"a\"];\nprintln(try { -xs[0]!; \"no\" } catch e { \"caught: ${e}\" });\nlet ys = [1];\nprintln(try { !ys[0]!; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+            new(
+                "ordering_across_kinds",
+                "let xs = [1, \"a\"];\nlet out = try {\n  println(xs[0]! < xs[1]!);\n  \"no-raise\"\n} catch e {\n  \"caught: ${e}\"\n};\nprintln(out);\nreturn 0;\n",
+            ),
+            new(
+                "list_store_out_of_bounds",
+                "let xs = [1];\nprintln(try { xs[9] = 2; \"no\" } catch e { \"caught: ${e}\" });\nprintln(try { xs[-9] = 2; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+            new(
+                "float_member_and_key",
+                "let s = Set([]);\nprintln(try { s.add(1.5); \"no\" } catch e { \"caught: ${e}\" });\nlet m = {};\nprintln(try { m[1.5] = 1; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+            new(
+                "assert_is_lowercase",
+                "println(try { assert(1 == 2); \"no\" } catch e { \"caught: ${e}\" });\nprintln(try { assert(false, \"nope\"); \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+            // The kinds a message can name, including the representation wart:
+            // a string of 8 bytes is `Object`, one of 7 is `String`.
+            new(
+                "operand_kind_names",
+                "let xs = [1, \"ab\", \"aaaaaaaaaa\", 2.5, true, [1], {\"a\": 1}];\nprintln(try { xs[0]! - xs[1]!; \"no\" } catch e { \"${e}\" });\nprintln(try { xs[0]! - xs[2]!; \"no\" } catch e { \"${e}\" });\nprintln(try { xs[0]! - xs[4]!; \"no\" } catch e { \"${e}\" });\nprintln(try { xs[0]! - xs[5]!; \"no\" } catch e { \"${e}\" });\nprintln(try { xs[0]! - xs[6]!; \"no\" } catch e { \"${e}\" });\nprintln(try { xs[1]! * xs[3]!; \"no\" } catch e { \"${e}\" });\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `+` and `==` across types, pinned to pure Cranelift.
 ///
 /// From an operator x type-pair sweep (11 values x 13 operators). Two things

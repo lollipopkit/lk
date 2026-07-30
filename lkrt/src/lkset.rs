@@ -131,7 +131,14 @@ pub unsafe extern "C" fn lkrt_lkset_has(handle: *mut c_void, value: LkDyn) -> i6
 /// `handle` must be a live `Set` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkset_add(handle: *mut c_void, value: LkDyn) -> i64 {
-    let key = key_from_dyn(value);
+    // The VM prefixes the member error with the call: `set.add() value: Float
+    // cannot be a map key or set member`. A caught error is printed output, so
+    // the prefix is part of the answer.
+    let key = if matches!(value.tag, crate::lkdyn::DYN_F64) {
+        crate::panic::raise_str("set.add() value: Float cannot be a map key or set member")
+    } else {
+        key_from_dyn(value)
+    };
     i64::from(set_mut(handle).insert(key))
 }
 

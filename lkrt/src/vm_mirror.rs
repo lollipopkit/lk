@@ -93,8 +93,9 @@ pub(crate) fn key_from_dyn(v: LkDyn) -> RtKey {
             str_key(text)
         }
         // Float keys are the VM's loud "cannot be used as a key" error;
-        // container keys (heap-handle identity) are outside the subset.
-        _ => crate::panic::raise_str("runtime error"),
+        // container keys (heap-handle identity) are outside the subset. The
+        // wording is the VM's, because a caught error is printed output.
+        _ => crate::panic::raise_str("Float cannot be a map key or set member"),
     }
 }
 

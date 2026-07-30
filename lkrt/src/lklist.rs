@@ -670,6 +670,20 @@ fn store_index(index: i64, len: usize) -> Option<usize> {
     (resolved >= 0 && resolved < len).then_some(resolved as usize)
 }
 
+/// The same, raising in the VM's exact wording when it is out of range.
+///
+/// Two messages, because the VM has two: still-negative after resolving is
+/// `list index must be non-negative`, past the end is `list index N out of
+/// bounds` — and `N` is the index *as written*, not the resolved one. A caught
+/// error is printed output, so the text is part of the answer.
+pub(crate) fn store_index_or_raise(index: i64, len: usize) -> usize {
+    match store_index(index, len) {
+        Some(resolved) => resolved,
+        None if (index < 0 && len as i64 + index < 0) => crate::panic::raise_str("list index must be non-negative"),
+        None => crate::panic::raise_str(&alloc::format!("list index {index} out of bounds")),
+    }
+}
+
 /// Stores `value` at `index`. Unlike indexing (`get`), the VM treats an
 /// out-of-range store index as a fatal error (`list index N out of bounds`),
 /// not a nil/grow — so this raises, matching the VM's *halt* (a loud failure,
@@ -685,9 +699,7 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<i64>) };
-    let Some(index) = store_index(index, values.len()) else {
-        crate::panic::raise_str("runtime error");
-    };
+    let index = store_index_or_raise(index, values.len());
     values[index] = value;
 }
 
@@ -703,9 +715,7 @@ pub unsafe extern "C" fn lkrt_lklist_f64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<f64>) };
-    let Some(index) = store_index(index, values.len()) else {
-        crate::panic::raise_str("runtime error");
-    };
+    let index = store_index_or_raise(index, values.len());
     values[index] = value;
 }
 

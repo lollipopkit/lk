@@ -308,6 +308,28 @@ argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 
 | `std.write` 与 `println` 交错 | 程序序 | **stdout 顺序契约**:native 侧 Rust 写者先 `fflush(NULL)` 再写、写后 flush 自身流,保证与 C `printf` 缓冲的输出保持程序序 |
 | `math.sqrt(-4.0)` | 响亮失败 | 负参是致命错误(双方 loud),不是 NaN |
 
+## 被捕获的错误:消息是输出(2026-07-30 立)
+
+响亮失败的契约一直是"比成功 + stdout,不比失败的文本"。那对**未捕获**的失败是对的
+—— 那段文本是宿主的外壳。它对**捕获**的什么也没说,而在那里消息**就是 stdout**:
+
+```lk
+let r = try { xs[9] = 1; "no" } catch e { "${e}" };
+println(r);
+```
+
+所以规矩是:**可捕获的 raise,两个后端的消息必须逐字一致;未捕获失败的文本不要求。**
+`a_caught_errors_message_matches` 是它的门禁。
+
+立这条时两边有七处不一样,包括 `assert` 差一个大写字母、所有动态类型错误在 native
+侧都是一句 `runtime type error`(VM 会说出运算符和两个操作数的种类)、越界写说
+`runtime error`(VM 说 `list index 9 out of bounds`)。
+
+措辞以 VM 为准,**连它的 wart 一起**:8 字节的字符串报 `Object`、7 字节的报
+`String`,因为 VM 格式化的是值的**表示**而不是类型;`CmpLtInt` 这种融合 opcode 名
+也会漏给用户,而用户写的是 `<`。这些是 VM 一侧的问题,单独立项 —— 先镜像,分歧
+就先没了。
+
 ## 容器 display
 
 | 程序 | 期望 stdout | 说明 |

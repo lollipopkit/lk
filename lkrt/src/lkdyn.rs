@@ -309,12 +309,41 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
 /// `-x` on a boxed value: an Int wraps at `i64::MIN` and a Float gets a real
 /// `fneg`, exactly as `Executor::dispatch_neg` does. Anything else is the
 /// VM's loud type error.
+/// The type name a *caught* type error names its operand by.
+///
+/// The VM formats `RuntimeVal::kind()`, which reports the **representation**:
+/// a string of <= 7 bytes is `String` (it is an inline `ShortStr`) and a longer
+/// one is `Object`, as is every list, map, set and byte buffer. That is a wart
+/// on the VM's side — its own doc says a caller with the heap should use
+/// `HeapValue::type_name` — but it is what a program that prints a caught error
+/// sees today, and the two backends have to print the same thing.
+///
+/// Filed separately as the VM-side fix; mirrored exactly here so the divergence
+/// is gone either way.
+fn kind_name(v: LkDyn) -> &'static str {
+    match v.tag {
+        DYN_NIL => "Nil",
+        DYN_BOOL => "Bool",
+        DYN_I64 => "Int",
+        DYN_F64 => "Float",
+        // SAFETY: a `DYN_STR` payload is a live NUL-terminated arena string.
+        DYN_STR if unsafe { dyn_str(v) }.len() <= 7 => "String",
+        _ => "Object",
+    }
+}
+
+/// A binary type error in the VM's wording. `verb` is the operator as the VM
+/// spells it in this message — which is not uniform: `Sub`, `*`, `CmpLtInt`.
+fn binary_type_error(verb: &str, tail: &str, a: LkDyn, b: LkDyn) -> ! {
+    crate::panic::raise_str(&format!("{verb} {tail}, got {} and {}", kind_name(a), kind_name(b)))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_neg(v: LkDyn) -> LkDyn {
     match v.tag {
         DYN_I64 => from_i64(v.payload.wrapping_neg()),
         DYN_F64 => from_f64(-v.f64_value()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => crate::panic::raise_str(&format!("unary '-' expects Int or Float, got {}", kind_name(v))),
     }
 }
 
@@ -325,7 +354,7 @@ pub extern "C" fn lkrt_dyn_not(v: LkDyn) -> i64 {
     match v.tag {
         DYN_NIL => 1,
         DYN_BOOL => i64::from(v.payload == 0),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => crate::panic::raise_str(&format!("Not expected Bool or Nil, got {}", kind_name(v))),
     }
 }
 
@@ -651,7 +680,7 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_sub(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() - y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => binary_type_error("Sub", "expected numbers or list/map lhs", a, b),
     }
 }
 
@@ -660,7 +689,7 @@ pub extern "C" fn lkrt_dyn_mul(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_mul(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() * y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => binary_type_error("*", "expects Int or Float", a, b),
     }
 }
 
@@ -673,7 +702,7 @@ pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {
         // zero is an infinity or a NaN rather than a raise — the same as the
         // VM, which this file exists to mirror.
         (Some(x), Some(y)) => from_f64(x.as_f64() / y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => binary_type_error("/", "expects Int or Float", a, b),
     }
 }
 
@@ -683,7 +712,7 @@ pub extern "C" fn lkrt_dyn_mod(a: LkDyn, b: LkDyn) -> LkDyn {
         (Some(Numeric::Int(_)), Some(Numeric::Int(0))) => crate::panic::raise_str("ModInt divisor is zero"),
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_rem(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() % y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => binary_type_error("%", "expects Int or Float", a, b),
     }
 }
 
@@ -772,7 +801,7 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
 }
 
 macro_rules! dyn_ord {
-    ($name:ident, $op:tt) => {
+    ($name:ident, $op:tt, $vm_name:literal) => {
         /// # Safety
         /// Str payloads must be live NUL-terminated strings.
         #[unsafe(no_mangle)]
@@ -786,15 +815,15 @@ macro_rules! dyn_ord {
             match (a.as_numeric(), b.as_numeric()) {
                 (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => i64::from(x $op y),
                 (Some(x), Some(y)) => i64::from(x.as_f64() $op y.as_f64()),
-                _ => crate::panic::raise_str("runtime type error"),
+                _ => binary_type_error($vm_name, "expected Int, Float, or String", a, b),
             }
         }
     };
 }
-dyn_ord!(lkrt_dyn_lt, <);
-dyn_ord!(lkrt_dyn_le, <=);
-dyn_ord!(lkrt_dyn_gt, >);
-dyn_ord!(lkrt_dyn_ge, >=);
+dyn_ord!(lkrt_dyn_lt, <, "CmpLtInt");
+dyn_ord!(lkrt_dyn_le, <=, "CmpLeInt");
+dyn_ord!(lkrt_dyn_gt, >, "CmpGtInt");
+dyn_ord!(lkrt_dyn_ge, >=, "CmpGeInt");
 
 // ── Display (two modes, matching the VM's two display paths) ───────────
 
@@ -1104,16 +1133,13 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_set(handle: *mut c_void, index: i64, va
         crate::panic::raise_str("runtime error");
     }
     let values = unsafe { &mut *(handle as *mut Vec<LkDyn>) };
-    let len = values.len() as i64;
-    let idx = if index < 0 { len + index } else { index };
     // Out of range is a halt, matching the VM's `list index N out of bounds`.
     // This used to *grow* the list to fit (and silently ignore an index before
     // the start), so `xs[9] = 1` on a three-element list raised interpreted and
-    // appended six nils compiled.
-    if idx < 0 || idx >= len {
-        crate::panic::raise_str("runtime error");
-    }
-    values[idx as usize] = value;
+    // appended six nils compiled. The wording comes from the one helper the
+    // typed lists use, because a caught error is printed output.
+    let idx = crate::lklist::store_index_or_raise(index, values.len());
+    values[idx] = value;
 }
 
 /// # Safety
