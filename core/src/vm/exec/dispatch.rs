@@ -150,7 +150,7 @@ impl Executor {
                 RuntimeVal::Int(value) => value != 0,
                 RuntimeVal::Float(value) => value != 0.0,
                 RuntimeVal::Nil => false,
-                other => bail!("cannot cast {:?} to Bool", other.kind()),
+                other => bail!("cannot cast {} to Bool", self.value_type_name(&other)),
             }),
             CastTarget::Float => RuntimeVal::Float(match source {
                 RuntimeVal::Float(value) => value,
@@ -162,7 +162,7 @@ impl Executor {
                         0.0
                     }
                 }
-                other => bail!("cannot cast {:?} to Float", other.kind()),
+                other => bail!("cannot cast {} to Float", self.value_type_name(&other)),
             }),
             CastTarget::Int => RuntimeVal::Int(cast_source_to_i64(&source)?),
             machine => {
@@ -208,7 +208,7 @@ impl Executor {
         let value = match &self.state.stack[index] {
             RuntimeVal::Int(value) => RuntimeVal::Int(value.wrapping_neg()),
             RuntimeVal::Float(value) => RuntimeVal::Float(-value),
-            other => bail!("unary '-' expects Int or Float, got {:?}", other.kind()),
+            other => bail!("unary '-' expects Int or Float, got {}", self.value_type_name(other)),
         };
         self.write_unchecked(instr.a(), value);
         self.pc += 1;
@@ -220,7 +220,7 @@ impl Executor {
         let value = match &self.state.stack[index] {
             RuntimeVal::Bool(b) => !b,
             RuntimeVal::Nil => true,
-            other => bail!("Not expected Bool or Nil, got {:?}", other.kind()),
+            other => bail!("Not expected Bool or Nil, got {}", self.value_type_name(other)),
         };
         if self.try_fused_bool_branch(function, instr.a(), value, self.collect_metrics)? {
             return Ok(());
@@ -827,7 +827,10 @@ fn cast_source_to_i64(source: &RuntimeVal) -> Result<i64> {
         // Truncates toward zero, like every other language's float-to-int cast.
         RuntimeVal::Float(value) => *value as i64,
         RuntimeVal::Bool(value) => i64::from(*value),
-        other => bail!("cannot cast {:?} to an integer", other.kind()),
+        // No heap here, and none is needed: only a scalar can be cast, so a
+        // handle is exactly the case this refuses. `scalar_type_name` says
+        // `Object` and names itself for saying it.
+        other => bail!("cannot cast {} to an integer", other.kind().scalar_type_name()),
     })
 }
 

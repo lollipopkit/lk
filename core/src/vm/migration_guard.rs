@@ -16,6 +16,23 @@ const FORBIDDEN_TOKENS: &[(&str, &str)] = &[
         "quickening",
         "runtime feedback/quickening must not return to the VM path",
     ),
+    // A value's *type* in a message needs the heap: `RuntimeVal::kind()` calls
+    // every handle `Object`, so `[1] * 2` said `Object` and `"ab" - 1` said
+    // `String` while `"aaaaaaaaaa" - 1` said `Object` — one type, two names,
+    // decided by whether the string fit in seven bytes.
+    //
+    // Forty-odd sites made that mistake because the wrong function had the
+    // right-sounding name. It is `scalar_type_name` now, and the honest one is
+    // `RuntimeVal::type_name_in(heap)` (or `Executor::value_type_name`). This
+    // token is what keeps the next site from reaching past them: a `kind()` that
+    // really wants the *representation* can say `repr_name` or compare the
+    // variant, neither of which matches here.
+    (
+        ".kind()",
+        "name a value's type, not its representation: RuntimeVal::type_name_in(heap) \
+         (or Executor::value_type_name). `.kind().scalar_type_name()` is the opt-in \
+         for a site with no heap, and says so",
+    ),
     ("unsafe ", "LLVM-external VM/value code must stay safe Rust"),
     ("unsafe{", "LLVM-external VM/value code must stay safe Rust"),
     ("unsafe\n", "LLVM-external VM/value code must stay safe Rust"),
@@ -53,6 +70,15 @@ fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<Str
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs") || path.ends_with("migration_guard.rs") {
         return;
     }
+    // Test files compare `RuntimeValKind` variants, which is what `kind()` is
+    // *for*. The rule being guarded is about error *messages*, and a test that
+    // asserts a value's representation is not one.
+    if path
+        .components()
+        .any(|c| c.as_os_str().to_str().is_some_and(|name| name.contains("test")))
+    {
+        return;
+    }
     // `vm/hardware.rs` is exempt from the no-`unsafe` rule.
     //
     // That rule exists because a memory error inside the interpreter is
@@ -69,7 +95,7 @@ fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<Str
     let scannable = scannable_lines(&source);
     for (token, reason) in FORBIDDEN_TOKENS {
         for (line_index, line) in scannable.iter().enumerate() {
-            if line.contains(token) {
+            if line.contains(token) && !exempt(token, line) {
                 violations.push(format!(
                     "{}:{} contains `{}` ({})",
                     relative.display(),
@@ -132,4 +158,13 @@ fn scannable_code(line: &str, in_string: &mut bool) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Whether a line that contains a forbidden token is nevertheless allowed.
+///
+/// Only `.kind()` has exceptions, and they are the two spellings that are *not*
+/// the mistake: naming the scalar limit out loud, and comparing variants
+/// (`kind()` is what a representation check is for).
+fn exempt(token: &str, line: &str) -> bool {
+    token == ".kind()" && (line.contains("scalar_type_name") || line.contains("RuntimeValKind"))
 }

@@ -105,6 +105,20 @@ impl RuntimeVal {
         }
     }
 
+    /// The **language type** name of this value: `List` / `Map` / `Set` /
+    /// `Bytes` / `String` for a handle, the scalar's own name otherwise.
+    ///
+    /// Takes the heap because that is what makes the question answerable — a
+    /// handle's type lives there. That is the point of the signature: an error
+    /// message that has the heap cannot accidentally print `Object`, and one
+    /// that does not have it cannot call this at all.
+    pub fn type_name_in(&self, heap: &HeapStore) -> &'static str {
+        match self {
+            Self::Obj(handle) => heap.get(*handle).map_or("Object", HeapValue::type_name),
+            other => other.kind().scalar_type_name(),
+        }
+    }
+
     /// The same scalar, or literally the same heap object.
     ///
     /// This is what the derived `PartialEq` used to provide silently. It is
@@ -171,8 +185,18 @@ pub enum RuntimeValKind {
 }
 
 impl RuntimeValKind {
-    /// The type name a program would use.
-    pub const fn type_name(self) -> &'static str {
+    /// The type name a program would use — **for a scalar**. A handle answers
+    /// `Object`, which is not a type the language has.
+    ///
+    /// Named for that limit on purpose. It used to be `type_name`, and 40-odd
+    /// error messages reached for it and printed `Object` where they meant
+    /// `List`, `Map`, `Set`, or `String`-that-did-not-fit-in-seven-bytes. The
+    /// doc said "a caller that has one should reach for `HeapValue::type_name`
+    /// instead" and nothing did, because the wrong function had the right name.
+    ///
+    /// [`RuntimeVal::type_name_in`] is the one to use: it takes the heap, so
+    /// forgetting it is a compile error rather than a wrong string.
+    pub const fn scalar_type_name(self) -> &'static str {
         match self {
             Self::Nil => "Nil",
             Self::Bool => "Bool",
@@ -200,13 +224,13 @@ impl RuntimeValKind {
 
 impl core::fmt::Debug for RuntimeValKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.type_name())
+        f.write_str(self.scalar_type_name())
     }
 }
 
 impl core::fmt::Display for RuntimeValKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.type_name())
+        f.write_str(self.scalar_type_name())
     }
 }
 

@@ -50,7 +50,7 @@ impl Executor {
     fn runtime_value_to_plain_string(&self, value: &RuntimeVal) -> Result<String> {
         match self.runtime_value_to_plain_string_maybe(value)? {
             Some(value) => Ok(value),
-            None => bail!("object cannot be converted to string: {:?}", value.kind()),
+            None => bail!("object cannot be converted to string: {}", self.value_type_name(value)),
         }
     }
 
@@ -136,11 +136,17 @@ impl Executor {
     pub(super) fn string_split(&mut self, dst: u8, target: u8, delimiter: u8) -> Result<()> {
         let target = *self.read(target)?;
         let Some(target) = self.runtime_value_to_string(&target)? else {
-            bail!("StringSplit target must be string, got {:?}", target.kind());
+            bail!(
+                "StringSplit target must be string, got {}",
+                self.value_type_name(&target)
+            );
         };
         let delimiter = *self.read(delimiter)?;
         let Some(delimiter) = self.runtime_value_to_string(&delimiter)? else {
-            bail!("StringSplit delimiter must be string, got {:?}", delimiter.kind());
+            bail!(
+                "StringSplit delimiter must be string, got {}",
+                self.value_type_name(&delimiter)
+            );
         };
         let values = target
             .split(delimiter.as_ref())
@@ -153,11 +159,14 @@ impl Executor {
     pub(super) fn list_join(&mut self, dst: u8, target: u8, separator: u8) -> Result<()> {
         let target = *self.read(target)?;
         let RuntimeVal::Obj(handle) = target else {
-            bail!("ListJoin target must be list, got {:?}", target.kind());
+            bail!("ListJoin target must be list, got {}", self.value_type_name(&target));
         };
         let separator = *self.read(separator)?;
         let Some(separator) = self.runtime_value_to_string(&separator)? else {
-            bail!("ListJoin separator must be string, got {:?}", separator.kind());
+            bail!(
+                "ListJoin separator must be string, got {}",
+                self.value_type_name(&separator)
+            );
         };
         let joined = match self
             .state
@@ -217,25 +226,11 @@ impl Executor {
         ))
     }
 
-    /// The **language type** name of a value, for an error message a program
-    /// can print.
-    ///
-    /// `RuntimeVal::kind().type_name()` cannot answer this: a handle is
-    /// `Object`, and its own doc says a caller that has the heap should reach
-    /// for `HeapValue::type_name` instead. Every arithmetic/compare error
-    /// message formatted the kind, so `"ab" - 1` said `String` and
-    /// `"aaaaaaaaaa" - 1` said `Object` — the same type, two names, decided by
-    /// whether the string fit in seven bytes. A list, map and set were all
-    /// `Object` too.
-    ///
-    /// The representation is not secret — `RuntimeValKind::repr_name` exists and
-    /// names itself — it is just not what an error about a *type* should say.
+    /// The executor's spelling of [`RuntimeVal::type_name_in`] — it has the
+    /// heap, so callers do not thread it through.
     #[cold]
     pub(super) fn value_type_name(&self, value: &RuntimeVal) -> &'static str {
-        match value {
-            RuntimeVal::Obj(handle) => self.state.heap.get(*handle).map_or("Object", |value| value.type_name()),
-            other => other.kind().type_name(),
-        }
+        value.type_name_in(&self.state.heap)
     }
 
     #[cold]

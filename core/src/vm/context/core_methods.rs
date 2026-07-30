@@ -55,8 +55,8 @@ fn method_name_detached(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> 
             None => Err(anyhow!("heap object {} out of bounds", handle.index())),
         },
         other => Err(anyhow!(
-            "{helper} expects method name as string, got {:?}",
-            other.kind()
+            "{helper} expects method name as string, got {}",
+            other.type_name_in(heap)
         )),
     }
 }
@@ -636,7 +636,7 @@ pub(super) fn core_set_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime
 /// a set key.
 fn runtime_set_from_value(value: &RuntimeVal, heap: &mut HeapStore) -> anyhow::Result<RuntimeSet> {
     let RuntimeVal::Obj(handle) = value else {
-        bail!("Set(value) expects List or Set, got {:?}", value.kind());
+        bail!("Set(value) expects List or Set, got {}", value.type_name_in(heap));
     };
     match heap.get(*handle) {
         Some(HeapValue::List(list)) => {
@@ -684,7 +684,7 @@ fn extract_string_detached(value: &RuntimeVal, heap: &HeapStore, context: &str) 
             Some(v) => bail!("{context}: expected string, got {}", v.type_name()),
             None => bail!("{context}: heap object out of bounds"),
         },
-        other => bail!("{context}: expected string, got {:?}", other.kind()),
+        other => bail!("{context}: expected string, got {}", other.type_name_in(heap)),
     }
 }
 
@@ -749,7 +749,10 @@ fn dispatch_string_builtin_method(
             }
             let index = match &positional[0] {
                 RuntimeVal::Int(value) => *value,
-                other => bail!("string.byte_at() index must be an Int, got {:?}", other.kind()),
+                other => bail!(
+                    "string.byte_at() index must be an Int, got {}",
+                    other.kind().scalar_type_name()
+                ),
             };
             let bytes = s.as_bytes();
             // Nil past either end. This answered `-1` while `string.byte_at`
@@ -1431,7 +1434,7 @@ fn list_join_parts(list: &TypedList, heap: &HeapStore) -> anyhow::Result<Vec<Str
                         Some(other) => bail!("list.join(): element is not a string ({})", other.type_name()),
                         None => bail!("list.join(): heap object out of bounds"),
                     },
-                    other => bail!("list.join(): element is not a string ({:?})", other.kind()),
+                    other => bail!("list.join(): element is not a string ({})", other.type_name_in(heap)),
                 };
                 out.push(string);
             }
@@ -1773,7 +1776,10 @@ fn runtime_positional_arg_list(
     let handle = match value {
         RuntimeVal::Nil => return Ok(MethodPositionalArgs::Empty),
         RuntimeVal::Obj(h) => *h,
-        other => bail!("{helper} expects positional arguments as list, got {:?}", other.kind()),
+        other => bail!(
+            "{helper} expects positional arguments as list, got {}",
+            other.kind().scalar_type_name()
+        ),
     };
 
     let heap_val = heap
@@ -1839,7 +1845,10 @@ fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> 
     let handle = match value {
         RuntimeVal::Nil => return Ok(None),
         RuntimeVal::Obj(h) => *h,
-        other => bail!("{helper} expects named arguments as map, got {:?}", other.kind()),
+        other => bail!(
+            "{helper} expects named arguments as map, got {}",
+            other.type_name_in(heap)
+        ),
     };
 
     let heap_val = heap

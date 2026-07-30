@@ -8,7 +8,10 @@ impl ProgramResult {
 
     pub fn first_return_list(&self) -> Result<&TypedList> {
         let RuntimeVal::Obj(handle) = self.first_return() else {
-            bail!("first return is {:?}, expected list object", self.first_return().kind());
+            bail!(
+                "first return is {}, expected list object",
+                self.first_return().type_name_in(&self.state.heap)
+            );
         };
         match self.state.heap.get(*handle) {
             Some(HeapValue::List(values)) => Ok(values),
@@ -19,7 +22,10 @@ impl ProgramResult {
 
     pub fn first_return_map(&self) -> Result<&TypedMap> {
         let RuntimeVal::Obj(handle) = self.first_return() else {
-            bail!("first return is {:?}, expected map object", self.first_return().kind());
+            bail!(
+                "first return is {}, expected map object",
+                self.first_return().type_name_in(&self.state.heap)
+            );
         };
         match self.state.heap.get(*handle) {
             Some(HeapValue::Map(values)) => Ok(values),

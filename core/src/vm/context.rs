@@ -751,8 +751,8 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         }
         other => {
             return Err(anyhow!(
-                "__lk_make_struct expects fields as map, got {:?}",
-                other.kind()
+                "__lk_make_struct expects fields as map, got {}",
+                other.type_name_in(runtime.heap())
             ));
         }
     };
@@ -808,8 +808,8 @@ fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>)
             Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(updated)))
         }
         other => Err(anyhow!(
-            "__lk_set_field target must be Map or Object, got {:?}",
-            other.kind()
+            "__lk_set_field target must be Map or Object, got {}",
+            other.type_name_in(runtime.heap())
         )),
     }
 }
@@ -839,8 +839,8 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
         RuntimeVal::Nil => None,
         other => {
             return Err(anyhow!(
-                "__lk_merge_fields base must be Object, Map, or Nil, got {:?}",
-                other.kind()
+                "__lk_merge_fields base must be Object, Map, or Nil, got {}",
+                other.type_name_in(runtime.heap())
             ));
         }
     };
@@ -863,7 +863,10 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
             };
             Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(fields))))
         }
-        other => Err(anyhow!("__lk_merge_fields overlay must be Map, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "__lk_merge_fields overlay must be Map, got {}",
+            other.kind().scalar_type_name()
+        )),
     }
 }
 
@@ -1110,7 +1113,10 @@ fn runtime_string_arg(value: &RuntimeVal, heap: &HeapStore, func: &str) -> anyho
             HeapValue::String(value) => Ok(value.clone()),
             other => Err(anyhow!("{func} expects string argument, got {}", other.type_name())),
         },
-        other => Err(anyhow!("{func} expects string argument, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "{func} expects string argument, got {}",
+            other.type_name_in(heap)
+        )),
     }
 }
 
@@ -1194,7 +1200,10 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
 fn bit_arg(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<i64> {
     match value {
         crate::val::RuntimeVal::Int(i) => Ok(*i),
-        other => Err(anyhow!("{func} expects Int arguments, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "{func} expects Int arguments, got {}",
+            other.kind().scalar_type_name()
+        )),
     }
 }
 

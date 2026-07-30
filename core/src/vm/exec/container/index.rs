@@ -213,7 +213,7 @@ impl Executor {
                 let handle = *handle;
                 self.get_heap_index(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
             }
-            other => bail!("{:?} is not indexable", other.kind()),
+            other => bail!("{} is not indexable", self.value_type_name(other)),
         }
     }
 

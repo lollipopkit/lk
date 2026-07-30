@@ -297,7 +297,11 @@ impl Executor {
         let index = self.stack_index(register)?;
         match &self.state.stack[index] {
             RuntimeVal::Int(value) => Ok(*value),
-            other => bail!("register {} expected Int, got {:?}", register, other.kind()),
+            other => bail!(
+                "register {} expected Int, got {}",
+                register,
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -312,7 +316,7 @@ impl Executor {
         match value {
             RuntimeVal::Int(value) => Ok(*value as f64),
             RuntimeVal::Float(value) => Ok(*value),
-            other => bail!("got {:?}", other.kind()),
+            other => bail!("got {}", self.value_type_name(other)),
         }
     }
 

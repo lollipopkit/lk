@@ -230,7 +230,7 @@ impl Executor {
                     _ => bail!("Slice target must be string or list"),
                 }
             }
-            other => bail!("Slice target expected string/list, got {:?}", other.kind()),
+            other => bail!("Slice target expected string/list, got {}", self.value_type_name(other)),
         }
     }
 
@@ -310,7 +310,10 @@ impl Executor {
                 HeapValue::Set(value) => Ok(value.len()),
                 other => bail!("Len target object is not sized: {:?}", HeapValue::type_name(other)),
             },
-            other => bail!("Len target expected string/list/map/set, got {:?}", other.kind()),
+            other => bail!(
+                "Len target expected string/list/map/set, got {}",
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -344,7 +347,10 @@ impl Executor {
                     HeapValue::type_name(other)
                 ),
             },
-            other => bail!("Contains haystack expected string/list/map/set, got {:?}", other.kind()),
+            other => bail!(
+                "Contains haystack expected string/list/map/set, got {}",
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -372,7 +378,10 @@ impl Executor {
                     SliceFromPlan::String(value) => self.slice_string_from(value, start),
                 }
             }
-            other => bail!("SliceFrom target expected string/list object, got {:?}", other.kind()),
+            other => bail!(
+                "SliceFrom target expected string/list object, got {}",
+                self.value_type_name(&other)
+            ),
         }
     }
 
@@ -524,7 +533,10 @@ impl Executor {
                 };
                 self.finish_to_iter_plan(plan)
             }
-            other => bail!("ToIter target expected string/list/map/set, got {:?}", other.kind()),
+            other => bail!(
+                "ToIter target expected string/list/map/set, got {}",
+                self.value_type_name(&other)
+            ),
         }
     }
 
@@ -620,7 +632,7 @@ impl Executor {
         let handle = {
             let target = self.read(target_reg)?;
             let RuntimeVal::Obj(handle) = target else {
-                bail!("ListPush target expected Obj, got {:?}", target.kind());
+                bail!("ListPush target expected Obj, got {}", self.value_type_name(target));
             };
             *handle
         };
@@ -822,7 +834,7 @@ impl Executor {
                 HeapValue::String(value) => Ok(value.clone()),
                 other => bail!("object field key cannot be object: {:?}", HeapValue::type_name(other)),
             },
-            other => bail!("object field key must be string, got {:?}", other.kind()),
+            other => bail!("object field key must be string, got {}", self.value_type_name(other)),
         }
     }
 
@@ -1140,7 +1152,7 @@ impl Executor {
     fn int_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<i64> {
         match moved_key {
             Some(RuntimeVal::Int(value)) => Ok(value),
-            Some(other) => bail!("a list index must be Int, got {:?}", other.kind()),
+            Some(other) => bail!("a list index must be Int, got {}", self.value_type_name(&other)),
             None => self.read_int(register),
         }
     }
