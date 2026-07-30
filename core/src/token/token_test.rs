@@ -981,3 +981,39 @@ line2""#,
         assert!(Tokenizer::tokenize("0b").is_err());
     }
 }
+
+/// A keyword may name a **member** — a field or a method — because a member is
+/// only ever reached through `.` or declared inside a `struct`/`impl`/`trait`
+/// body, and none of those positions can start a statement. Reserving them
+/// everywhere was more than the grammar needed: `db.select()`,
+/// `parser.match(x)` and `struct Row { type: String }` were syntax errors.
+#[test]
+fn every_keyword_can_name_a_member() {
+    use crate::token::{Token, keyword_as_name};
+
+    for (token, word) in [
+        (Token::Select, "select"),
+        (Token::Match, "match"),
+        (Token::Try, "try"),
+        (Token::Go, "go"),
+        (Token::Use, "use"),
+        (Token::Type, "type"),
+        (Token::As, "as"),
+        (Token::Impl, "impl"),
+        (Token::Trait, "trait"),
+        (Token::Defer, "defer"),
+        (Token::Fn, "fn"),
+        (Token::Return, "return"),
+    ] {
+        assert_eq!(keyword_as_name(&token), Some(word), "{token:?}");
+    }
+
+    // The value literals are values, not keywords: `p.nil` reads as nothing.
+    assert_eq!(keyword_as_name(&Token::Nil), None);
+    assert_eq!(keyword_as_name(&Token::Bool(true)), None);
+    // Nor is punctuation a name.
+    assert_eq!(keyword_as_name(&Token::LBrace), None);
+    assert_eq!(keyword_as_name(&Token::Comma), None);
+    // An identifier goes down the ordinary path, not this one.
+    assert_eq!(keyword_as_name(&Token::Id("select".to_string())), None);
+}

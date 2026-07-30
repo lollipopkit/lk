@@ -18,6 +18,21 @@ impl<'a> StmtParser<'a> {
             let name = id.clone();
             self.pos += 1;
             name
+        } else if let Some(word) = self
+            .in_member_body
+            .then(|| crate::token::keyword_as_name(&self.tokens[self.pos]))
+            .flatten()
+        {
+            // A method name, not a global one — reached through `.`, so a
+            // keyword says it unambiguously (`db.select()`).
+            self.pos += 1;
+            word.to_string()
+        } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+            // Refused, but in the language's words: the reader needs to know it
+            // is a keyword and where one *is* allowed.
+            return Err(anyhow!(self.err(&alloc::format!(
+                "`{word}` is a keyword, so it cannot name a top-level function — a call to one is a bare                  name, where `{word}(…)` could not be told from the `{word}` statement. It *can* name a                  method or a field"
+            ))));
         } else {
             return Err(anyhow!(self.err("Expected function name")));
         };

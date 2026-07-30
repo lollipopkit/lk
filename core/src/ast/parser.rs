@@ -1098,11 +1098,15 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // Field name must be identifier
+            // Field name. A keyword names one unambiguously here — a struct
+            // literal's `{ … }` holds `name: value` pairs and nothing else.
             let key = if let Token::Id(id) = &self.tokens[self.pos] {
                 let k = id.clone();
                 self.pos += 1;
                 k
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected identifier as struct field name")));
             };

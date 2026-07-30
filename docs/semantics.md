@@ -713,6 +713,31 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 关键字可以当成员名(2026-07-30 补)
+
+关键字以前在**所有**位置都被保留,这比语法需要的多。一个**成员**总是经 `.` 到达,
+或者声明在 `struct` / `impl` / `trait` 的体里,而这些位置**都不能起一条语句** ——
+所以下面这些以前是语法错误,没有任何读者能据以行动的理由:
+
+```lk
+struct Row { type: String, select: Int }
+impl Row { fn match(self) -> Int { return self.select * 2; } }
+trait Runner { fn go(self) -> Int; }
+db.select()
+parser.match(x)
+```
+
+放开的位置一共四处:`.` 之后的成员读取、结构体**字段声明**、结构体**字面量**的
+字段名、`impl`/`trait` 体里的方法名。值字面量(`true`/`false`/`nil`)故意不在里面
+—— 它们是值不是关键字,`p.nil` 读不出意思。
+
+**顶层 `fn` 保留限制**:调用它是表达式位置上的一个裸名字,`select(1)` 和 `select { … }`
+就得靠上下文区分了。报错也跟着说清:"`select` is a keyword, so it cannot name a
+top-level function — a call to one is a bare name, where `select(…)` could not be
+told from the `select` statement. It *can* name a method or a field"。
+
+"这个 token 能不能当名字"只有一份判据(`token::keyword_as_name`),四个位置共用。
+
 ## 一个名字一个意思:方法只声明一次(2026-07-30 裁决)
 
 三种撞名以前都是**静默取最后一个**:

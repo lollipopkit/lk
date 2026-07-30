@@ -46,10 +46,15 @@ impl<'a> StmtParser<'a> {
 
         loop {
             // 字段名
+            // A field is only ever reached through `.` or a struct literal, so
+            // a keyword names one unambiguously (`struct Row { type: String }`).
             let field_name = if let Token::Id(id) = &self.tokens[self.pos] {
                 let s = id.clone();
                 self.pos += 1;
                 s
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected field name in struct")));
             };
@@ -158,6 +163,10 @@ impl<'a> StmtParser<'a> {
                 let m = id.clone();
                 self.pos += 1;
                 m
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                // A trait method is reached through `.` like any other member.
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected method name in trait")));
             };
@@ -234,7 +243,10 @@ impl<'a> StmtParser<'a> {
         if !self.trait_method_has_body() {
             return Ok(None);
         }
-        Ok(Some(self.parse_function_stmt()?))
+        let previous = core::mem::replace(&mut self.in_member_body, true);
+        let parsed = self.parse_function_stmt();
+        self.in_member_body = previous;
+        Ok(Some(parsed?))
     }
 
     /// Whether the `fn` at the cursor is followed by a body rather than a `;`.
@@ -343,7 +355,10 @@ impl<'a> StmtParser<'a> {
             if self.tokens[self.pos] != Token::Fn {
                 return Err(anyhow!(self.err("Expected 'fn' in impl block")));
             }
-            let m = self.parse_function_stmt()?;
+            let previous = core::mem::replace(&mut self.in_member_body, true);
+            let parsed = self.parse_function_stmt();
+            self.in_member_body = previous;
+            let m = parsed?;
             // Two methods of one name in one block: the second silently won,
             // and the first was compiled and never reachable. Nothing else in
             // the language lets a declaration be shadowed by a sibling.

@@ -114,8 +114,16 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(expr)
             }
-            _ => {
-                let msg = format!("Invalid field name: {:?}", self.tokens[self.pos]);
+            // A keyword is a fine member name: this position follows a `.`,
+            // where nothing can start a statement (see `keyword_as_name`).
+            token if crate::token::keyword_as_name(token).is_some() => {
+                let word = crate::token::keyword_as_name(token).expect("checked");
+                let expr = Expr::Literal(LiteralVal::from_str(word));
+                self.pos += 1;
+                Ok(expr)
+            }
+            other => {
+                let msg = alloc::format!("Invalid field name: {}", crate::token::token_lexeme(other));
                 Err(anyhow!(self.err(&msg)))
             }
         }

@@ -1160,4 +1160,29 @@ mod tests {
         let program = parse_program("let golang = 1; let gopher = golang + 1; return gopher;");
         assert_eq!(program.statements.len(), 3);
     }
+
+    /// A keyword names a field and a method, and the statements it belongs to
+    /// still parse. A *top-level* `fn` keeps the restriction, because a call to
+    /// one is a bare name where `select(1)` could not be told from the `select`
+    /// statement — and says so.
+    #[test]
+    fn a_keyword_can_name_a_field_and_a_method() {
+        let (result, _) = execute_source_with_ctx(
+            r#"
+            struct Row { type: String, select: Int }
+            impl Row { fn match(self) -> Int { return self.select * 2; } }
+            trait Runner { fn go(self) -> Int; }
+            impl Runner for Row { fn go(self) -> Int { return self.select; } }
+            let r = Row { type: "t", select: 21 };
+            return r.match() + r.go() + r.select;
+            "#,
+        );
+        assert_eq!(result, RuntimeVal::Int(42 + 21 + 21));
+
+        let error = crate::syntax::parse_program_source("fn select() -> Int { return 1; }", Default::default())
+            .expect_err("a top-level `fn` keeps the restriction");
+        let text = alloc::format!("{error:#}");
+        assert!(text.contains("`select` is a keyword"), "{text}");
+        assert!(text.contains("method or a field"), "{text}");
+    }
 }

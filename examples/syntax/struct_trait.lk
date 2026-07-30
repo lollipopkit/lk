@@ -72,4 +72,13 @@ trait Scaled {
 impl Scaled for Rect { fn base(self) -> Int { return self.w; } }
 assert(r.doubled() == 20);
 
+// A keyword names a member fine: a member is reached through `.` or declared
+// inside a struct/impl/trait body, and none of those positions starts a
+// statement. (A top-level `fn` keeps the restriction.)
+struct Row { type: String, select: Int }
+impl Row { fn match(self) -> Int { return self.select * 2; } }
+let row = Row { type: "t", select: 21 };
+assert(row.match() == 42);
+assert(row.type == "t");
+
 println("struct_trait: all assertions passed");

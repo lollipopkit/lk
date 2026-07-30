@@ -16,6 +16,53 @@ use crate::compat::prelude::*;
 /// itself, and having it there made `stmt` depend on `macro_system` purely to
 /// print a token — a dependency cycle (`macro_system` parses `stmt` patterns)
 /// that blocked separating the two.
+/// The word a keyword token spells, when it may stand in for an identifier.
+///
+/// Keywords are reserved *everywhere*, which is more than the grammar needs: a
+/// **member** is always reached through `.` or declared inside a `struct` /
+/// `impl` / `trait` body, and none of those positions can start a statement. So
+/// `db.select()`, `parser.match(x)` and `struct Row { type: String }` were
+/// syntax errors for no reason a reader could act on.
+///
+/// The value literals (`true`, `false`, `nil`) are deliberately absent: they are
+/// values, not keywords, and `p.nil` reads as nothing.
+///
+/// A *top-level* `fn` keeps the restriction — a call to it is a bare name in
+/// expression position, where `select(1)` and `select { … }` would have to be
+/// told apart.
+pub fn keyword_as_name(token: &Token) -> Option<&'static str> {
+    Some(match token {
+        Token::In => "in",
+        Token::If => "if",
+        Token::Else => "else",
+        Token::While => "while",
+        Token::Let => "let",
+        Token::Const => "const",
+        Token::Break => "break",
+        Token::Continue => "continue",
+        Token::Defer => "defer",
+        Token::Return => "return",
+        Token::Fn => "fn",
+        Token::Use => "use",
+        Token::From => "from",
+        Token::As => "as",
+        Token::For => "for",
+        Token::Go => "go",
+        Token::Match => "match",
+        Token::Unsafe => "unsafe",
+        Token::Try => "try",
+        Token::Catch => "catch",
+        Token::Select => "select",
+        Token::Case => "case",
+        Token::Default => "default",
+        Token::Type => "type",
+        Token::Struct => "struct",
+        Token::Trait => "trait",
+        Token::Impl => "impl",
+        _ => return None,
+    })
+}
+
 pub fn token_lexeme(token: &Token) -> String {
     match token {
         Token::LParen => "(".to_string(),
