@@ -72,8 +72,8 @@ mod textcodec;
 mod vm_mirror;
 
 pub use abi::{
-    lkrt_abi_check, lkrt_abi_version, lkrt_abort, lkrt_assert, lkrt_assert_msg, lkrt_cleanup, lkrt_error_clear,
-    lkrt_last_error, lkrt_panic, lkrt_string_free,
+    lkrt_abi_version, lkrt_abort, lkrt_assert, lkrt_assert_msg, lkrt_cleanup, lkrt_error_clear, lkrt_last_error,
+    lkrt_panic, lkrt_rt_begin, lkrt_string_free,
 };
 pub use arith::{
     lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked, lkrt_i64_shl_checked,

@@ -971,6 +971,18 @@ impl Compiler {
         // are shadowed by the registers they lower into.
         let lhs_is_literal = support::is_int_literal(lhs);
         let rhs_is_literal = support::is_int_literal(rhs);
+        // `1 + expr`: the immediate form wants the constant on the right, so the
+        // commuted attempt must lower `expr` to ask whether its value is a proven
+        // `Int`. When the answer is no, **the register it just produced is the
+        // operand** — falling through to lower `rhs` a second time left the first
+        // lowering's instructions in the stream and ran the expression twice. So
+        // `1 + f(x)` called `f` twice, and `return 1 + f(n - 1)` cost 2^n calls:
+        // `f(5)` made 63 of them, `f(50)` never finished. The answer stayed right
+        // for a pure function, which is how it survived.
+        //
+        // Lowering `rhs` before `lhs` reorders nothing observable: only an integer
+        // literal reaches `commuted_int_immediate_operand`.
+        let mut commuted_rhs = None;
         if static_flavor == NumericFlavor::Int
             && let Some(immediate) = support::commuted_int_immediate_operand(op, lhs)
         {
@@ -983,9 +995,11 @@ impl Compiler {
                 let dst = self.alloc_reg();
                 return self.emit_int_immediate_to_register(dst, op, rhs, immediate);
             }
+            commuted_rhs = Some(rhs);
         }
         let lhs = self.lower_readonly_operand(lhs)?;
-        if let Some(immediate) = int_immediate_operand(op, rhs)
+        if commuted_rhs.is_none()
+            && let Some(immediate) = int_immediate_operand(op, rhs)
             && !self.machine_regs.contains_key(&lhs)
         {
             let dst = self.alloc_reg();
@@ -998,7 +1012,10 @@ impl Compiler {
                 return self.emit_int_immediate_to_register(dst, op, lhs, immediate);
             }
         }
-        let rhs = self.lower_readonly_operand(rhs)?;
+        let rhs = match commuted_rhs {
+            Some(reg) => reg,
+            None => self.lower_readonly_operand(rhs)?,
+        };
         // A literal beside a machine integer takes its width, so the wrap below
         // has two proven operands to agree about.
         self.adopt_machine_width_for_literal(lhs, rhs, lhs_is_literal, rhs_is_literal)?;

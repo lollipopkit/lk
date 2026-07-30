@@ -503,7 +503,7 @@ pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature
 }
 
 /// Lower a MIR function body into `clif_func`. When `is_entry`, `clif_func` must
-/// be the program `main` (`() -> i32`): its entry block gets an `abi_check`
+/// be the program `main` (`() -> i32`): its entry block gets an `rt_begin`
 /// prologue and its returns print the top-level result before `ret 0`, matching
 /// the string-IR backend.
 fn build_function(
@@ -568,7 +568,7 @@ fn build_function(
         builder.switch_to_block(cb);
         // The entry/`main` guards against ABI drift before any user code runs.
         if is_entry && block.id == func.entry {
-            let check = mctx.abi_func(resolve_abi("lkrt", "abi_check")?)?;
+            let check = mctx.abi_func(resolve_abi("lkrt", "rt_begin")?)?;
             let version = builder.ins().iconst(types::I64, abi_version);
             lower.call(&mut builder, mctx, check, None, &[version])?;
         }
@@ -2090,7 +2090,7 @@ mod tests {
         compile_module(&mir, host_isa()).expect("print str must compile");
     }
 
-    // The entry function compiles to C `main`: `abi_check` prologue + top-level
+    // The entry function compiles to C `main`: `rt_begin` prologue + top-level
     // result print + `ret 0`.
     #[test]
     fn lowers_entry_main() {

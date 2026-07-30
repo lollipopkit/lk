@@ -169,7 +169,7 @@ macro_rules! for_each_abi_fn {
             ("port", "out_u16", lkrt_port_out_u16, WritesHost, [I64, I64], Nil);
             ("port", "out_u32", lkrt_port_out_u32, WritesHost, [I64, I64], Nil);
             ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
-            ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
+            ("lkrt", "rt_begin", lkrt_rt_begin, WritesHost, [I64], Nil);
             ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);
             ("lkrt", "error_clear", lkrt_error_clear, WritesHost, [], Nil);
             ("lkrt", "last_error", lkrt_last_error, ReadsHost, [], StrPtr);

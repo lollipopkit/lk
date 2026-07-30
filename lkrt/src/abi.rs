@@ -114,17 +114,40 @@ pub extern "C" fn lkrt_abi_version() -> i64 {
     ABI_VERSION
 }
 
-/// Called at the start of a native binary's `main` with the ABI version the code
-/// was generated against. If the linked `lkrt` reports a different version the
-/// binary and runtime disagree on the calling/representation contract, so we
-/// abort with a clear message rather than execute with a mismatched ABI (this is
-/// a link/configuration error, never a reason to fall back to the VM).
+// `sigaltstack`/`sigaction` in C, because lkrt has no `libc` dependency to spell
+// their platform structs with — the same reason `try_trampoline.c` exists. Absent
+// on bare metal, where `build.rs` skips the C files and there are no signals.
+#[cfg(feature = "std")]
+unsafe extern "C" {
+    fn lk_install_stack_guard();
+}
+
+/// The program's start, called from a native binary's `main` before any user
+/// code, with the ABI version the code was generated against.
+///
+/// Two things happen here, which is why this is `rt_begin` and not `abi_check`
+/// (its name until the second one arrived):
+///
+/// * The ABI version is checked. A linked `lkrt` reporting a different version
+///   disagrees with the binary about the calling/representation contract, so this
+///   aborts with a clear message rather than executing under a mismatched ABI —
+///   a link/configuration error, never a reason to fall back to the VM.
+/// * The stack-exhaustion handler is installed (`stack_guard.c`). Runaway
+///   recursion used to die on SIGSEGV with exit 139 and no output at all, while
+///   the VM raised a catchable `call depth limit exceeded`. It costs nothing on
+///   the hot path: this runs once, and the handler only ever runs on a fault.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_abi_check(expected: i64) {
+pub extern "C" fn lkrt_rt_begin(expected: i64) {
     if expected != ABI_VERSION {
         crate::rt_eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
         flush_and_abort();
     }
+    #[cfg(feature = "std")]
+    // SAFETY: installs a signal handler and an alternate stack; both are
+    // process-wide, idempotent, and this runs once before any user code.
+    unsafe {
+        lk_install_stack_guard()
+    };
 }
 
 #[unsafe(no_mangle)]

@@ -1532,6 +1532,64 @@ fn reverse_and_index_of_cover_every_list_carrier() {
     );
 }
 
+/// `1 + f(x)` evaluates `f(x)` **once**.
+///
+/// The immediate form of an int binary op wants the constant on the right, so
+/// `const + expr` lowered `expr` first to ask whether its value is a proven
+/// `Int`. When the answer was no — which it is for any call without an annotated
+/// return type — the code fell through and lowered `expr` *again*, leaving the
+/// first lowering's instructions in the stream. So the operand ran twice: `1 +
+/// side(7)` called `side` twice, and `return 1 + f(n - 1)` cost 2^n calls —
+/// `f(5)` made 63 instead of 6, `f(50)` never finished, and `f(20000)` was a
+/// hang where the VM's own depth limit is 100000.
+///
+/// It survived because the *answer* stays right for a pure function. Only a
+/// counted side effect shows it, which is what these cases count. Both copies of
+/// the lowering had it (`lower_bin_op` and `lower_into`), so both are exercised
+/// here: `let a = …` goes through one and `println(…)`/`return` through the other.
+#[test]
+fn a_constant_on_the_left_evaluates_the_other_side_once() {
+    run_differential(
+        "commuted_immediate",
+        &[
+            new(
+                "each_operator_shape",
+                "let log = [];\nfn side(x) { log.push(x); return x; }\n\
+                 let a = 1 + side(1);\nlet b = side(2) + 1;\nlet c = 2 * side(3);\n\
+                 let d = 10 - side(4);\nlet e = 1 + side(5) + 1;\n\
+                 println(\"${a} ${b} ${c} ${d} ${e}\");\nprintln(log);\nreturn 0;\n",
+            ),
+            // The count, not the answer: the answer was always right.
+            new(
+                "the_recursive_call_count",
+                "let calls = 0;\nfn f(n) { calls = calls + 1; if (n <= 0) { return 0; } return 1 + f(n - 1); }\n\
+                 println(f(5));\nprintln(calls);\nreturn 0;\n",
+            ),
+            // A depth the old lowering could not reach. Deliberately *not* the
+            // f(50) that first showed the bug, and deliberately not an f(1000)
+            // beside it either: 2^n calls is a hang, and a guard that hangs CI
+            // instead of failing it is the mute failure mode this whole file
+            // exists to avoid. 18 is the largest depth whose broken cost (262143
+            // calls) is still finite, so this fails fast rather than never — and
+            // the fixed version reaches the VM's own 100000-frame limit happily,
+            // which `f(20000)` was checked against by hand.
+            new(
+                "a_depth_the_doubling_could_not_reach",
+                "fn f(n) { if (n <= 0) { return 0; } return 1 + f(n - 1); }\nprintln(f(18));\nreturn 0;\n",
+            ),
+            // Through the other lowering: a statement-position expression and an
+            // argument, neither of which goes through `lower_bin_op`'s `let`.
+            new(
+                "the_other_lowering",
+                "let log = [];\nfn side(x) { log.push(x); return x; }\n\
+                 println(1 + side(9));\nprintln(log.len());\n\
+                 fn wrap(v) { return v; }\nprintln(wrap(2 * side(9)));\nprintln(log.len());\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `sort` on the `Float` and `String` carriers — and the NaN that made writing
 /// it find a panic on *both* backends.
 ///

@@ -80,6 +80,11 @@ impl Compiler {
                 // beside a machine integer takes that width — see below.
                 let lhs_is_literal = super::support::is_int_literal(lhs);
                 let rhs_is_literal = super::support::is_int_literal(rhs);
+                // The commuted attempt keeps the register it lowered — see the
+                // same shape in `lower_bin_op`: falling through to lower `rhs`
+                // again ran the expression twice, so `1 + f(x)` called `f` twice.
+                // This copy had the identical defect.
+                let mut commuted_rhs = None;
                 if static_flavor == super::support::NumericFlavor::Int
                     && let Some(immediate) = super::support::commuted_int_immediate_operand(op, lhs)
                 {
@@ -93,9 +98,11 @@ impl Compiler {
                         self.emit_int_immediate_to_register(dst, op, rhs, immediate)?;
                         return Ok(true);
                     }
+                    commuted_rhs = Some(rhs);
                 }
                 let lhs = self.lower_readonly_operand(lhs)?;
-                if let Some(immediate) = super::support::int_immediate_operand(op, rhs)
+                if commuted_rhs.is_none()
+                    && let Some(immediate) = super::support::int_immediate_operand(op, rhs)
                     && self.function.performance.value_kind(lhs) == PerfValueKind::Int
                     && static_flavor == super::support::NumericFlavor::Int
                     && !self.machine_regs.contains_key(&lhs)
@@ -103,7 +110,10 @@ impl Compiler {
                     self.emit_int_immediate_to_register(dst, op, lhs, immediate)?;
                     return Ok(true);
                 }
-                let rhs = self.lower_readonly_operand(rhs)?;
+                let rhs = match commuted_rhs {
+                    Some(reg) => reg,
+                    None => self.lower_readonly_operand(rhs)?,
+                };
                 // A literal beside a machine integer takes its width.
                 //
                 // `reg + 1` is what driver code is made of, and the type checker

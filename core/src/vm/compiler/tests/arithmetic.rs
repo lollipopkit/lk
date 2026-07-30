@@ -373,3 +373,75 @@ fn compiler_does_not_let_a_machine_width_outlive_its_value() {
         "the Int branch must not inherit the u32 branch's width"
     );
 }
+
+/// `1 + f(x)` evaluates `f(x)` **once**, in every syntactic position.
+///
+/// The immediate form of an int binary op wants the constant on the right, so
+/// `const + expr` lowered `expr` first to ask whether its value is a proven
+/// `Int`. When the answer was no — which it is for any call whose return type is
+/// not annotated — the code fell through and lowered `expr` *again*, leaving the
+/// first lowering's instructions in the stream. The operand then ran twice: `1 +
+/// side(7)` called `side` twice, `f(5)` made 63 calls instead of 6, and `f(50)`
+/// never finished at all. The *answer* stayed right for a pure function, which is
+/// how it survived.
+///
+/// Both lowerings had it, and they cover different positions: `lower_into` takes
+/// `let`/element/argument destinations, `lower_bin_op` takes `return` and template
+/// interpolation. Fixing one and testing the other would have looked green, so the
+/// count below spans both.
+///
+/// A *condition* (`if (1 + f(x) > 0)`) is deliberately absent: it still evaluates
+/// the operand three times, through a different mechanism — the condition path
+/// tries five fused branch shapes in turn, and each helper lowers an operand
+/// before checking a register fact, so every rejected attempt leaves its
+/// instructions in the stream. That is its own defect with its own fix; writing
+/// its current count into this test would pin a wrong answer as expected.
+///
+/// Pinned to a *number*, not to the other backend, because **no differential
+/// test can see this**: both backends lower from this bytecode, so both doubled
+/// the call identically and agreed with each other. A VM-vs-native comparison is
+/// blind to a front-end bug by construction.
+#[test]
+fn a_commuted_immediate_evaluates_its_operand_once() {
+    let module = crate::vm::compile_source_module(
+        r#"
+        let calls = 0;
+        fn side(x) { calls = calls + 1; return x; }
+        fn through_return() { return 1 + side(1); }
+        let through_let = 1 + side(1);
+        let through_element = [2 * side(1)];
+        let through_template = "${1 + side(1)}";
+        through_return();
+        return calls;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = crate::vm::execute_module(&module).expect("run module");
+    assert_eq!(
+        result.returns,
+        vec![crate::val::RuntimeVal::Int(4)],
+        "four `side` calls are written, so four must run — the doubling made this 5 or more \
+         depending on the position"
+    );
+
+    // The same claim on the instruction stream, where it is a property of the
+    // code rather than of one run: the entry emits exactly the calls the source
+    // spells.
+    let entry = module.entry_function().expect("entry function");
+    let emitted = entry
+        .code
+        .iter()
+        // Any call-shaped opcode, by name: the lowering picks between
+        // `CallDirect`/`Call`/`CallNamed` on grounds this test does not care
+        // about, and matching an explicit list would let a new one through
+        // silently.
+        .filter(|instr| alloc::format!("{:?}", instr.opcode()).starts_with("Call"))
+        .count();
+    assert_eq!(
+        emitted,
+        4,
+        "three `side` operands plus the one call to the helper: {:?}",
+        entry.code.iter().map(|i| i.opcode()).collect::<Vec<_>>()
+    );
+}
