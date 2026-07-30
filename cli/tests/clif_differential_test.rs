@@ -1418,6 +1418,46 @@ fn try_catch_differential() {
     );
 }
 
+/// `for x in s` over a `Set`, and `for b in bytes`, pinned to pure Cranelift.
+///
+/// A set's *iteration* order is its hash order — unlike its display order,
+/// which is imposed — so this needs the mirror discipline. It could not have it
+/// while `lkset` kept its own four-variant key that folded both string shapes
+/// into one: membership agreed with the VM and the **hash** did not, and the
+/// way that showed up was iteration never being lowered at all. One `RtKey`,
+/// one hash, and `set_iteration_order_matches_the_vm` can then say something.
+///
+/// `Bytes` iterates its byte values in order — no hash anywhere.
+#[test]
+fn sets_and_bytes_iterate_natively() {
+    run_differential(
+        "set_bytes_iter",
+        &[
+            // Enough members to force several table growths, so the order is a
+            // real check rather than a small set's coincidence.
+            new(
+                "many_int_members",
+                "let s = Set([]);\nlet i = 0;\nwhile i < 40 {\n  s.add(i * 3 - 7);\n  i = i + 1;\n}\nlet out = [];\nfor x in s { out.push(x); }\nprintln(out);\nreturn 0;\n",
+            ),
+            // Short (inline) and long (heap) keys mixed: the two shapes hash
+            // differently, which is exactly what one shared key type buys.
+            new(
+                "short_and_long_string_members",
+                "let s = Set([\"alpha\", \"b\", \"gamma_long_key\", \"d\", \"another_long_one\"]);\nfor y in s { println(y); }\nreturn 0;\n",
+            ),
+            new(
+                "iterate_after_mutation",
+                "let s = Set([1, 2, 3]);\ns.delete(2);\ns.add(9);\nfor x in s { println(x); }\nprintln(s.len());\nreturn 0;\n",
+            ),
+            new(
+                "bytes_iterate_in_order",
+                "use bytes;\nfor b in bytes.from_string(\"hey\") { println(b); }\nlet n = 0;\nfor b in bytes.from_string(\"\") { n = n + 1; }\nprintln(n);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `Set` and `Bytes` as boxed values, pinned to pure Cranelift.
 ///
 /// Neither had a `LkDyn` tag, so neither could be *boxed* — and boxing is how a

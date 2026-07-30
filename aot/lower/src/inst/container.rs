@@ -668,6 +668,29 @@ pub(super) fn lower(
                     });
                     ssa.write(instr.a(), block, (dst, Ty::ListDyn));
                 }
+                // A set snapshots to its members, in the VM's order — both
+                // sides key by the same `RtKey` and fill by the same sequence,
+                // and a set has no second stage for anything else to enter.
+                Ty::Set => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("set", "iter"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                // `Bytes` iterates its byte values, in order — no hash
+                // anywhere, so nothing to mirror.
+                Ty::Bytes => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("bytes_h", "to_i64_list"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListI64));
+                }
                 Ty::Dyn => {
                     let dst = ssa.new_val();
                     insts.push(Inst::Call {

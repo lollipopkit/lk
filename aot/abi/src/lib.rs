@@ -648,6 +648,7 @@ macro_rules! for_each_abi_fn {
             ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("set", "display", lkrt_lkset_display, WritesHost, [Ptr], StrPtr, Borrowed);
             ("set", "eq", lkrt_lkset_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("set", "iter", lkrt_lkset_iter, WritesHost, [Ptr], Ptr, Constructs);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);

@@ -1095,6 +1095,41 @@ pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)
     }
 }
 
+/// Test-support for lkrt's set-order conformance: the member iteration order
+/// of a `Set` built by inserting the given strings in order.
+///
+/// A set has no second stage — `RuntimeSet` *is* the `FastHashSet`, so the
+/// order is a function of the key hashes and this one insertion sequence. That
+/// is only mirrorable if the native side keys its set by the same shape, which
+/// is why `lkrt` has exactly one `RtKey`.
+pub fn set_iteration_order(members: impl Iterator<Item = MirrorMember>) -> Vec<MirrorMember> {
+    let mut set = fast_hash_set_new();
+    for member in members {
+        set.insert(match &member {
+            MirrorMember::Int(v) => RuntimeMapKey::Int(*v),
+            MirrorMember::Str(v) => match ShortStr::new(v) {
+                Some(short) => RuntimeMapKey::ShortStr(short),
+                None => RuntimeMapKey::String(Arc::from(v.as_str())),
+            },
+        });
+    }
+    set.iter()
+        .map(|key| match key {
+            RuntimeMapKey::Int(v) => MirrorMember::Int(*v),
+            other => MirrorMember::Str(other.as_str().expect("string key").to_string()),
+        })
+        .collect()
+}
+
+/// The member kinds [`set_iteration_order`] round-trips. Deliberately not
+/// `RuntimeMapKey` itself: the point of the test is that lkrt does *not* get to
+/// see the VM's key type, only the values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MirrorMember {
+    Int(i64),
+    Str(String),
+}
+
 /// The same, for an **int**-keyed literal — where the shaping is different in
 /// the way that matters: a non-string key makes [`typed_map_from_entries`]
 /// return `Mixed`, which *is* the stage-1 table. There is no stage 2, so a

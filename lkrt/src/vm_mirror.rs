@@ -40,7 +40,7 @@ use crate::state::arena_handle;
 
 /// Field-order/type mirror of `lk_values::ShortStr` (`len: u8, data: [u8; 7]`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct MirrorShortStr {
+pub(crate) struct MirrorShortStr {
     len: u8,
     data: [u8; 7],
 }
@@ -50,7 +50,7 @@ struct MirrorShortStr {
 /// keeps the discriminant numbering aligned.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
-enum RtKey {
+pub(crate) enum RtKey {
     Nil,
     Bool(bool),
     Int(i64),
@@ -59,7 +59,25 @@ enum RtKey {
     Obj(u64),
 }
 
-fn key_from_dyn(v: LkDyn) -> RtKey {
+/// The VM's canonical string key: ≤ 7 bytes is always the inline `ShortStr`
+/// runtime value, 8+ always a heap string. The split is by length alone, so it
+/// is deterministic — and it is *load-bearing for the hash*, which is why a
+/// set cannot keep its own one-variant version of this and still iterate in the
+/// VM's order.
+pub(crate) fn str_key(text: &str) -> RtKey {
+    if text.len() <= 7 {
+        let mut data = [0u8; 7];
+        data[..text.len()].copy_from_slice(text.as_bytes());
+        RtKey::ShortStr(MirrorShortStr {
+            len: text.len() as u8,
+            data,
+        })
+    } else {
+        RtKey::String(text.to_owned())
+    }
+}
+
+pub(crate) fn key_from_dyn(v: LkDyn) -> RtKey {
     match v.tag {
         DYN_NIL => RtKey::Nil,
         DYN_BOOL => RtKey::Bool(v.payload != 0),
@@ -72,18 +90,7 @@ fn key_from_dyn(v: LkDyn) -> RtKey {
                 // SAFETY: DYN_STR payloads are NUL-terminated arena strings.
                 unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
             };
-            // The VM's canonical string split: ≤ 7 bytes is always the
-            // inline `ShortStr` runtime value, 8+ always a heap string.
-            if text.len() <= 7 {
-                let mut data = [0u8; 7];
-                data[..text.len()].copy_from_slice(text.as_bytes());
-                RtKey::ShortStr(MirrorShortStr {
-                    len: text.len() as u8,
-                    data,
-                })
-            } else {
-                RtKey::String(text.to_owned())
-            }
+            str_key(text)
         }
         // Float keys are the VM's loud "cannot be used as a key" error;
         // container keys (heap-handle identity) are outside the subset.
@@ -91,7 +98,7 @@ fn key_from_dyn(v: LkDyn) -> RtKey {
     }
 }
 
-fn key_str(key: &RtKey) -> &str {
+pub(crate) fn key_str(key: &RtKey) -> &str {
     match key {
         RtKey::ShortStr(s) => core::str::from_utf8(&s.data[..s.len as usize]).unwrap_or(""),
         RtKey::String(s) => s.as_str(),
@@ -105,17 +112,7 @@ fn key_str(key: &RtKey) -> &str {
 pub(crate) fn str_dyn_map_mirrored(pairs: Vec<(String, LkDyn)>) -> *mut c_void {
     let mut stage1: FxMap<RtKey, LkDyn> = FxMap::default();
     for (key, value) in pairs {
-        let rt_key = if key.len() <= 7 {
-            let mut data = [0u8; 7];
-            data[..key.len()].copy_from_slice(key.as_bytes());
-            RtKey::ShortStr(MirrorShortStr {
-                len: key.len() as u8,
-                data,
-            })
-        } else {
-            RtKey::String(key)
-        };
-        stage1.insert(rt_key, value);
+        stage1.insert(str_key(&key), value);
     }
     let mut out = StrDynMap::default();
     for (key, value) in &stage1 {
