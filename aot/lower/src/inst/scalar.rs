@@ -12,6 +12,7 @@ pub(super) fn lower(
     pc: usize,
 ) -> Result<(), Unsupported> {
     let ssa = &mut *ctx.ssa;
+    let globals = &mut *ctx.globals;
     let func = ctx.func;
     match instr.opcode() {
         Opcode::LoadInt => {
@@ -492,28 +493,46 @@ pub(super) fn lower(
                 // `as_str` tag guard (same loud failure) and emit a *typed*
                 // concat — the result stays `Str`, keeping a loop
                 // accumulator (`acc += s[i]`) same-typed through its phi.
+                // `Str + Dyn`: ask the runtime, which is where the VM's rule
+                // lives (`dyn.add` mirrors `Executor::dynamic_add`). This used
+                // to unbox the Dyn side with `as_str` — a *raise* unless it
+                // happened to hold a string — on the belief that the VM "only
+                // accepts Str + Str here". It does not: `"v=" + x` with a boxed
+                // Int is `v=1`, and `"p=" + xs` with a boxed list is the list
+                // `["p=", 1, 2]`, because a list operand outranks a string one.
+                // The old arm aborted both.
+                //
+                // The result is `Dyn` rather than `Str` for the same reason: a
+                // list operand makes it a list. A loop accumulator stays
+                // same-typed through its phi either way, since both sides of
+                // the phi come out of this arm.
                 if op == Opcode::AddInt && matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str)) {
-                    let unbox = |ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty| {
-                        if ty == Ty::Dyn {
-                            let dst = ssa.new_val();
-                            insts.push(Inst::Call {
-                                dst: Some(dst),
-                                callee: AbiRef::new("dyn", "as_str"),
-                                args: vec![v],
-                            });
-                            dst
-                        } else {
-                            v
-                        }
-                    };
-                    let lhs = unbox(ssa, insts, lv_raw, lty_raw);
-                    let rhs = unbox(ssa, insts, rv_raw, rty_raw);
+                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
                     let dst = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(dst),
-                        callee: AbiRef::new("str", "concat"),
+                        callee: AbiRef::new("dyn", "add"),
                         args: vec![lhs, rhs],
                     });
+                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    return Ok(());
+                }
+                // `Str + scalar` / `scalar + Str`: display-concatenate, the
+                // VM's fourth `dynamic_add` case. Statically known on both
+                // sides, so it needs no runtime dispatch — and it had no arm at
+                // all, which took `println(1 + "ab")` down with it.
+                if op == Opcode::AddInt
+                    && matches!((lty_raw, rty_raw), (Ty::Str, _) | (_, Ty::Str))
+                    && matches!(lty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                    && matches!(rty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                    && (lty_raw, rty_raw) != (Ty::Str, Ty::Str)
+                {
+                    let (l, l_fresh) = to_display_str(ssa, insts, globals, lv_raw, lty_raw, false, pc)?;
+                    let dst = concat_display(ssa, insts, globals, l, rv_raw, rty_raw, false, pc)?;
+                    if l_fresh {
+                        free_owned_str(insts, l);
+                    }
                     ssa.write(instr.a(), block, (dst, Ty::Str));
                     return Ok(());
                 }
@@ -1093,6 +1112,30 @@ pub(super) fn lower(
                     });
                     (false, cmp, zero)
                 }
+                // Two values of *different kinds* are never equal, and both
+                // kinds are known here — so the answer is a constant.
+                //
+                // Every arm above pairs a kind with itself (or Int with Float,
+                // which coerce). What was left was `1 == "a"`, `true == [1]`,
+                // `nil == 2.5` and the hundred-odd other cross-kind pairings —
+                // each a `false` the VM computes and the lowering refused,
+                // taking the whole program down with it.
+                //
+                // `eq_kind` returns `None` for anything whose kind is not
+                // static (`Dyn`, a `Maybe` carrier), and those must not fold: a
+                // `Maybe<Int>` is an Int *or* nil, which is two kinds.
+                (lk, rk)
+                    if matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne)
+                        && matches!((eq_kind(lk), eq_kind(rk)), (Some(a), Some(b)) if a != b) =>
+                {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(cmp_op(op) == CmpOp::Ne),
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    return Ok(());
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let dst = ssa.new_val();
@@ -1108,4 +1151,27 @@ pub(super) fn lower(
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
+}
+
+/// The *kind* a value belongs to for equality: two values of different kinds
+/// are never equal, whatever their contents.
+///
+/// `Int` and `Float` share a kind because the VM coerces them (`1 == 1.0`),
+/// and the four list representations share one because a list's element typing
+/// is a storage detail, not part of its value — the same for the five map
+/// carriers. `None` means the kind is not decidable at lower time: a `Dyn` is
+/// whatever it is at runtime, and a `Maybe<Int>` is an Int *or* nil, which is
+/// two kinds in one static type.
+fn eq_kind(ty: Ty) -> Option<u8> {
+    Some(match ty {
+        Ty::Nil => 0,
+        Ty::Bool => 1,
+        Ty::I64 | Ty::F64 => 2,
+        Ty::Str => 3,
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => 4,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => 5,
+        Ty::Set => 6,
+        Ty::Bytes => 7,
+        _ => return None,
+    })
 }

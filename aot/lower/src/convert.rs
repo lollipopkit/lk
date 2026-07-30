@@ -178,6 +178,17 @@ pub(crate) fn to_display_str(
 ) -> Result<(ValueId, bool), Unsupported> {
     match ty {
         Ty::Str => Ok((v, false)),
+        // `nil` renders as the word, in every display context the VM has. It
+        // had no arm at all, so `"x" + nil` and `"${nil}"` fell back.
+        Ty::Nil => {
+            let gid = intern_global(globals, "nil");
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Str(GlobalId(gid)),
+            });
+            Ok((dst, false))
+        }
         // A `Maybe` displays its value when present and `nil` when absent
         // (matching the VM's display of a missing-key read). The value-side
         // conversion runs unconditionally (its result is arena-owned and

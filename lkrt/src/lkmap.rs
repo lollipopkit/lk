@@ -573,6 +573,23 @@ pub(crate) fn typed_map_keyed(kind: i64, handle: *mut c_void) -> FxMap<RtKey, cr
     out
 }
 
+/// The general map key, re-exported so the `dyn` layer can name the type its
+/// keyed views return without reaching into the mirror.
+pub(crate) type MapKey = RtKey;
+
+/// Turns a keyed view back into a boxed `str -> Dyn` map.
+///
+/// String keys only, which is what `+`'s merge produces: an int-keyed operand
+/// would have raised at `key_str`. The insertion order is the view's, and this
+/// is a *new* map — nothing is claiming to preserve an order it never had.
+pub(crate) fn str_dyn_from_keyed(entries: FxMap<MapKey, crate::lkdyn::LkDyn>) -> *mut c_void {
+    let mut out = StrDynMap::default();
+    for (key, value) in entries {
+        out.insert(crate::vm_mirror::key_str(&key).to_string(), value);
+    }
+    crate::state::arena_handle(out)
+}
+
 /// The same view of a **boxed** (`str -> Dyn`) map, so equality can compare one
 /// against a typed one.
 pub(crate) fn boxed_map_keyed(handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {

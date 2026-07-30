@@ -579,18 +579,70 @@ pub extern "C" fn lkrt_dyn_method_missing() {
 /// Str payloads must be live NUL-terminated strings (arena or interned).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
-    if a.tag == DYN_STR && b.tag == DYN_STR {
-        let joined = format!("{}{}", unsafe { dyn_str(a) }, unsafe { dyn_str(b) });
+    // `Executor::dynamic_add`, in its order — and the order is the rule, not a
+    // detail: a list operand wins over a string one, so `"p=" + [1, 2]` is the
+    // list `["p=", 1, 2]` and not the text `p=[1,2]`.
+    //
+    // Only the first and last cases were here before, under the belief that the
+    // VM "only accepts Str + Str"; everything else raised. `"v=" + x` with a
+    // boxed Int aborted the program where the VM prints `v=1`.
+
+    // 1. Numbers.
+    if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
+        return match (x, y) {
+            (Numeric::Int(x), Numeric::Int(y)) => from_i64(x.wrapping_add(y)),
+            _ => from_f64(x.as_f64() + y.as_f64()),
+        };
+    }
+    // 2. Two maps merge, the right side winning.
+    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+        let mut merged = map_entries(a);
+        for (key, value) in map_entries(b) {
+            merged.insert(key, value);
+        }
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_keyed(merged) as i64,
+        };
+    }
+    // 3. A list on *either* side concatenates; the other operand is one element.
+    if a.tag == DYN_LIST || b.tag == DYN_LIST {
+        let mut out: Vec<LkDyn> = Vec::new();
+        for side in [a, b] {
+            if side.tag == DYN_LIST {
+                out.extend_from_slice(dyn_list(side));
+            } else {
+                out.push(side);
+            }
+        }
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(out) as i64,
+        };
+    }
+    // 4. A string on either side: display-concatenate. Both operands are
+    //    scalars by now, which is what makes the bare display exact.
+    if a.tag == DYN_STR || b.tag == DYN_STR {
+        let mut joined = String::new();
+        display_into(&mut joined, a, false);
+        display_into(&mut joined, b, false);
         let ptr = arena_c_string(CString::new(joined).unwrap_or_default());
         return LkDyn {
             tag: DYN_STR,
             payload: ptr as i64,
         };
     }
-    match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_add(y)),
-        (Some(x), Some(y)) => from_f64(x.as_f64() + y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+    crate::panic::raise_str("runtime type error")
+}
+
+/// A map of any representation as `(key, value)` pairs under the general key,
+/// for the merge above. A copy, and sound for the same reason
+/// `lkmap::typed_map_keyed` is: the result is a *new* map either way.
+fn map_entries(v: LkDyn) -> crate::lkmap::FxMap<crate::lkmap::MapKey, LkDyn> {
+    if v.tag == DYN_MAP {
+        crate::lkmap::boxed_map_keyed(v.payload as *mut c_void)
+    } else {
+        crate::lkmap::typed_map_keyed(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
     }
 }
 

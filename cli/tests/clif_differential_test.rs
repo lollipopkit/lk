@@ -1418,6 +1418,55 @@ fn try_catch_differential() {
     );
 }
 
+/// `+` and `==` across types, pinned to pure Cranelift.
+///
+/// From an operator x type-pair sweep (11 values x 13 operators). Two things
+/// came out of it, and only one of them was a missing feature.
+///
+/// **`==` across kinds is a constant.** Every arm paired a kind with itself, so
+/// `1 == "a"`, `true == [1]`, `nil == 2.5` and a hundred other pairings — each
+/// a `false` the VM computes without hesitating — took the whole program down.
+/// Both kinds are known at lower time, so the answer folds.
+///
+/// **`+` was answering the wrong question.** The `Str + Dyn` arm unboxed the
+/// Dyn with `as_str`, which *raises* unless it holds a string, on the belief
+/// that the VM "only accepts Str + Str here". `Executor::dynamic_add` says
+/// otherwise, in this order: numbers, then two maps merge, then a list on
+/// either side concatenates, then a string on either side display-concatenates.
+/// So `"v=" + x` with a boxed Int is `v=1` and `"p=" + xs` with a boxed list is
+/// the *list* `["p=", 1, 2]` — the old arm aborted both.
+#[test]
+fn mixed_type_addition_and_equality() {
+    run_differential(
+        "mixed_type_ops",
+        &[
+            new(
+                "cross_kind_equality_is_false",
+                "println(1 == \"a\");\nprintln(1 != \"a\");\nprintln(true == 1);\nprintln(nil == 0);\nprintln(nil == false);\nprintln([1] == {\"a\": 1});\nprintln(2.5 == \"x\");\nprintln(Set([1]) == [1]);\nreturn 0;\n",
+            ),
+            new(
+                "numeric_kinds_still_coerce",
+                "println(1 == 1.0);\nprintln(1 != 1.0);\nprintln([1] == [1.0]);\nprintln(nil == nil);\nreturn 0;\n",
+            ),
+            new(
+                "string_plus_scalar_displays",
+                "println(1 + \"ab\");\nprintln(\"ab\" + 1);\nprintln(2.5 + \"x\");\nprintln(\"x\" + 2.5);\nprintln(true + \"x\");\nprintln(\"x\" + nil);\nprintln(\"a\" + \"b\");\nreturn 0;\n",
+            ),
+            // The wrong answer: a boxed operand that is not a string.
+            new(
+                "string_plus_boxed_scalar",
+                "let xs = [1, \"a\", 2.5, true];\nfor x in xs { println(\"v=\" + x); }\nreturn 0;\n",
+            ),
+            // A list operand outranks a string one, so this is a list.
+            new(
+                "a_list_operand_outranks_a_string",
+                "let xs = [[1, 2], \"s\"];\nlet a = xs[0]!;\nprintln(\"t=${a}\");\nprintln(\"p=\" + a);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A typed map boxed into a container keeps its own entry order.
 ///
 /// Boxing used to mean `str_i64_to_dyn` — rebuilding the map into a
