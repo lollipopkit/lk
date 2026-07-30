@@ -11,7 +11,42 @@ Each entry records **where its body lives** (`MethodImpl`):
 | variant | body | called against |
 | --- | --- | --- |
 | `Local { module, function }` | function index in `module` | the executing state — directly when `module` *is* the executing module, otherwise as described below |
-| `Imported(RuntimeCallable)` | function index in the callable's own module | that module's own `Arc<Mutex<RuntimeModuleState>>`, with arguments and the result marshalled across heaps |
+| `Imported(RuntimeCallable)` | function index in the callable's own module | that module's own `Arc<Mutex<RuntimeModuleState>>`, with arguments and the result marshalled across heaps — unless that module is already executing, see below |
+
+### `Imported` when the module is already on the stack
+
+Borrowing a module's state means *moving* it out of its mutex until the call
+returns, so nothing can enter that module again in the meantime. Two ordinary
+programs do exactly that:
+
+```lk
+// shape.lk — a method calling another method on self
+impl Sq { fn area(self) -> Int { return self.side * self.side; }
+          fn twice(self) -> Int { return self.area() * 2; } }
+```
+
+```lk
+// a.lk — out to another module and back
+impl A { fn base(self) -> Int { return self.v; }
+         fn viab(self) -> Int { return helper(self); } }   // helper() calls x.base()
+```
+
+Both failed with `module expected 83 globals, got 0`: the re-entering call got
+the `Default::default()` placeholder left in the mutex, which is indistinguishable
+from a real state that happens to be empty. The placeholder now carries
+`borrowed_for_call`, so "in use" is something it says about itself rather than
+something a later length check infers.
+
+Knowing that, the two cases take the two paths that already existed:
+
+- **The module is the one executing** (`twice` → `self.area()`) — no borrowing is
+  needed at all; the live state *is* that module's. Runs like a local closure.
+- **The module is elsewhere on the stack** (`viab` → `helper` → `base`) — run it
+  the way any foreign body is run, below: current heap, globals seeded to the
+  declaring module's shape. That needs the module, not the module's state.
+
+A body that *writes* a module global still cannot take the second path, and is
+refused by name rather than writing into a table that is about to be discarded.
 
 ## The hard case: an `impl` reached from another module's frame
 
