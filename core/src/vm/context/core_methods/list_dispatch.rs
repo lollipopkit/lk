@@ -308,9 +308,31 @@ pub(super) fn dispatch_list_builtin_method(
             let Some(HeapValue::List(list)) = heap.get(handle) else {
                 return Ok(None);
             };
-            let index = write_index_arg(&positional[0], list.len(), "list.set() index")?;
+            // Worded like the index-assignment path, not like `insert`/`remove_at`.
+            // The compiler rewrites every `xs.set(k, v)` into a `SetIndex`, so
+            // this arm is not reached from compiled code — a literal receiver, an
+            // unannotated parameter, a map-indexed receiver and a module-global
+            // list all report the assignment wording, and a sentinel put here
+            // survived the whole test suite and every example unseen. It stays
+            // because `set` is a real method and a program should not depend on
+            // which route the compiler picked; what it must not do is *disagree*
+            // with that route, which is what "list.set() index N out of bounds
+            // (len=N)" did. `insert`/`remove_at` keep their own wording because
+            // they have no rewrite and that wording is what a program sees.
+            let RuntimeVal::Int(requested) = positional[0] else {
+                bail!("list index must be Int");
+            };
+            let resolved = if requested < 0 {
+                list.len() as i64 + requested
+            } else {
+                requested
+            };
+            if resolved < 0 {
+                bail!("list index must be non-negative");
+            }
+            let index = resolved as usize;
             if index >= list.len() {
-                bail!("list.set() index {} out of bounds (len={})", index, list.len());
+                bail!("list index {requested} out of bounds");
             }
             // In place, answering the receiver — the same thing the compiler's
             // own lowering does. This arm used to copy the list and return a
@@ -459,5 +481,52 @@ pub(super) fn dispatch_list_builtin_method(
             Ok(Some(make_string_val(&joined, heap)))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::val::TypedList;
+
+    /// The `set` arm words its range failures like the index-assignment path.
+    ///
+    /// Reached from here rather than from LK because it cannot be reached from
+    /// LK: the compiler rewrites every `xs.set(k, v)` into a `SetIndex`, and a
+    /// sentinel put in this arm survived the whole test suite and every example
+    /// unseen. That is exactly why it needs a test — an arm no program reaches is
+    /// an arm whose wording nothing checks, and this one used to say
+    /// `list.set() index N out of bounds (len=N)` where the route programs
+    /// actually take says `list index N out of bounds`.
+    #[test]
+    fn the_unreachable_set_arm_agrees_with_the_assignment_path() {
+        let mut heap = HeapStore::new();
+        let handle = heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2])));
+        let receiver = RuntimeVal::Obj(handle);
+
+        let mut message = |index: i64| {
+            dispatch_list_builtin_method(
+                &receiver,
+                "set",
+                &[RuntimeVal::Int(index), RuntimeVal::Int(5)],
+                &mut heap,
+            )
+            .expect_err("out of range")
+            .to_string()
+        };
+        assert_eq!(message(9), "list index 9 out of bounds");
+        assert_eq!(message(-9), "list index must be non-negative");
+
+        // And it still writes, in place, answering the receiver — the effect the
+        // rewritten route has.
+        let answer =
+            dispatch_list_builtin_method(&receiver, "set", &[RuntimeVal::Int(-1), RuntimeVal::Int(7)], &mut heap)
+                .expect("in range")
+                .expect("handled");
+        assert_eq!(answer, receiver, "`set` answers the list it wrote to");
+        assert!(
+            matches!(heap.get(handle), Some(HeapValue::List(TypedList::Int(values))) if values == &[1, 7]),
+            "the write lands in the receiver's own list"
+        );
     }
 }
