@@ -49,6 +49,23 @@ jobs:
           rustup target add wasm32-unknown-unknown
           cargo build -p lk-values --target wasm32-unknown-unknown
           cargo build -p lk-wasm --target wasm32-unknown-unknown
+      - name: every bare-metal LK program type-checks
+        # The two bare-metal crates are excluded from the workspace, and their
+        # build steps only compile the *one* program each embeds — so a `.lk`
+        # beside it drifted out of the type system unnoticed. Two real bugs were
+        # found this way on the same day: a `Float` reaching `&` in seven PCI
+        # driver functions, and a `u32` mask assigned to an `Int` flag in
+        # `uart.lk`, which the embedded path never type-checked at all.
+        run: |
+          cargo build -p lk-cli --no-default-features --features stdlib
+          fail=0
+          for f in $(find bare-metal bare-metal-x86 -name '*.lk' -not -path '*/target/*'); do
+            if ! ./target/debug/lk check "$f"; then
+              echo "::error file=$f::does not type-check"
+              fail=1
+            fi
+          done
+          exit $fail
       - name: thumbv7em MCU smoke (bare + alloc L0 profiles on bare-metal ARM)
         # Proves the L0 foundations cross-compile to a real Cortex-M MCU target
         # (no OS, no allocator provided): lk-values is the `alloc` profile

@@ -38,7 +38,11 @@ fn uart_putc(byte: Int) {
     let full = 1;
     while (full != 0) {
         let state = unsafe { volatile_read_u32((UART0_BASE + REG_STATE) as *mut u32) };
-        full = state & STATE_TX_FULL;
+        // `as Int`: the mask is a `u32` because the register is, and `full` is
+        // the loop's own Int flag. Stating the narrowing is what `lk check`
+        // asks for — the embedded path never ran that check, so this file
+        // disagreed with the checker for as long as it existed.
+        full = (state & STATE_TX_FULL) as Int;
     }
     unsafe { volatile_write_u32((UART0_BASE + REG_DATA) as *mut u32, byte as u32); };
 }
