@@ -222,13 +222,20 @@ fn raise_current(value: LkDyn) -> ! {
                 crate::abi::flush_and_abort()
             }
         }
-        // Uncaught: surface the error before dying — the VM prints its
-        // uncaught message to stderr, a silent abort loses it. (Only the
-        // stderr *text* differs across backends; the differential contract
-        // compares stdout + success only.) Exit 1 like the VM rather than
-        // abort: the program failed, the runtime did not.
+        // Uncaught: surface the error before dying — a silent abort loses it.
+        // Exit 1 rather than abort: the program failed, the runtime did not.
+        //
+        // `Error: ` is the label the whole language reports with — parse errors,
+        // type errors, and every `diagnostic::error` in the CLI. This said `lk:
+        // uncaught error: ` for as long as the divergence was written off as
+        // "only the stderr text differs, and the differential compares stdout +
+        // success only" — which says what the gate looked at, not what a reader
+        // gets: the same failing program read two different ways depending on
+        // which backend ran it, and `lk:` named a program that a compiled binary
+        // is not. `an_uncaught_error_exits_and_reads_the_same_on_both_backends` now compares
+        // the two byte for byte.
         None => {
-            crate::rt_eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
+            crate::rt_eprintln!("Error: {}", crate::lkdyn::display_for_diagnostics(value));
             crate::abi::flush_and_exit_failure()
         }
     }

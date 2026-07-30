@@ -616,13 +616,25 @@ fn main() -> anyhow::Result<()> {
             },
             None => program.execute_with_ctx(&mut base_env),
         }
-    }
-    .with_context(|| "VM execution failed");
+    };
 
     // Shutdown runtime after execution
     base_env.shutdown_async_runtime();
 
-    let result = unwrap_with_traceback(exec_result, &base_env)?;
+    // Reported here rather than propagated, so a failing program reads the same
+    // whichever backend ran it. This used to carry `.with_context("VM execution
+    // failed")`, which anyhow rendered as four lines around the real message —
+    // and the claim was false for half of what reaches here: the compiler's own
+    // errors come out of this `Result` too (`compile_program_module_with_ctx`),
+    // and nothing had executed. A native binary prints one `Error: …` line;
+    // `an_uncaught_error_exits_and_reads_the_same_on_both_backends` pins the two together.
+    let result = match unwrap_with_traceback(exec_result, &base_env) {
+        Ok(result) => result,
+        Err(err) => {
+            diagnostic::error(format!("{err:#}"));
+            std::process::exit(1);
+        }
+    };
     maybe_print_vm_profile(profile_enabled);
 
     if !result.first_return_is_nil() {

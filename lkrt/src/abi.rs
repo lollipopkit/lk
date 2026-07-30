@@ -56,7 +56,7 @@ pub(crate) fn flush_and_exit_failure() -> ! {
     // Bare metal has no process to exit; the panic handler is the stop.
     #[cfg(not(feature = "std"))]
     {
-        panic!("lk: uncaught error")
+        panic!("Error: uncaught")
     }
 }
 

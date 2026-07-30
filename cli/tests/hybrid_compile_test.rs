@@ -333,7 +333,7 @@ fn raises_reach_the_enclosing_try_like_the_vm() {
 }
 
 #[test]
-fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
+fn an_uncaught_error_exits_and_reads_the_same_on_both_backends() {
     let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_err_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create tmp dir");
@@ -385,6 +385,40 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
     assert!(
         native_stderr.contains("bad: 5"),
         "the VM's rendered error must reach stderr: {native_stderr}"
+    );
+
+    // And it reads the same. The VM said `Error: VM execution failed` with the
+    // real message demoted to anyhow's `Caused by:` block, while lkrt said `lk:
+    // uncaught error: bad: 5` — one failing program, two reports, and the
+    // divergence was written off in `lkrt/src/panic.rs` because "the
+    // differential compares stdout + success only". That says what the gate
+    // looked at.
+    //
+    // Not byte equality: the VM also prints a call-stack traceback, which a
+    // native binary has no frames for. The contract is the *error line* — the
+    // traceback is something the VM has to offer on top of it.
+    let error_line = |stderr: &str| {
+        stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let vm_stderr = String::from_utf8_lossy(&vm.stderr).into_owned();
+    assert_eq!(
+        error_line(&vm_stderr),
+        error_line(&native_stderr),
+        "an uncaught error must read the same on both backends\nvm:\n{vm_stderr}\nnative:\n{native_stderr}"
+    );
+    assert_eq!(
+        error_line(&native_stderr),
+        "Error: bad: 5",
+        "the label is the one the rest of the language reports with: {native_stderr}"
+    );
+    assert!(
+        vm_stderr.contains("Call stack:"),
+        "the VM keeps offering its traceback above that line: {vm_stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
