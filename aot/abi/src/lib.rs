@@ -338,7 +338,17 @@ macro_rules! for_each_abi_fn {
             // Float → ±1.0/0.0); the lowering dispatches on the static type.
             ("math", "sign_i64", lkrt_math_sign_i64, Pure, [I64], I64);
             ("math", "sign_f64", lkrt_math_sign_f64, Pure, [F64], F64);
+            // The `path` module's fixed-arity members. `String?` results arrive
+            // boxed, the same convention `string.strip_prefix` uses.
+            ("path", "parent", lkrt_path_parent, Pure, [StrPtr], DynVal);
+            ("path", "file_name", lkrt_path_file_name, Pure, [StrPtr], DynVal);
+            ("path", "file_stem", lkrt_path_file_stem, Pure, [StrPtr], DynVal);
+            ("path", "extension", lkrt_path_extension, Pure, [StrPtr], DynVal);
+            ("path", "with_extension", lkrt_path_with_extension, WritesHost, [StrPtr, StrPtr], StrPtr);
+            ("path", "is_absolute", lkrt_path_is_absolute, Pure, [StrPtr], I64);
+            ("path", "components", lkrt_path_components, WritesHost, [StrPtr], Ptr);
             ("path", "sep", lkrt_path_sep, ReadsHost, [], StrPtr);
+            ("path", "delimiter", lkrt_path_delimiter, ReadsHost, [], StrPtr);
             // chrono-backed datetime (same crate as the stdlib module, so
             // formatting/weekday output is byte-identical). `format`/`parse`/
             // ordinal helpers abort on invalid input like the VM's loud error.

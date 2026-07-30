@@ -323,7 +323,54 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
     // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
     abi_row("math", "is_nan", AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool),
+    // The `path` module's fixed-arity members. `parent`/`file_name`/`file_stem`/
+    // `extension` answer `String?`, which arrives boxed — the convention
+    // `string.strip_prefix` established.
+    abi_row("path", "parent", AbiRef::new("path", "parent"), &[Ty::Str], Ty::Dyn),
+    abi_row(
+        "path",
+        "file_name",
+        AbiRef::new("path", "file_name"),
+        &[Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "path",
+        "file_stem",
+        AbiRef::new("path", "file_stem"),
+        &[Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "path",
+        "extension",
+        AbiRef::new("path", "extension"),
+        &[Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "path",
+        "with_extension",
+        AbiRef::new("path", "with_extension"),
+        &[Ty::Str, Ty::Str],
+        Ty::Str,
+    ),
+    abi_row(
+        "path",
+        "is_absolute",
+        AbiRef::new("path", "is_absolute"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "path",
+        "components",
+        AbiRef::new("path", "components"),
+        &[Ty::Str],
+        Ty::ListStr,
+    ),
     abi_row("path", "sep", AbiRef::new("path", "sep"), &[], Ty::Str),
+    abi_row("path", "delimiter", AbiRef::new("path", "delimiter"), &[], Ty::Str),
     // String-or-nil results arrive boxed (`String?` in the module schema).
     abi_row(
         "string",
@@ -671,5 +718,56 @@ pub(crate) fn module_const(module: &str, name: &str) -> Option<(Const, Ty)> {
         ("math", "max_float") => Some((Const::F64(f64::MAX), Ty::F64)),
         ("math", "epsilon") => Some((Const::F64(f64::EPSILON), Ty::F64)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `path` members that lower natively, and the two that deliberately do
+    /// not.
+    ///
+    /// This is a table test rather than a differential for a reason worth
+    /// stating: **the differential cannot see this**. Delete a row below and
+    /// `path_members_answer_the_same_on_both_ends` still passes — the call falls
+    /// to the hybrid bridge, prints the same answer, and is merely ~3x slower.
+    /// Only a check of the table itself (or `scripts/aot_coverage.sh`, which
+    /// pins fallback off) notices.
+    ///
+    /// `join` and `normalize` are absent on purpose. `join` is variadic, which
+    /// the fixed-arity ABI cannot express. `normalize` is lexical path
+    /// cleaning, which `std::path` does not do — lowering it means *copying*
+    /// the VM's component loop into `lkrt`, giving one rule that has already
+    /// carried two bugs a second place to drift. lkrt's discipline is to share
+    /// the crate underneath (`std::path`, as it already shares base64/hex/
+    /// chrono), never to re-type LK-level logic. Both stay on the bridge until
+    /// there is a shared implementation to point at.
+    #[test]
+    fn the_path_module_lowers_exactly_its_fixed_arity_members() {
+        for member in [
+            "parent",
+            "file_name",
+            "file_stem",
+            "extension",
+            "with_extension",
+            "is_absolute",
+            "components",
+            "sep",
+            "delimiter",
+        ] {
+            assert!(
+                module_call_abi("path", member).is_some(),
+                "path.{member} lost its native lowering — it now runs on the hybrid bridge, \
+                 which no differential test can detect"
+            );
+        }
+        for member in ["join", "normalize"] {
+            assert!(
+                module_call_abi("path", member).is_none(),
+                "path.{member} gained a native lowering; if that is intended, say here what \
+                 it shares its implementation with"
+            );
+        }
     }
 }

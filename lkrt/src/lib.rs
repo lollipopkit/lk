@@ -122,7 +122,9 @@ pub use host::{
 };
 #[cfg(feature = "std")]
 pub use host::{
-    lkrt_math_cbrt, lkrt_math_hypot, lkrt_math_is_nan, lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_path_sep,
+    lkrt_math_cbrt, lkrt_math_hypot, lkrt_math_is_nan, lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_path_components,
+    lkrt_path_delimiter, lkrt_path_extension, lkrt_path_file_name, lkrt_path_file_stem, lkrt_path_is_absolute,
+    lkrt_path_parent, lkrt_path_sep, lkrt_path_with_extension,
 };
 #[cfg(feature = "std")]
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};

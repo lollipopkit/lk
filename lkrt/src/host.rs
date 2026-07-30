@@ -410,6 +410,102 @@ pub extern "C" fn lkrt_math_sign_f64(v: f64) -> f64 {
 
 /// `path.sep()` — the platform's main separator (the stdlib module's
 /// `MAIN_SEPARATOR_STR`).
+/// The `path` module's `String?` parts, each one `std::path`'s own answer.
+///
+/// The stdlib module calls exactly these `Path` methods, so sharing the
+/// *underlying crate* is what keeps the two ends identical — the same discipline
+/// the base64/hex and datetime helpers here follow, rather than a second
+/// implementation of the rule.
+macro_rules! path_part {
+    ($name:ident, $call:ident, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `path` must be a valid C string.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(path: *const c_char) -> crate::lkdyn::LkDyn {
+            // SAFETY: caller guarantees a valid C string.
+            let text = unsafe { core::ffi::CStr::from_ptr(path) }.to_str().unwrap_or("");
+            match std::path::Path::new(text).$call() {
+                Some(part) => {
+                    let owned = crate::lkstr::arena_c_string(
+                        alloc::ffi::CString::new(part.to_string_lossy().as_ref()).unwrap_or_default(),
+                    );
+                    crate::lkdyn::lkrt_dyn_from_str(owned)
+                }
+                None => crate::lkdyn::LkDyn::NIL,
+            }
+        }
+    };
+}
+
+path_part!(lkrt_path_parent, parent, "`path.parent(p)` → String?");
+path_part!(lkrt_path_file_name, file_name, "`path.file_name(p)` → String?");
+path_part!(lkrt_path_file_stem, file_stem, "`path.file_stem(p)` → String?");
+path_part!(lkrt_path_extension, extension, "`path.extension(p)` → String?");
+
+/// `path.with_extension(p, ext)` → String.
+///
+/// # Safety
+/// Both arguments must be valid C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_path_with_extension(path: *const c_char, ext: *const c_char) -> *mut c_char {
+    // SAFETY: caller guarantees valid C strings.
+    let (text, ext) = unsafe {
+        (
+            core::ffi::CStr::from_ptr(path).to_str().unwrap_or(""),
+            core::ffi::CStr::from_ptr(ext).to_str().unwrap_or(""),
+        )
+    };
+    let joined = std::path::Path::new(text).with_extension(ext);
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(joined.to_string_lossy().as_ref()).unwrap_or_default())
+}
+
+/// `path.is_absolute(p)` → Bool, as 1/0.
+///
+/// # Safety
+/// `path` must be a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_path_is_absolute(path: *const c_char) -> i64 {
+    // SAFETY: caller guarantees a valid C string.
+    let text = unsafe { core::ffi::CStr::from_ptr(path) }.to_str().unwrap_or("");
+    i64::from(std::path::Path::new(text).is_absolute())
+}
+
+/// `path.components(p)` → List<String>, the same `Path::components` walk.
+///
+/// # Safety
+/// `path` must be a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_path_components(path: *const c_char) -> *mut core::ffi::c_void {
+    // SAFETY: caller guarantees a valid C string.
+    let text = unsafe { core::ffi::CStr::from_ptr(path) }.to_str().unwrap_or("");
+    let parts: Vec<*const c_char> = std::path::Path::new(text)
+        .components()
+        .map(|component| {
+            crate::lkstr::arena_c_string(
+                alloc::ffi::CString::new(component.as_os_str().to_string_lossy().as_ref()).unwrap_or_default(),
+            )
+            .cast_const()
+        })
+        .collect();
+    crate::state::arena_handle(parts)
+}
+
+/// The stdlib `path` module's `delimiter`: the character that separates
+/// *entries* in a `PATH`-style variable, as opposed to `sep`, which separates
+/// components within one path.
+///
+/// `std::path` names only the latter (`MAIN_SEPARATOR_STR`), so the platform
+/// answer is written out here — the same two-line `cfg!(windows)` the stdlib
+/// module has. That is a rule in two places, which is why the table test in
+/// `aot/lower/src/tables.rs` names it: it exists so the pair cannot silently
+/// disagree the day one of them learns a third platform.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_path_delimiter() -> *mut c_char {
+    let delimiter = if cfg!(windows) { ";" } else { ":" };
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(delimiter).unwrap_or_default())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_path_sep() -> *mut c_char {
     crate::lkstr::arena_c_string(alloc::ffi::CString::new(std::path::MAIN_SEPARATOR_STR).unwrap_or_default())

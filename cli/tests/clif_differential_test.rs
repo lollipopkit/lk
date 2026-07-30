@@ -4401,3 +4401,39 @@ fn the_string_module_spelling_lowers_like_the_method() {
         ],
     );
 }
+
+/// The `path` module's fixed-arity members answer natively, and answer the same.
+///
+/// The module is `std::path` on both ends — the same discipline that keeps the
+/// base64/hex text and the datetime formatting byte-identical: share the crate
+/// underneath, do not write the rule twice.
+///
+/// The `String?` members are the sharp edge. `path.parent("c.txt")` is the empty
+/// string while `path.parent("/")` is nil, and `path.extension("a")` and
+/// `path.extension(".bashrc")` are both nil for different reasons — a boxed
+/// result that got the empty-vs-nil distinction wrong would look right on the
+/// common cases.
+#[test]
+fn path_members_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "path_members",
+        &[
+            new(
+                "the_optional_parts",
+                "use path;\nlet z = \"\";\nprintln(path.parent(\"a/b/c.txt\" + z));\n\
+                 println(path.parent(\"c.txt\"));\nprintln(path.parent(\"/\"));\n\
+                 println(path.file_name(\"a/b/c.txt\"));\nprintln(path.file_name(\"a/b/\"));\n\
+                 println(path.file_stem(\"a/b/c.tar.gz\"));\nprintln(path.extension(\"a/b/c.tar.gz\"));\n\
+                 println(path.extension(\"a\"));\nprintln(path.extension(\".bashrc\"));\nreturn 0;\n",
+            ),
+            new(
+                "the_total_parts",
+                "use path;\nlet z = \"\";\nprintln(path.with_extension(\"a/b.txt\" + z, \"md\"));\n\
+                 println(path.with_extension(\"a\", \"txt\"));\nprintln(path.is_absolute(\"/a\"));\n\
+                 println(path.is_absolute(\"a\"));\nprintln(path.components(\"a/b/c\"));\n\
+                 println(path.components(\"/a/b\"));\nprintln(path.components(\"\"));\n\
+                 println(path.sep());\nprintln(path.delimiter());\nreturn 0;\n",
+            ),
+        ],
+    );
+}
