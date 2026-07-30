@@ -795,8 +795,18 @@ pub(super) fn lower(
                     ssa.write(instr.a(), block, (dst, ty));
                     return Ok(());
                 }
-                ssa.builtin_regs
-                    .insert((block, instr.a()), GlobalRef::ModuleFn(module, name));
+                // `encoding.json`, `io.std`, `net.tcp`: reading a *submodule*
+                // off its parent gives another module object, not a function of
+                // the parent. Without this the chain stopped at the first dot,
+                // so `encoding.json.parse(s)` dropped the program to the VM
+                // while `use { json } from encoding;` lowered — the same rule
+                // the import path already applies (`is_submodule`).
+                let global_ref = if is_submodule(&module, &name) {
+                    GlobalRef::Module(name)
+                } else {
+                    GlobalRef::ModuleFn(module, name)
+                };
+                ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
             }
             // `a` = dst, `b` = container register, `c` = key register.

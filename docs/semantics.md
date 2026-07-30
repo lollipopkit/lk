@@ -718,6 +718,26 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 子模块经父模块访问也要原生降低(2026-07-30)
+
+`encoding.json.parse(s)` 和 `use { json } from encoding; json.parse(s)` 是同一个
+成员的两种拼法。后者一直原生降低,前者**整个程序掉回 VM** —— 答案一样,慢三倍,
+所以差分门禁看不见,是探针撞上的(和模板串里的容器、`chan.new` 同一类)。
+
+缺的是两件事:
+
+1. 从父模块读一个**子模块**,给出的是父模块的一个"函数"(`ModuleFn`),而不是
+   另一个模块对象。链子因此停在第一个点上。`is_submodule` 谓词早就有了 —— 选择性
+   导入那条路一直在用它 —— 只是 `GetIndex` 那侧没用。
+2. `encoding.json.parse(s)` 编译成 **`CallMethodK`**,接收者是模块对象。那条路上
+   没有模块分支,于是去 `ssa.read` 一个只存在于降低期的 ref,报
+   "register r7 is read before any definition"。
+
+顺带补齐了 `MODULE_TABLE`:父模块(`encoding`/`net`/`io`)此前根本没有行,名字都绑
+不上;子模块补了 `base64`/`hex`/`url`/`udp`/`file`。名字**绑得上**和成员**降得下**
+是两件事 —— 前者归这张表,后者归 `MODULE_ABI`;`encoding.base64.encode` 现在是后者
+缺(lkrt 里没有符号),报的也是那句话。
+
 ## 排序说的是排序的规矩(2026-07-30 裁决)
 
 `<` / `<=` / `>` / `>=` 排的是**数字和字符串**,两边要**同类**。规矩没变,报错以前

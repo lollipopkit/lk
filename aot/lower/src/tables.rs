@@ -101,8 +101,26 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         bare_global: true,
         submodule_of: None,
     },
-    // `encoding`/`net` submodules (the parents themselves have no typed
-    // members — only the submodule objects bind).
+    // The submodule *parents*. They have no typed members of their own, but the
+    // name has to bind for `encoding.json.parse(s)` to reach the submodule at
+    // all — without these rows the chain stopped at the first dot and the whole
+    // program fell back, while `use { json } from encoding;` lowered.
+    ModuleRow {
+        name: "encoding",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "net",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "io",
+        bare_global: true,
+        submodule_of: None,
+    },
+    // `encoding`/`net`/`io` submodules.
     ModuleRow {
         name: "json",
         bare_global: false,
@@ -119,6 +137,21 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         submodule_of: Some("encoding"),
     },
     ModuleRow {
+        name: "base64",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
+        name: "hex",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
+        name: "url",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
         name: "socket",
         bare_global: false,
         submodule_of: Some("net"),
@@ -127,6 +160,16 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         name: "tcp",
         bare_global: false,
         submodule_of: Some("net"),
+    },
+    ModuleRow {
+        name: "udp",
+        bare_global: false,
+        submodule_of: Some("net"),
+    },
+    ModuleRow {
+        name: "file",
+        bare_global: false,
+        submodule_of: Some("io"),
     },
 ];
 

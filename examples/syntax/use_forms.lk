@@ -43,4 +43,11 @@ assert(point.manhattan(pt) == 7);
 // A trait the imported module implements dispatches on it too.
 assert(pt.norm() == 7);
 
+// 9. A submodule through its parent. Both spellings reach the same member:
+// `encoding.json` is a module object, so the chain continues through it.
+use encoding;
+assert(encoding.json.parse("[1,2]") == [1, 2]);
+use { json } from encoding;
+assert(json.parse("[1,2]") == [1, 2]);
+
 println("use_forms: all assertions passed");

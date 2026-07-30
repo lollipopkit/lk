@@ -57,8 +57,20 @@ pub(crate) fn lower_method_call_k(
         .get(instr.b() as usize)
         .ok_or(Unsupported::BadConst { pc })?
         .clone();
-    let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     let argc = instr.c() as usize;
+    // A **module object** receiver is a module function call, not a method
+    // call: `encoding.json.parse(s)` compiles to `CallMethodK` with `parse` as
+    // the name and `encoding.json` as the receiver, and there was no arm for
+    // that — the receiver holds a lowering-time ref, not an SSA value, so the
+    // read below reported "register r7 is read before any definition" and the
+    // whole program fell back. Only the selective import
+    // (`use { json } from encoding;`) lowered.
+    if let Some(GlobalRef::Module(module)) = ssa.builtin_ref_at(base, block) {
+        // `lower_module_call` reads its arguments from `base + 1`, which is
+        // where a method call's arguments already sit.
+        return lower_module_call(ssa, insts, &module, &name, base, argc, block, pc);
+    }
+    let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     // A boxed Dyn receiver unwraps through the as_list guard for list-only
     // method names (a non-list tag aborts — the VM's method-on-wrong-type is
     // a loud error too). Names shared with str/map receivers stay boxed.

@@ -1486,6 +1486,41 @@ fn a_closure_may_assign_to_its_capture() {
     );
 }
 
+/// A submodule reached through its parent, pinned to pure Cranelift.
+///
+/// `encoding.json.parse(s)` compiles to a `CallMethodK` whose *receiver* is the
+/// module object `encoding.json`, and two things were missing: reading a
+/// submodule off its parent gave a module *function* rather than another module,
+/// and a module-object receiver had no arm at all. So the chain stopped at the
+/// first dot and the program fell back, while `use { json } from encoding;`
+/// lowered — same answer, three times slower, which no differential test can
+/// see.
+#[test]
+fn a_submodule_reached_through_its_parent_lowers_natively() {
+    run_differential(
+        "nested_module",
+        &[
+            new(
+                "encoding_json_through_its_parent",
+                "use encoding;\nprintln(encoding.json.parse(\"[1,2]\"));\nreturn 0;\n",
+            ),
+            // The same member through the selective import, which always
+            // lowered: both spellings, one answer.
+            new(
+                "encoding_json_through_a_selective_import",
+                "use { json } from encoding;\nprintln(json.parse(\"[1,2]\"));\nreturn 0;\n",
+            ),
+            // `io.std` is the other shape: a submodule whose parent had no row
+            // at all, so even the name did not bind.
+            new(
+                "io_std_through_its_parent",
+                "use io;\nlet out = io.std.stdout();\nprintln(io.std.write(out, \"a\"));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// The `chan` module's own spelling, pinned to pure Cranelift.
 ///
 /// The surrounding channel cases allow degradation because raises through
