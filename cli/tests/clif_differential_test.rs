@@ -4346,3 +4346,58 @@ fn math_agrees_on_values_and_on_domain_errors() {
         ],
     );
 }
+
+/// `string.f(s, …)` and `s.f(…)` are the same call, so they lower the same way.
+///
+/// The forwarder that makes a module spelling reach the method arm was gated on
+/// `matches!(module, "iter" | "stream")` — a list of two, not a rule. So every
+/// one of the `string` module's functions fell back to the VM while its method
+/// spelling lowered, and which spelling a program happened to use decided
+/// whether it stayed native. The VM routes both through the same
+/// `core_methods`; all thirteen pairs below were checked to be equal there
+/// before the gate was widened.
+///
+/// `split` needed one thing more: it is an *intrinsic* in the bytecode compiler,
+/// so the method spelling becomes `Opcode::StringSplit` and never reaches the
+/// method table at all. The module spelling does, so the arm it forwards to had
+/// to exist — pointed at the same helper the opcode uses, so the two cannot
+/// drift.
+#[test]
+fn the_string_module_spelling_lowers_like_the_method() {
+    run_clif_differential(
+        "string_module_spelling",
+        &[
+            new(
+                "each_pair_agrees",
+                "use string;\nlet z = \"z\";\nlet s = \"  Hello World  \" + z;\n\
+                 println(string.trim(s) == s.trim());\nprintln(string.upper(s) == s.upper());\n\
+                 println(string.lower(s) == s.lower());\nprintln(string.len(s) == s.len());\n\
+                 println(string.reverse(s) == s.reverse());\n\
+                 println(string.contains(s, \"Hello\") == s.contains(\"Hello\"));\n\
+                 println(string.index_of(s, \"World\") == s.index_of(\"World\"));\n\
+                 println(string.starts_with(s, \" \") == s.starts_with(\" \"));\n\
+                 println(string.ends_with(s, \"z\") == s.ends_with(\"z\"));\n\
+                 println(string.slice(s, 0, 4) == s.slice(0, 4));\n\
+                 println(string.repeat(\"ab\", 2) == \"ab\".repeat(2));\nreturn 0;\n",
+            ),
+            // The intrinsic pair, and the values themselves rather than only the
+            // equality — a bug that made both sides equally wrong would pass the
+            // comparisons above.
+            new(
+                "split_and_replace_by_value",
+                "use string;\nlet z = \",\";\nprintln(string.split(\"a,b,c\", z));\n\
+                 println(string.replace(\"aaa\", \"a\", \"b\"));\nprintln(string.trim(\"  x  \"));\n\
+                 println(string.upper(\"aBc\"));\nprintln(string.index_of(\"abc\", \"zz\"));\n\
+                 println(string.slice(\"abcde\", 1, 3));\nreturn 0;\n",
+            ),
+            // Multibyte, because every string position in this language is a
+            // character position and the module spelling must not forget.
+            new(
+                "module_spelling_counts_characters_too",
+                "use string;\nlet s = \"中文abc\";\nprintln(string.len(s));\n\
+                 println(string.slice(s, 1, 3));\nprintln(string.index_of(s, \"a\"));\n\
+                 println(string.reverse(s));\nreturn 0;\n",
+            ),
+        ],
+    );
+}

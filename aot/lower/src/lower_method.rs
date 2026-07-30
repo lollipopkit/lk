@@ -1551,6 +1551,20 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        // `split` is an intrinsic in the bytecode compiler, so the *method*
+        // spelling becomes `Opcode::StringSplit` and never arrives here. The
+        // module spelling does arrive, now that `string.f(s, …)` forwards like
+        // `iter.f(xs, …)` always has — same helper as the opcode lowering, so
+        // the two spellings cannot drift.
+        (Ty::Str, "split", [(sep, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "split"),
+                args: vec![receiver, *sep],
+            });
+            (dst, Ty::ListStr)
+        }
         (Ty::Str, "contains", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

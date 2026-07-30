@@ -607,6 +607,52 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("remove",     false,     true,     false,  false),
 ];
 
+/// Whether `module.name(receiver, …)` is the method `receiver.name(…)`.
+///
+/// The VM routes both spellings through the same `core_methods`, so the
+/// lowering has one job: put the receiver where the method arm expects it. This
+/// used to be spelled `matches!(module, "iter" | "stream")` at the call site —
+/// a list of two, not a rule — so every `string` module function fell back
+/// while its method spelling lowered. `string.trim(s)` and `s.trim()` are the
+/// same call; which one a program wrote decided whether it stayed native.
+///
+/// `string`'s names are listed rather than "anything the method table knows",
+/// because deciding by *trying* `lower_method_dispatch` would emit instructions
+/// before finding out — the mistake `lower_conditional` made and paid for.
+pub(crate) fn forwards_to_method(module: &str, name: &str) -> bool {
+    match module {
+        "iter" | "stream" => method_role(name).is_some_and(|role| role.forward),
+        // Every `string` member that is a `Str` method with the receiver first.
+        // Checked against the VM: each `string.f(s, …) == s.f(…)`.
+        "string" => matches!(
+            name,
+            "len"
+                | "is_empty"
+                | "lower"
+                | "upper"
+                | "trim"
+                | "reverse"
+                | "repeat"
+                | "starts_with"
+                | "ends_with"
+                | "contains"
+                | "slice"
+                | "index_of"
+                | "get"
+                | "first"
+                | "last"
+                | "take"
+                | "skip"
+                | "replace"
+                | "split"
+                | "chars"
+                | "bytes"
+                | "byte_at"
+        ),
+        _ => false,
+    }
+}
+
 pub(crate) fn method_role(name: &str) -> Option<&'static MethodRow> {
     METHOD_TABLE.iter().find(|row| row.name == name)
 }

@@ -202,10 +202,7 @@ pub(super) fn lower(
                     // routes both through the same core_methods) — forward
                     // to the same lowering with the receiver at `base+1`.
                     let argc = instr.c() as usize;
-                    if matches!(module.as_str(), "iter" | "stream")
-                        && method_role(&name).is_some_and(|role| role.forward)
-                        && argc >= 1
-                    {
+                    if forwards_to_method(module.as_str(), &name) && argc >= 1 {
                         let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
                         // The HOF spellings reuse the lambda-aware method
                         // path (the lambda register offset matches with the
