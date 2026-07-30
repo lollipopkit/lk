@@ -105,16 +105,28 @@ impl RuntimeVal {
         }
     }
 
-    /// The **language type** name of this value: `List` / `Map` / `Set` /
-    /// `Bytes` / `String` for a handle, the scalar's own name otherwise.
+    /// The **language type** name of this value: the struct's own name for an
+    /// instance, `List` / `Map` / `Set` / `Bytes` / `String` for the other
+    /// handles, the scalar's own name otherwise.
     ///
     /// Takes the heap because that is what makes the question answerable — a
     /// handle's type lives there. That is the point of the signature: an error
     /// message that has the heap cannot accidentally print `Object`, and one
     /// that does not have it cannot call this at all.
-    pub fn type_name_in(&self, heap: &HeapStore) -> &'static str {
+    ///
+    /// The return borrows the heap for the same reason. It was `&'static str`,
+    /// and a struct's name is not static — so this function, the one written to
+    /// stop messages saying `Object`, said `Object` for every struct instance:
+    /// `p.nonexistent()` reported "Object has no method 'nonexistent'" while the
+    /// dispatch two lines away already had `Point` in hand. A rule's own carrier
+    /// had exactly the hole the rule exists to close.
+    pub fn type_name_in<'heap>(&self, heap: &'heap HeapStore) -> &'heap str {
         match self {
-            Self::Obj(handle) => heap.get(*handle).map_or("Object", HeapValue::type_name),
+            Self::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::Object(object)) => object.type_name(),
+                Some(other) => other.type_name(),
+                None => "Object",
+            },
             other => other.kind().scalar_type_name(),
         }
     }

@@ -229,7 +229,7 @@ impl Executor {
     /// The executor's spelling of [`RuntimeVal::type_name_in`] — it has the
     /// heap, so callers do not thread it through.
     #[cold]
-    pub(super) fn value_type_name(&self, value: &RuntimeVal) -> &'static str {
+    pub(super) fn value_type_name(&self, value: &RuntimeVal) -> &str {
         value.type_name_in(&self.state.heap)
     }
 

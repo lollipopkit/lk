@@ -1610,7 +1610,12 @@ fn call_trait_method_runtime(
     runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
-    let receiver_type_name = runtime_type_name(&receiver, runtime.heap());
+    // Owned because `parts_mut` takes the heap mutably below, and this borrows
+    // it: `type_name_in` names a struct instance `P`, which is not a `'static`
+    // string. That is the whole point — these messages used to say "Object has
+    // no method 'nonexistent'" while `declared_type` sat two lines down with the
+    // real name in it, already computed for dispatch.
+    let receiver_type_name = receiver.type_name_in(runtime.heap()).to_string();
     // Taken before `parts_mut` borrows the heap mutably: a struct instance
     // dispatches in the scope of the module that declared it, which is the
     // half of its identity the bare type name does not carry.
@@ -1621,9 +1626,6 @@ fn call_trait_method_runtime(
     let Some(ctx) = ctx else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    // Dispatch on the *declared* type name (`Sq`), not the diagnostic one
-    // (`runtime_type_name` reports the heap kind, i.e. "Object", for any
-    // struct instance).
     let declared_type = receiver_type.display();
     let Some(impl_ref) = ctx
         .trait_method(&receiver_scope, &declared_type, method.as_str())
@@ -1910,16 +1912,5 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         HeapValue::Object(object) => Type::Named(object.type_name().to_string()),
         HeapValue::UpvalCell(_) => Type::Any,
         HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
-    }
-}
-
-fn runtime_type_name(value: &RuntimeVal, heap: &HeapStore) -> &'static str {
-    match value {
-        RuntimeVal::Nil => "Nil",
-        RuntimeVal::Bool(_) => "Bool",
-        RuntimeVal::Int(_) => "Int",
-        RuntimeVal::Float(_) => "Float",
-        RuntimeVal::ShortStr(_) => "String",
-        RuntimeVal::Obj(handle) => heap.get(*handle).map(HeapValue::type_name).unwrap_or("Object"),
     }
 }
