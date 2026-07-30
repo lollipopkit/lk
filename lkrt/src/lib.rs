@@ -112,7 +112,10 @@ pub use lkbytes::{
     lkrt_lkbytes_utf8_lossy,
 };
 #[cfg(feature = "std")]
-pub use lkregex::{lkrt_regex_is_match, lkrt_regex_replace, lkrt_regex_split};
+pub use lkregex::{
+    lkrt_regex_captures, lkrt_regex_find, lkrt_regex_find_all, lkrt_regex_is_match, lkrt_regex_replace,
+    lkrt_regex_split,
+};
 pub use textcodec::{
     lkrt_base64_decode, lkrt_base64_encode, lkrt_base64_encode_bytes, lkrt_hex_decode, lkrt_hex_encode,
     lkrt_hex_encode_bytes, lkrt_url_decode_component, lkrt_url_encode_component,

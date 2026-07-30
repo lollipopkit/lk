@@ -73,6 +73,69 @@ fn str_list(values: Vec<String>) -> *mut c_void {
     crate::state::arena_handle(list)
 }
 
+/// One match, as the stdlib module's `match_map` builds it: keys `text`,
+/// `start`, `end`, in that insertion order and through the VM's own two-stage
+/// map construction, because the iteration order is what gets printed.
+fn match_map(text: &str, start: usize, end: usize) -> *mut c_void {
+    let pairs = alloc::vec![
+        (
+            String::from("text"),
+            crate::lkdyn::lkrt_dyn_from_str(
+                crate::lkstr::arena_c_string(alloc::ffi::CString::new(text).unwrap_or_default()).cast_const()
+            )
+        ),
+        (String::from("start"), crate::lkdyn::lkrt_dyn_from_i64(start as i64)),
+        (String::from("end"), crate::lkdyn::lkrt_dyn_from_i64(end as i64)),
+    ];
+    crate::vm_mirror::str_dyn_map_mirrored(pairs)
+}
+
+/// `regex.find(pattern, text)` — the match map, or nil when there is none.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_regex_find(pattern: *const c_char, text: *const c_char) -> crate::lkdyn::LkDyn {
+    let regex = regex_or_raise(pattern);
+    match regex.find(view(text)) {
+        Some(m) => crate::lkdyn::lkrt_dyn_from_map(match_map(m.as_str(), m.start(), m.end())),
+        None => crate::lkdyn::lkrt_dyn_from_nil(),
+    }
+}
+
+/// `regex.find_all(pattern, text)` — every match, as a list of match maps.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_regex_find_all(pattern: *const c_char, text: *const c_char) -> *mut c_void {
+    let regex = regex_or_raise(pattern);
+    let values: Vec<crate::lkdyn::LkDyn> = regex
+        .find_iter(view(text))
+        .map(|m| crate::lkdyn::lkrt_dyn_from_map(match_map(m.as_str(), m.start(), m.end())))
+        .collect();
+    crate::state::arena_handle(values)
+}
+
+/// `regex.captures(pattern, text)` — group 0 first, then each group, with
+/// **nil for a group that did not participate**; nil when nothing matched at
+/// all.
+///
+/// Two different nils, and they are not interchangeable: `captures("z", "abc")`
+/// is nil because there was no match, while `captures("(a)(z)?", "xaq")` is
+/// `["a", "a", nil]` — a list whose last element is nil.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_regex_captures(pattern: *const c_char, text: *const c_char) -> crate::lkdyn::LkDyn {
+    let regex = regex_or_raise(pattern);
+    let Some(captures) = regex.captures(view(text)) else {
+        return crate::lkdyn::lkrt_dyn_from_nil();
+    };
+    let values: Vec<crate::lkdyn::LkDyn> = captures
+        .iter()
+        .map(|capture| match capture {
+            Some(value) => crate::lkdyn::lkrt_dyn_from_str(
+                crate::lkstr::arena_c_string(alloc::ffi::CString::new(value.as_str()).unwrap_or_default()).cast_const(),
+            ),
+            None => crate::lkdyn::lkrt_dyn_from_nil(),
+        })
+        .collect();
+    crate::lkdyn::lkrt_dyn_from_list(crate::state::arena_handle(values))
+}
+
 /// `regex.is_match(pattern, text)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_regex_is_match(pattern: *const c_char, text: *const c_char) -> i64 {

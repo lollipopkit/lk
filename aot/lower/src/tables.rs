@@ -664,9 +664,32 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
     // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
     // what keeps the two spellings equal.
-    // `regex`. `find`/`find_all`/`captures` stay on the bridge: they answer a
-    // `Map?`, a list of maps, and a list with nils in it, and the ABI has no way
-    // to hand any of those back in one call.
+    // `regex`. `find` answers `Map?` and `captures` answers `List?`, so both
+    // arrive boxed; `find_all` is a dyn list of match maps. Each map is built
+    // through the VM's own two-stage construction (`str_dyn_map_mirrored`) —
+    // its keys are `text`, `start`, `end`, and that insertion order is what
+    // `println` prints.
+    abi_row(
+        "regex",
+        "find",
+        AbiRef::new("regex", "find"),
+        &[Ty::Str, Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "regex",
+        "find_all",
+        AbiRef::new("regex", "find_all"),
+        &[Ty::Str, Ty::Str],
+        Ty::ListDyn,
+    ),
+    abi_row(
+        "regex",
+        "captures",
+        AbiRef::new("regex", "captures"),
+        &[Ty::Str, Ty::Str],
+        Ty::Dyn,
+    ),
     abi_row(
         "regex",
         "is_match",

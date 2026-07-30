@@ -4581,6 +4581,10 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
                  println(regex.is_match(\"^z\", \"baaa\"));\nprintln(regex.split(\"[,;]\", \"a,b;c\"));\n\
                  println(regex.split(\"x\", \"abc\"));\n\
                  println(regex.replace(\"a+\", \"baaa\", \"X\"));\n\
+                 println(regex.find(\"a+\", \"xbaaay\"));\nprintln(regex.find(\"z\", \"abc\"));\n\
+                 println(regex.find_all(\"a\", \"banana\"));\n\
+                 println(regex.captures(\"(a)(z)?\", \"xaq\"));\n\
+                 println(regex.captures(\"z\", \"abc\"));\n\
                  let e = try { regex.is_match(\"(\", \"x\") } catch err { err };\nprintln(e);\nreturn 0;\n",
             ),
             new(

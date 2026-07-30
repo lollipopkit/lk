@@ -262,6 +262,9 @@ macro_rules! for_each_abi_fn {
             // the cache is process state.
             ("regex", "is_match", lkrt_regex_is_match, ReadsHost, [StrPtr, StrPtr], I64);
             ("regex", "split", lkrt_regex_split, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("regex", "find", lkrt_regex_find, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("regex", "find_all", lkrt_regex_find_all, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("regex", "captures", lkrt_regex_captures, WritesHost, [StrPtr, StrPtr], DynVal);
             ("regex", "replace", lkrt_regex_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             ("uuid", "v4", lkrt_uuid_v4, WritesHost, [], StrPtr);
             ("uuid", "parse", lkrt_uuid_parse, WritesHost, [StrPtr], StrPtr);
