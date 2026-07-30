@@ -39,6 +39,21 @@
 //! this rewrite. A `defer` releasing something a handler then needs would be
 //! worse than no `defer`, so this is said plainly rather than approximated.
 //!
+//! There *is* a third option this used to not consider, and it is worth writing
+//! down so the question is not re-opened from scratch: the rewrite could wrap
+//! the body in a `try`, run the releases in the `catch`, and re-raise. That
+//! stays a pure AST rewrite — `try`/`catch` and re-raising from a handler both
+//! already work in both backends (measured 2026-07-30) — so it would not be the
+//! runtime mechanism this section argues against.
+//!
+//! What blocks it today is measurable rather than philosophical: a `return`
+//! inside a `try` **body** cannot be outlined natively yet
+//! (`docs/aot/aot-gaps-and-lkrt.md` §17), and wrapping a function body puts
+//! every one of its `return`s inside a `try`. So the wrap would make every
+//! deferring function fall back to the VM — including the bare-metal
+//! demonstration above, which is compiled and is the reason this feature
+//! exists. Fix §17 first; then this becomes a choice rather than a constraint.
+//!
 //! **It may only appear at the top level of a function body.** Not inside an
 //! `if`, a loop, or a nested block. That is what makes the rewrite sound: at the
 //! top level, textual order is execution order, so "every `defer` written above

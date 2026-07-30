@@ -498,3 +498,41 @@ SSA 值,读不到。
 还没通的一种:`let n = 2; let f = |x| x * n; let g = |x| f(x) + 1;` —— 被调的那个自己
 带捕获,正是上面故意拒绝的那条。
 
+## 17. `try` 体里的 `return`(2026-07-30 调查,未实现)
+
+```lk
+fn f(n: Int) -> Int {
+  try { return n * 2; } catch e { return -1; }        // 整个程序回落
+}
+fn g(n: Int) -> Int {
+  let v = try { n * 2 } catch e { -1 };  return v;    // 原生
+}
+```
+
+同一个意思两种写法,一种慢三倍。拒绝的理由在 `try_region.rs` 里写着:body 被外联成
+一个函数,里面的 `return` 会变成"从 body 返回"而不是"从外层函数返回",而"然后返回"
+这个协议还没有。
+
+**协议离它有多远(实测)**:body 已经有两条通道 —— 返回值走 `LkDyn`,raise 走
+trampoline 的 outcome。缺的是第三个信号。现有的**输出 cell** 机制(`try_body_cells`:
+父建 cell、当额外实参传进去、调用后读回)正好是它需要的形状,所以做法是:
+
+1. 多一对输出 cell:一个"是否返回了"的标志,一个返回值。
+2. body 侧:`Return v` 降低成 `cell_set(flag, 1); cell_set(value, box v); Ret nil`。
+3. 父侧:读回之后、分支之前,`if flag { return unbox(value) }`。
+
+风险在第 3 步:漏掉任何一条边上的检查,就是**静默返回错值**,不是回落。所以它值得
+单独一轮做,而不是搭在别的改动上。
+
+这条也是 `defer` 能否在 raise 路径上跑的前置条件 —— 见 `core/src/stmt/defer.rs`。
+
+## 18. `task.join_all`(2026-07-30)
+
+变参,所以**没有哪一行能描述它** —— 一行只有一个 arity。三种拼写里,
+`join_all(a, b)` 和 `join_all(a)` 是同一个循环(逐个 `rt.task_await`,推进一个 dyn
+列表),现在原生;`join_all([a, b])` 传的是一个 `List<Int>` 句柄,长度只有运行时才知道,
+需要 lkrt 里的一个循环而不是在这里展开 —— 那一种仍然回落。
+
+元素显示是这条的验收点:dyn 列表对字符串的引号必须和 VM 的类型化列表**逐字**一样
+(`["x","y z"]`),混合类型也一样(`[1,"s"]`)。差分语料里两种都在。
+

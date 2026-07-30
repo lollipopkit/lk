@@ -1418,6 +1418,34 @@ fn try_catch_differential() {
     );
 }
 
+/// `task.join_all` over task handles, pinned to pure Cranelift.
+///
+/// Variadic, so no ABI row can describe it — a row has one arity — and it was
+/// the last thing in the concurrency surface that dropped a program to the VM.
+/// The element display is the point of the string case: a `Dyn` list has to
+/// quote exactly as the VM's typed list does.
+#[test]
+fn join_all_over_handles_lowers_natively() {
+    run_differential(
+        "join_all",
+        &[
+            new(
+                "several_tasks",
+                "use task;\nlet a = spawn(|| 1);\nlet b = spawn(|| 2);\nprintln(task.join_all(a, b));\nreturn 0;\n",
+            ),
+            new(
+                "one_task",
+                "use task;\nlet a = spawn(|| 1);\nprintln(task.join_all(a));\nreturn 0;\n",
+            ),
+            new(
+                "string_and_mixed_elements",
+                "use task;\nlet a = spawn(|| \"x\");\nlet b = spawn(|| \"y z\");\nprintln(task.join_all(a, b));\nlet c = spawn(|| 1);\nlet d = spawn(|| \"s\");\nprintln(task.join_all(c, d));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A closure that calls another closure, pinned to pure Cranelift.
 ///
 /// Composing two lambdas is most of what having them is for, and it dropped the

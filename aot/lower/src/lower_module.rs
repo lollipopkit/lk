@@ -402,6 +402,48 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (dst, ty));
         return Ok(());
     }
+    // `task.join_all(a, b, …)` — await each, in order, into a list.
+    //
+    // Variadic, so no row can describe it: a row has one arity. The three
+    // spellings the VM accepts are `join_all(a, b)`, `join_all(a)` (one task)
+    // and `join_all([a, b])` (a list of them); the first two are the same loop,
+    // and the list form needs the elements out of a handle, which is the
+    // `ListI64` case below.
+    if module == "task" && name == "join_all" && argc >= 1 {
+        let list = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(list),
+            callee: AbiRef::new("list_h", "dyn_new"),
+            args: Vec::new(),
+        });
+        let await_into = |ssa: &mut Ssa, insts: &mut Vec<Inst>, handle: ValueId| {
+            let value = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(value),
+                callee: AbiRef::new("rt", "task_await"),
+                args: vec![handle],
+            });
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", "dyn_push"),
+                args: vec![list, value],
+            });
+        };
+        // `join_all([a, b])`: a single `List<Int>` of task handles. Its length
+        // is only known at run time, so the awaits are a loop in lkrt rather
+        // than unrolled here — which this lowering has no way to emit, so the
+        // list form stays a fallback and only the handle forms lower.
+        let mut handles = Vec::with_capacity(argc);
+        for index in 0..argc {
+            let reg = base.wrapping_add(1).wrapping_add(index as u8);
+            handles.push(ssa.read_typed(reg, block, Ty::I64, pc)?);
+        }
+        for handle in handles {
+            await_into(ssa, insts, handle);
+        }
+        ssa.write(base, block, (list, Ty::ListDyn));
+        return Ok(());
+    }
     // `string.slice(s, start)` — as above, defaulting to the character length.
     if module == "string" && name == "slice" && argc == 2 {
         let text = ssa.read_typed(base.wrapping_add(1), block, Ty::Str, pc)?;
