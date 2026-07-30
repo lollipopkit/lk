@@ -970,12 +970,7 @@ fn dispatch_string_builtin_method(
 /// same program, two answers. Counting from the end is what the rest of the
 /// language already means by a negative position, so that is what this says.
 pub(super) fn slice_position(value: &RuntimeVal, len: usize, context: &str) -> anyhow::Result<usize> {
-    let RuntimeVal::Int(index) = value else {
-        bail!("{context} must be Int");
-    };
-    let len = len as i64;
-    let resolved = if *index < 0 { len + *index } else { *index };
-    Ok(resolved.clamp(0, len) as usize)
+    crate::val::position::read_position(value, len, context)
 }
 
 /// A *write* position against a container of `len` elements.
@@ -986,14 +981,7 @@ pub(super) fn slice_position(value: &RuntimeVal, len: usize, context: &str) -> a
 /// is not something a program can mean. The caller does the upper-bound check,
 /// because `insert` accepts `len` and the others do not.
 pub(super) fn write_index_arg(value: &RuntimeVal, len: usize, context: &str) -> anyhow::Result<usize> {
-    let RuntimeVal::Int(index) = value else {
-        bail!("{context} must be Int");
-    };
-    let resolved = if *index < 0 { len as i64 + *index } else { *index };
-    if resolved < 0 {
-        bail!("{context} {index} is before the start of a list of {len}");
-    }
-    Ok(resolved as usize)
+    crate::val::position::write_position(value, len, context)
 }
 
 fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {

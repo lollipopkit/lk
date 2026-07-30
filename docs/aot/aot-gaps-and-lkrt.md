@@ -437,3 +437,23 @@ crate**(`base64`、`hex`),所以文本逐字节相同 —— 和 `datetime` 用 
 `base64.decode` / `hex.decode` 给 `Bytes`,原生没有那个承载类型(见 §13 之前的
 Bytes 一节 / todos),继续回落。
 
+## 15. `Bytes` 是一个原生值(2026-07-30)
+
+`Bytes` 以前在原生一侧**没有承载类型**,于是 `"hi".bytes()`、`bytes` 模块的每个
+成员、`base64.decode` / `hex.decode` 出现任意一个,整个程序回落。
+
+`Ty::Bytes` 是个不透明指针句柄,和 `List`/`Map`/`Set` 同形 —— 十个接点(MIR 的 `Ty`
+与渲染、codegen 的类型映射、lower 的两张"这是句柄"表、显示、相等、`len` 快路、
+`GetIndex`、方法表、模块表)。它必须是**独立的类型**而不是裸句柄整数,因为显示和相等
+都要知道它是字节:`println(b)` 是 `Bytes([104,105])` 而不是一个指针,`==` 比内容。
+
+**lkrt 里曾经有两个 `Bytes`。** 另一个是 `tcp`/`fs` 用的**一次性** host 句柄
+(`HandleKind::Bytes`,用 `take_bytes` 读,读走就没了)。对"读一次 socket 然后解一次
+码"是对的,对**值**是错的:`bytes.len(b)` 之后再 `bytes.to_string_utf8(b)`,第二次就
+找不到句柄了。所以 `tcp.read` / `fs.read` 现在都给 arena 句柄,一次性那套(资源变体、
+两个访问器、`bytes.to_string_utf8`/`bytes.free` 两条 ABI 项)整套删掉 —— 让它们分开的
+理由消失了,留着就是个陷阱。`fs.read` 因此也第一次拿到了降低行:它一直有 ABI 项而没有
+行,因为没有类型可给。
+
+`bytes.from_list` / `to_list` 要列表互操作,还没做。
+

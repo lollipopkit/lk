@@ -1,6 +1,5 @@
 use crate::{
     abi::{c_str, owned_c_string, raising, status, write_out},
-    state::with_runtime,
 };
 use core::ffi::c_char;
 use std::{
@@ -93,11 +92,11 @@ pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_fs_read(path: *const c_char) -> i64 {
+pub extern "C" fn lkrt_fs_read(path: *const c_char) -> *mut core::ffi::c_void {
     raising(|| {
         let path = c_str(path, "fs.read path")?;
         let data = fs::read(path.as_str()).map_err(|err| format!("fs.read {path}: {err}"))?;
-        Ok(with_runtime(|rt| rt.insert_bytes(data)))
+        Ok(crate::lkbytes::bytes_handle(data))
     })
 }
 
@@ -121,10 +120,10 @@ pub extern "C" fn lkrt_fs_write_str(path: *const c_char, data: *const c_char) ->
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: i64) -> i64 {
+pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: *mut core::ffi::c_void) -> i64 {
     raising(|| {
         let path = c_str(path, "fs.write path")?;
-        let data = with_runtime(|rt| rt.take_bytes(data))?;
+        let data = crate::lkbytes::bytes_slice(data).to_vec();
         fs::write(path.as_str(), &data).map_err(|err| format!("fs.write {path}: {err}"))?;
         Ok(1)
     })
@@ -470,7 +469,7 @@ fn env_lock() -> MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lkrt_bytes_free, lkrt_string_free};
+    use crate::lkrt_string_free;
     use alloc::ffi::CString;
     use core::ffi::CStr;
 
@@ -500,9 +499,13 @@ mod tests {
         assert_eq!(lkrt_fs_metadata_is_file(file.as_ptr()), 1);
         assert_eq!(lkrt_fs_metadata_is_dir(file.as_ptr()), 0);
 
+        // A `Bytes` **value**: read its length, then its text, then its length
+        // again — the one-shot host handle this used to be could only be read
+        // once.
         let bytes = lkrt_fs_read(file.as_ptr());
-        assert!(bytes > 0);
-        let text_ptr = crate::lkrt_bytes_to_string_utf8(bytes);
+        assert!(!bytes.is_null());
+        assert_eq!(unsafe { crate::lkrt_lkbytes_len(bytes) }, 5);
+        let text_ptr = unsafe { crate::lkrt_lkbytes_utf8(bytes) };
         assert!(!text_ptr.is_null());
         // SAFETY: text_ptr is an lkrt-owned NUL-terminated CString pointer.
         let text = unsafe { CStr::from_ptr(text_ptr) };
@@ -512,7 +515,7 @@ mod tests {
         // provenance, so handing it to `CString::from_raw` is UB (caught by
         // Miri's Stacked Borrows checking).
         unsafe { lkrt_string_free(text_ptr) };
-        assert_eq!(lkrt_bytes_free(bytes), 0);
+        assert_eq!(unsafe { crate::lkrt_lkbytes_len(bytes) }, 5);
 
         let canonical = lkrt_fs_canonicalize(file.as_ptr());
         assert!(!canonical.is_null());

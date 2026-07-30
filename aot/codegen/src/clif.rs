@@ -470,6 +470,7 @@ pub fn ty_to_clif(ty: Ty) -> Result<types::Type, ClifError> {
         | Ty::MapStrBool
         | Ty::Cell
         | Ty::Set
+        | Ty::Bytes
         | Ty::ListDyn
         | Ty::MapStrDyn => types::I64,
         Ty::Nil => return Err(ClifError::Unsupported("nil value type")),

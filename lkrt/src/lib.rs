@@ -44,6 +44,7 @@ mod arith;
 mod chan;
 mod cpu;
 mod encoding;
+mod lkbytes;
 mod textcodec;
 #[cfg(feature = "std")]
 mod host;
@@ -88,7 +89,14 @@ pub use cpu::{
 // rest of them, because it *is* one of them: `isr.rs` holds both directions of
 // the same obstacle — a vector that cannot be an operand, answered by a table.
 pub use encoding::lkrt_json_parse;
-pub use textcodec::{lkrt_base64_encode, lkrt_hex_encode, lkrt_url_decode_component, lkrt_url_encode_component};
+pub use lkbytes::{
+    lkrt_lkbytes_concat, lkrt_lkbytes_eq, lkrt_lkbytes_from_str, lkrt_lkbytes_get, lkrt_lkbytes_is_empty,
+    lkrt_lkbytes_len, lkrt_lkbytes_slice, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
+};
+pub use textcodec::{
+    lkrt_base64_decode, lkrt_base64_encode, lkrt_hex_decode, lkrt_hex_encode, lkrt_url_decode_component,
+    lkrt_url_encode_component,
+};
 #[cfg(feature = "std")]
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
 pub use isr::lkrt_cpu_raise_interrupt;
@@ -177,7 +185,7 @@ pub use lkstr::{
 };
 #[cfg(feature = "std")]
 pub use net::{
-    lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
+    lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,
 };
 pub use panic::{

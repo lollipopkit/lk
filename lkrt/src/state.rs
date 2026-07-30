@@ -79,13 +79,13 @@ pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandleKind {
-    Bytes,
     #[cfg(feature = "std")]
     TcpStream,
 }
 
 pub(crate) struct RuntimeState {
     next_handle: i64,
+    #[cfg(feature = "std")]
     resources: HashMap<i64, Resource, FxBuildHasher>,
     owned_strings: HashSet<usize, FxBuildHasher>,
     /// Container handles (lists/maps) with their typed drop functions — the
@@ -100,6 +100,7 @@ impl RuntimeState {
     const fn new() -> Self {
         Self {
             next_handle: 0,
+            #[cfg(feature = "std")]
             resources: HashMap::with_hasher(FxBuildHasher),
             owned_strings: HashSet::with_hasher(FxBuildHasher),
             owned_containers: HashMap::with_hasher(FxBuildHasher),
@@ -107,17 +108,27 @@ impl RuntimeState {
     }
 }
 
+/// A host resource behind an `i64` handle.
+///
+/// `TcpStream` is the only kind left, so the whole family is `std`-only: without
+/// an OS there is no host resource to hold. It is still an enum rather than the
+/// stream itself because the *handle* machinery (`close_any`, `close_kind`) is
+/// about "a resource of some kind", and a second kind is a plausible addition.
+///
+/// `Bytes` used to be one of these — a *one-shot* value, read with `take_bytes`,
+/// which removed it. Every producer now answers the arena `Bytes` handle
+/// ([`crate::lkbytes`]) instead, because a `Bytes` in the language is an
+/// ordinary value you may read twice; the one-shot kind, its two accessors and
+/// the `bytes.to_string_utf8`/`bytes.free` ABI entries over it are gone with it.
+#[cfg(feature = "std")]
 enum Resource {
-    Bytes(Vec<u8>),
-    #[cfg(feature = "std")]
     TcpStream(TcpStream),
 }
 
+#[cfg(feature = "std")]
 impl Resource {
     fn kind(&self) -> HandleKind {
         match self {
-            Resource::Bytes(_) => HandleKind::Bytes,
-            #[cfg(feature = "std")]
             Resource::TcpStream(_) => HandleKind::TcpStream,
         }
     }
@@ -135,37 +146,16 @@ impl RuntimeState {
     pub(crate) fn stream(&self, handle: i64) -> Result<&TcpStream, String> {
         match self.resources.get(&handle) {
             Some(Resource::TcpStream(stream)) => Ok(stream),
-            Some(resource) => Err(wrong_kind_error(handle, HandleKind::TcpStream, resource.kind())),
             None => Err(format!("tcp stream handle {handle} is closed or invalid")),
         }
     }
 
-    pub(crate) fn insert_bytes(&mut self, bytes: Vec<u8>) -> i64 {
-        let handle = self.next_handle();
-        self.resources.insert(handle, Resource::Bytes(bytes));
-        handle
-    }
-
-    pub(crate) fn take_bytes(&mut self, handle: i64) -> Result<Vec<u8>, String> {
-        let Some(resource) = self.resources.remove(&handle) else {
-            return Err(format!("bytes handle {handle} is closed or invalid"));
-        };
-        match resource {
-            Resource::Bytes(bytes) => Ok(bytes),
-            // Unreachable without `std`: `Bytes` is the only variant there.
-            #[cfg(feature = "std")]
-            other => {
-                let actual = other.kind();
-                self.resources.insert(handle, other);
-                Err(wrong_kind_error(handle, HandleKind::Bytes, actual))
-            }
-        }
-    }
-
+    #[cfg(feature = "std")]
     pub(crate) fn close_any(&mut self, handle: i64) -> bool {
         self.resources.remove(&handle).is_some()
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn close_kind(&mut self, handle: i64, expected: HandleKind) -> Result<bool, String> {
         let Some(resource) = self.resources.get(&handle) else {
             return Ok(false);
@@ -234,6 +224,7 @@ impl RuntimeState {
     }
 
     pub(crate) fn cleanup(&mut self) {
+        #[cfg(feature = "std")]
         self.resources.clear();
         for ptr in self.owned_strings.drain() {
             // SAFETY: All entries are pointers produced by CString::into_raw

@@ -8,10 +8,10 @@
 //! writes the same one, because the pair's two directions have to agree with
 //! each other before they agree with anything else.
 //!
-//! Only the `String -> String` half is here. `base64.decode` and `hex.decode`
-//! answer `Bytes`, which the native lowering has no carrier for yet
-//! (`docs/aot/aot-gaps-and-lkrt.md`), so they keep falling back — a member with
-//! no row is an ordinary fallback, not a wrong answer.
+//! `base64.decode` and `hex.decode` answer `Bytes`, which is an arena handle
+//! ([`crate::lkbytes`]) — the same shape a `List` has. Both raise on malformed
+//! input with the stdlib module's exact message, because the raise text is part
+//! of the contract.
 
 use alloc::ffi::CString;
 use alloc::string::String;
@@ -19,6 +19,7 @@ use core::ffi::{CStr, c_char};
 
 use base64::Engine as _;
 
+use crate::lkbytes::bytes_handle;
 use crate::lkstr::arena_c_string;
 
 fn view<'a>(p: *const c_char) -> &'a str {
@@ -50,6 +51,30 @@ pub unsafe extern "C" fn lkrt_base64_encode(data: *const c_char) -> *mut c_char 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_hex_encode(data: *const c_char) -> *mut c_char {
     out(hex::encode(view(data).as_bytes()))
+}
+
+/// `encoding.base64.decode(text)` — raises on malformed input.
+///
+/// # Safety
+/// `text` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_base64_decode(text: *const c_char) -> *mut core::ffi::c_void {
+    match base64::engine::general_purpose::STANDARD.decode(view(text).as_bytes()) {
+        Ok(bytes) => bytes_handle(bytes),
+        Err(error) => crate::panic::raise_str(&alloc::format!("invalid base64 data: {error}")),
+    }
+}
+
+/// `encoding.hex.decode(text)` — raises on malformed input.
+///
+/// # Safety
+/// `text` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_hex_decode(text: *const c_char) -> *mut core::ffi::c_void {
+    match hex::decode(view(text)) {
+        Ok(bytes) => bytes_handle(bytes),
+        Err(error) => crate::panic::raise_str(&alloc::format!("invalid hex data: {error}")),
+    }
 }
 
 /// Whether `byte` survives a URI component unescaped.

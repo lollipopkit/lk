@@ -247,6 +247,9 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::ListStr,
     ),
     abi_row("fs", "exists", AbiRef::new("fs", "exists"), &[Ty::Str], Ty::Bool),
+    // Answers a `Bytes` value. It had an ABI entry and no row, because there was
+    // no type to give it.
+    abi_row("fs", "read", AbiRef::new("fs", "read"), &[Ty::Str], Ty::Bytes),
     // chrono-backed datetime (byte-identical to the stdlib module).
     abi_row("datetime", "now", AbiRef::new("datetime", "now"), &[], Ty::I64),
     abi_row(
@@ -411,13 +414,73 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &[Ty::I64, Ty::Str],
         Ty::I64,
     ),
-    abi_row("tcp", "read", AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::I64),
+    // Answers a `Bytes` **value**, not the one-shot host handle it used to: a
+    // `Bytes` you can only read once is not the language's `Bytes`.
+    abi_row("tcp", "read", AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::Bytes),
     abi_row("tcp", "close", AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64),
+    // The `bytes` module over the `Bytes` handle. `from_list` / `to_list` /
+    // `slice` need list interop and stay out for now — a member with no row is
+    // an ordinary fallback.
+    abi_row(
+        "bytes",
+        "from_string",
+        AbiRef::new("bytes_h", "from_str"),
+        &[Ty::Str],
+        Ty::Bytes,
+    ),
+    abi_row("bytes", "len", AbiRef::new("bytes_h", "len"), &[Ty::Bytes], Ty::I64),
+    abi_row(
+        "bytes",
+        "is_empty",
+        AbiRef::new("bytes_h", "is_empty"),
+        &[Ty::Bytes],
+        Ty::Bool,
+    ),
+    abi_row(
+        "bytes",
+        "get",
+        AbiRef::new("bytes_h", "get"),
+        &[Ty::Bytes, Ty::I64],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "bytes",
+        "slice",
+        AbiRef::new("bytes_h", "slice"),
+        &[Ty::Bytes, Ty::I64, Ty::I64],
+        Ty::Bytes,
+    ),
+    abi_row(
+        "bytes",
+        "concat",
+        AbiRef::new("bytes_h", "concat"),
+        &[Ty::Bytes, Ty::Bytes],
+        Ty::Bytes,
+    ),
+    abi_row(
+        "bytes",
+        "to_string_lossy",
+        AbiRef::new("bytes_h", "utf8_lossy"),
+        &[Ty::Bytes],
+        Ty::Str,
+    ),
+    abi_row(
+        "base64",
+        "decode",
+        AbiRef::new("base64", "decode"),
+        &[Ty::Str],
+        Ty::Bytes,
+    ),
+    abi_row("hex", "decode", AbiRef::new("hex", "decode"), &[Ty::Str], Ty::Bytes),
     abi_row(
         "bytes",
         "to_string_utf8",
-        AbiRef::new("bytes", "to_string_utf8"),
-        &[Ty::I64],
+        // Was `AbiRef::new("bytes", "to_string_utf8")` over an `i64` *host*
+        // handle — the one-shot kind the `tcp` path reads with `take_bytes`.
+        // A `Bytes` in the language is a value you may read twice, so it is an
+        // arena handle now and this row points at that.
+        AbiRef::new("bytes_h", "utf8"),
+        &[Ty::Bytes],
         Ty::Str,
     ),
 ];

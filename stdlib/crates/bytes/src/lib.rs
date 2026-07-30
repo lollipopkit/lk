@@ -96,10 +96,14 @@ impl BytesModule {
     fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.get()")?;
-        let index = usize_arg(&values[1], "bytes.get() index")?;
-        Ok(bytes
-            .get(index)
-            .copied()
+        // The same rule every other container reads by: negative counts from
+        // the end, out of range is nil. This module had its own `usize_arg`
+        // instead, so `bytes.get(b, -1)` raised while `b.get(-1)` — the method
+        // spelling, which goes through the VM's dispatch — answered the last
+        // byte. Same operation, two spellings, two answers.
+        let index = lk_core::val::position::element_position(&values[1], bytes.len(), "bytes.get() index")?;
+        Ok(index
+            .and_then(|index| bytes.get(index).copied())
             .map(|value| RuntimeVal::Int(value as i64))
             .unwrap_or(RuntimeVal::Nil))
     }
@@ -111,9 +115,12 @@ impl BytesModule {
         }
         let values = args.as_slice();
         let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.slice()")?;
-        let start = usize_arg(&values[1], "bytes.slice() start")?.min(bytes.len());
+        // Window positions: negative counts from the end and out of range
+        // clamps — the same `read_position` the VM's own `bytes.slice` dispatch
+        // uses, which is why the two spellings now agree.
+        let start = lk_core::val::position::read_position(&values[1], bytes.len(), "bytes.slice() start")?;
         let end = if let Some(value) = values.get(2) {
-            usize_arg(value, "bytes.slice() end")?.min(bytes.len())
+            lk_core::val::position::read_position(value, bytes.len(), "bytes.slice() end")?
         } else {
             bytes.len()
         };
@@ -193,11 +200,4 @@ fn byte_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<
 
 fn checked_byte(value: i64, context: &str) -> Result<u8> {
     u8::try_from(value).map_err(|_| anyhow!("{context} expects byte values in 0..=255, got {value}"))
-}
-
-fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
-    match value {
-        RuntimeVal::Int(value) if *value >= 0 => Ok(*value as usize),
-        other => bail!("{context} expects a non-negative integer, got {:?}", other.kind()),
-    }
 }

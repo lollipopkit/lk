@@ -124,6 +124,18 @@ nil 流到下一个读 `n` 的地方才炸 —— 报的是错的行,而那个�
 最后一个元素。四份实现现在共用 `slice_position`(VM)与 `resolve_position`
 (lkrt),差分语料补了负数窗口。
 
+**`bytes` 模块是第五处,2026-07-30 才接上。** 上面说"四份实现现在共用
+`slice_position`",而 `bytes` 模块的 `get`/`slice` 仍然 raise ——
+它在 stdlib crate 里,够不到 core 那个 `pub(super)` 的辅助函数,于是自己写了
+`usize_arg`。可观测的是**同一个操作两个答案**:`b.slice(1, -1)`(方法拼写,走 VM 的
+方法分发)给 `Bytes([98,99,100])`,而 `bytes.slice(b, 1, -1)`(模块拼写,走 stdlib
+自己的代码)报 "expects a non-negative integer"。
+
+判据因此提成了 `core::val::position` 的公开 API(`read_position` /
+`element_position` / `write_position`),VM 侧现在真的只有一份;`element_position` 与
+`read_position` 的区别正是"元素**没有**可编的答案,窗口有" —— `xs[9]` 是 nil 而不是
+最后一个元素。native 侧保持自己的镜像(lkrt 不能依赖前端),这是既有的模式。
+
 **写也一样。** `xs[-1] = 9`、`xs.set(-1, 9)`、`remove_at(-1)`、`insert(-1, v)`
 都从尾部数;此前读能负、写报 "list index must be non-negative" —— 同一个下标
 表达式,一个方向能用。解析之后仍然越界的写是**响亮失败**(读越界是 nil,写越界

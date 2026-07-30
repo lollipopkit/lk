@@ -952,6 +952,25 @@ pub(super) fn lower(
                     });
                     (false, eq, one)
                 }
+                // `Bytes` compares by content, the VM's rule (unlike a struct,
+                // which compared by handle until that was fixed).
+                (Ty::Bytes, Ty::Bytes) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("bytes_h", "eq"),
+                        args: vec![lv, rv],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
                 // A dyn list against any list: both sides normalize to dyn
                 // lists and compare structurally (`dyn_eq` recurses with the
                 // VM's numeric coercion).

@@ -94,6 +94,7 @@ fn crosses_as_word(ty: Ty) -> bool {
             | Ty::MapStrBool
             | Ty::MapStrDyn
             | Ty::Set
+            | Ty::Bytes
     )
 }
 
@@ -834,6 +835,7 @@ pub(crate) fn lower_function(
                     | Ty::MapStrBool
                     | Ty::MapStrDyn
                     | Ty::Set
+                    | Ty::Bytes
                     | Ty::Cell => {
                         let c = ssa.new_val();
                         insts.push(Inst::Const {

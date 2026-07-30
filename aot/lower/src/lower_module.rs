@@ -402,6 +402,26 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (dst, ty));
         return Ok(());
     }
+    // `bytes.slice(b, start)` — the two-argument form, whose `end` defaults to
+    // the length. A row has one arity, so the default belongs here.
+    if module == "bytes" && name == "slice" && argc == 2 {
+        let handle = ssa.read_typed(base.wrapping_add(1), block, Ty::Bytes, pc)?;
+        let start = ssa.read_typed(base.wrapping_add(2), block, Ty::I64, pc)?;
+        let end = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(end),
+            callee: AbiRef::new("bytes_h", "len"),
+            args: vec![handle],
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("bytes_h", "slice"),
+            args: vec![handle, start, end],
+        });
+        ssa.write(base, block, (dst, Ty::Bytes));
+        return Ok(());
+    }
     let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
         return Err(Unsupported::Opcode { pc, op: Opcode::Call });
     };

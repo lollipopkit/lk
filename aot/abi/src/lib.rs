@@ -217,6 +217,21 @@ macro_rules! for_each_abi_fn {
             // the text is byte-identical. `WritesHost` like every other
             // arena-allocating string producer. `url.decode_component` raises on
             // a malformed escape.
+            // `Bytes` handles: an arena-owned `Vec<u8>`, the same shape a list
+            // handle has. Content equality and `Bytes([…])` display, both the
+            // VM's rules.
+            ("bytes_h", "from_str", lkrt_lkbytes_from_str, WritesHost, [StrPtr], Ptr);
+            ("bytes_h", "len", lkrt_lkbytes_len, Pure, [Ptr], I64);
+            ("bytes_h", "is_empty", lkrt_lkbytes_is_empty, Pure, [Ptr], I64);
+            ("bytes_h", "eq", lkrt_lkbytes_eq, Pure, [Ptr, Ptr], I64);
+            ("bytes_h", "get", lkrt_lkbytes_get, Pure, [Ptr, I64], DynVal);
+            ("bytes_h", "concat", lkrt_lkbytes_concat, WritesHost, [Ptr, Ptr], Ptr);
+            ("bytes_h", "slice", lkrt_lkbytes_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            ("bytes_h", "utf8", lkrt_lkbytes_utf8, WritesHost, [Ptr], StrPtr);
+            ("bytes_h", "utf8_lossy", lkrt_lkbytes_utf8_lossy, WritesHost, [Ptr], StrPtr);
+            ("bytes_h", "to_str", lkrt_lkbytes_to_str, WritesHost, [Ptr], StrPtr);
+            ("base64", "decode", lkrt_base64_decode, WritesHost, [StrPtr], Ptr);
+            ("hex", "decode", lkrt_hex_decode, WritesHost, [StrPtr], Ptr);
             ("base64", "encode", lkrt_base64_encode, WritesHost, [StrPtr], StrPtr);
             ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
             ("url", "encode_component", lkrt_url_encode_component, WritesHost, [StrPtr], StrPtr);
@@ -232,15 +247,13 @@ macro_rules! for_each_abi_fn {
             ("rt", "task_await", lkrt_task_await, WritesHost, [I64], DynVal);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
-            ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
+            ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], Ptr);
             ("tcp", "write_str", lkrt_tcp_write_str, WritesHost, [I64, StrPtr], I64);
-            ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, I64], I64);
+            ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, Ptr], I64);
             ("tcp", "close", lkrt_tcp_close, WritesHost, [I64], I64);
             // Not `Pure`: it `take_bytes` — the handle is *consumed*, so a
             // second call with the same handle fails where the first one
             // succeeded. Mislabeling it would let a CSE pass collapse the two.
-            ("bytes", "to_string_utf8", lkrt_bytes_to_string_utf8, WritesHost, [I64], StrPtr);
-            ("bytes", "free", lkrt_bytes_free, WritesHost, [I64], I64);
             ("lkrt", "handle_close", lkrt_handle_close, WritesHost, [I64], I64);
             ("io.std", "write", lkrt_io_std_write, WritesHost, [I64, StrPtr, I64], I64);
             ("io.std", "flush", lkrt_io_std_flush, WritesHost, [I64], I64);
@@ -250,10 +263,10 @@ macro_rules! for_each_abi_fn {
             ("env", "has", lkrt_env_has, ReadsHost, [StrPtr], I64);
             ("env", "set", lkrt_env_set, WritesHost, [StrPtr, StrPtr], I64);
             ("env", "remove", lkrt_env_remove, WritesHost, [StrPtr], I64);
-            ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], I64);
+            ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], Ptr);
             ("fs", "read_to_string", lkrt_fs_read_to_string, ReadsHost, [StrPtr], StrPtr);
             ("fs", "write_str", lkrt_fs_write_str, WritesHost, [StrPtr, StrPtr], I64);
-            ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, I64], I64);
+            ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, Ptr], I64);
             ("fs", "exists", lkrt_fs_exists, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_len", lkrt_fs_metadata_len, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_is_file", lkrt_fs_metadata_is_file, ReadsHost, [StrPtr], I64);

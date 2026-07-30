@@ -1486,6 +1486,50 @@ fn a_closure_may_assign_to_its_capture() {
     );
 }
 
+/// `Bytes` as a native value, pinned to pure Cranelift.
+///
+/// It had no carrier at all, so `"hi".bytes()`, every `bytes` module member, and
+/// `base64.decode` / `hex.decode` dropped the whole program to the VM. Display
+/// (`Bytes([104,105])`) and equality (by *content*) are the two things a bare
+/// handle integer could not have expressed.
+#[test]
+fn bytes_are_a_native_value() {
+    run_differential(
+        "bytes_value",
+        &[
+            new(
+                "module_surface",
+                "use bytes;\nlet b = bytes.from_string(\"hi\");\nprintln(b);\nprintln(bytes.len(b));\nprintln(bytes.is_empty(b));\nprintln(bytes.to_string_utf8(b));\nprintln(bytes.to_string_lossy(b));\nprintln(bytes.get(b, 0) ?? -1);\nprintln(bytes.get(b, -1) ?? -1);\nprintln(bytes.get(b, 9) ?? -1);\nprintln(bytes.concat(b, b));\nreturn 0;\n",
+            ),
+            // The method spellings, and `len` through the container fast path.
+            new(
+                "method_surface",
+                "println(\"hi\".bytes());\nprintln(\"hi\".bytes().len());\nprintln(\"\".bytes().is_empty());\nprintln(\"\".bytes());\nreturn 0;\n",
+            ),
+            // Indexing, which is also what `b.get(i)` compiles to, and the
+            // two-argument `slice`. Negative counts from the end and out of
+            // range is nil — the same rule every container reads by, which the
+            // `bytes` *module* did not have until now (`b.slice(1, -1)` through
+            // the method dispatch answered while `bytes.slice(b, 1, -1)` raised).
+            new(
+                "indexing_and_slicing",
+                "use bytes;\nlet b = bytes.from_string(\"abcde\");\nprintln(b[0]);\nprintln(b[-1]);\nprintln(b[9] ?? -1);\nprintln(b.get(-1) ?? -1);\nprintln(bytes.slice(b, 1));\nprintln(bytes.slice(b, 1, -1));\nprintln(b.slice(1, -1));\nreturn 0;\n",
+            ),
+            // Content equality, not handle identity.
+            new(
+                "content_equality",
+                "use bytes;\nlet a = bytes.from_string(\"hi\");\nprintln(a == bytes.from_string(\"hi\"));\nprintln(a == bytes.from_string(\"ho\"));\nprintln(a != bytes.from_string(\"ho\"));\nreturn 0;\n",
+            ),
+            // The decoders answer `Bytes`, and raise catchably on bad input.
+            new(
+                "decoders_answer_bytes",
+                "use bytes;\nuse encoding;\nlet d = encoding.base64.decode(\"aGk=\");\nprintln(d);\nprintln(bytes.to_string_utf8(d));\nprintln(encoding.hex.decode(\"6869\") == d);\ntry { encoding.base64.decode(\"!!!\"); println(\"no\"); } catch e { println(\"caught\"); }\ntry { encoding.hex.decode(\"zz\"); println(\"no\"); } catch e { println(\"caught\"); }\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `base64` / `hex` / `url` text, pinned to pure Cranelift.
 ///
 /// lkrt uses the same crates the stdlib module does, so the bytes are identical

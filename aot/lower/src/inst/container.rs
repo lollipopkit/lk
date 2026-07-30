@@ -440,6 +440,7 @@ pub(super) fn lower(
                 Ty::ListDyn => ("list_h", "dyn_len"),
                 Ty::MapStrDyn => ("map_h", "str_dyn_len"),
                 Ty::Set => ("set", "len"),
+                Ty::Bytes => ("bytes_h", "len"),
                 // A boxed Dyn: length dispatches on the runtime tag.
                 Ty::Dyn => ("dyn", "len_of"),
                 _ => return Err(Unsupported::TypeMismatch { pc }),
@@ -932,6 +933,23 @@ pub(super) fn lower(
             };
             if let Some(idx) = const_in_range {
                 let (at_fn, elem_ty) = match list_ty {
+                    // A `Bytes` element is a `Dyn` whether or not the index is
+                    // provably in range: one helper, one rule.
+                    Ty::Bytes => {
+                        let idx_v = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: idx_v,
+                            value: Const::I64(idx),
+                        });
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("bytes_h", "get"),
+                            args: vec![handle, idx_v],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                        return Ok(());
+                    }
                     Ty::ListI64 => ("i64_at", Ty::I64),
                     Ty::ListF64 => ("f64_at", Ty::F64),
                     Ty::ListStr => ("str_at", Ty::Str),
@@ -962,6 +980,19 @@ pub(super) fn lower(
                 // and prints `nil`. Either way there is no eager-abort shortcut that
                 // would diverge from `return xs[oob]` printing `nil`.
                 match list_ty {
+                    // `b[i]` on a `Bytes`, which is also what `b.get(i)`
+                    // compiles to. Like a dyn list, the Dyn's Nil tag is the
+                    // absent case — negative counts from the end, out of range
+                    // is nil.
+                    Ty::Bytes => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("bytes_h", "get"),
+                            args: vec![handle, index_val],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    }
                     // Mixed list: no Maybe carrier needed — the Dyn's Nil tag
                     // *is* the absent case (`dyn_at` maps OOB/negative-beyond
                     // to Nil, matching the VM's nil-on-out-of-range).

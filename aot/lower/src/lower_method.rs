@@ -1459,6 +1459,68 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        // `s.bytes()` — the string's UTF-8 bytes as a `Bytes` handle.
+        (Ty::Str, "bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_str"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        // The `bytes` module's members are also reachable as methods.
+        (Ty::Bytes, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Bytes, "is_empty", []) => {
+            // Through `len == 0`, like `Set::is_empty`: the ABI answers an `i64`
+            // and a `Bool` operand has to be an i1.
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("bytes_h", "len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Bytes, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "get"),
+                args: vec![receiver, *index],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "slice", [(from, Ty::I64), (to, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "slice"),
+                args: vec![receiver, *from, *to],
+            });
+            (dst, Ty::Bytes)
+        }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
             let dst = ssa.new_val();

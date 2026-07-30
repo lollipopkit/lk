@@ -1,0 +1,53 @@
+// `Bytes` as a value, and the codecs that produce it.
+// Run from project root: lk examples/stdlib/bytes_codec.lk
+
+use bytes;
+use encoding;
+
+// 1. A Bytes is an ordinary value: read it as many times as you like.
+let hi = bytes.from_string("hi");
+assert(bytes.len(hi) == 2);
+assert(bytes.to_string_utf8(hi) == "hi");
+assert(bytes.len(hi) == 2);
+assert(!bytes.is_empty(hi));
+assert(bytes.is_empty(bytes.from_string("")));
+
+// 2. It displays as its byte values, and compares by *content*.
+assert("${hi}" != "");
+assert(hi == bytes.from_string("hi"));
+assert(hi != bytes.from_string("ho"));
+
+// 3. A negative position counts from the end, and out of range is nil — the
+// same rule every other container reads by, in both spellings.
+let abc = bytes.from_string("abcde");
+assert(bytes.get(abc, 0)! == 97);
+assert(bytes.get(abc, -1)! == 101);
+assert(bytes.get(abc, 9) == nil);
+assert(abc.get(-1)! == 101);
+assert(bytes.slice(abc, 1, -1) == bytes.from_string("bcd"));
+assert(abc.slice(1, -1) == bytes.from_string("bcd"));
+
+// 4. The string method spelling.
+assert("hi".bytes() == hi);
+assert("hi".bytes().len() == 2);
+
+// 5. base64 and hex round-trip through Bytes.
+assert(encoding.base64.encode("hi") == "aGk=");
+assert(encoding.base64.decode("aGk=") == hi);
+assert(encoding.hex.encode("hi") == "6869");
+assert(encoding.hex.decode("6869") == hi);
+assert(bytes.concat(hi, hi) == bytes.from_string("hihi"));
+
+// A malformed encoding raises, catchably.
+let bad = try { encoding.base64.decode("!!!"); "no" } catch e { "caught" };
+assert(bad == "caught");
+
+// 6. A URI component round-trips too: a space is `%20`, and `+` stays the
+// literal `+` it is (form encoding is what `url.query_stringify` is for).
+let raw = "a b&c=d";
+let escaped = encoding.url.encode_component(raw);
+assert(escaped == "a%20b%26c%3Dd");
+assert(encoding.url.decode_component(escaped) == raw);
+assert(encoding.url.decode_component("a+b") == "a+b");
+
+println("bytes_codec: all assertions passed");

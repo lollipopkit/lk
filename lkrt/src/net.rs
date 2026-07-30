@@ -28,8 +28,15 @@ pub extern "C" fn lkrt_tcp_connect(addr: *const c_char) -> i64 {
     })
 }
 
+/// `tcp.read(stream, max)` — the bytes read, as a `Bytes` **value**.
+///
+/// It used to answer the one-shot host handle (`insert_bytes`, read once with
+/// `take_bytes`). That made `tcp.read` produce something that was not the
+/// language's `Bytes`: you could hand it to `bytes.to_string_utf8` exactly once
+/// and to nothing else. A `Bytes` is an ordinary value, so this hands back the
+/// arena handle every other producer does.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_tcp_read(stream: i64, max_bytes: i64) -> i64 {
+pub extern "C" fn lkrt_tcp_read(stream: i64, max_bytes: i64) -> *mut core::ffi::c_void {
     raising(|| {
         let max = checked_read_len(max_bytes)?;
         let mut stream = with_runtime(|rt| {
@@ -40,7 +47,7 @@ pub extern "C" fn lkrt_tcp_read(stream: i64, max_bytes: i64) -> i64 {
         let mut buffer = vec![0u8; max];
         let read = stream.read(&mut buffer).map_err(|err| format!("tcp read: {err}"))?;
         buffer.truncate(read);
-        Ok(with_runtime(|rt| rt.insert_bytes(buffer)))
+        Ok(crate::lkbytes::bytes_handle(buffer))
     })
 }
 
@@ -53,30 +60,13 @@ pub extern "C" fn lkrt_tcp_write_str(stream: i64, data: *const c_char) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_tcp_write_bytes(stream: i64, data: i64) -> i64 {
-    raising(|| {
-        let data = with_runtime(|rt| rt.take_bytes(data))?;
-        write_stream(stream, &data)
-    })
+pub extern "C" fn lkrt_tcp_write_bytes(stream: i64, data: *mut core::ffi::c_void) -> i64 {
+    raising(|| write_stream(stream, crate::lkbytes::bytes_slice(data)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_tcp_close(stream: i64) -> i64 {
     raising(|| with_runtime(|rt| rt.close_kind(stream, HandleKind::TcpStream)).map(i64::from))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_bytes_to_string_utf8(bytes: i64) -> *mut c_char {
-    raising(|| {
-        let bytes = with_runtime(|rt| rt.take_bytes(bytes))?;
-        let value = core::str::from_utf8(&bytes).map_err(|err| format!("bytes are not valid UTF-8: {err}"))?;
-        owned_c_string(value)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_bytes_free(bytes: i64) -> i64 {
-    raising(|| with_runtime(|rt| rt.close_kind(bytes, HandleKind::Bytes)).map(i64::from))
 }
 
 #[unsafe(no_mangle)]
@@ -132,8 +122,11 @@ mod tests {
         let stream = lkrt_tcp_connect(addr.as_ptr());
         let request = CString::new("ping").expect("request cstring");
         assert_eq!(lkrt_tcp_write_str(stream, request.as_ptr()), 4);
+        // A `Bytes` **value** now, not the one-shot host handle: read it twice
+        // to say so.
         let bytes = lkrt_tcp_read(stream, 4);
-        let response = lkrt_bytes_to_string_utf8(bytes);
+        assert_eq!(unsafe { crate::lkbytes::lkrt_lkbytes_len(bytes) }, 4);
+        let response = unsafe { crate::lkbytes::lkrt_lkbytes_utf8(bytes) };
         // SAFETY: response is an lkrt-owned NUL-terminated CString pointer.
         let response_text = unsafe { core::ffi::CStr::from_ptr(response) }
             .to_str()
@@ -142,7 +135,7 @@ mod tests {
         // SAFETY: the pointer came from an lkrt owned-string return.
         unsafe { lkrt_string_free(response) };
         assert_eq!(response_text, "pong");
-        assert_eq!(lkrt_bytes_free(bytes), 0);
+        assert_eq!(unsafe { crate::lkbytes::lkrt_lkbytes_len(bytes) }, 4);
         assert_eq!(lkrt_tcp_close(stream), 1);
         assert_eq!(lkrt_tcp_close(stream), 0);
         server.join().expect("server thread");

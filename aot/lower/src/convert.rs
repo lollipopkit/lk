@@ -290,6 +290,21 @@ pub(crate) fn to_display_str(
             });
             Ok((dst, true))
         }
+        // `Bytes([104,105])` — rendered inside lkrt with the VM's exact
+        // separators. A container, so the scalar-only display contexts reject it
+        // like they reject a list.
+        Ty::Bytes => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "to_str"),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         // A window prints as the list it windows — the VM renders a
         // `HeapValue::Slice` through the same list formatter.
         Ty::SliceI64 => {

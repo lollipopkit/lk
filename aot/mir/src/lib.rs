@@ -72,6 +72,13 @@ pub enum Ty {
     /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
     MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
+    /// A native `Bytes` handle (`*mut c_void` → an arena-owned `Vec<u8>`),
+    /// mirroring the VM's `HeapValue::Bytes`. Opaque pointer.
+    ///
+    /// A distinct type rather than a bare handle integer because *display* and
+    /// *equality* depend on knowing it is bytes: `println(b)` is
+    /// `Bytes([104,105])`, not a pointer, and `==` compares content.
+    Bytes,
     /// A mutable capture cell (`rt.cell_*`, the VM's `UpvalCell`): an
     /// arena-owned boxed-Dyn slot passed by pointer, so a `try` body's
     /// assignment to an outer local writes through. Opaque pointer.
@@ -815,6 +822,7 @@ pub fn ty_name(ty: Ty) -> &'static str {
         Ty::ListDyn => "list<dyn>",
         Ty::MapStrDyn => "map<str,dyn>",
         Ty::Set => "set",
+        Ty::Bytes => "bytes",
         Ty::Cell => "cell",
     }
 }
