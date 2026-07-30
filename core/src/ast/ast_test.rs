@@ -637,6 +637,40 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// Only a bare **name** can start a macro invocation.
+    ///
+    /// The test used to be the open delimiter alone, so `m["a"]![0]` — unwrap a
+    /// map read, then index it — was "a macro invocation reached the parser",
+    /// for a spelling no macro could ever have. The workaround was to
+    /// parenthesise or split the line, for an expression with no ambiguity in
+    /// it.
+    #[test]
+    fn postfix_unwrap_is_not_a_macro_invocation() {
+        let parses = |src: &str| {
+            let tokens = Tokenizer::tokenize(src).expect("tokenize");
+            Parser::new(&tokens).parse().is_ok()
+        };
+        assert!(parses(r#"m["a"]![0]"#), "unwrap a map read, then index it");
+        assert!(parses("xs[0]![0]"), "unwrap a list read, then index it");
+        assert!(parses("m.field![0]"), "unwrap a field read, then index it");
+        assert!(
+            parses("(m!)[0]"),
+            "the parenthesised spelling for unwrapping a bare name"
+        );
+        assert!(
+            parses("m[\"a\"]! + 1"),
+            "a `!` not followed by a delimiter was always fine"
+        );
+
+        // A bare name *is* ambiguous, and the name goes to the macro — with the
+        // message that says so, since expansion runs before the parser.
+        let tokens = Tokenizer::tokenize("nope!()").expect("tokenize");
+        let error = Parser::new(&tokens).parse().expect_err("no such macro");
+        let text = alloc::format!("{error:#}");
+        assert!(text.contains("no macro named `nope`"), "{text}");
+        assert!(text.contains("(nope!)(…)"), "{text}");
+    }
+
     /// `Expr` is parsed recursively, so its *size* is part of how deep the
     /// parser can go before the stack runs out — and the depth guard is only
     /// useful if it trips first.

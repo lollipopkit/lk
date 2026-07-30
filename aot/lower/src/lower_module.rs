@@ -402,6 +402,25 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (dst, ty));
         return Ok(());
     }
+    // `string.slice(s, start)` — as above, defaulting to the character length.
+    if module == "string" && name == "slice" && argc == 2 {
+        let text = ssa.read_typed(base.wrapping_add(1), block, Ty::Str, pc)?;
+        let start = ssa.read_typed(base.wrapping_add(2), block, Ty::I64, pc)?;
+        let end = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(end),
+            callee: AbiRef::new("str", "char_len"),
+            args: vec![text],
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("str", "slice_chars"),
+            args: vec![text, start, end],
+        });
+        ssa.write(base, block, (dst, Ty::Str));
+        return Ok(());
+    }
     // `bytes.slice(b, start)` — the two-argument form, whose `end` defaults to
     // the length. A row has one arity, so the default belongs here.
     if module == "bytes" && name == "slice" && argc == 2 {

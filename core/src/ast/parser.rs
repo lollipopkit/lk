@@ -923,46 +923,34 @@ impl<'a> Parser<'a> {
 
                 // Build bracket Access
                 expr = Expr::Access(Box::new(expr), index_expr);
-            } else if !self.eof()
-                && self.tokens[self.pos] == Token::Not
-                && !matches!(
-                    self.tokens.get(self.pos + 1),
-                    Some(Token::LParen | Token::LBracket | Token::LBrace)
-                )
-            {
+            } else if !self.eof() && self.tokens[self.pos] == Token::Not && !self.macro_invocation_follows(&expr) {
                 // Postfix `!` — Swift-style force unwrap, parse-time sugar:
                 // `expr!` ⇒ `{ let __unwrap{n} = expr;
                 //              __unwrap{n} == nil ? error("unwrap of nil value")
                 //                                 : __unwrap{n} }`
                 // Raises a catchable error on nil, evaluates to the value
-                // otherwise. Two boundaries: `!` immediately followed by an
-                // open delimiter stays a *macro invocation* (`name!(...)` /
-                // `name![...]` / `name!{...}` — parenthesize as `(x!)(...)`
-                // to call an unwrapped value), and the lexer greedily takes
-                // `!=` as Ne, so `x!== 1` is a parse error — write `x! == 1`.
+                // otherwise. Two boundaries: a `!` that continues a *macro
+                // name* is a macro invocation, not an unwrap (see
+                // [`Parser::macro_invocation_follows`]), and the lexer greedily
+                // takes `!=` as Ne, so `x!== 1` is a parse error — write
+                // `x! == 1`.
                 self.pos += 1;
                 self.desugar_counter += 1;
                 expr = desugar_unwrap(self.desugar_counter, expr);
-            } else if !self.eof()
-                && self.tokens[self.pos] == Token::Not
-                && matches!(
-                    self.tokens.get(self.pos + 1),
-                    Some(Token::LParen | Token::LBracket | Token::LBrace)
-                )
-            {
+            } else if !self.eof() && self.tokens[self.pos] == Token::Not && self.macro_invocation_follows(&expr) {
                 // A macro invocation that reached the parser is one macro
                 // expansion left alone, and expansion runs first — so no macro
                 // of this name is defined. Saying that beats what the fall
                 // through said: `nope!()` left the `!` unconsumed and reported
                 // "Unexpected tokens at end (found Not)", which names a token
                 // the program does not contain and no macro at all.
-                let msg = match &expr {
-                    Expr::Var(name) => alloc::format!(
-                        "no macro named `{name}` is defined — `{name}!(…)` is a macro invocation, \
-                         and to call an unwrapped value write `({name}!)(…)`"
-                    ),
-                    _ => "a macro invocation reached the parser, so no macro of that name is defined".to_string(),
+                let Expr::Var(name) = &expr else {
+                    unreachable!("macro_invocation_follows only answers true for a bare name");
                 };
+                let msg = alloc::format!(
+                    "no macro named `{name}` is defined — `{name}!(…)` is a macro invocation, \
+                     and to call an unwrapped value write `({name}!)(…)`"
+                );
                 return Err(anyhow!(self.err(&msg)));
             } else {
                 break; // No more postfix operations
@@ -970,6 +958,27 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
+    }
+
+    /// Whether the `!` at the cursor continues a **macro invocation** rather
+    /// than being a postfix unwrap.
+    ///
+    /// A macro name is an identifier, so only a bare name can be one:
+    /// `name!(…)`, `name![…]`, `name!{…}`. The test used to be the open
+    /// delimiter alone, which made `m["a"]![0]` — unwrap a map read, then index
+    /// it — a "macro invocation reached the parser" error, for a spelling no
+    /// macro could ever have. `xs[0]![0]` likewise. The workaround was to
+    /// parenthesise or split the line, for an expression with no ambiguity in
+    /// it at all.
+    ///
+    /// To *call* an unwrapped value bound to a bare name, parenthesise:
+    /// `(f!)(…)`. That one really is ambiguous, and the name goes to the macro.
+    fn macro_invocation_follows(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Var(_))
+            && matches!(
+                self.tokens.get(self.pos + 1),
+                Some(Token::LParen | Token::LBracket | Token::LBrace)
+            )
     }
 
     /// Parse struct fields: '{ id: expr, ... }'

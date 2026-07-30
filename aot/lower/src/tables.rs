@@ -323,6 +323,15 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     ),
     // The module spelling counts bytes (`str::len`), unlike `.len()`.
     abi_row("string", "len", AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64),
+    // The module spelling of `s.slice(a, b)`, which the method path has always
+    // lowered. Two spellings of one operation, and only one of them was fast.
+    abi_row(
+        "string",
+        "slice",
+        AbiRef::new("str", "slice_chars"),
+        &[Ty::Str, Ty::I64, Ty::I64],
+        Ty::Str,
+    ),
     abi_row(
         "string",
         "capitalize",

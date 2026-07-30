@@ -1486,6 +1486,24 @@ fn a_closure_may_assign_to_its_capture() {
     );
 }
 
+/// Both arities of `slice`, in both spellings, pinned to pure Cranelift.
+///
+/// A string had one- and two-argument forms; a list had only the two-argument
+/// one, so `xs.slice(1)` dropped the program to the VM. And `string.slice(s, a,
+/// b)` — the *module* spelling of what the method path had always lowered — had
+/// no row at all: two spellings of one operation, only one of them fast.
+#[test]
+fn every_slice_spelling_lowers_natively() {
+    run_differential(
+        "slice_spellings",
+        &[new(
+            "list_string_and_bytes",
+            "use string;\nuse bytes;\nlet xs = [1,2,3];\nprintln(xs.slice(1));\nprintln(xs.slice(1, 3));\nprintln(string.slice(\"hello\", 1, 3));\nprintln(string.slice(\"hello\", 1));\nprintln(\"hello\".slice(1));\nlet b = bytes.from_string(\"abcde\");\nprintln(b.slice(1));\nreturn 0;\n",
+        )],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `Bytes` as a native value, pinned to pure Cranelift.
 ///
 /// It had no carrier at all, so `"hi".bytes()`, every `bytes` module member, and

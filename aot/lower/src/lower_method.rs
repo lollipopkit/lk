@@ -708,6 +708,39 @@ pub(crate) fn lower_method_dispatch(
         // `Ty::ListI64` until the VM's `.slice()` became a view: the two
         // backends then disagreed about whether a write to the source shows
         // through, and about whether `.to_list()` existed at all.
+        // `xs.slice(start)` — the one-argument form, whose end defaults to the
+        // length. `Ty::Str` had both arities and a list had only the two-arg
+        // one, so `xs.slice(1)` dropped the program to the VM.
+        (Ty::ListI64, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("list_h", "i64_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_new"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        (Ty::Bytes, "slice", [(from, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("bytes_h", "len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "slice"),
+                args: vec![receiver, *from, end],
+            });
+            (dst, Ty::Bytes)
+        }
         (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
