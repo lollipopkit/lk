@@ -1457,6 +1457,14 @@ fn a_closure_may_call_another_closure() {
                 "alias_a_lambda",
                 "let f = |x| x + 1;\nlet g = f;\nprintln(g(1));\nreturn 0;\n",
             ),
+            // A lambda *argument* whose body calls a captured lambda. Its whole
+            // environment is static, so it is erased and the typed `map_fn` fast
+            // path — which calls the callback with the element and nothing else —
+            // accepts it.
+            new(
+                "captured_lambda_inside_a_map_callback",
+                "let f = |x| x + 1;\nprintln([1,2,3].map(|x| f(x)));\nprintln([1,2,3].filter(|x| f(x) > 2));\nreturn 0;\n",
+            ),
         ],
         NativePath::PureCranelift,
     );

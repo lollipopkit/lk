@@ -122,4 +122,10 @@ record(1);
 record(2);
 assert(seen == 5);
 
+// A captured lambda inside a callback: the closure's whole environment is a
+// static reference, so it carries nothing at run time and reaches the same
+// fast path a bare `|x| x + 1` would.
+assert([1, 2, 3].map(|x| add_one(x)) == [2, 3, 4]);
+assert([1, 2, 3].filter(|x| add_one(x) > 2) == [2, 3]);
+
 println("closure: all assertions passed");

@@ -106,8 +106,14 @@ pub(super) fn lower(
                 }
                 captures.push(ClosureCapture::Value(v, ty));
             }
-            ssa.builtin_regs
-                .insert((block, instr.a()), GlobalRef::Closure(fidx as u32, captures));
+            // Nothing to pass: this is a plain function reference, which is
+            // what lets the list HOFs' typed fast paths accept it.
+            let global_ref = if captures.iter().all(|c| matches!(c, ClosureCapture::StaticRef)) {
+                GlobalRef::Lambda(fidx as u32)
+            } else {
+                GlobalRef::Closure(fidx as u32, captures)
+            };
+            ssa.builtin_regs.insert((block, instr.a()), global_ref);
         }
         // `abx(CallNamed, call_base, (named_count << 7) | positional_count)`:
         // the callee sits at `call_base`, the positional arguments follow it,

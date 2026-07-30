@@ -23,14 +23,15 @@ pub(super) fn lower(
             // trailing parameter (the cell's value at the call site). A direct
             // (non-cell) use of the register finds no SSA value and rejects.
             let k = instr.bx() as usize;
-            if k >= capture_params.len() {
-                return Err(Unsupported::BadConst { pc });
-            }
-            // A capture whose whole meaning is a callable reference: the slot
-            // carries a dead `0`, and *this* is where the meaning arrives.
+            // A capture whose whole meaning is a callable reference. Checked
+            // before the bounds test because an all-static environment declares
+            // no parameters at all.
             if let Some(callable) = sig.ref_captures.get(&(ctx_func_index, k)).cloned() {
                 ssa.builtin_regs.insert((block, instr.a()), callable);
                 return Ok(());
+            }
+            if k >= capture_params.len() {
+                return Err(Unsupported::BadConst { pc });
             }
             ssa.builtin_regs.insert((block, instr.a()), GlobalRef::CellParam(k));
         }

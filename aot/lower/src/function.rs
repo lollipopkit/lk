@@ -435,12 +435,17 @@ pub(crate) fn lower_function(
     // lowering); it occupies no register — `LoadCapture k` reads it directly.
     let spawned_isolate = sig.spawned_isolate.contains(&func_index);
     ssa.spawned_isolate = spawned_isolate;
+    // An environment that is entirely static references carries nothing at
+    // runtime, so it is not declared at all (`SigInfer::captures_all_static`).
+    let erased_environment = sig.captures_all_static(func_index as usize, capture_count);
     let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
     for k in 0..capture_count {
         let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
         capture_params.push((cv, cty));
-        fn_params.push((cv, cty));
+        if !erased_environment {
+            fn_params.push((cv, cty));
+        }
         // A spawned goroutine's cell captures are thread-private copies:
         // seed the virtual slot so body writes (isolate — never visible to
         // the spawner) go through plain SSA.

@@ -254,6 +254,22 @@ impl SigInfer {
         }
     }
 
+    /// Whether *every* capture of `callee` is a static reference.
+    ///
+    /// Then the closure needs nothing at runtime — it is a plain function
+    /// reference — so the capture environment is erased entirely rather than
+    /// carried as dead slots. That is what lets `xs.map(|x| f(x))` reach the
+    /// typed `map_fn` fast path, which calls the callback with exactly the
+    /// element and nothing else.
+    ///
+    /// All-or-nothing on purpose: a *mixed* environment would need a hole at one
+    /// index, and every call site would have to agree on where the hole is. The
+    /// dead-slot form already handles that case correctly, just with one wasted
+    /// register.
+    pub(crate) fn captures_all_static(&self, callee: usize, capture_count: usize) -> bool {
+        capture_count > 0 && (0..capture_count).all(|k| self.ref_captures.contains_key(&(callee as u32, k)))
+    }
+
     /// Records that capture `k` of `callee` has to arrive as a runtime cell,
     /// and **pins** its parameter slot to [`Ty::Cell`].
     ///

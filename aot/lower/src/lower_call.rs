@@ -332,7 +332,8 @@ pub(crate) fn lower_user_call(
             op: Opcode::CallDirect,
         });
     }
-    if captures.len() != funcs[callee_idx].capture_count as usize {
+    let capture_count = funcs[callee_idx].capture_count as usize;
+    if captures.len() != capture_count && !sig.captures_all_static(callee_idx, capture_count) {
         return Err(Unsupported::Opcode {
             pc,
             op: Opcode::CallDirect,
