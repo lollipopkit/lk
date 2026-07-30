@@ -15,9 +15,10 @@ machine gets.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 # `x` then backspace, so the echo shows the correction; then enough newlines
 # to push the title off the top, which is what proves scrolling rather than
@@ -110,9 +111,7 @@ EXPECTED_REPORT = f"keys {len(KEYS)} last 10"
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")

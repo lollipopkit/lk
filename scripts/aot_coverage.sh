@@ -2,7 +2,7 @@
 # AOT native-lowering coverage scan (M4.2): tries a native `lk compile` on every
 # example and tallies the Unsupported reasons, so "deep coverage" work stays
 # data-driven. Usage:
-#   cargo build -p lk-cli --features aot && bash scripts/aot_coverage.sh
+#   bash scripts/aot_coverage.sh          # builds the compiler it scans with
 # Output: per-file OK/FAIL lines on stdout, reason ranking on stderr.
 #
 # Gate mode (used by CI): `AOT_COVERAGE_REQUIRE_FULL=1` makes the script exit
@@ -13,6 +13,16 @@
 # must be listed explicitly in `AOT_COVERAGE_ALLOW` (comma-separated paths),
 # never dropped silently.
 set -u
+# The compiler under test is built here rather than assumed. A *missing* binary
+# is loud — every compile fails and the count goes to zero — but a *stale* one
+# is silent: it reports full coverage for a compiler that never contained the
+# change being scanned, which is exactly how a fix once got credit for lowering
+# it had not done. `cargo build` is a no-op when nothing changed, so the only
+# cost is honesty. An explicit `LK_BIN` is used verbatim: that names a specific
+# binary, and whether it matches the tree is the caller's business.
+if [ -z "${LK_BIN:-}" ]; then
+    cargo build -p lk-cli --features aot || exit 1
+fi
 LK_BIN="${LK_BIN:-./target/debug/lk}"
 REQUIRE_FULL="${AOT_COVERAGE_REQUIRE_FULL:-0}"
 ALLOW="${AOT_COVERAGE_ALLOW:-}"

@@ -19,10 +19,11 @@ import io
 import os
 import socket
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
+
+from kernel import kernel_image
 
 SECTOR = 512
 SECTORS = 64
@@ -81,9 +82,7 @@ def send_line(connection, text):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         disk = os.path.join(workdir, "disk.img")
         archive = io.BytesIO()

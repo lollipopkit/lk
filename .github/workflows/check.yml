@@ -267,13 +267,15 @@ jobs:
             echo "::error::the exception reporter did not report the faulting address"
             exit 1
           }
+          # Each `check_*.py` builds and objcopies its own image (`kernel.py`) —
+          # this used to do it for all of them, which meant the fault-probe
+          # build above had to be undone here before anything else ran, and
+          # nothing said so. A check that boots whatever is on disk is not a
+          # check: see `kernel.py` for the two ways that lied.
+          #
           # Reading the framebuffer back proves the writes reached the device's
           # memory; it does not prove the mode was set, because an unconfigured
           # card still accepts them. Only what QEMU scans out shows that.
-          LK_BIN=../target/debug/lk cargo build --release
-          llvm-objcopy -O elf32-i386 \
-            target/x86_64-unknown-none/release/lk-bare-metal-x86 \
-            target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot
           timeout 120 python3 check_screen.py
           # The input half, end to end: `sendkey` puts real scancodes into the
           # emulated PS/2 controller, the LK handler decodes them into a line,
@@ -331,8 +333,11 @@ jobs:
         # pinned off, no fallback) is the only thing that catches it. Add a
         # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
         run: |
-          cargo build -p lk-cli --features aot
-          # 55/55, and no allow list. The try/catch corpus was the last thing
+          # The script builds the compiler it scans with — a stale binary would
+          # report full coverage for code it does not contain, and unlike a
+          # missing one that failure is silent.
+          #
+          # 60/60, and no allow list. The try/catch corpus was the last thing
           # on it; each of the three came off by a different fix, and each was
           # checked by *running* it against the VM rather than by the fact that
           # it compiled — see `aot/lower/src/try_region.rs`, where the two

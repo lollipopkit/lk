@@ -20,9 +20,10 @@ while other tasks hold the CPU.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 # The two windows, as `program.lk` places them: the spinner at the top right and
 # the clock three rows below it. Sampled inside their frames.
@@ -51,9 +52,7 @@ def region(path, rect):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")

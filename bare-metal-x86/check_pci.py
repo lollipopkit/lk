@@ -39,6 +39,8 @@ import sys
 import tempfile
 import time
 
+from kernel import kernel_image
+
 # What QEMU's educational PCI device answers to.
 EDU_ID = "1234:11e8"
 
@@ -54,9 +56,7 @@ def send_line(connection, text):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")

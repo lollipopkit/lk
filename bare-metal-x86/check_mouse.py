@@ -24,9 +24,10 @@ reports zero motion, which a small movement would be indistinguishable from.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 WIDTH, HEIGHT = 320, 200
 POINTER = (0xFF, 0x40, 0x60)
@@ -64,9 +65,7 @@ def pointer_pixels(path):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         qemu = subprocess.Popen(

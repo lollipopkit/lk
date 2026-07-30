@@ -38,6 +38,8 @@ import sys
 import tempfile
 import time
 
+from kernel import kernel_image
+
 # What QEMU's HPET runs at: a 10 ns period, stated as 10,000,000 femtoseconds,
 # so 10^15 / 10^7. Checked exactly rather than as a range — it is a fixed
 # property of the emulated chip, so any other number means the driver read the
@@ -62,9 +64,7 @@ def send_line(connection, text):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")

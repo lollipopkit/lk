@@ -34,9 +34,10 @@ with the same `cr2` and a different meaning.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 # What the ring-3 program prints through the syscall, and where it then tries to
 # write. Both are in `src/user.rs`.
@@ -55,9 +56,7 @@ USER_WRITE_FAULT = "error=0000000000000005"
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")

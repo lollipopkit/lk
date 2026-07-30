@@ -11,15 +11,18 @@ configuration space and draw to its framebuffer.
 ```bash
 rustup target add x86_64-unknown-none
 cargo build -p lk-cli --features aot   # from the repo root
-LK_BIN=../target/debug/lk ./run.sh
+./run.sh                               # builds the image and boots it
+python3 check_pci.py                   # any check builds its own image too
 ```
 
 ```
-.display at pci slot 2
+half 44
+display at pci 2.0
 framebuffer 0xfd000000
 pixels 00001428 00ffc040
-....lkos
-keys 4 last 115
+ABBA.BAB.ABA.BABA.BABA.BABAB.ABAB.ABABA. ...
+keys 0 last 0
+[lk returned to the board]
 ```
 
 ...and on the screen, a shell:
@@ -1608,9 +1611,15 @@ relocation model in `.cargo/config.toml` is what makes the two agree.
 
 ## What the checks cover
 
-Fifteen scripts, each booting the image under QEMU and driving it through the
-monitor. They are listed here because a check nobody runs is a claim nobody
-holds, and five of these were written after the sections above.
+Seventeen scripts, each *building* the image and booting it under QEMU, driving
+it through the monitor. They are listed here because a check nobody runs is a
+claim nobody holds, and five of these were written after the sections above.
+
+Building is `kernel.py`'s job and it is not a convenience: the image path used
+to be a bare default, so a script tested whatever happened to be on disk —
+including the kernel that `CARGO_FLAGS=--features=fault-probe ./run.sh` builds
+to page-fault deliberately, which made every check report a fault it had not
+caused, on every revision.
 
 | | what fails if it is wrong |
 | --- | --- |

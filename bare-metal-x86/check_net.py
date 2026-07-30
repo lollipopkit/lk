@@ -40,6 +40,8 @@ import sys
 import tempfile
 import time
 
+from kernel import kernel_image
+
 # QEMU's user-mode network: the guest is .15 and the gateway is .2. The
 # gateway's hardware address is derived from its IP by slirp, which is why it can
 # be written down here.
@@ -91,9 +93,7 @@ def arp_of(frame):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")
