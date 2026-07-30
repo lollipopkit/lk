@@ -1418,6 +1418,49 @@ fn try_catch_differential() {
     );
 }
 
+/// A `try` body that `return`s from the enclosing function, pinned to pure
+/// Cranelift.
+///
+/// The body is outlined into a function of its own, so a `return` written in it
+/// would return from *that* function. It used to be a rejection, which made the
+/// statement form fall back while the value form lowered — the same function,
+/// two spellings, one three times slower. The body now has a third channel
+/// beside "the value" and "it raised": a flag cell and a value cell, checked on
+/// the ok edge.
+#[test]
+fn a_try_body_may_return_from_its_function() {
+    run_differential(
+        "try_body_return",
+        &[
+            new(
+                "int_return_and_fallthrough",
+                "fn f(n: Int) -> Int {\n  let v = try { if (n > 0) { return 10; } 0 } catch e { -1 };\n  return v;\n}\nprintln(f(1));\nprintln(f(-1));\nprintln(f(0));\nreturn 0;\n",
+            ),
+            // Every carrier the value cell has to hand back.
+            new(
+                "string_return",
+                "fn f(n: Int) -> String {\n  let v = try { if (n > 0) { return \"big\"; } \"small\" } catch e { \"err\" };\n  return v;\n}\nprintln(f(1));\nprintln(f(0));\nreturn 0;\n",
+            ),
+            new(
+                "bool_return",
+                "fn f(n: Int) -> Bool {\n  let v = try { if (n > 0) { return true; } false } catch e { false };\n  return v;\n}\nprintln(f(1));\nprintln(f(0));\nreturn 0;\n",
+            ),
+            // A return *and* a raise from the same body: the two channels must
+            // not be confused for each other.
+            new(
+                "return_or_raise",
+                "fn f(n: Int) -> Int {\n  let v = try { if (n > 0) { return 10; } error(\"neg\"); 0 } catch e { -1 };\n  return v;\n}\nprintln(f(1));\nprintln(f(-1));\nreturn 0;\n",
+            ),
+            // Two returns and a fallthrough in one body.
+            new(
+                "two_returns_and_a_fallthrough",
+                "fn f(n: Int) -> Int {\n  let v = try { if (n > 0) { return n; } if (n < -5) { return -n; } 0 } catch e { -1 };\n  return v;\n}\nprintln(f(3));\nprintln(f(-9));\nprintln(f(-1));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `task.join_all` over task handles, pinned to pure Cranelift.
 ///
 /// Variadic, so no ABI row can describe it — a row has one arity — and it was

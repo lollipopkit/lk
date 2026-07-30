@@ -516,18 +516,27 @@ fn g(n: Int) -> Int {
 一个函数,里面的 `return` 会变成"从 body 返回"而不是"从外层函数返回",而"然后返回"
 这个协议还没有。
 
-**协议离它有多远(实测)**:body 已经有两条通道 —— 返回值走 `LkDyn`,raise 走
-trampoline 的 outcome。缺的是第三个信号。现有的**输出 cell** 机制(`try_body_cells`:
-父建 cell、当额外实参传进去、调用后读回)正好是它需要的形状,所以做法是:
+**做法(2026-07-30 已实现)**:body 本来就有两条通道 —— 返回值走 `LkDyn`,raise 走
+trampoline 的 outcome。加的是第三个信号,用的是现成的**输出 cell** 机制
+(`try_body_cells`:父建 cell、当额外实参传进去、调用后读回):
 
-1. 多一对输出 cell:一个"是否返回了"的标志,一个返回值。
-2. body 侧:`Return v` 降低成 `cell_set(flag, 1); cell_set(value, box v); Ret nil`。
-3. 父侧:读回之后、分支之前,`if flag { return unbox(value) }`。
+1. 多一对输出 cell:一个"是否返回了"的标志,一个返回值。只给**体里真的有 return**
+   的 region 加(`SigInfer::try_body_returns`),别的 region 传的东西一个不变。
+2. body 侧:`Return v` 降低成 `cell_set(flag, 1); cell_set(value, box v)`,然后正常
+   返回,让 trampoline 报"没有 raise"。
+3. 父侧:ok 边不再直接去 fallthrough,而是去一个**检查块**:读标志,真就去一个
+   **返回块**,假就转发到原来的 fallthrough。
 
-风险在第 3 步:漏掉任何一条边上的检查,就是**静默返回错值**,不是回落。所以它值得
-单独一轮做,而不是搭在别的改动上。
+第 3 步本来的顾虑是"新块会成为 fallthrough / handler 的新前驱,phi 要重排"。**不需要**:
+检查块转发时用的是 `args_to(区域块, fallthrough)` —— 也就是区域块本来要传的那一份实参。
+目标的 phi 操作数仍然记在区域块名下,而这里正是读它的地方。所以插入是局部的。
 
-这条也是 `defer` 能否在 raise 路径上跑的前置条件 —— 见 `core/src/stmt/defer.rs`。
+**退化情形仍然拒绝**:体里每条路都 return 时,编译器不会发出跳过 handler 的 `Jmp`,
+于是这个 region 根本**没有 ok 边** —— `TryEnd` 那个块没有后继可记。那要的是"没有 ok 边
+的 region",不是多一个 cell,所以它是一条独立的、说清了理由的拒绝。
+
+这条也是 `defer` 能否在 raise 路径上跑的前置条件 —— 见 `core/src/stmt/defer.rs`。那条
+路现在只差退化情形。
 
 ## 18. `task.join_all`(2026-07-30)
 

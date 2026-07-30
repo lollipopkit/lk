@@ -78,6 +78,19 @@ pub(crate) struct SigInfer {
     /// scan cannot know about because nothing in the parent defines it. The
     /// read itself is the evidence, and it arrives as an `UndefinedOperand`.
     pub(crate) try_body_extra_cells: std::collections::HashMap<u32, std::collections::HashSet<u8>>,
+    /// Try bodies that `return` from the **enclosing** function.
+    ///
+    /// A body is outlined into a function of its own, so a `return` written in
+    /// it would return from *that* function — a different program. It used to be
+    /// refused, which made `try { return n * 2; } catch e { return -1; }` drop
+    /// the whole program to the VM while the value form
+    /// (`let v = try { n * 2 } catch e { -1 }; return v;`) lowered. The same
+    /// function, two spellings, one of them three times slower.
+    ///
+    /// So the body gets a third channel beside "the value" and "it raised": two
+    /// more output cells, a flag and the value. The body sets them and returns
+    /// normally; the caller checks the flag on the ok edge and returns.
+    pub(crate) try_body_returns: std::collections::HashSet<u32>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

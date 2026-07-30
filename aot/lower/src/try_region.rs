@@ -99,6 +99,13 @@ pub(crate) struct TryRegionShape {
     pub(crate) fallthrough: usize,
     /// The register the handler reads the caught value from.
     pub(crate) catch_reg: u8,
+    /// The body `return`s from the **enclosing** function.
+    ///
+    /// Outlined, such a `return` would return from the body instead — a
+    /// different program — so it used to be a rejection. It is a third outcome
+    /// now: two more output cells (a flag and the value), set by the body and
+    /// checked by the caller on the ok edge.
+    pub(crate) body_returns: bool,
 }
 
 /// Every register the body might write.
@@ -201,28 +208,33 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
     let handler =
         crate::cfg::rel(begin_pc, i32::from(begin.sbx()), code_len).ok_or(Unsupported::BadTarget { pc: begin_pc })?;
     // What follows `TryEnd` is the jump over the handler, when the body can
-    // fall through at all. A body that always returns has none — but such a
-    // body is rejected below, so this is the ordinary case.
+    // fall through at all.
+    //
+    // A body that *always* returns has none, and then there is no ok edge to
+    // give the region: `after_end` is the handler itself, and the `TryEnd`
+    // block has no successor for the CFG to record. The return channel
+    // (`body_returns`) answers a body that returns on *some* path, which is the
+    // general shape; this degenerate one — the whole body is a `return` — stays
+    // a rejection, because the fix for it is a region with no ok edge rather
+    // than one more cell.
     let after_end = body_end + 1;
-    let fallthrough = if after_end < code_len && instrs[after_end].opcode() == Opcode::Jmp {
+    let has_fallthrough = after_end < code_len && instrs[after_end].opcode() == Opcode::Jmp;
+    let fallthrough = if has_fallthrough {
         crate::cfg::rel(after_end, instrs[after_end].sj_arg(), code_len)
             .ok_or(Unsupported::BadTarget { pc: after_end })?
     } else {
         after_end
     };
 
+    let mut body_returns = false;
     for (pc, instr) in instrs.iter().enumerate().take(body_end).skip(begin_pc + 1) {
         let op = instr.opcode();
-        // A `return` inside the body returns from the *enclosing* function.
-        // Outlined, it would return from the body instead — a different
-        // program. Propagating it needs the call to carry "and then return",
-        // which is a protocol this does not have yet.
+        // A `return` inside the body returns from the *enclosing* function —
+        // recorded, and answered by the return channel (`body_returns`).
         if matches!(op, Opcode::Return | Opcode::Return0 | Opcode::Return1) {
-            return Err(Unsupported::TryRegion {
-                pc,
-                reason: "the body returns from the enclosing function",
-            });
+            body_returns = true;
         }
+
         // A nested region would need its own outlining pass inside the
         // synthesized function. That is the same work again, and it is the
         // next round's.
@@ -232,6 +244,13 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
                 reason: "a try inside a try",
             });
         }
+    }
+
+    if body_returns && !has_fallthrough {
+        return Err(Unsupported::TryRegion {
+            pc: begin_pc,
+            reason: "every path through the body returns, so the region has no ok edge",
+        });
     }
 
     // Jumps must stay inside the body: a `break` out of a loop that encloses
@@ -257,5 +276,6 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         handler,
         fallthrough,
         catch_reg: begin.a(),
+        body_returns,
     })
 }

@@ -408,6 +408,17 @@ pub(crate) fn lower_function(
         cell_handles.push((reg, pv));
     }
 
+    // A body that `return`s from the enclosing function takes two more cells:
+    // a flag saying it did, and the value. They come last, so nothing else
+    // shifts. (`SigInfer::try_body_returns`.)
+    let return_channel = sig.try_body_returns.contains(&func_index).then(|| {
+        let flag = ssa.new_val();
+        fn_params.push((flag, Ty::Cell));
+        let value = ssa.new_val();
+        fn_params.push((value, Ty::Cell));
+        (flag, value)
+    });
+
     // An erased *capturing* closure argument: its environment (resolved at
     // the call site) arrives as hidden trailing parameters, one block per
     // erased parameter in parameter order. The register holds a Closure ref
@@ -458,6 +469,10 @@ pub(crate) fn lower_function(
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
     let mut ret_ty: Option<Ty> = None;
     // Resolved terminator value reads (filled during each block's lowering).
+    // Regions whose body may `return` from this function: the ok edge gets a
+    // check block, and a `return` block behind it. Collected here and emitted
+    // after the block loop, where this function's own return type is known.
+    let mut try_return_checks: Vec<(usize, ValueId, ValueId)> = Vec::new();
     let mut ret_val: Vec<Option<ValueId>> = vec![None; total_blocks];
     let mut cond_val: Vec<Option<ValueId>> = vec![None; total_blocks];
 
@@ -588,64 +603,97 @@ pub(crate) fn lower_function(
                     });
                 }
                 let (v, ty) = ssa.read(reg, bi, start)?;
-                // The struct this return constructs, carried out to callers so
-                // a method on the result devirtualizes (`sig.ret_structs`).
-                // Joined across return points: two different structs, or one
-                // return that is not a struct, answer "unknown" rather than a
-                // name that is right only sometimes.
-                if !is_entry {
-                    let returned = ssa.struct_types.get(&v).cloned();
-                    match sig.ret_structs.entry(func_index) {
-                        std::collections::hash_map::Entry::Vacant(slot) => {
-                            slot.insert(returned);
-                        }
-                        std::collections::hash_map::Entry::Occupied(mut slot) => {
-                            if *slot.get() != returned {
-                                slot.insert(None);
-                            }
-                        }
-                    }
-                }
-                // A function discovered to mix return types boxes every
-                // return point: it returns `Dyn`, callers consume through
-                // the Dyn arms (plan M4.2 cross-function Dyn flow).
-                let force_dyn = !is_entry && sig.dyn_rets.contains(&func_index);
-                let (v, ty) = if force_dyn && ty != Ty::Dyn {
-                    (to_dyn_any(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                // A try body's `return` is the enclosing function's, not this
+                // one's: set the flag, park the value, and return normally so
+                // the trampoline reports "did not raise". The caller checks the
+                // flag on the ok edge.
+                let parked = if let Some((flag, slot)) = return_channel {
+                    let boxed = to_dyn_any(&mut ssa, &mut insts, v, ty, start)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "cell_set"),
+                        args: vec![slot, boxed],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    let marked = to_dyn_any(&mut ssa, &mut insts, one, Ty::I64, start)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "cell_set"),
+                        args: vec![flag, marked],
+                    });
+                    ret_val[bi] = None;
+                    ret_ty = Some(Ty::Nil);
+                    true
                 } else {
-                    (v, ty)
+                    false
                 };
-                match ret_ty {
-                    Some(prev) if prev != ty => {
-                        // Heterogeneous but boxable returns are retriable:
-                        // record the function, the fixpoint re-lowers it with
-                        // every return boxed (the snapshot includes the set's
-                        // size). Everything else stays a real reject.
-                        if !is_entry && dyn_boxable_ty(prev) && dyn_boxable_ty(ty) {
-                            sig.dyn_rets.insert(func_index);
-                        }
-                        return Err(Unsupported::ReturnTypeConflict);
-                    }
-                    _ => {
-                        // Eagerly publish the first concrete return type so a
-                        // self-recursive call later in this same body observes
-                        // it instead of the stale `I64` default (a Bool-typed
-                        // `return f(xs.skip(1))` chain would otherwise look
-                        // heterogeneous forever).
-                        if ret_ty.is_none()
-                            && !is_entry
-                            && let Some(slot) = sig.ret_types.get_mut(func_index as usize)
-                        {
-                            *slot = ty;
-                            if let Some(known) = sig.ret_known.get_mut(func_index as usize) {
-                                *known = true;
+                // Everything below is about *this* function's return value, and
+                // a parked one is not that. Guarded rather than `continue`d:
+                // the loop's tail is what stores this block's instructions.
+                if !parked {
+                    // The struct this return constructs, carried out to callers so
+                    // a method on the result devirtualizes (`sig.ret_structs`).
+                    // Joined across return points: two different structs, or one
+                    // return that is not a struct, answer "unknown" rather than a
+                    // name that is right only sometimes.
+                    if !is_entry {
+                        let returned = ssa.struct_types.get(&v).cloned();
+                        match sig.ret_structs.entry(func_index) {
+                            std::collections::hash_map::Entry::Vacant(slot) => {
+                                slot.insert(returned);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                                if *slot.get() != returned {
+                                    slot.insert(None);
+                                }
                             }
                         }
-                        ret_ty = Some(ty);
                     }
+                    // A function discovered to mix return types boxes every
+                    // return point: it returns `Dyn`, callers consume through
+                    // the Dyn arms (plan M4.2 cross-function Dyn flow).
+                    let force_dyn = !is_entry && sig.dyn_rets.contains(&func_index);
+                    let (v, ty) = if force_dyn && ty != Ty::Dyn {
+                        (to_dyn_any(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                    } else {
+                        (v, ty)
+                    };
+                    match ret_ty {
+                        Some(prev) if prev != ty => {
+                            // Heterogeneous but boxable returns are retriable:
+                            // record the function, the fixpoint re-lowers it with
+                            // every return boxed (the snapshot includes the set's
+                            // size). Everything else stays a real reject.
+                            if !is_entry && dyn_boxable_ty(prev) && dyn_boxable_ty(ty) {
+                                sig.dyn_rets.insert(func_index);
+                            }
+                            return Err(Unsupported::ReturnTypeConflict);
+                        }
+                        _ => {
+                            // Eagerly publish the first concrete return type so a
+                            // self-recursive call later in this same body observes
+                            // it instead of the stale `I64` default (a Bool-typed
+                            // `return f(xs.skip(1))` chain would otherwise look
+                            // heterogeneous forever).
+                            if ret_ty.is_none()
+                                && !is_entry
+                                && let Some(slot) = sig.ret_types.get_mut(func_index as usize)
+                            {
+                                *slot = ty;
+                                if let Some(known) = sig.ret_known.get_mut(func_index as usize) {
+                                    *known = true;
+                                }
+                            }
+                            ret_ty = Some(ty);
+                        }
+                    }
+                    // A `Nil` return value renders as `ret void`.
+                    ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
                 }
-                // A `Nil` return value renders as `ret void`.
-                ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
             }
             Some(Exit::TryRegion { body, catch_reg, .. }) => {
                 // Run the body under a handler, and bind what it raised.
@@ -703,6 +751,38 @@ pub(crate) fn lower_function(
                     });
                     call_args.push(handle);
                     cell_values.push((reg, handle, ty));
+                }
+                // The return channel: a flag cell (seeded false) and a value
+                // cell (seeded nil). Only for a body that `return`s — every
+                // other region passes exactly what it always did.
+                let return_channel = sig.try_body_returns.contains(&body).then(|| {
+                    let mut fresh_cell = |seed: Ty| -> Result<ValueId, Unsupported> {
+                        let raw = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: raw,
+                            value: Const::I64(0),
+                        });
+                        let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, raw, seed, start)?;
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("rt", "cell_new"),
+                            args: vec![boxed],
+                        });
+                        Ok(handle)
+                    };
+                    let flag = fresh_cell(Ty::I64)?;
+                    let value = fresh_cell(Ty::Nil)?;
+                    call_args.push(flag);
+                    call_args.push(value);
+                    Ok::<_, Unsupported>((flag, value))
+                });
+                let return_channel = match return_channel {
+                    Some(result) => Some(result?),
+                    None => None,
+                };
+                if let Some((flag, value)) = return_channel {
+                    try_return_checks.push((bi, flag, value));
                 }
                 let ok = ssa.new_val();
                 insts.push(Inst::TryRegionCall {
@@ -1180,6 +1260,14 @@ pub(crate) fn lower_function(
             *pc_to_block.range(..=pc).next_back().map(|(_, id)| id).unwrap()
         }
     };
+    // Two synthetic blocks per returning region, after every real block and the
+    // implicit-return block (the same allocation `implicit_ret_block` uses).
+    let synthetic_base = total_blocks as u32 + u32::from(implicit_ret_block.is_some());
+    let check_block_ids: Vec<u32> = (0..try_return_checks.len())
+        .map(|i| synthetic_base + (i as u32) * 2)
+        .collect();
+    let ret_block_ids: Vec<u32> = check_block_ids.iter().map(|id| id + 1).collect();
+    let mut forwarded_args: Vec<(usize, Vec<ValueId>, BlockId)> = Vec::new();
     let mut mir_blocks: Vec<Block> = Vec::with_capacity(total_blocks);
     for bi in 0..leader_vec.len() {
         let params: Vec<(ValueId, Ty)> = ssa.phis[bi].iter().map(|p| (p.param, p.ty)).collect();
@@ -1187,7 +1275,20 @@ pub(crate) fn lower_function(
         // Phi-edge conversions land after the block's own instructions,
         // before the terminator.
         let edge_tail = std::mem::take(&mut ssa.edge_insts[bi]);
-        let term = build_term(bi, exit, &ssa, &block_id, ret_val[bi], cond_val[bi]);
+        let mut term = build_term(bi, exit, &ssa, &block_id, ret_val[bi], cond_val[bi]);
+        // A region whose body may return: its ok edge goes to the check block
+        // instead, which forwards to the real fallthrough with the *same*
+        // arguments. Rewriting the edge rather than re-keying the phis is what
+        // keeps this local — the target's operands are still recorded against
+        // this block, and this is where they are read from.
+        if let Some(index) = try_return_checks.iter().position(|(rb, _, _)| *rb == bi)
+            && let Term::CondBr {
+                then_blk, then_args, ..
+            } = &mut term
+        {
+            forwarded_args.push((index, core::mem::take(then_args), *then_blk));
+            *then_blk = BlockId(check_block_ids[index]);
+        }
         let mut insts = std::mem::take(&mut block_insts[bi]);
         insts.extend(edge_tail);
         mir_blocks.push(Block {
@@ -1217,7 +1318,117 @@ pub(crate) fn lower_function(
         });
     }
 
+    // The check/return pair for each region whose body may return. Emitted here
+    // because the *enclosing* function's return type is only settled once every
+    // block has been lowered, and the parked value has to come back out of its
+    // cell as that type.
     let ret = ret_ty.unwrap_or(Ty::Nil);
+    for (index, (_, flag, value)) in try_return_checks.iter().enumerate() {
+        let (_, fallthrough_args, fallthrough) = forwarded_args
+            .iter()
+            .find(|(i, _, _)| *i == index)
+            .cloned()
+            .expect("every recorded check redirects exactly one edge");
+        let mut check_insts = Vec::new();
+        let raised = ssa.new_val();
+        check_insts.push(Inst::Call {
+            dst: Some(raised),
+            callee: AbiRef::new("rt", "cell_get"),
+            args: vec![*flag],
+        });
+        let as_int = ssa.new_val();
+        check_insts.push(Inst::Call {
+            dst: Some(as_int),
+            callee: AbiRef::new("dyn", "as_i64"),
+            args: vec![raised],
+        });
+        let zero = ssa.new_val();
+        check_insts.push(Inst::Const {
+            dst: zero,
+            value: Const::I64(0),
+        });
+        let returned = ssa.new_val();
+        check_insts.push(Inst::Cmp {
+            dst: returned,
+            op: CmpOp::Ne,
+            float: false,
+            lhs: as_int,
+            rhs: zero,
+        });
+        mir_blocks.push(Block {
+            id: BlockId(check_block_ids[index]),
+            params: Vec::new(),
+            insts: check_insts,
+            term: Term::CondBr {
+                cond: returned,
+                then_blk: BlockId(ret_block_ids[index]),
+                then_args: Vec::new(),
+                else_blk: fallthrough,
+                else_args: fallthrough_args,
+            },
+        });
+
+        let mut ret_insts = Vec::new();
+        let boxed = ssa.new_val();
+        ret_insts.push(Inst::Call {
+            dst: Some(boxed),
+            callee: AbiRef::new("rt", "cell_get"),
+            args: vec![*value],
+        });
+        let returned_value = match ret {
+            Ty::Nil => None,
+            Ty::Dyn => Some(boxed),
+            other => {
+                // The same unboxing table the output cells use; a type with no
+                // unboxer never got here, because the body's `return` had to box
+                // it in the first place.
+                let Some(read_back) = unbox_from_dyn(other) else {
+                    return Err(Unsupported::TryRegion {
+                        pc: 0,
+                        reason: "the body returns a value that cannot be read back out of a cell",
+                    });
+                };
+                match read_back {
+                    CellReadBack::Identity => Some(boxed),
+                    CellReadBack::Unbox(module, name) => {
+                        let raw = ssa.new_val();
+                        ret_insts.push(Inst::Call {
+                            dst: Some(raw),
+                            callee: AbiRef::new(module, name),
+                            args: vec![boxed],
+                        });
+                        // `dyn.as_bool` answers an `i64`; a `Bool` operand is
+                        // narrower, and the verifier rejects the wide value.
+                        if other == Ty::Bool {
+                            let zero = ssa.new_val();
+                            ret_insts.push(Inst::Const {
+                                dst: zero,
+                                value: Const::I64(0),
+                            });
+                            let narrow = ssa.new_val();
+                            ret_insts.push(Inst::Cmp {
+                                dst: narrow,
+                                op: CmpOp::Ne,
+                                float: false,
+                                lhs: raw,
+                                rhs: zero,
+                            });
+                            Some(narrow)
+                        } else {
+                            Some(raw)
+                        }
+                    }
+                }
+            }
+        };
+        mir_blocks.push(Block {
+            id: BlockId(ret_block_ids[index]),
+            params: Vec::new(),
+            insts: ret_insts,
+            term: Term::Ret(returned_value),
+        });
+    }
+
     // User (non-entry) functions return scalars, `Str`/handle pointers
     // (arena-owned until exit), or nothing (`Nil` renders as `void`).
     // A `Maybe` carrier has no direct-call return form: retriable — the

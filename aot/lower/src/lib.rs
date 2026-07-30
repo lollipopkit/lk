@@ -160,6 +160,7 @@ pub fn lower_bundled(
         try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
         try_body_extra_cells: std::collections::HashMap::new(),
+        try_body_returns: std::collections::HashSet::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
@@ -228,6 +229,9 @@ pub fn lower_bundled(
             sig.ret_types.push(Ty::Nil);
             sig.ret_known.push(true);
             sig.try_bodies.insert((fi as u32, region.begin_pc), body_index);
+            if region.body_returns {
+                sig.try_body_returns.insert(body_index);
+            }
             discover_try_params(&mut funcs, body_index, module, &mut sig);
         }
     }
