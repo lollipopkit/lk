@@ -643,8 +643,5 @@ impl Compiler {
 /// Whether a statement sequence ends in an expression — its *value*, by the
 /// same rule a block expression uses.
 fn ends_in_expression(statements: &[Box<Stmt>]) -> bool {
-    matches!(
-        statements.last().map(|stmt| stmt.as_ref()),
-        Some(Stmt::Expr { .. })
-    )
+    matches!(statements.last().map(|stmt| stmt.as_ref()), Some(Stmt::Expr { .. }))
 }

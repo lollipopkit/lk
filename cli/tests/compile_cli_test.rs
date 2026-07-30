@@ -1270,3 +1270,39 @@ fn compile_object_rejects_an_unknown_triple() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A struct literal is not capped at a number nobody could reach.
+///
+/// The guard said "max 127 fields", but `NewObject` reads its fields from a
+/// window of *two* registers each plus one for the type name, so 127 fields
+/// need 255 window registers and `dst` has nowhere to go. In practice it broke
+/// around 84, and what came out was "this function needs more than 256
+/// registers" — a message about the enclosing function, for a limit belonging to
+/// one literal. Two diagnostics, one real ceiling, neither of them naming it.
+///
+/// 200 is chosen to sit past every one of those numbers: past 84, past 127, and
+/// past the 255-register window the old path needed.
+#[test]
+fn a_struct_literal_is_not_capped_at_an_unreachable_field_count() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("wide.lk");
+    let fields = (0..200).map(|i| format!("f{i}: Int")).collect::<Vec<_>>().join(", ");
+    let values = (0..200).map(|i| format!("f{i}: {i}")).collect::<Vec<_>>().join(", ");
+    std::fs::write(
+        &path,
+        format!("struct Wide {{ {fields} }}\nlet w = Wide {{ {values} }};\nprintln(\"${{w.f199}} ${{w.f0}}\");\n"),
+    )
+    .expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&path)
+        .output()
+        .expect("run lk");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "199 0");
+}

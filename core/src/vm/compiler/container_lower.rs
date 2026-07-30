@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 
 use crate::{
     expr::Expr,
@@ -151,18 +151,31 @@ impl Compiler {
         Ok(dst)
     }
 
+    /// `Name { field: value, … }`, however many fields it has.
+    ///
+    /// `NewObject` reads its fields from a contiguous window of *two* registers
+    /// each plus one for the type name, so the window is what runs out first —
+    /// and the diagnostics disagreed about where. The guard said "max 127", but
+    /// 127 fields need 255 window registers plus `dst`, so 127 was never
+    /// reachable: at ~85 fields the surrounding locals already pushed the
+    /// allocator over and the failure came out as "this function needs more than
+    /// 256 registers", blaming the function for a limit belonging to one
+    /// literal. Two messages, one real ceiling, and neither of them named it.
+    ///
+    /// So the window is sized against what is actually free, and every field it
+    /// cannot hold is set afterwards on the finished object, one at a time,
+    /// through a scratch register that is handed straight back. Same shape as the
+    /// list and map literals next door.
     pub(super) fn lower_struct_literal(&mut self, name: &str, fields: &[(String, Box<Expr>)]) -> Result<u16> {
         let len = fields.len();
-        if len > i8::MAX as usize {
-            bail!("Compiler object literal has {} fields, max {}", len, i8::MAX);
-        }
-        let base = self.alloc_regs(
-            len.checked_mul(2)
-                .and_then(|slots| slots.checked_add(1))
-                .ok_or_else(|| anyhow!("Compiler object field overflow"))?,
-        )?;
+        // `1 + 2 * window` for the window itself, one more for `dst`, and every
+        // register must still be nameable in 8 bits.
+        let free = (u8::MAX as usize).saturating_sub(self.next_reg as usize);
+        let window = len.min(free.saturating_sub(2) / 2).min(i8::MAX as usize);
+
+        let base = self.alloc_regs(1 + window * 2)?;
         self.emit_literal_to_register(base, &LiteralVal::from_str(name))?;
-        for (offset, (key, value)) in fields.iter().enumerate() {
+        for (offset, (key, value)) in fields[..window].iter().enumerate() {
             let key_dst = base + 1 + (offset as u16 * 2);
             self.emit_literal_to_register(key_dst, &LiteralVal::from_str(key))?;
             self.lower_expr_to_register(key_dst + 1, value, "object value")?;
@@ -173,9 +186,45 @@ impl Compiler {
             Opcode::NewObject,
             checked_u8("object dst", dst)?,
             checked_u8("object base", base)?,
-            checked_u8("object len", len as u16)?,
+            checked_u8("object len", window as u16)?,
         ));
         self.set_register_kind(dst, PerfValueKind::Object);
+
+        for (key, value) in &fields[window..] {
+            let watermark = self.next_reg;
+            let const_key = self.push_string(key)?;
+            let scratch = self.alloc_reg();
+            self.lower_expr_to_register(scratch, value, "object value")?;
+            let set_pc = self.function.code.len();
+            if const_key <= u8::MAX as u16 {
+                self.emit(Instr::abc(
+                    Opcode::SetFieldK,
+                    checked_u8("object dst", dst)?,
+                    checked_u8("object value", scratch)?,
+                    const_key as u8,
+                ));
+            } else {
+                // The const pool outgrew the `c` operand; the key goes in a
+                // register instead. Rare, and the only alternative is refusing a
+                // program for how many strings it happens to contain.
+                let key_reg = self.alloc_reg();
+                self.emit_literal_to_register(key_reg, &LiteralVal::from_str(key))?;
+                self.emit(Instr::abc(
+                    Opcode::SetIndex,
+                    checked_u8("object dst", dst)?,
+                    checked_u8("object key", key_reg)?,
+                    checked_u8("object value", scratch)?,
+                ));
+            }
+            self.function.performance.set_container_move_fact(
+                set_pc,
+                PerfContainerMoveFact {
+                    move_key: false,
+                    move_value: true,
+                },
+            );
+            self.next_reg = self.live_register_floor().max(watermark);
+        }
         Ok(dst)
     }
 
