@@ -714,3 +714,18 @@ lookups, `histogram_group_count` about `3.5K`, `log_parse_filter` about `2.2K`,
 and `inventory_reorder` about `2.8K`. The next optimization target should move
 to general loop materialization, arithmetic temporaries, `Move` elimination, and
 branch lowering.
+
+## AOT 的数字不能说谎(2026-07-30)
+
+`RUN_AOT=1` 那条路以前用一句普通的 `lk compile` 编译语料。普通的 `compile` 对
+Cranelift 降不下来的形状**会回落**到 VM bundle,于是那一趟仍然产出一个二进制、仍然
+被报成 "AOT",而实际跑的是解释器 —— 一个错的数字,而且没有任何东西说一句话。
+
+现在它带 `LK_AOT_HYBRID=0 LK_AOT_NO_FALLBACK=1`:降不下来就编译失败,报告说
+"a shape stopped lowering natively",AOT 那一列直接缺席。
+
+同一份语料也进了 `scripts/aot_coverage.sh` 的扫描 —— 两半各管一头:门禁保证它**一直**
+能全原生降低,严格编译保证即使有人跳过门禁,**测量本身**也不会说谎。
+
+顺带:报告里的 "AOT: … (unknown)" 是残留。它在从编译日志里刮一行 "backend X,",而那
+行随着字符串 IR 的 `llvm` 后端一起退休了。现在只有一个原生后端,直接写出来。

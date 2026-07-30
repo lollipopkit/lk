@@ -31,7 +31,11 @@ tmp_bin="$(mktemp)"
 trap 'rm -f "$reasons_file" "$tmp_bin"' EXIT
 
 stale_allow=""
-for f in examples/syntax/*.lk examples/stdlib/*.lk examples/general/*.lk; do
+# The bench corpus belongs in the scan for a reason of its own: the bench script
+# compiles it with a plain `lk compile`, which happily falls back. A workload
+# that stopped lowering would be measured as "AOT" while running the VM bundle —
+# the perf numbers would be wrong and nothing would say so.
+for f in examples/syntax/*.lk examples/stdlib/*.lk examples/general/*.lk bench/workloads_business_algorithms.lk; do
     total=$((total + 1))
     out=$("$LK_BIN" compile "$f" --output "$tmp_bin" 2>&1)
     if [ $? -eq 0 ]; then

@@ -36,6 +36,14 @@ jobs:
         run: |
           cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings
           cargo clippy -p lkrt --no-default-features --all-targets -- -D warnings
+      - name: zed extension check
+        # `ecosystem/zed-ext` is excluded from the workspace (it targets
+        # wasm32-wasip1), so `cargo test --workspace` never sees it. The check
+        # existed as a Makefile target and was never wired up here, which means
+        # the extension could stop compiling and nothing would say so.
+        run: |
+          rustup target add wasm32-wasip1
+          make zed-ext-check
       - name: wasm32 smoke (L0 no_std crates + browser playground)
         run: |
           rustup target add wasm32-unknown-unknown

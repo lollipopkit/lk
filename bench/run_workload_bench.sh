@@ -390,16 +390,23 @@ echo "LK:  $LK_BIN"
 echo "Lua: $($LUA_BIN -v 2>&1 | head -1)"
 if [ "$RUN_AOT" != "0" ]; then
   AOT_COMPILE_LOG="$TMPDIR/aot_compile.log"
-  if "$LK_BIN" compile "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
+  # `LK_AOT_NO_FALLBACK=1`: a plain `compile` would happily bundle the VM for a
+  # shape Cranelift cannot lower, and the run would then be reported as "AOT"
+  # while executing the interpreter — a wrong number with nothing saying so.
+  # `scripts/aot_coverage.sh` scans this same file for the same reason; this is
+  # the second half, so the measurement cannot lie even if the gate is skipped.
+  if LK_AOT_HYBRID=0 LK_AOT_NO_FALLBACK=1 "$LK_BIN" compile \
+    "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
     AOT_ENABLED=1
-    AOT_BACKEND=$(sed -nE 's/.*backend ([^,]+),.*/\1/p' "$AOT_COMPILE_LOG" | tail -1)
-    if [ -z "$AOT_BACKEND" ]; then
-      AOT_BACKEND="unknown"
-    fi
+    # There is one native backend (Cranelift); the string-IR `llvm` one retired.
+    # This used to scrape a "backend X," line out of the compile log — a line the
+    # compiler stopped emitting when that backend went away, so the report had
+    # been saying "(unknown)" ever since.
+    AOT_BACKEND="cranelift"
     echo "AOT: $AOT_BIN ($AOT_BACKEND)"
   else
     AOT_BACKEND="skipped"
-    echo "AOT: skipped (compile failed)"
+    echo "AOT: skipped (compile failed — a shape stopped lowering natively)"
     echo "AOT compile failed; continuing with LK VM and Lua only:" >&2
     sed 's/^/  /' "$AOT_COMPILE_LOG" >&2
   fi
