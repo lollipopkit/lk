@@ -1418,6 +1418,45 @@ fn try_catch_differential() {
     );
 }
 
+/// `xs.chain(ys)` over every list pairing, pinned to pure Cranelift.
+///
+/// `chain` is `+` spelled as a method, and the operator path has always covered
+/// every pairing: same-typed keeps its carrier, cross-typed chains boxed. The
+/// method path had exactly one arm, `List<Int>` twice — so `line.chain([byte])`
+/// with a boxed element did not lower. One operation, two implementations, and
+/// only one of them complete.
+///
+/// The x86 bare-metal kernel is where that showed up: eleven of its eighteen
+/// native-lowering blockers were this one method.
+#[test]
+fn chain_covers_every_list_pairing() {
+    run_differential(
+        "list_chain_method",
+        &[
+            // The shape from the kernel: a typed list chained with a one-element
+            // list whose element is boxed.
+            new(
+                "typed_receiver_boxed_argument",
+                "let xs = [1, \"s\"];\nlet a = [1, 2];\nprintln(a.chain([xs[0]!]));\nreturn 0;\n",
+            ),
+            new(
+                "same_typed_pairings",
+                "println([1, 2].chain([3]));\nprintln([1.5].chain([2.5]));\nprintln([\"a\"].chain([\"b\"]));\nreturn 0;\n",
+            ),
+            // Repeated chaining in a loop, which is how the kernel builds a line.
+            new(
+                "chained_in_a_loop",
+                "let line = [0];\nlet i = 0;\nwhile i < 6 {\n  line = line.chain([i * 2]);\n  i = i + 1;\n}\nprintln(line);\nprintln(line.len());\nreturn 0;\n",
+            ),
+            new(
+                "empty_operands",
+                "println([1].chain([]));\nprintln([].chain([1]));\nprintln([].chain([]));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Integer and float edge values, pinned to pure Cranelift.
 ///
 /// `i64::MIN % -1` **panicked the interpreter**. Integer division overflow is a

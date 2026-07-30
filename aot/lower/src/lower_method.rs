@@ -1169,14 +1169,41 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListI64)
         }
-        (Ty::ListI64, "chain", [(other, Ty::ListI64)]) => {
+        // `xs.chain(ys)` is `xs + ys`, and the operator path has always covered
+        // every list pairing: same-typed keeps its carrier, cross-typed chains
+        // boxed (the VM's result there is a Mixed list, which is what
+        // `dyn_chain` builds). The method path had one arm — `ListI64` twice —
+        // so `line.chain([byte])` with a boxed element did not lower, and in the
+        // x86 kernel that one shape was eleven of the eighteen blockers.
+        //
+        // One operation, one rule: this mirrors `inst::scalar`'s `list_chain`.
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
+            "chain",
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)],
+        ) => {
+            let other_ty = args[0].1;
+            let (helper, out_ty) = match (receiver_ty, other_ty) {
+                (Ty::ListI64, Ty::ListI64) => ("i64_chain", Ty::ListI64),
+                (Ty::ListF64, Ty::ListF64) => ("f64_chain", Ty::ListF64),
+                (Ty::ListStr, Ty::ListStr) => ("str_chain", Ty::ListStr),
+                _ => ("dyn_chain", Ty::ListDyn),
+            };
+            let (lhs, rhs) = if out_ty == Ty::ListDyn {
+                (
+                    to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?,
+                    to_dyn_list_handle(ssa, insts, *other, other_ty, pc)?,
+                )
+            } else {
+                (receiver, *other)
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_chain"),
-                args: vec![receiver, *other],
+                callee: AbiRef::new("list_h", helper),
+                args: vec![lhs, rhs],
             });
-            (dst, Ty::ListI64)
+            (dst, out_ty)
         }
         (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
             let raw = ssa.new_val();
