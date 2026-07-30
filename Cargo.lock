@@ -1648,6 +1648,7 @@ dependencies = [
  "hex",
  "lk-aot-abi",
  "lk-core",
+ "rand",
  "regex",
  "rustc-hash",
  "serde_json",

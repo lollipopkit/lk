@@ -266,6 +266,21 @@ macro_rules! for_each_abi_fn {
             ("regex", "find_all", lkrt_regex_find_all, WritesHost, [StrPtr, StrPtr], Ptr);
             ("regex", "captures", lkrt_regex_captures, WritesHost, [StrPtr, StrPtr], DynVal);
             ("regex", "replace", lkrt_regex_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
+            // `random`: nondeterministic to a value, so never `Pure` (CSE would
+            // merge two rolls into one).
+            ("random", "int", lkrt_random_int, WritesHost, [I64, I64], I64);
+            ("random", "float", lkrt_random_float, WritesHost, [], F64);
+            ("random", "bool", lkrt_random_bool, WritesHost, [], I64);
+            ("random", "bool_p", lkrt_random_bool_p, WritesHost, [F64], I64);
+            ("random", "bytes", lkrt_random_bytes, WritesHost, [I64], Ptr);
+            ("random", "choice_i64", lkrt_random_choice_i64, WritesHost, [Ptr], DynVal);
+            ("random", "choice_f64", lkrt_random_choice_f64, WritesHost, [Ptr], DynVal);
+            ("random", "choice_str", lkrt_random_choice_str, WritesHost, [Ptr], DynVal);
+            ("random", "choice_dyn", lkrt_random_choice_dyn, WritesHost, [Ptr], DynVal);
+            ("random", "shuffle_i64", lkrt_random_shuffle_i64, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_f64", lkrt_random_shuffle_f64, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_str", lkrt_random_shuffle_str, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_dyn", lkrt_random_shuffle_dyn, WritesHost, [Ptr], Ptr);
             ("uuid", "v4", lkrt_uuid_v4, WritesHost, [], StrPtr);
             ("uuid", "parse", lkrt_uuid_parse, WritesHost, [StrPtr], StrPtr);
             ("uuid", "is_valid", lkrt_uuid_is_valid, Pure, [StrPtr], I64);
@@ -859,6 +874,11 @@ mod tests {
     fn nondeterministic_entries_are_not_pure() {
         for (module, name) in [
             ("uuid", "v4"),
+            ("random", "int"),
+            ("random", "float"),
+            ("random", "bool"),
+            ("random", "choice_i64"),
+            ("random", "shuffle_i64"),
             ("os", "clock"),
             ("os", "epoch"),
             ("time", "now"),

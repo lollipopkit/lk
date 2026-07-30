@@ -61,6 +61,8 @@ mod lkdyn;
 mod lklist;
 mod lkmap;
 #[cfg(feature = "std")]
+mod lkrandom;
+#[cfg(feature = "std")]
 mod lkregex;
 mod lkset;
 mod lkslice;
@@ -110,6 +112,12 @@ pub use lkbytes::{
     lkrt_lkbytes_get, lkrt_lkbytes_index_of, lkrt_lkbytes_is_empty, lkrt_lkbytes_len, lkrt_lkbytes_skip,
     lkrt_lkbytes_slice, lkrt_lkbytes_take, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8,
     lkrt_lkbytes_utf8_lossy,
+};
+#[cfg(feature = "std")]
+pub use lkrandom::{
+    lkrt_random_bool, lkrt_random_bool_p, lkrt_random_bytes, lkrt_random_choice_dyn, lkrt_random_choice_f64,
+    lkrt_random_choice_i64, lkrt_random_choice_str, lkrt_random_float, lkrt_random_int, lkrt_random_shuffle_dyn,
+    lkrt_random_shuffle_f64, lkrt_random_shuffle_i64, lkrt_random_shuffle_str,
 };
 #[cfg(feature = "std")]
 pub use lkregex::{

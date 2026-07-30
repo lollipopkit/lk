@@ -107,6 +107,11 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         submodule_of: None,
     },
     ModuleRow {
+        name: "random",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
         name: "regex",
         bare_global: true,
         submodule_of: None,
@@ -664,6 +669,76 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
     // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
     // what keeps the two spellings equal.
+    // `random`. `bool` is two arities (the probability defaults to 0.5), and
+    // `choice`/`shuffle` are one row per list carrier — `choice` answers the
+    // element, so it boxes; `shuffle` answers a list of the same carrier.
+    abi_row(
+        "random",
+        "int",
+        AbiRef::new("random", "int"),
+        &[Ty::I64, Ty::I64],
+        Ty::I64,
+    ),
+    abi_row("random", "float", AbiRef::new("random", "float"), &[], Ty::F64),
+    abi_row("random", "bool", AbiRef::new("random", "bool"), &[], Ty::Bool),
+    abi_row("random", "bool", AbiRef::new("random", "bool_p"), &[Ty::F64], Ty::Bool),
+    abi_row("random", "bytes", AbiRef::new("random", "bytes"), &[Ty::I64], Ty::Bytes),
+    abi_row(
+        "random",
+        "choice",
+        AbiRef::new("random", "choice_i64"),
+        &[Ty::ListI64],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "random",
+        "choice",
+        AbiRef::new("random", "choice_f64"),
+        &[Ty::ListF64],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "random",
+        "choice",
+        AbiRef::new("random", "choice_str"),
+        &[Ty::ListStr],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "random",
+        "choice",
+        AbiRef::new("random", "choice_dyn"),
+        &[Ty::ListDyn],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "random",
+        "shuffle",
+        AbiRef::new("random", "shuffle_i64"),
+        &[Ty::ListI64],
+        Ty::ListI64,
+    ),
+    abi_row(
+        "random",
+        "shuffle",
+        AbiRef::new("random", "shuffle_f64"),
+        &[Ty::ListF64],
+        Ty::ListF64,
+    ),
+    abi_row(
+        "random",
+        "shuffle",
+        AbiRef::new("random", "shuffle_str"),
+        &[Ty::ListStr],
+        Ty::ListStr,
+    ),
+    abi_row(
+        "random",
+        "shuffle",
+        AbiRef::new("random", "shuffle_dyn"),
+        &[Ty::ListDyn],
+        Ty::ListDyn,
+    ),
     // `regex`. `find` answers `Map?` and `captures` answers `List?`, so both
     // arrive boxed; `find_all` is a dyn list of match maps. Each map is built
     // through the VM's own two-stage construction (`str_dyn_map_mirrored`) —

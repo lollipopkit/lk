@@ -4600,3 +4600,41 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `random`: everything about it that is *not* random has to match.
+///
+/// The values cannot be compared — that is the point of them — so the case
+/// pins the frame around them: `int` is inclusive at both ends (hence
+/// `random.int(4, 4)`), `float` is the half-open unit interval, `bool(1.0)` and
+/// `bool(0.0)` are decided, `choice([])` is nil rather than a raise, `shuffle`
+/// keeps the length, and each refusal is the stdlib's exact sentence — the
+/// negative-length one included, which is a *type* complaint from the module's
+/// shared argument reader and not this member's own wording.
+#[test]
+fn random_members_behave_the_same_on_both_ends() {
+    run_clif_differential(
+        "random_members",
+        &[
+            new(
+                "bounds_and_shapes",
+                "use random;\nlet z = 0;\nlet a = random.int(1 + z, 6);\n\
+                 println(a >= 1 && a <= 6);\nprintln(random.int(4, 4));\n\
+                 let f = random.float();\nprintln(f >= 0.0 && f < 1.0);\n\
+                 println(random.bool(1.0));\nprintln(random.bool(0.0));\n\
+                 let b = random.bool();\nprintln(b == true || b == false);\n\
+                 println(random.bytes(8).len());\nprintln(random.choice([7]));\n\
+                 println(random.choice([]));\nprintln(random.shuffle([1, 2, 3]).len());\n\
+                 println(random.shuffle([\"a\", \"b\"]).len());\n\
+                 println(random.shuffle([1.5, 2.5]).len());\nreturn 0;\n",
+            ),
+            new(
+                "refusals",
+                "use random;\nlet z = 0;\n\
+                 let e = try { random.int(5 + z, 1) } catch err { err };\nprintln(e);\n\
+                 let e2 = try { random.bool(2.0) } catch err { err };\nprintln(e2);\n\
+                 let e3 = try { random.bytes(0 - 1) } catch err { err };\nprintln(e3);\n\
+                 let e4 = try { random.bytes(99999999) } catch err { err };\nprintln(e4);\nreturn 0;\n",
+            ),
+        ],
+    );
+}
