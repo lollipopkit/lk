@@ -570,10 +570,32 @@ impl Executor {
         collect_metrics: bool,
     ) -> Result<Option<u32>> {
         self.safepoint()?;
-        if collect_metrics {
-            record_call_op_known_enabled(VmCallMetric::Generic);
-        }
         let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
+        if collect_metrics {
+            // Classified, not just counted. `native_call_ops` / `closure_call_ops`
+            // were printed by `lk coverage --profile` and were **structurally
+            // zero**: the variants had arms adding them up and no site ever
+            // constructed one, so every `Call` landed in `Generic`. A report that
+            // says a program calling `println` made no native calls is worse than
+            // one that says nothing, and `bench/README.md` decides fused opcodes
+            // from these numbers.
+            //
+            // The kind comes from the *callee value*, not from the static fact:
+            // the fact is `Unknown` at most call sites (the compiler proves it
+            // only for a direct module call), so classifying by it left the same
+            // zeroes it was supposed to fix. `observe_call_target_kind` reads the
+            // heap value the call is about to enter — which is what the counter
+            // is asking about. `Runtime` (a compiled LK function reached through
+            // a value) has no bucket of its own, so it stays in the unclassified
+            // total along with `Unknown`.
+            record_call_op_known_enabled(match self.observe_call_target_kind(call_fact.call_base) {
+                crate::vm::analysis::PerfCallTargetKind::Native => VmCallMetric::Native,
+                crate::vm::analysis::PerfCallTargetKind::Closure => VmCallMetric::Closure,
+                crate::vm::analysis::PerfCallTargetKind::Runtime | crate::vm::analysis::PerfCallTargetKind::Unknown => {
+                    VmCallMetric::Generic
+                }
+            });
+        }
         let window = CallWindow::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
         let call_pc = self.pc;
         match self.call_function(module, window, Some(call_fact.target_kind), ctx)? {

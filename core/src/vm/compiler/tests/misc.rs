@@ -1467,3 +1467,76 @@ fn compiling_many_functions_stays_linear() {
          400 fns in {small:?}, 800 fns in {large:?}"
     );
 }
+
+/// The call-kind counters count. None of them may be structurally zero.
+///
+/// `native_call_ops`, `closure_call_ops` and `method_call_ops` had match arms
+/// adding them up and **no site constructing one**, so `lk coverage --runtime`
+/// reported zero native calls for a program that calls `println` in a loop. A
+/// number that is always zero is worse than an absent one: `bench/README.md`
+/// decides which fused opcodes to keep from these proportions.
+///
+/// Asserted as an exact partition — every call lands in exactly one bucket, so
+/// the parts must sum to the total. That is what catches the next version of
+/// this bug: a call classified twice, or a new call opcode that forgets to
+/// classify at all, breaks the sum.
+#[test]
+fn every_call_lands_in_exactly_one_bucket() {
+    fn a_native(args: NativeArgs<'_>, _runtime: &mut crate::vm::NativeRuntime<'_>) -> Result<crate::val::RuntimeVal> {
+        let [value] = args.as_slice() else {
+            bail!("a_native expects one argument");
+        };
+        Ok(*value)
+    }
+
+    // A *builtin* method for the method bucket (`xs.unique()` lowers to
+    // `CallMethodK`), so this needs no impl table and stays in the same harness
+    // as the other three.
+    let module = compile_source_module_with_natives(
+        r#"
+        fn direct(n) { return n + 1; }
+        let closure = |x| x + 1;
+        let xs = [3, 1, 2, 1];
+        let total = 0;
+        total = total + direct(1);
+        total = total + closure(1);
+        total = total + xs.unique().len();
+        total = total + a_native(1);
+        return total;
+        "#,
+        vec![NativeEntry {
+            name: "a_native".to_string(),
+            arity: 1,
+            function: NativeFunction::Plain(a_native),
+        }],
+    )
+    .expect("compile module");
+
+    crate::vm::vm_runtime_metrics_reset();
+    execute_module(&module).expect("run module");
+    let metrics = crate::vm::vm_runtime_metrics_snapshot();
+
+    assert!(
+        metrics.native_call_ops > 0,
+        "`a_native(1)` is a native call: {metrics:?}"
+    );
+    assert!(
+        metrics.closure_call_ops > 0,
+        "the lambda is a closure call: {metrics:?}"
+    );
+    assert!(
+        metrics.method_call_ops > 0,
+        "`xs.unique()` is a method call: {metrics:?}"
+    );
+    assert!(metrics.exact_call_ops > 0, "`direct(1)` is a direct call: {metrics:?}");
+
+    let classified = metrics.native_call_ops
+        + metrics.closure_call_ops
+        + metrics.method_call_ops
+        + metrics.exact_call_ops
+        + metrics.named_call_ops;
+    assert_eq!(
+        classified, metrics.call_ops,
+        "every call is counted once and classified once: {metrics:?}"
+    );
+}

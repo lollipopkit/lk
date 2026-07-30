@@ -346,10 +346,26 @@ impl Executor {
                     let instr = code[self.pc];
                     let value = *self.read_unchecked(instr.b());
                     self.write_unchecked(instr.a(), value);
+                    // `Move` was the one common opcode whose register write went
+                    // into no bucket at all: `VmRegisterWriteSource::Move` had a
+                    // slot and no site constructing it, so the write-source
+                    // breakdown silently omitted the second most executed
+                    // instruction — and `bench/README.md` reasons about the
+                    // *proportions* in that breakdown. Recorded per move, inside
+                    // the batching loop, because that is how many writes happen.
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
                     self.pc += 1;
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
+                    // The dispatch loop records one opcode per *dispatch*, and
+                    // this arm consumes a whole run of moves inside one — so a
+                    // run of five counted as one. `bench/README.md` states the
+                    // batching "preserves per-instruction profile accounting";
+                    // it did not, and the histogram it reasons from undercounted
+                    // the second most executed instruction by the batch factor.
+                    // The first move of the run was recorded before the match.
+                    profile.record_opcode(Opcode::Move, collect_metrics);
                     if BUDGETED {
                         self.consume_instruction()?;
                     }
@@ -359,6 +375,9 @@ impl Executor {
                     self.write_unchecked(instr.a(), first);
                     let second = *self.read_unchecked(instr.c());
                     self.write_unchecked(instr.b(), second);
+                    // Two writes, two records.
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
                     self.pc += 1;
                 }
                 Opcode::LoadCapture => {
@@ -1420,6 +1439,12 @@ impl Executor {
                     }
                 }
                 Opcode::CallMethodK => {
+                    if collect_metrics {
+                        record_call_op_known_enabled(VmCallMetric::Method);
+                    }
+                    // `method_call_ops` had arms adding it up and no site
+                    // constructing it, so the profile reported zero method calls
+                    // for every program. This is the opcode that makes one.
                     self.dispatch_call_method_k(function, module, instr, ctx)?;
                     profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
                 }
