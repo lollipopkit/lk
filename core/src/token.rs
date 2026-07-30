@@ -10,12 +10,98 @@ pub use lexer::*;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 
-/// The source text a token was written as.
+/// One piece of a template string's content: plain text, or a `${…}` interior.
 ///
-/// Lives here rather than in the macro system: it is a property of `Token`
-/// itself, and having it there made `stmt` depend on `macro_system` purely to
-/// print a token — a dependency cycle (`macro_system` parses `stmt` patterns)
-/// that blocked separating the two.
+/// Both borrow from the content they were scanned out of, so reassembling a
+/// template is a matter of writing the literals back verbatim and wrapping each
+/// (possibly rewritten) expression in `${…}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplateSegment<'a> {
+    Literal(&'a str),
+    /// The text between `${` and its matching `}`, braces excluded.
+    Expr(&'a str),
+}
+
+/// Split a `TemplateString` token's content into literal and `${…}` pieces.
+///
+/// One scanner, because there used to be two and they disagreed: the lexer
+/// balances nested braces when deciding where an interpolation ends, and the
+/// parser's copy did not, so `"${R {}}"` reached the parser as `R {` and the
+/// struct-literal parser read past the end of its stream and panicked.
+///
+/// It is shared for a second reason now. A template is *one token* to the macro
+/// expander, and its interior is only tokenized later, by the parser — so
+/// nothing inside `${…}` was ever expanded or substituted. Teaching the expander
+/// to look inside means it has to agree with the parser about where "inside"
+/// starts and stops, and the way to guarantee that is to not have a second copy.
+pub fn split_template_string(content: &str) -> Result<Vec<TemplateSegment<'_>>, TemplateScanError> {
+    let mut segments = Vec::new();
+    let mut literal_start = 0usize;
+    let mut expr_start = None::<usize>;
+    let mut depth = 0usize;
+
+    let chars: Vec<(usize, char)> = content.char_indices().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let (byte_pos, ch) = chars[index];
+        match expr_start {
+            Some(start) => {
+                if ch == '{' {
+                    depth += 1;
+                } else if ch == '}' && depth > 0 {
+                    depth -= 1;
+                } else if ch == '}' {
+                    segments.push(TemplateSegment::Expr(&content[start..byte_pos]));
+                    expr_start = None;
+                    literal_start = byte_pos + ch.len_utf8();
+                }
+                index += 1;
+            }
+            None if ch == '$' && index + 1 < chars.len() && chars[index + 1].1 == '{' => {
+                if literal_start < byte_pos {
+                    segments.push(TemplateSegment::Literal(&content[literal_start..byte_pos]));
+                }
+                index += 2;
+                expr_start = Some(if index < chars.len() {
+                    chars[index].0
+                } else {
+                    content.len()
+                });
+            }
+            None => index += 1,
+        }
+    }
+
+    if expr_start.is_some() {
+        return Err(TemplateScanError::Unclosed);
+    }
+    if literal_start < content.len() {
+        segments.push(TemplateSegment::Literal(&content[literal_start..]));
+    }
+    Ok(segments)
+}
+
+/// Write segments back out as template content, inverse of [`split_template_string`].
+pub fn join_template_segments(segments: &[TemplateSegment<'_>]) -> String {
+    let mut out = String::new();
+    for segment in segments {
+        match segment {
+            TemplateSegment::Literal(text) => out.push_str(text),
+            TemplateSegment::Expr(text) => {
+                out.push_str("${");
+                out.push_str(text);
+                out.push('}');
+            }
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateScanError {
+    Unclosed,
+}
+
 /// The word a keyword token spells, when it may stand in for an identifier.
 ///
 /// Keywords are reserved *everywhere*, which is more than the grammar needs: a
@@ -63,6 +149,12 @@ pub fn keyword_as_name(token: &Token) -> Option<&'static str> {
     })
 }
 
+/// The source text a token was written as.
+///
+/// Lives here rather than in the macro system: it is a property of `Token`
+/// itself, and having it there made `stmt` depend on `macro_system` purely to
+/// print a token — a dependency cycle (`macro_system` parses `stmt` patterns)
+/// that blocked separating the two.
 pub fn token_lexeme(token: &Token) -> String {
     match token {
         Token::LParen => "(".to_string(),

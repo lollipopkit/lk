@@ -3,7 +3,10 @@ use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
-    token::{ParseError, Span, Token, Tokenizer, offset_to_position},
+    token::{
+        ParseError, Span, TemplateScanError, TemplateSegment, Token, Tokenizer, offset_to_position,
+        split_template_string,
+    },
     val::{LiteralVal, Type},
 };
 use anyhow::{Result, anyhow};
@@ -1532,92 +1535,35 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse template string content from a TemplateString token
+    ///
+    /// Where the `${…}` boundaries are is [`split_template_string`]'s answer, not
+    /// this function's: the scan used to live here as a second copy of the
+    /// lexer's, and the two disagreed about nested braces (`"${R {}}"` cut at the
+    /// first `}` and the struct-literal parser then read past the end of its
+    /// stream). The macro expander now needs the same answer, which makes a
+    /// shared scanner the only way to keep three readers of one syntax honest.
     fn parse_template_string_content(&mut self, content: &str) -> Result<Expr> {
+        let segments = split_template_string(content)
+            .map_err(|TemplateScanError::Unclosed| anyhow!(self.err("Unclosed template expression")))?;
         let mut parts = Vec::new();
-        let mut current_literal = String::new();
-        let mut in_expr = false;
-        let mut expr_start = 0usize; // byte offset into `content`
-        // Braces nest inside `${…}`, and the lexer already balances them when
-        // it decides where the interpolation ends (`Tokenizer::read_string`).
-        // This scan did not, so it cut at the *first* `}` — `"${R {}}"`
-        // reached the parser as `R {`, and the struct-literal parser then read
-        // past the end of its token stream and panicked. Two scanners of one
-        // syntax, disagreeing.
-        let mut expr_depth = 0usize;
-
-        // Use char_indices so `byte_pos` is always a valid byte boundary for slicing.
-        let chars: Vec<(usize, char)> = content.char_indices().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            let (byte_pos, c) = chars[i];
-
-            if in_expr {
-                if c == '{' {
-                    expr_depth += 1;
-                    i += 1;
-                    continue;
-                }
-                if c == '}' && expr_depth > 0 {
-                    expr_depth -= 1;
-                    i += 1;
-                    continue;
-                }
-                if c == '}' {
-                    // End of ${...} expression — byte_pos is the correct slice bound.
-                    let expr_content = &content[expr_start..byte_pos];
-                    if !expr_content.is_empty() {
-                        let expr_tokens = match Tokenizer::tokenize_enhanced(expr_content) {
-                            Ok(tokens) => tokens,
-                            Err(e) => {
-                                return Err(anyhow!(
-                                    self.err(&format!("Failed to parse template expression: {}", e))
-                                ));
-                            }
-                        };
-
-                        if !expr_tokens.is_empty() {
-                            let mut expr_parser = self.sub_parser(&expr_tokens);
-                            match expr_parser.parse_expr() {
-                                Ok(expr) => parts.push(TemplateStringPart::Expr(Box::new(expr))),
-                                Err(e) => {
-                                    return Err(anyhow!(
-                                        self.err(&format!("Failed to parse template expression: {}", e))
-                                    ));
-                                }
-                            }
-                        }
+        for segment in segments {
+            match segment {
+                TemplateSegment::Literal(text) => parts.push(TemplateStringPart::Literal(text.to_string())),
+                TemplateSegment::Expr("") => {}
+                TemplateSegment::Expr(text) => {
+                    let expr_tokens = Tokenizer::tokenize_enhanced(text)
+                        .map_err(|e| anyhow!(self.err(&format!("Failed to parse template expression: {e}"))))?;
+                    if expr_tokens.is_empty() {
+                        continue;
                     }
-                    in_expr = false;
+                    let mut expr_parser = self.sub_parser(&expr_tokens);
+                    let expr = expr_parser
+                        .parse_expr()
+                        .map_err(|e| anyhow!(self.err(&format!("Failed to parse template expression: {e}"))))?;
+                    parts.push(TemplateStringPart::Expr(Box::new(expr)));
                 }
-                i += 1;
-            } else if c == '$' && i + 1 < chars.len() && chars[i + 1].1 == '{' {
-                // Start of ${expr} syntax — skip both '$' and '{'.
-                i += 2;
-
-                if !current_literal.is_empty() {
-                    parts.push(TemplateStringPart::Literal(core::mem::take(&mut current_literal)));
-                }
-
-                in_expr = true;
-                // expr_start is the byte offset of the first char inside the braces.
-                expr_start = if i < chars.len() { chars[i].0 } else { content.len() };
-            } else {
-                current_literal.push(c);
-                i += 1;
             }
         }
-
-        // Push any remaining literal content
-        if !current_literal.is_empty() {
-            parts.push(TemplateStringPart::Literal(current_literal));
-        }
-
-        // If we're still in an expression, it's an error
-        if in_expr {
-            return Err(anyhow!(self.err("Unclosed template expression")));
-        }
-
         Ok(Expr::TemplateString(parts))
     }
 

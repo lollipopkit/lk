@@ -66,6 +66,26 @@ fragment 之后允许跟随的 token 受 follow-set 约束
 - 模板中元变量的重复深度必须与 matcher 一致
   (`core/src/macro_system/validation.rs` 在定义时校验)。
 
+### 模板串里的宏
+
+模板串的 `${…}` 洞里可以写宏调用,也可以写元变量,两者还能嵌套:
+
+```lk
+macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+macro_rules! show {
+    ($label:expr, $e:expr) => { "${$label} = ${twice!($e)}" };
+}
+show!("total", 21)   // "total = 42"
+```
+
+只有 `${…}` 内部被改写。字面量部分的 `$e` 就是 `$` 和 `e` 两个字符 ——
+和宏外面的 `"$e"` 一样;洞里引用未定义的元变量是错误,不会静默留下。
+
+这曾经是个洞:模板串对 token 级展开器是**一个 token**,内部文本要到解析期
+才被重新切分。于是 `"${twice!(3)}"` 报"no macro named `twice` is defined"
+(而它就定义在上面),`"${$e}"` 报 `Unexpected token: Dollar`。切分器现在只有
+一份(`token::split_template_string`),解析器和展开器共用。
+
 ### 卫生(hygiene)
 
 宏体内引入的绑定不会捕获/污染调用点同名变量(`core/src/macro_system/

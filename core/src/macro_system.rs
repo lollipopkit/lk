@@ -4,7 +4,7 @@ use crate::compat::path::{Path, PathBuf};
 use crate::compat::prelude::*;
 use crate::token::token_lexeme;
 
-use crate::token::{ParseError, Span, Token};
+use crate::token::{ParseError, Span, TemplateSegment, Token, Tokenizer, split_template_string};
 
 mod expansion;
 mod follow;
@@ -26,6 +26,9 @@ mod validation;
 
 #[cfg(test)]
 mod hygiene_tests;
+
+#[cfg(test)]
+mod template_tests;
 
 // The validation corpus drives macro *file* imports and proc-macro
 // providers, both std-only leaves.
@@ -760,7 +763,14 @@ fn expand_stream(
     let mut index = 0usize;
     while index < tokens.len() {
         let Some((name, group_start)) = macro_invocation_at(tokens, index, registry, options) else {
-            output.push(tokens[index].clone());
+            output.push(expand_template_interiors(
+                &tokens[index],
+                registry,
+                options,
+                depth,
+                trace,
+                stack,
+            )?);
             index += 1;
             continue;
         };
@@ -811,6 +821,109 @@ fn expand_stream(
         index = inner_end + 1;
     }
     Ok(output)
+}
+
+/// Expand macro invocations that sit inside a template string's `${…}` holes.
+///
+/// A template is one token here — its interior is only tokenized much later, by
+/// the parser — so `"${twice!(3)}"` used to reach the parser with the invocation
+/// intact, and the parser answered "no macro named `twice` is defined". That
+/// message rests on "expansion runs first, so anything left is undefined", which
+/// is true of every position *except* this one; `twice!` worked in
+/// `let a = twice!(3)` and in `println("{}", twice!(4))` in the same file.
+///
+/// A segment whose token stream comes back unchanged keeps its original text
+/// byte for byte. That matters: rendering tokens back to source is by lexeme, so
+/// `a.b` would return as `a . b`, and a program with no macros in its templates
+/// must not be rewritten at all. A segment that does not tokenize is also left
+/// alone — the parser reports that, with a position, and this pass has none.
+fn expand_template_interiors(
+    token: &SourceToken,
+    registry: &MacroRegistry,
+    options: &MacroExpandOptions,
+    depth: usize,
+    trace: &mut Vec<MacroTrace>,
+    stack: &mut Vec<MacroCallFrame>,
+) -> Result<SourceToken, ParseError> {
+    let Token::TemplateString(content) = &token.token else {
+        return Ok(token.clone());
+    };
+    let Ok(segments) = split_template_string(content) else {
+        return Ok(token.clone());
+    };
+    if !segments
+        .iter()
+        .any(|segment| matches!(segment, TemplateSegment::Expr(_)))
+    {
+        return Ok(token.clone());
+    }
+
+    let mut rebuilt = String::with_capacity(content.len());
+    let mut changed = false;
+    for segment in &segments {
+        match segment {
+            TemplateSegment::Literal(text) => rebuilt.push_str(text),
+            TemplateSegment::Expr(text) => {
+                rebuilt.push_str("${");
+                match expand_template_expr(text, token, registry, options, depth, trace, stack)? {
+                    Some(expanded) => {
+                        changed = true;
+                        rebuilt.push_str(&expanded);
+                    }
+                    None => rebuilt.push_str(text),
+                }
+                rebuilt.push('}');
+            }
+        }
+    }
+    if !changed {
+        return Ok(token.clone());
+    }
+    let mut rewritten = token.clone();
+    rewritten.token = Token::TemplateString(rebuilt);
+    rewritten.lexeme = token_lexeme(&rewritten.token);
+    Ok(rewritten)
+}
+
+/// Expand one `${…}` interior; `None` when it holds no macro to expand.
+fn expand_template_expr(
+    text: &str,
+    token: &SourceToken,
+    registry: &MacroRegistry,
+    options: &MacroExpandOptions,
+    depth: usize,
+    trace: &mut Vec<MacroTrace>,
+    stack: &mut Vec<MacroCallFrame>,
+) -> Result<Option<String>, ParseError> {
+    let Ok(inner) = Tokenizer::tokenize_enhanced(text) else {
+        return Ok(None);
+    };
+    let inner: Vec<SourceToken> = inner
+        .into_iter()
+        .map(|inner_token| SourceToken {
+            lexeme: token_lexeme(&inner_token),
+            token: inner_token,
+            // Every interior token answers with the template's own position: the
+            // template is one token to the lexer, so there is nothing finer.
+            span: token.span.clone(),
+            origins: token.origins.clone(),
+        })
+        .collect();
+    if !inner
+        .iter()
+        .enumerate()
+        .any(|(index, _)| macro_invocation_at(&inner, index, registry, options).is_some())
+    {
+        return Ok(None);
+    }
+    let expanded = expand_stream(&inner, registry, options, depth + 1, trace, stack)?;
+    Ok(Some(
+        expanded
+            .iter()
+            .map(|expanded_token| expanded_token.lexeme.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    ))
 }
 
 fn macro_error_with_stack(error: ParseError, stack: &[MacroCallFrame]) -> ParseError {
