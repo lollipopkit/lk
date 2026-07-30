@@ -232,6 +232,19 @@ pub(crate) struct Ssa {
     /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
     pub(crate) builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
+    /// Cells whose whole content is a lowering-time reference — a lambda, a
+    /// closure, a named function.
+    ///
+    /// `let f = |x| x + 1; let g = |x| f(x) * 2;` is the shape: `f` is captured,
+    /// so the compiler puts it in a cell, and what goes *into* that cell is a
+    /// `GlobalRef`, not a value. `StoreCellVal` read the register for an SSA
+    /// value, found none, and the program fell back — composing two lambdas,
+    /// which is most of what having them is for.
+    ///
+    /// One ref per cell. A cell that is also assigned something else refuses
+    /// (`Unsupported`, so the program falls back) rather than guessing which
+    /// meaning a later read wanted.
+    pub(crate) cell_refs: std::collections::HashMap<u32, GlobalRef>,
     /// Fresh ids for upvalue cells created by `LoadHeapConst`; each cell's
     /// content lives in virtual slot `reg_count + cid`, participating in the
     /// same Braun construction as registers (cross-block cell state gets
@@ -286,6 +299,7 @@ impl Ssa {
             list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
+            cell_refs: std::collections::HashMap::new(),
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
             struct_types: std::collections::HashMap::new(),

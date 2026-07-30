@@ -103,4 +103,23 @@ assert(adder()(1) == 101);
 // (A closure *inside* a container is checked the same way, but does not lower
 // natively yet, so it stays out of this file — the AOT coverage gate reads it.)
 
+// 12. A closure may call another closure. The callee lives in a cell (that is
+// what being captured means), and what goes into that cell is a reference to a
+// function rather than a value — so composing two lambdas is a different shape
+// from capturing a number.
+let add_one = |x| x + 1;
+let double_after = |x| add_one(x) * 2;
+assert(double_after(1) == 4);
+
+fn times_three(x: Int) -> Int { return x * 3; }
+let times_three_plus_one = |x| times_three(x) + 1;
+assert(times_three_plus_one(2) == 7);
+
+// Calling one and writing a capture at the same time.
+let seen = 0;
+let record = |x| { seen = seen + add_one(x); };
+record(1);
+record(2);
+assert(seen == 5);
+
 println("closure: all assertions passed");

@@ -105,6 +105,21 @@ pub(crate) struct SigInfer {
     /// already crosses on. Nothing guesses at the bytecode's register
     /// provenance, and a read-only capture keeps passing as a plain value.
     pub(crate) cell_captures: std::collections::HashSet<(u32, usize)>,
+    /// `(function, capture index)` → the callable that capture *is*.
+    ///
+    /// `let f = |x| x + 1; let g = |x| f(x) * 2;` — composing two lambdas, which
+    /// is most of what having them is for. `f` is captured, so the compiler puts
+    /// it in a cell, and what goes into that cell is a lowering-time reference,
+    /// not a value. The callee's `LoadCapture` + `LoadCellVal` then read a
+    /// parameter that holds nothing meaningful.
+    ///
+    /// A reference has no runtime representation here, so the capture still
+    /// occupies its ABI slot (a dead `0`) and the *meaning* travels through this
+    /// map instead. Discovered by the caller and retried, the same loop
+    /// `cell_captures` uses — so the callee never lowers before the fact exists;
+    /// if it somehow did, the `Call` on a plain integer refuses and the retry
+    /// fixes it.
+    pub(crate) ref_captures: std::collections::HashMap<(u32, usize), GlobalRef>,
     /// Per function: the struct its returns are known to construct.
     ///
     /// A type's *name* only ever entered the lowering from a `NewObject`
@@ -285,7 +300,7 @@ pub(crate) fn ret_closure_candidate(
             }
             // A capture taken onward from an enclosing closure is not one of
             // *this* function's parameter values, so the summary does not apply.
-            ClosureCapture::CellParam(_) => return None,
+            ClosureCapture::CellParam(_) | ClosureCapture::StaticRef => return None,
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
         let k = fn_params

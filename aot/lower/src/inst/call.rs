@@ -74,6 +74,19 @@ pub(super) fn lower(
                 // mutable boxes); a plain value is captured directly.
                 match ssa.builtin_ref_at(reg, block) {
                     Some(GlobalRef::Cell(cid)) => {
+                        // A cell whose content is a callable *reference* has no
+                        // runtime value to pass: the meaning goes to the callee
+                        // through `sig.ref_captures`, and the slot carries a
+                        // dead `0` so the ABI arity is unchanged.
+                        if let Some(callable) = ssa.cell_refs.get(&cid).cloned() {
+                            let key = (fidx as u32, k as usize);
+                            if sig.ref_captures.get(&key) != Some(&callable) {
+                                sig.ref_captures.insert(key, callable);
+                                return Err(Unsupported::TypeMismatch { pc });
+                            }
+                            captures.push(ClosureCapture::StaticRef);
+                            continue;
+                        }
                         captures.push(ClosureCapture::Cell(cid));
                         continue;
                     }
@@ -287,6 +300,16 @@ pub(super) fn lower(
                                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                                 }
                                 (v, ty)
+                            }
+                            // A static reference: the slot exists only to keep the
+                            // ABI arity, so it carries a dead `0`.
+                            ClosureCapture::StaticRef => {
+                                let zero = ssa.new_val();
+                                insts.push(Inst::Const {
+                                    dst: zero,
+                                    value: Const::I64(0),
+                                });
+                                (zero, Ty::I64)
                             }
                             ClosureCapture::Value(v, ty) => (*v, *ty),
                         };

@@ -196,6 +196,10 @@ pub(crate) enum ClosureCapture {
     /// propagates up: the call site records it against the parent and retries,
     /// so `SigInfer::cell_captures` reaches a fixpoint over the whole chain.
     CellParam(usize),
+    /// A capture whose whole meaning is a lowering-time reference (a lambda, a
+    /// named function): nothing to pass, so the slot carries a dead `0` and the
+    /// callee reads [`SigInfer::ref_captures`].
+    StaticRef,
     /// A direct by-value capture.
     Value(ValueId, Ty),
 }

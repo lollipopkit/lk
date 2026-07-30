@@ -1418,6 +1418,50 @@ fn try_catch_differential() {
     );
 }
 
+/// A closure that calls another closure, pinned to pure Cranelift.
+///
+/// Composing two lambdas is most of what having them is for, and it dropped the
+/// whole program to the VM: a captured `f` lives in a *cell*, and what goes into
+/// that cell is a lowering-time reference rather than a value, so the store had
+/// nothing to read and the callee's capture had nothing to mean.
+#[test]
+fn a_closure_may_call_another_closure() {
+    run_differential(
+        "closure_composition",
+        &[
+            new(
+                "compose_two",
+                "let f = |x| x + 1;\nlet g = |x| f(x) * 2;\nprintln(g(1));\nreturn 0;\n",
+            ),
+            // A named `fn` is the same kind of reference.
+            new(
+                "call_a_named_function",
+                "fn inc(x: Int) -> Int { return x + 1; }\nlet g = |x| inc(x) * 2;\nprintln(g(1));\nreturn 0;\n",
+            ),
+            // Twice in one body, and a three-deep chain.
+            new(
+                "call_it_twice",
+                "let f = |x| x + 1;\nlet g = |x| f(f(x));\nprintln(g(1));\nreturn 0;\n",
+            ),
+            new(
+                "chain_of_three",
+                "let f = |x| x + 1;\nlet g = |x| x * 2;\nlet h = |x| g(f(x));\nprintln(h(1));\nreturn 0;\n",
+            ),
+            // Calling one *and* writing a capture, the two closure facts at once.
+            new(
+                "call_and_assign_a_capture",
+                "let acc = 0;\nlet f = |x| x + 1;\nlet g = |x| { acc = acc + f(x); };\ng(1);\ng(2);\nprintln(acc);\nreturn 0;\n",
+            ),
+            // A plain alias of a lambda.
+            new(
+                "alias_a_lambda",
+                "let f = |x| x + 1;\nlet g = f;\nprintln(g(1));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Closures that **assign** to what they captured.
 ///
 /// A capture travelled as a hidden trailing argument holding the cell's content

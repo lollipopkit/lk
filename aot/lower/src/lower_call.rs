@@ -57,6 +57,16 @@ pub(crate) fn lower_spawn(
                 // `try` region and an erased-closure environment refuse, so the
                 // program falls back rather than losing the write-back.
                 ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+                // A static reference: the slot exists only to keep the ABI arity,
+                // so it carries a dead `0`.
+                ClosureCapture::StaticRef => {
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    (zero, Ty::I64)
+                }
                 ClosureCapture::Value(v, ty) => (*v, *ty),
             };
             let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
@@ -244,6 +254,16 @@ pub(crate) fn lower_try_call(
             // `try` region and an erased-closure environment refuse, so the
             // program falls back rather than losing the write-back.
             ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+            // A static reference: the slot exists only to keep the ABI arity,
+            // so it carries a dead `0`.
+            ClosureCapture::StaticRef => {
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                (zero, Ty::I64)
+            }
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
         let want = sig.observe_param(fidx, k, ty);
@@ -484,6 +504,16 @@ pub(crate) fn lower_user_call(
                         // `try` region and an erased-closure environment refuse, so the
                         // program falls back rather than losing the write-back.
                         ClosureCapture::CellParam(_) => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+                        // A static reference: the slot exists only to keep the ABI arity,
+                        // so it carries a dead `0`.
+                        ClosureCapture::StaticRef => {
+                            let zero = ssa.new_val();
+                            insts.push(Inst::Const {
+                                dst: zero,
+                                value: Const::I64(0),
+                            });
+                            (zero, Ty::I64)
+                        }
                         ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
                     env_args.push((v, ty));

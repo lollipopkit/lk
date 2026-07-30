@@ -26,6 +26,12 @@ pub(super) fn lower(
             if k >= capture_params.len() {
                 return Err(Unsupported::BadConst { pc });
             }
+            // A capture whose whole meaning is a callable reference: the slot
+            // carries a dead `0`, and *this* is where the meaning arrives.
+            if let Some(callable) = sig.ref_captures.get(&(ctx_func_index, k)).cloned() {
+                ssa.builtin_regs.insert((block, instr.a()), callable);
+                return Ok(());
+            }
             ssa.builtin_regs.insert((block, instr.a()), GlobalRef::CellParam(k));
         }
         Opcode::LoadCellVal => {
@@ -33,6 +39,11 @@ pub(super) fn lower(
             // The cell ref backtracks across blocks like any global ref; the
             // content read goes through the virtual slot (phis on demand).
             match ssa.builtin_ref_at(instr.b(), block) {
+                // The register already holds the callable (a ref capture): a
+                // cell read of it is the same reference.
+                Some(callable @ (GlobalRef::Lambda(_) | GlobalRef::UserFn(_))) => {
+                    ssa.builtin_regs.insert((block, instr.a()), callable);
+                }
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
                     // A runtime cell (a `try$call` boundary capture) reads
@@ -55,6 +66,12 @@ pub(super) fn lower(
                     }
                 }
                 Some(GlobalRef::Cell(cid)) => {
+                    // A cell holding a lambda/closure gives the *reference*
+                    // back: there is no runtime value to read.
+                    if let Some(global_ref) = ssa.cell_refs.get(&cid).cloned() {
+                        ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                        return Ok(());
+                    }
                     let slot = ssa.cell_slot(cid);
                     let (v, ty) = ssa.read_slot(slot, block, pc)?;
                     ssa.write(instr.a(), block, (v, ty));
@@ -69,6 +86,34 @@ pub(super) fn lower(
             // by-value capture parameter still rejects (no write-back path).
             match ssa.builtin_ref_at(instr.a(), block) {
                 Some(GlobalRef::Cell(cid)) => {
+                    // Storing a lambda/closure/function *reference* into the
+                    // cell: there is no value to write, so the ref is recorded
+                    // against the cell and every read of it gives the ref back.
+                    // Only a *capture-free* callable. A `Closure(fidx, caps)`
+                    // carries `ValueId`s from the function that built it, which
+                    // name nothing in whoever reads the cell — recording one
+                    // would hand the reader operands that do not exist. It
+                    // refuses instead (the program falls back), and it refuses
+                    // on purpose rather than by accident.
+                    if let Some(stored) = ssa.builtin_ref_at(instr.b(), block)
+                        && matches!(stored, GlobalRef::Lambda(_) | GlobalRef::UserFn(_))
+                    {
+                        match ssa.cell_refs.get(&cid) {
+                            // A cell that means two different things at two
+                            // points is not something a single ref can answer.
+                            Some(existing) if *existing != stored => {
+                                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                            }
+                            _ => {
+                                ssa.cell_refs.insert(cid, stored);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    if ssa.cell_refs.contains_key(&cid) {
+                        // Was a callable, now something else — same reason.
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                    }
                     let (v, ty) = ssa.read(instr.b(), block, pc)?;
                     let slot = ssa.cell_slot(cid);
                     ssa.write_slot(slot, block, (v, ty));
