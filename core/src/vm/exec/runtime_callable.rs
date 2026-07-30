@@ -1316,7 +1316,25 @@ fn copy_heap_value(
             function_index,
             captures,
         }) => match mode {
-            ClosureCopy::Reject => bail!("cannot copy closure without module context"),
+            // The old text was "cannot copy closure without module context",
+            // which names a parameter of this function and nothing the program
+            // did. What the program did is hand a function to another module —
+            // as an argument to an imported function, or as a channel payload —
+            // and a bare closure is a `function_index` into *its own* module's
+            // table, meaningless once it lands anywhere else.
+            //
+            // The export direction already solves this: `import_runtime_export`
+            // promotes a crossing closure to a `RuntimeCallable`, which carries
+            // its module with it. The argument direction cannot yet, because the
+            // promotion also wants the caller module's shared state and the entry
+            // module has none — see the task tracking the module-bound callable
+            // that would close it.
+            ClosureCopy::Reject => bail!(
+                "a function value cannot be passed out of the module that defined it (here: as an argument to an \
+                 imported function, or as a channel payload). A function carries an index into its own module's \
+                 table, and nothing outside that module can read it. Move the function into the module that calls \
+                 it, or send the data and let that module call a function of its own"
+            ),
             ClosureCopy::SameModule => {
                 let mut copied = Vec::with_capacity(captures.len());
                 for value in captures.iter() {
