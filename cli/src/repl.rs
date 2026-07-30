@@ -113,8 +113,7 @@ impl ReplSession {
         source: &str,
         statement_error: lk_core::token::ParseError,
     ) -> Option<anyhow::Result<ReplExecutionResult>> {
-        let normalized = normalize_binary_signs(source);
-        let wrapped = format!("println(({}));", normalized);
+        let wrapped = expression_program_source(source);
         match parse_program_source(&wrapped, ParseOptions::default()) {
             Ok(program) => Some(self.vm.execute_program(&program)),
             Err(_expr_err) => {
@@ -133,6 +132,19 @@ impl Drop for ReplSession {
 
 fn print_repl_help() {
     eprintln!("Commands: :quit | :exit | :q, :help");
+}
+
+/// The program the expression fallback runs for a semicolon-less input.
+///
+/// `return`, not `println`. Wrapping in `println` made the *program* print the
+/// value, so an input that already prints — or that evaluates to nil — printed
+/// twice: `println(a)` ran `println((println(a)))` and echoed the inner call's
+/// nil under its `1`. Returning the value hands it to the REPL instead, which
+/// applies the same nil-suppressing rule as the statement path
+/// (`first_return_is_nil`) and renders it with the same `runtime_display_value`
+/// that `println` uses, so a real value looks exactly as it did before.
+fn expression_program_source(source: &str) -> String {
+    format!("return ({});", normalize_binary_signs(source))
 }
 
 pub(crate) fn should_continue_multiline(buf: &str) -> bool {
@@ -367,6 +379,38 @@ mod tests {
         assert!(should_continue_multiline("println((1)\n"));
         assert!(should_continue_multiline("let xs = [1,\n"));
         assert!(!should_continue_multiline("println(1)\n"));
+    }
+
+    #[test]
+    fn expression_fallback_returns_the_value_rather_than_printing_it() {
+        // The nesting this asserts against — println((println(a))) — is what
+        // printed a spurious `nil` after the real output.
+        assert_eq!(expression_program_source("println(a)"), "return (println(a));");
+        assert_eq!(expression_program_source("1+1"), "return (1+ 1);");
+    }
+
+    #[cfg(feature = "stdlib")]
+    #[test]
+    fn expression_fallback_echoes_values_but_not_nil_returns() {
+        let mut session = ReplSession::new().expect("repl session");
+
+        let run = |session: &mut ReplSession, src: &str| {
+            let program = parse_program_source(&expression_program_source(src), ParseOptions::default())
+                .expect("expression program parses");
+            session.vm.execute_program(&program).expect("expression program runs")
+        };
+
+        // println prints its own `1`; the REPL must add nothing after it.
+        let printed = run(&mut session, "println(1)");
+        assert!(printed.first_return_is_nil());
+
+        let value = run(&mut session, "1+1");
+        assert!(!value.first_return_is_nil());
+        assert_eq!(value.display_first_return(), "2");
+
+        // Rendering is unchanged from the println wrapper: strings unquoted.
+        let text = run(&mut session, "\"x\"");
+        assert_eq!(text.display_first_return(), "x");
     }
 
     #[test]
