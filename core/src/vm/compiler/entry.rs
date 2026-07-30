@@ -1,6 +1,7 @@
 use crate::compat::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use alloc::rc::Rc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -50,16 +51,16 @@ impl Compiler {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let function_names = collect_function_names(program)?;
-        let function_signatures = collect_function_signatures(program)?;
-        let function_bodies = collect_function_inline_bodies(program)?;
-        let native_names = collect_native_names(&natives)?;
-        let global_names = collect_global_names_with_external(program, external_globals)?;
-        let user_let_globals = collect_function_visible_let_names(program);
-        let machine_returns = collect_function_machine_returns(program);
-        let struct_widths = collect_struct_field_machine_widths(program);
-        let impl_methods = collect_impl_method_names(program);
-        let global_widths = collect_top_level_machine_widths(program);
+        let function_names = Rc::new(collect_function_names(program)?);
+        let function_signatures = Rc::new(collect_function_signatures(program)?);
+        let function_bodies = Rc::new(collect_function_inline_bodies(program)?);
+        let native_names = Rc::new(collect_native_names(&natives)?);
+        let global_names = Rc::new(collect_global_names_with_external(program, external_globals)?);
+        let user_let_globals = Rc::new(collect_function_visible_let_names(program));
+        let machine_returns = Rc::new(collect_function_machine_returns(program));
+        let struct_widths = Rc::new(collect_struct_field_machine_widths(program));
+        let impl_methods = Rc::new(collect_impl_method_names(program));
+        let global_widths = Rc::new(collect_top_level_machine_widths(program));
         let mut module = Module {
             functions: vec![Function::default(); function_names.len() + 1],
             natives,
@@ -208,11 +209,11 @@ impl Compiler {
     }
 
     pub(super) fn with_names(
-        function_names: HashMap<String, u32>,
-        function_signatures: HashMap<String, FunctionSignature>,
-        function_bodies: HashMap<String, super::support::FunctionInlineBody>,
-        native_names: HashMap<String, u32>,
-        global_names: HashMap<String, u32>,
+        function_names: Rc<HashMap<String, u32>>,
+        function_signatures: Rc<HashMap<String, FunctionSignature>>,
+        function_bodies: Rc<HashMap<String, super::support::FunctionInlineBody>>,
+        native_names: Rc<HashMap<String, u32>>,
+        global_names: Rc<HashMap<String, u32>>,
         top_level: bool,
     ) -> Self {
         Self {
@@ -232,16 +233,16 @@ impl Compiler {
         param_types: &[Option<crate::val::Type>],
         named_params: &[crate::stmt::NamedParamDecl],
         body: &Stmt,
-        function_names: HashMap<String, u32>,
-        function_signatures: HashMap<String, FunctionSignature>,
-        function_bodies: HashMap<String, super::support::FunctionInlineBody>,
-        native_names: HashMap<String, u32>,
-        global_names: HashMap<String, u32>,
-        user_let_globals: HashSet<String>,
-        machine_returns: HashMap<String, crate::val::IntKind>,
-        struct_widths: HashMap<String, HashMap<String, crate::val::IntKind>>,
-        impl_methods: HashSet<String>,
-        global_widths: HashMap<String, crate::val::IntKind>,
+        function_names: Rc<HashMap<String, u32>>,
+        function_signatures: Rc<HashMap<String, FunctionSignature>>,
+        function_bodies: Rc<HashMap<String, super::support::FunctionInlineBody>>,
+        native_names: Rc<HashMap<String, u32>>,
+        global_names: Rc<HashMap<String, u32>>,
+        user_let_globals: Rc<HashSet<String>>,
+        machine_returns: Rc<HashMap<String, crate::val::IntKind>>,
+        struct_widths: Rc<HashMap<String, HashMap<String, crate::val::IntKind>>>,
+        impl_methods: Rc<HashSet<String>>,
+        global_widths: Rc<HashMap<String, crate::val::IntKind>>,
         capture_names: HashMap<String, u16>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {

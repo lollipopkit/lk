@@ -925,10 +925,13 @@ impl TypeChecker {
                     self.check_pattern_against_type(&arm.pattern, &value_type)?;
 
                     // Arm body is checked in a scope with pattern bindings available
-                    let locals_snapshot = self.local_types.clone();
-                    self.add_bindings_for_pattern(&arm.pattern, &value_type)?;
-                    let arm_type = self.check_expr(&arm.body)?;
-                    self.local_types = locals_snapshot;
+                    // A scope, not a snapshot of every visible binding: the arm's
+                    // pattern bindings live in their own layer and go away with it.
+                    self.push_scope();
+                    let bound = self.add_bindings_for_pattern(&arm.pattern, &value_type);
+                    let arm_type = bound.and_then(|()| self.check_expr(&arm.body));
+                    self.pop_scope();
+                    let arm_type = arm_type?;
 
                     if let Some(existing_type) = &result_type {
                         // Add constraint that all arms should return the same type
@@ -1022,7 +1025,7 @@ impl TypeChecker {
     /// Check identifier type
     fn check_identifier(&mut self, name: &str) -> Result<Type> {
         // Check local variables first
-        if let Some(typ) = self.local_types.get(name) {
+        if let Some(typ) = self.get_local_type(name) {
             return Ok(typ.clone());
         }
 
@@ -1045,7 +1048,7 @@ impl TypeChecker {
 
         // Otherwise, assume it's a dynamic variable (type inference needed)
         let var_type = self.inference_engine.fresh_type_var();
-        self.local_types.insert(name.to_string(), var_type.clone());
+        self.add_local_type(name.to_string(), var_type.clone());
         Ok(var_type)
     }
 

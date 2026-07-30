@@ -75,12 +75,13 @@ impl TypeChecker {
                 self.check_pattern_against_type(pattern, value_type)?;
                 // Then validate the guard with temporary bindings from inner pattern
                 let temp_bindings = self.collect_bindings_for_pattern(pattern, value_type)?;
-                let snapshot = self.local_types.clone();
+                self.push_scope();
                 for (n, ty) in temp_bindings {
                     self.add_local_type(n, ty);
                 }
-                let gty = self.check_expr(guard)?;
-                self.local_types = snapshot;
+                let gty = self.check_expr(guard);
+                self.pop_scope();
+                let gty = gty?;
                 if gty != Type::Bool {
                     return Err(Self::type_err(
                         "Match guard must be Bool",
@@ -215,12 +216,13 @@ impl TypeChecker {
             Pattern::Guard { pattern, guard } => {
                 // Bind variables from inner pattern temporarily, then type-check guard
                 let bindings = self.collect_bindings_for_pattern(pattern, value_type)?;
-                let snapshot = self.local_types.clone();
+                self.push_scope();
                 for (n, ty) in bindings {
                     self.add_local_type(n, ty);
                 }
-                let gty = self.check_expr(guard)?;
-                self.local_types = snapshot;
+                let gty = self.check_expr(guard);
+                self.pop_scope();
+                let gty = gty?;
                 if gty != Type::Bool {
                     return Err(Self::type_err(
                         "Match guard must be Bool",

@@ -5,6 +5,7 @@
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use alloc::rc::Rc;
 mod assign;
 mod builder;
 mod call;
@@ -72,14 +73,25 @@ pub struct Compiler {
     /// How many scopes deep the lowering currently is. Bumped wherever
     /// `locals` is saved and restored.
     scope_depth: u32,
-    function_names: HashMap<String, u32>,
-    function_signatures: HashMap<String, FunctionSignature>,
-    function_bodies: HashMap<String, FunctionInlineBody>,
-    native_names: HashMap<String, u32>,
-    global_names: HashMap<String, u32>,
+    // The ten tables below describe the *program*, not the function being
+    // compiled: names, signatures, inlinable bodies, widths. Every function gets
+    // its own `Compiler`, and each one used to receive a deep **clone** of all
+    // ten — so compiling the n-th function copied everything the n-1 before it
+    // had declared, and `function_bodies` copies an AST per entry. Quadratic in
+    // the size of the file, and measurably so: 1000 functions type-checked and
+    // compiled in 0.55s, 2000 in 2.30s, 4000 in 10.9s.
+    //
+    // `Rc` because none of them is ever written after `collect_*` builds it —
+    // sharing is the whole truth about them, and a clone is now a refcount bump.
+    // Read sites are unchanged: `Rc` derefs.
+    function_names: Rc<HashMap<String, u32>>,
+    function_signatures: Rc<HashMap<String, FunctionSignature>>,
+    function_bodies: Rc<HashMap<String, FunctionInlineBody>>,
+    native_names: Rc<HashMap<String, u32>>,
+    global_names: Rc<HashMap<String, u32>>,
     /// Top-level `let` names visible to callables: user-data globals, not
     /// module objects — method calls on them dispatch as methods.
-    user_let_globals: HashSet<String>,
+    user_let_globals: Rc<HashSet<String>>,
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
@@ -95,21 +107,21 @@ pub struct Compiler {
     /// Top-level functions that declare a machine-int return, by name. Collected
     /// once so a `let` bound to a call can learn its width — see
     /// [`Compiler::initializer_machine_width`].
-    function_machine_returns: HashMap<String, crate::val::IntKind>,
+    function_machine_returns: Rc<HashMap<String, crate::val::IntKind>>,
     /// Machine-int widths of the names this closure captured, learned from the
     /// enclosing scope at the moment the closure was built. A capture is read
     /// through `LoadCapture` into a fresh register, which carries nothing.
     capture_machine_widths: HashMap<String, crate::val::IntKind>,
     /// Machine-int widths of top-level bindings, by name — see
     /// [`support::collect_top_level_machine_widths`].
-    global_machine_widths: HashMap<String, crate::val::IntKind>,
+    global_machine_widths: Rc<HashMap<String, crate::val::IntKind>>,
     /// Machine-int field widths, by struct name then field name — see
     /// [`support::collect_struct_field_machine_widths`].
-    struct_field_machine_widths: HashMap<String, HashMap<String, crate::val::IntKind>>,
+    struct_field_machine_widths: Rc<HashMap<String, HashMap<String, crate::val::IntKind>>>,
     /// Method names any `impl` in this program declares — see
     /// [`support::collect_impl_method_names`]. A call to one of these is never
     /// lowered to a builtin opcode.
-    impl_method_names: HashSet<String>,
+    impl_method_names: Rc<HashSet<String>>,
     /// Which struct a local is known to hold, learned from a struct-literal
     /// initializer or a declared type. The compiler tracks no other types; this
     /// exists only to give `r.field` a width to wrap to.

@@ -119,13 +119,25 @@ pub struct TypeChecker {
     /// Type inference engine
     inference_engine: TypeInferenceEngine,
 
-    /// Local variable types
-    local_types: HashMap<String, Type>,
-    /// Tracks const bindings in current scope
-    const_locals: HashSet<String>,
-    /// Snapshot stack for simple scope management
-    scope_stack: Vec<HashMap<String, Type>>,
-    const_stack: Vec<HashSet<String>>,
+    /// Local variable types, as a stack of scopes — innermost last, index 0 the
+    /// one that is always there.
+    ///
+    /// It was one flat map plus a **clone of it per scope**: entering a block
+    /// copied every binding then in scope, so checking the n-th top-level
+    /// function copied the n-1 declared before it. That is quadratic in the size
+    /// of the file, and it showed — 250 functions type-checked in 0.04s, 500 in
+    /// 0.17s, 1000 in 0.70s, 2000 in 3.03s, 4000 in 23s, while 2000 top-level
+    /// `let`s (which declare nothing to copy) took no measurable time at all.
+    ///
+    /// Layers instead: entering a scope pushes an empty map and leaving it pops
+    /// one, both O(1), and a lookup walks outward from the innermost — one or
+    /// two layers in practice. The visible semantics are unchanged, including the
+    /// part that matters: a binding added inside a scope, or an existing name
+    /// rebound there, is gone when the scope ends, because it went into that
+    /// scope's own layer.
+    local_types: Vec<HashMap<String, Type>>,
+    /// Const bindings, layered the same way and for the same reason.
+    const_locals: Vec<HashSet<String>>,
     /// Function signatures indexed by name (for static checking of CallNamed)
     function_sigs: HashMap<String, FunctionSig>,
     /// Behaviour options
@@ -258,10 +270,8 @@ impl TypeChecker {
         Self {
             registry,
             inference_engine,
-            local_types: HashMap::new(),
-            const_locals: HashSet::new(),
-            scope_stack: Vec::new(),
-            const_stack: Vec::new(),
+            local_types: alloc::vec![HashMap::new()],
+            const_locals: alloc::vec![HashSet::new()],
             function_sigs: HashMap::new(),
             options,
             impl_self_type: None,
@@ -327,7 +337,7 @@ impl TypeChecker {
         }
         let recorded: Vec<ObservedBinding> = names
             .filter_map(|name| {
-                self.local_types.get(name).map(|ty| ObservedBinding {
+                self.lookup_local(name).map(|ty| ObservedBinding {
                     span: span.clone(),
                     name: name.to_string(),
                     ty: ty.clone(),
@@ -341,8 +351,12 @@ impl TypeChecker {
     }
 
     /// How deep the scope stack is, for unwinding after a failed statement.
+    ///
+    /// Counted as the number of *pushed* scopes, so the always-present outermost
+    /// layer does not show — the same number this answered when scopes were
+    /// snapshots.
     pub fn scope_depth(&self) -> usize {
-        self.scope_stack.len()
+        self.local_types.len() - 1
     }
 
     /// Pop scopes until the stack is `depth` deep.
@@ -352,7 +366,7 @@ impl TypeChecker {
     /// statement is checked inside the failed one's scope, and reports errors
     /// about bindings that are not in fact visible to it.
     pub fn unwind_scopes_to(&mut self, depth: usize) {
-        while self.scope_stack.len() > depth {
+        while self.scope_depth() > depth {
             self.pop_scope();
         }
     }
@@ -724,7 +738,7 @@ impl TypeChecker {
 
     /// Get the inferred type for a local variable
     pub fn get_local_type(&self, name: &str) -> Option<&Type> {
-        self.local_types.get(name)
+        self.lookup_local(name)
     }
 
     /// Add a type annotation for a local variable
@@ -735,17 +749,35 @@ impl TypeChecker {
     /// Add a type annotation with mutability information
     pub fn add_local_binding(&mut self, name: String, typ: Type, is_const: bool) {
         let normalized = self.resolve_aliases(&typ);
-        self.local_types.insert(name.clone(), normalized);
+        // Into the innermost scope: rebinding a name from an outer one shadows it
+        // for the rest of this scope and leaves it alone afterwards, which is
+        // what the snapshot-and-restore did.
+        let scope = self
+            .local_types
+            .last_mut()
+            .expect("the outermost scope is never popped");
+        scope.insert(name.clone(), normalized);
+        let consts = self
+            .const_locals
+            .last_mut()
+            .expect("the outermost scope is never popped");
         if is_const {
-            self.const_locals.insert(name);
+            consts.insert(name);
         } else {
-            self.const_locals.remove(name.as_str());
+            consts.remove(name.as_str());
         }
     }
 
     /// Check whether a local binding is const
     pub fn is_const_local(&self, name: &str) -> bool {
-        self.const_locals.contains(name)
+        // Innermost first, like a type lookup: a name rebound in this scope is
+        // this scope's binding, const or not.
+        self.const_locals
+            .iter()
+            .rev()
+            .zip(self.local_types.iter().rev())
+            .find(|(_, types)| types.contains_key(name))
+            .is_some_and(|(consts, _)| consts.contains(name))
     }
 
     /// Get the type registry
@@ -815,23 +847,34 @@ impl TypeChecker {
 
     /// Enter a new scope for local variables
     pub fn push_scope(&mut self) {
-        // Snapshot current locals; modifications in the new scope are discarded on pop
-        self.scope_stack.push(self.local_types.clone());
-        self.const_stack.push(self.const_locals.clone());
+        self.local_types.push(HashMap::new());
+        self.const_locals.push(HashSet::new());
     }
 
-    /// Exit the current scope
+    /// Exit the current scope, discarding what it bound.
+    ///
+    /// The outermost layer is never popped: it is the scope every check starts
+    /// in, and an unbalanced `pop_scope` used to silently leave the checker with
+    /// the *previous* snapshot instead.
     pub fn pop_scope(&mut self) {
-        if let Some(prev) = self.scope_stack.pop() {
-            self.local_types = prev;
+        if self.local_types.len() > 1 {
+            self.local_types.pop();
         }
-        if let Some(prev) = self.const_stack.pop() {
-            self.const_locals = prev;
+        if self.const_locals.len() > 1 {
+            self.const_locals.pop();
         }
+    }
+
+    /// The type bound to `name`, searching from the innermost scope outward.
+    fn lookup_local(&self, name: &str) -> Option<&Type> {
+        self.local_types.iter().rev().find_map(|scope| scope.get(name))
     }
 
     fn apply_substitutions_to_environment(&mut self, subs: &HashMap<String, Type>) {
-        for ty in self.local_types.values_mut() {
+        // Every layer: this runs once, after the whole program, when only the
+        // outermost is left — writing to all of them keeps that true if it ever
+        // runs somewhere deeper.
+        for ty in self.local_types.iter_mut().flat_map(|scope| scope.values_mut()) {
             *ty = ty.substitute(subs);
         }
         for sig in self.function_sigs.values_mut() {

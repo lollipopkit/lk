@@ -1423,3 +1423,47 @@ fn a_call_above_its_definition_still_knows_the_signature() {
         assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)], "{order}");
     }
 }
+
+/// Compiling n functions costs O(n), not O(n²).
+///
+/// Every function gets its own `Compiler`, and each one used to receive a deep
+/// **clone** of the ten tables that describe the program — names, signatures,
+/// inlinable bodies (which hold ASTs), widths. So compiling the n-th function
+/// copied everything the n-1 before it had declared. It was not subtle: 1000
+/// functions took 0.55s, 2000 took 2.30s, 4000 took 10.9s, and before the type
+/// checker's scopes stopped cloning too, 4000 took 23s.
+///
+/// A wall-clock assertion would be flaky, so this measures the *shape*: double
+/// the input and the work must not quadruple. The bound is generous (3x for a
+/// 2x input) because a real machine has noise and allocation is not free — it
+/// fails on quadratic (which is 4x) and passes on linear.
+#[test]
+fn compiling_many_functions_stays_linear() {
+    fn source(n: usize) -> String {
+        let mut out = String::new();
+        for i in 0..n {
+            out.push_str(&alloc::format!(
+                "fn f{i}(a: Int, b: Int) -> Int {{ let x = a + b; return x * 2; }}\n"
+            ));
+        }
+        out.push_str("return 0;\n");
+        out
+    }
+
+    let time = |n: usize| {
+        let program = parse_program(&source(n));
+        let start = std::time::Instant::now();
+        crate::vm::Compiler::compile_module(&program).expect("compile module");
+        start.elapsed()
+    };
+
+    // Warm the allocator so the first measurement is not the outlier.
+    let _ = time(200);
+    let small = time(400);
+    let large = time(800);
+    assert!(
+        large < small * 3,
+        "doubling the function count roughly tripled or worse — quadratic is back: \
+         400 fns in {small:?}, 800 fns in {large:?}"
+    );
+}
