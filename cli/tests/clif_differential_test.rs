@@ -4123,3 +4123,35 @@ fn every_carrier_answers_contains_slice_and_flatten() {
         ],
     );
 }
+
+/// `m.clear()` lowers, like the list's and the set's.
+///
+/// It was the one container method the map lacked natively, so a function using
+/// it dropped to the VM for a reason no program can see. `Map<str, bool>` rides
+/// the `str_i64` carrier, so five helpers cover the six map types the MIR
+/// distinguishes — and every one of them is exercised here, because a carrier
+/// wired to the wrong helper would still compile.
+#[test]
+fn clear_lowers_on_every_map_carrier() {
+    run_clif_differential(
+        "map_clear",
+        &[
+            new(
+                "clear_each_carrier",
+                "let n = 2;\nlet si = {\"a\": 1, \"b\": n};\nlet sf = {\"a\": 1.5, \"b\": 2.5};\n\
+                 let sb = {\"a\": true, \"b\": false};\nlet ii = {1: 10, 2: 20};\nlet if_ = {1: 1.5, 2: 2.5};\n\
+                 si.clear();\nsf.clear();\nsb.clear();\nii.clear();\nif_.clear();\n\
+                 println(si.len());\nprintln(sf.len());\nprintln(sb.len());\n\
+                 println(ii.len());\nprintln(if_.len());\nreturn 0;\n",
+            ),
+            // Clearing is in place: the receiver is empty afterwards, and still
+            // usable.
+            new(
+                "a_cleared_map_is_empty_and_still_a_map",
+                "let n = 2;\nlet m = {\"a\": 1, \"b\": n};\nprintln(m.len());\nm.clear();\n\
+                 println(m.len());\nprintln(m.has(\"a\"));\nm[\"c\"] = 7;\n\
+                 println(m.len());\nprintln(m[\"c\"]);\nreturn 0;\n",
+            ),
+        ],
+    );
+}

@@ -643,6 +643,15 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_i64_iter_pairs", lkrt_lkmap_str_i64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_i64_keys", lkrt_lkmap_str_i64_keys, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_i64_values", lkrt_lkmap_str_i64_values, WritesHost, [Ptr], Ptr, Constructs);
+            // `clear` was the one container method the map lacked while the
+            // list and the set both had it, so `m.clear()` dropped its module to
+            // the VM. `Map<str, bool>` rides the `str_i64` carrier, so five
+            // helpers cover the six map types the MIR distinguishes.
+            ("map_h", "str_i64_clear", lkrt_lkmap_str_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "i64_i64_clear", lkrt_lkmap_i64_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "str_f64_clear", lkrt_lkmap_str_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "i64_f64_clear", lkrt_lkmap_i64_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "str_dyn_clear", lkrt_lkmap_str_dyn_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("map_h", "str_i64_delete", lkrt_lkmap_str_i64_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
             ("map_h", "str_f64_iter_pairs", lkrt_lkmap_str_f64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_f64_keys", lkrt_lkmap_str_f64_keys, WritesHost, [Ptr], Ptr, Constructs);

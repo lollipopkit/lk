@@ -138,6 +138,34 @@ pub unsafe extern "C" fn lkrt_lkmap_str_i64_set_ik(
     unsafe { with_ik_key(prefix, suffix, |key| set_str_key(map, key, value)) }
 }
 
+/// `m.clear()` — empties the map in place.
+///
+/// One macro over the five carriers, which are all `FxMap`. It was the only
+/// container method the *map* lacked natively while the list and the set both
+/// had it, so `m.clear()` dropped its whole module to the VM for a reason no
+/// program can see.
+macro_rules! map_clear {
+    ($name:ident, $map:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a map of the matching carrier.
+            unsafe { (*(handle as *mut $map)).clear() };
+        }
+    };
+}
+
+map_clear!(lkrt_lkmap_str_i64_clear, StrI64Map, "Empties a `str -> i64` map.");
+map_clear!(lkrt_lkmap_i64_i64_clear, I64I64Map, "Empties an `i64 -> i64` map.");
+map_clear!(lkrt_lkmap_str_f64_clear, StrF64Map, "Empties a `str -> f64` map.");
+map_clear!(lkrt_lkmap_i64_f64_clear, I64F64Map, "Empties an `i64 -> f64` map.");
+map_clear!(lkrt_lkmap_str_dyn_clear, StrDynMap, "Empties a `str -> Dyn` map.");
+
 /// Returns the number of entries.
 ///
 /// # Safety

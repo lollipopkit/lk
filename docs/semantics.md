@@ -1161,6 +1161,25 @@ native 侧 struct 实例是普通 string-keyed map(**无 `"$type"` 隐藏键**�
 无参数)且零捕获 impl;静态 devirt(NewObject provenance 已知)支持任意参数。
 分发臂按注册序排列,标记无匹配 → raise(VM 的 unknown-method 同为错误)。
 
+## 容器方法的拼写:contains / has / delete(2026-07-31 记)
+
+同一个问题在不同容器上叫什么,是查表查出来的,不是猜的:
+
+| 容器 | 在不在里面 | 按键/值删 |
+| --- | --- | --- |
+| list | `contains(v)`、`v in xs` | `remove_at(i)`(按下标) |
+| set | `contains(v)`、`v in st` | `delete(v)` |
+| string | `contains(s)`、`s in text` | — |
+| map | `has(k)`、`k in m` | `delete(k)` |
+
+规则是:**能不含歧义的地方一律 `contains`,map 用 `has`** —— 因为对 map 而言
+"contains 什么,键还是值?"是个真问题(Java 就得分成 `containsKey` /
+`containsValue`)。`in` 在四种容器上都可用,是那个统一的写法。
+
+这条记下来,是因为 AOT 的 Set 降低臂曾经同时接受 `has` 和 `remove`,而类型检查器
+两个都拒 —— 于是那两个名字永远到不了降低,读代码的人却会以为 `st.has(x)` 能用。
+删掉它们时顺手把规则写在这里,免得下一个人朝相反方向"修"。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

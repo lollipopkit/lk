@@ -976,6 +976,32 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        // `m.clear()`, the one container method the map did not lower.
+        (
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64,
+            "clear",
+            [],
+        ) => {
+            let abi_name = match receiver_ty {
+                // `Map<str, bool>` rides the `str_i64` carrier.
+                Ty::MapStrI64 | Ty::MapStrBool => "str_i64_clear",
+                Ty::MapStrF64 => "str_f64_clear",
+                Ty::MapI64I64 => "i64_i64_clear",
+                Ty::MapI64F64 => "i64_f64_clear",
+                _ => "str_dyn_clear",
+            };
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
+        }
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete" | "remove", [(k, Ty::Str)]) => {
             let abi_name = match receiver_ty {
                 Ty::MapStrI64 => "str_i64_delete",
@@ -1056,10 +1082,17 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        (Ty::Set, "has" | "contains" | "add" | "delete" | "remove", [(v, vty)]) => {
+        // Only the spellings the language actually has. This accepted `has` and
+        // `remove` too, and the type checker rejects both — so those two names
+        // could never reach a lowering, while a reader here would conclude
+        // `st.has(x)` works. The membership rule is `contains` wherever it is
+        // unambiguous (list, set, string) and `has` on a map, where "contains
+        // what — a key or a value?" is a real question; `in` works on all of
+        // them. See `docs/semantics.md`.
+        (Ty::Set, "contains" | "add" | "delete", [(v, vty)]) => {
             let boxed = to_dyn_any(ssa, insts, *v, *vty, pc)?;
             let abi_name = match name {
-                "has" | "contains" => "has",
+                "contains" => "has",
                 "add" => "add",
                 _ => "delete",
             };
