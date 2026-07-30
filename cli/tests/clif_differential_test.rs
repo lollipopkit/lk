@@ -2020,8 +2020,14 @@ fn a_caught_errors_message_matches() {
                 "let xs = [1];\nprintln(try { xs[9] = 2; \"no\" } catch e { \"caught: ${e}\" });\nprintln(try { xs[-9] = 2; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
             ),
             new(
+                // The key rule is a *check-time* error wherever the key's type is
+                // certainly wrong (`s.add(1.5)` no longer compiles). It stays a
+                // run-time one exactly where the checker is deliberately
+                // conservative — a union may be the Int at run time — so that is
+                // the shape this reaches it through, and the shape whose message
+                // has to match on both ends.
                 "float_member_and_key",
-                "let s = Set([]);\nprintln(try { s.add(1.5); \"no\" } catch e { \"caught: ${e}\" });\nlet m = {};\nprintln(try { m[1.5] = 1; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+                "fn opaque(v: Any) -> Any { return v; }\nlet s = Set([]);\nprintln(try { s.add(opaque(1.5)); \"no\" } catch e { \"caught: ${e}\" });\nlet m = {};\nprintln(try { m[opaque(1.5)] = 1; \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
             ),
             new(
                 "assert_is_lowercase",

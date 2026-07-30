@@ -593,6 +593,34 @@ impl TypeChecker {
                 // Source-level calls parse to `CallExpr`; `Call` is only built
                 // by internal desugars.
                 if let Expr::Var(name) = func_expr.as_ref() {
+                    // `m[k] = v` arrives here as `__lk_set_index(m, k, v)`: the
+                    // parser desugars it and, until now, only the bytecode
+                    // compiler knew the name — so the *key* of an index
+                    // assignment was the one place the key rule was never asked
+                    // about, and `m[1.5] = "a"` raised at run time. Only when the
+                    // container is provably a map: a list's index is an ordinary
+                    // `Int` position, and a receiver of unknown type is nobody's
+                    // business to refuse here.
+                    if name == "__lk_set_index"
+                        && let [container, key, _] = args.as_slice()
+                    {
+                        let container_ty = self.check_expr(container)?;
+                        if matches!(self.resolve_aliases(&container_ty), Type::Map(_, _)) {
+                            let key_ty = self.check_expr(key)?;
+                            let key_ty = self.resolve_aliases(&key_ty);
+                            if crate::typ::type_checker::type_is_certainly_not_a_key(&key_ty) {
+                                return Err(Self::type_err(
+                                    &format!(
+                                        "{} cannot be a map key — only nil, Bool, Int and String can",
+                                        key_ty.display()
+                                    ),
+                                    None,
+                                    Some(key_ty),
+                                    Some(key.as_ref().clone()),
+                                ));
+                            }
+                        }
+                    }
                     if let Some(result) = self.check_volatile_builtin(name, args)? {
                         return Ok(result);
                     }
@@ -1697,6 +1725,21 @@ impl TypeChecker {
         for (k, v) in pairs {
             let kt = self.check_expr(k)?;
             let vt = self.check_expr(v)?;
+            // Same rule as a set member, because a set *is* a key set. Each key
+            // is checked on its own: a literal names its key one by one, so
+            // `{1.5: "a"}` is settled here rather than at run time.
+            let resolved_key = self.resolve_aliases(&kt);
+            if crate::typ::type_checker::type_is_certainly_not_a_key(&resolved_key) {
+                return Err(Self::type_err(
+                    &format!(
+                        "{} cannot be a map key — only nil, Bool, Int and String can",
+                        resolved_key.display()
+                    ),
+                    None,
+                    Some(resolved_key),
+                    Some(k.as_ref().clone()),
+                ));
+            }
             match kt {
                 Type::Union(ts) => key_tys.extend(ts),
                 other => key_tys.push(other),

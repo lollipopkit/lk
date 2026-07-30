@@ -120,9 +120,48 @@ impl TypeChecker {
                         return Ok(Type::Set(Box::new(Type::Any)));
                     };
                     let arg_ty = self.check_expr(arg)?;
+                    // A tuple's elements are known one by one, so *any* of them
+                    // being unusable settles it; a `List<T>` only has `T` to go
+                    // on. That is why `[1, 1.0]` is caught here even though its
+                    // union type (`Int | Float`) is deliberately let through
+                    // everywhere else — a union may be the Int at run time, a
+                    // tuple element cannot be anything but what it is.
+                    let offender = match self.resolve_aliases(&arg_ty) {
+                        Type::List(elem) => {
+                            let elem = self.resolve_aliases(&elem);
+                            crate::typ::type_checker::type_is_certainly_not_a_key(&elem).then_some(elem)
+                        }
+                        Type::Tuple(elems) => elems
+                            .into_iter()
+                            .map(|elem| self.resolve_aliases(&elem))
+                            .find(crate::typ::type_checker::type_is_certainly_not_a_key),
+                        _ => None,
+                    };
+                    if let Some(member) = offender {
+                        return Err(Self::type_err(
+                            &format!(
+                                "{} cannot be a set member — a set is a map's key set, and only nil, Bool, Int and \
+                                 String can be a key",
+                                member.display()
+                            ),
+                            None,
+                            Some(member),
+                            Some(arg.as_ref().clone()),
+                        ));
+                    }
                     return match self.resolve_aliases(&arg_ty) {
                         Type::List(elem) => Ok(Type::Set(elem)),
                         Type::Set(elem) => Ok(Type::Set(elem)),
+                        // A tuple *is* a list — `HeapValue` has no tuple, and both
+                        // `is_assignable_to` and the unifier say so in as many
+                        // words. Only this hand-written match forgot, so
+                        // `Set([1, "a"])` was refused while `[1, "a"].len()`,
+                        // `.contains()`, `.map()` and the rest all worked and the
+                        // runtime built the set happily. A list is spelled
+                        // `Tuple<…>` exactly when its elements differ, so the
+                        // element type is their union — the same `union_of` that
+                        // collapses pattern alternatives and closure returns.
+                        Type::Tuple(elems) => Ok(Type::Set(Box::new(crate::typ::type_checker::union_of(elems)))),
                         Type::Any | Type::Variable(_) => Ok(Type::Set(Box::new(Type::Any))),
                         other => Err(Self::type_err(
                             "Set(value) expects List or Set",
@@ -486,6 +525,26 @@ impl TypeChecker {
                 callback_result = Some(self.resolve_aliases(return_type));
             }
             self.check_argument(param_type, &arg_type, index, arg)?;
+            // A set's member is a map's key, so the key rule applies to the one
+            // value these three take. The ordinary argument check cannot see it:
+            // on a `Set<Any>` the declared parameter is `Elem` = `Any`, which
+            // accepts anything — so `Set().add(1.5)` passed and raised at run
+            // time. See `type_is_certainly_not_a_key`.
+            if matches!(resolved_receiver, Type::Set(_)) && matches!(method, "add" | "contains" | "delete") {
+                let resolved_arg = self.resolve_aliases(&arg_type);
+                if crate::typ::type_checker::type_is_certainly_not_a_key(&resolved_arg) {
+                    return Err(Self::type_err(
+                        &format!(
+                            "{} cannot be a set member — a set is a map's key set, and only nil, Bool, Int and \
+                             String can be a key",
+                            resolved_arg.display()
+                        ),
+                        None,
+                        Some(resolved_arg),
+                        Some(arg.as_ref().clone()),
+                    ));
+                }
+            }
         }
         // `map`'s element type is the callback's return type, instantiated
         // here rather than declared in the table — the table cannot name it,

@@ -1003,6 +1003,29 @@ fn edit_distance(left: &str, right: &str) -> usize {
     previous[right.len()]
 }
 
+/// Whether a value of this type could ever be a map key or a set member.
+///
+/// The rule is `RuntimeMapKey::from_value`'s, and it is one rule for both
+/// questions because a set *is* a map's key set: nil, Bool, Int and String, and
+/// nothing else. Float is out because `0.0 == -0.0` while their bits differ and
+/// NaN is not equal to itself; containers are out because a key that can be
+/// mutated is a record you can no longer find. See `docs/semantics.md`.
+///
+/// The runtime enforced it and the checker did not, so `Set([1.5])` and
+/// `{1.5: "a"}` type-checked and raised at run time — with the key type sitting
+/// right there in the literal.
+///
+/// Answers `false` only when the type is *certainly* unusable. `Any`, a type
+/// variable and any union pass: a `Int | Float` value may well be the Int at run
+/// time, and refusing a working program is worse than letting the runtime have
+/// the last word on one that is not.
+pub(crate) fn type_is_certainly_not_a_key(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Float | Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_)
+    )
+}
+
 /// Collapses distributed alternatives: identical types stay themselves, `Any`
 /// anywhere swallows the rest (nothing is known), otherwise a union.
 ///

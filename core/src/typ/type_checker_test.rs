@@ -538,6 +538,68 @@ mod tests {
         // A block is a scope: the inner binding is not visible afterwards.
         assert!(check_program("let f = || { let inner = 1; return inner; };\nlet n: Int = f();").is_ok());
     }
+    /// A key that can never be a key is refused where it is written.
+    ///
+    /// Only nil, Bool, Int and String can be a map key or a set member — Float
+    /// because `0.0 == -0.0` while their bits differ and NaN is not equal to
+    /// itself, containers because a key you can mutate is a record you can no
+    /// longer find (`docs/semantics.md`). The runtime enforced it from one
+    /// place; the checker enforced it from none, so `Set([1.5])` and
+    /// `{1.5: "a"}` type-checked and raised at run time with the offending type
+    /// sitting in the literal.
+    ///
+    /// Four sites ask, because there are four ways to write a key: `Set(xs)`,
+    /// a map literal, `s.add(v)`, and `m[k] = v` — the last of which the checker
+    /// could not even see, since the parser turns it into `__lk_set_index` and
+    /// only the bytecode compiler knew that name.
+    #[test]
+    fn a_type_that_can_never_be_a_key_is_refused_at_check_time() {
+        for source in [
+            "let s = Set([1.5]);",
+            "let s = Set([[1]]);",
+            // A tuple names its elements one by one, so one bad element settles it.
+            "let s = Set([1, 1.0]);",
+            r#"let m = {1.5: "a"};"#,
+            r#"let m = {1: "a", 2.5: "b"};"#,
+            "let s = Set();\ns.add(1.5);",
+            "let s = Set();\ns.contains([1]);",
+            r#"let m = {"k": 1};
+               m[1.5] = 2;"#,
+        ] {
+            let error = check_program(source).expect_err(source);
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("cannot be a map key") || message.contains("cannot be a set member"),
+                "{source} → {message}"
+            );
+        }
+    }
+
+    /// …and nothing else is refused.
+    ///
+    /// The rule answers "certainly not a key", not "not obviously a key": a
+    /// union may be the Int at run time, a list index is an ordinary position,
+    /// and a receiver of unknown type is nobody's business to refuse. Rejecting
+    /// a working program is the failure mode that matters here.
+    #[test]
+    fn the_key_rule_refuses_nothing_that_might_work() {
+        for source in [
+            "let s = Set([1, 2]);",
+            r#"let s = Set([nil, true, "x"]);"#,
+            r#"let m = {"k": 1};"#,
+            "let m = {1: 2, true: 3};",
+            // A list index is a position, not a key.
+            "let xs = [1, 2];\nxs[0] = 9;",
+            "let i = 0;\nlet xs = [1];\nxs[i] = 5;",
+            // Values are unrestricted — only keys are.
+            r#"let m = {"k": 1.5};"#,
+            r#"let m = {"k": [1, 2]};"#,
+            "let s = Set([1]);\nlet v = s.values();",
+        ] {
+            assert!(check_program(source).is_ok(), "{source}");
+        }
+    }
+
     /// An argument's type error says *where*, like every other type error.
     ///
     /// `TypeError::span` is filled by the enclosing statement on the way out, and a
