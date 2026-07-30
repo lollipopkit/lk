@@ -224,6 +224,12 @@ fn member_text(key: &RtKey) -> String {
 /// `handle` must be a live `Set` handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkset_display(handle: *mut c_void) -> *mut c_char {
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(set_text(handle)).unwrap_or_default())
+}
+
+/// `Set([1,2,3])` as text, sorted by member — also what the boxed-value
+/// renderer calls, so a set inside a list renders through this one function.
+pub(crate) fn set_text(handle: *mut c_void) -> String {
     let empty = LkSet::default();
     // SAFETY: caller passes a live `LkSet` handle.
     let set: &LkSet = if handle.is_null() {
@@ -241,7 +247,7 @@ pub unsafe extern "C" fn lkrt_lkset_display(handle: *mut c_void) -> *mut c_char 
         out.push_str(&member_text(key));
     }
     out.push_str("])");
-    crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
+    out
 }
 
 /// `a == b` → 0/1: same size and every member of `a` present in `b`.

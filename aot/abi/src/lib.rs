@@ -533,6 +533,13 @@ macro_rules! for_each_abi_fn {
             ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
             ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
+            // `Set`/`Bytes` in the boxed universe: without these two tags they
+            // could not enter a mixed container, a struct field, or a bridged
+            // return at all.
+            ("dyn", "from_set", lkrt_dyn_from_set, Pure, [Ptr], DynVal);
+            ("dyn", "as_set", lkrt_dyn_as_set, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "from_bytes", lkrt_dyn_from_bytes, Pure, [Ptr], DynVal);
+            ("dyn", "as_bytes", lkrt_dyn_as_bytes, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);

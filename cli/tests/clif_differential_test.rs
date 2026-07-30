@@ -1418,6 +1418,47 @@ fn try_catch_differential() {
     );
 }
 
+/// `Set` and `Bytes` as boxed values, pinned to pure Cranelift.
+///
+/// Neither had a `LkDyn` tag, so neither could be *boxed* — and boxing is how a
+/// value enters a mixed container, a struct field, or a returned position. So
+/// `[s]` and `{"k": b}` had no lowering, for a reason that had nothing to do
+/// with sets or byte buffers: the dynamic carrier did not cover every value the
+/// language has. `DYN_SET` and `DYN_BYTES` close that, and each tags the handle
+/// in place — no rebuild, so identity and any mutation ride along.
+#[test]
+fn sets_and_bytes_are_boxable() {
+    run_differential(
+        "dyn_set_bytes",
+        &[
+            new(
+                "set_in_containers",
+                "let s = Set([2, 1]);\nprintln([s]);\nprintln({\"k\": s});\nprintln([s, s]);\nreturn 0;\n",
+            ),
+            new(
+                "bytes_in_containers",
+                "use bytes;\nlet b = bytes.from_string(\"hi\");\nprintln([b]);\nprintln({\"k\": b});\nreturn 0;\n",
+            ),
+            // Boxing tags in place, so a mutation after the box is visible
+            // through it — the same handle, not a copy.
+            new(
+                "boxing_keeps_identity",
+                "let s = Set([1]);\nlet holder = [s];\ns.add(2);\nprintln(holder);\nprintln(s);\nreturn 0;\n",
+            ),
+            new(
+                "returned_and_compared",
+                "fn id(a) { return a; }\nlet s = Set([1, 2]);\nprintln(id(s));\nprintln(id(s) == Set([2, 1]));\nuse bytes;\nlet b = bytes.from_string(\"ab\");\nprintln(id(b));\nprintln(id(b) == bytes.from_string(\"ab\"));\nreturn 0;\n",
+            ),
+            // Mixed with other element types, and nested one level down.
+            new(
+                "mixed_and_nested",
+                "use bytes;\nlet s = Set([1]);\nlet b = bytes.from_string(\"x\");\nprintln([1, s, \"t\", b]);\nprintln({\"a\": [s], \"b\": b});\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `Set` display and `==`, pinned to pure Cranelift.
 ///
 /// A set displays sorted, because its hash iteration order is not something to

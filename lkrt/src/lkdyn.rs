@@ -47,6 +47,53 @@ pub const DYN_MAP: i64 = 6;
 /// `Vec<LkDyn>`.
 pub const DYN_RAW: i64 = 7;
 
+/// A `Set` handle, boxed.
+///
+/// `Set` and `Bytes` had no tag, so they could not be *boxed* at all — and
+/// boxing is how a value enters a mixed container, a struct field, a bridged
+/// return, or anything else that holds `LkDyn`. `[s]` and `{"k": s}` therefore
+/// had no lowering, for a reason that had nothing to do with sets: the dynamic
+/// carrier simply did not cover every value the language has.
+pub const DYN_SET: i64 = 8;
+/// A `Bytes` handle, boxed. See [`DYN_SET`].
+pub const DYN_BYTES: i64 = 9;
+
+/// Boxes a `Set` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_set(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_SET,
+        payload: handle as i64,
+    }
+}
+
+/// Unboxes a `Set` handle; any other tag is the VM's loud type error.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_set(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_SET {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
+/// Boxes a `Bytes` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_bytes(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_BYTES,
+        payload: handle as i64,
+    }
+}
+
+/// Unboxes a `Bytes` handle; any other tag is the VM's loud type error.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_bytes(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_BYTES {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for
 /// Bool, the integer itself for I64, `f64::to_bits` for F64, a `*const
 /// c_char` for Str, a list handle (`*mut c_void`) for List — both pointers
@@ -262,6 +309,8 @@ pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
         DYN_STR => crate::panic::raise_str("cannot cast String to an integer"),
         DYN_LIST => crate::panic::raise_str("cannot cast List to an integer"),
         DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
+        DYN_SET => crate::panic::raise_str("cannot cast Set to an integer"),
+        DYN_BYTES => crate::panic::raise_str("cannot cast Bytes to an integer"),
         _ => crate::panic::raise_str("cannot cast Nil to an integer"),
     }
 }
@@ -595,6 +644,14 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             // but key-lookup equality is).
             xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)))
         }
+        // Both compare by *content*, the same rule their unboxed spellings
+        // follow (`set.eq` is order-free; `bytes.eq` is byte-wise).
+        // SAFETY: a `DYN_SET`/`DYN_BYTES` payload is a live handle of that
+        // kind — the tag is only ever set by `from_set`/`from_bytes`.
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_eq(a.payload as *mut c_void, b.payload as *mut c_void) != 0 },
+        DYN_BYTES => unsafe {
+            crate::lkbytes::lkrt_lkbytes_eq(a.payload as *mut c_void, b.payload as *mut c_void) != 0
+        },
         _ => false,
     }
 }
@@ -699,6 +756,10 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
             }
             out.push('}');
         }
+        // Rendered through the same function the unboxed spelling calls, so a
+        // set in a list and a set on its own cannot drift apart.
+        DYN_SET => out.push_str(&crate::lkset::set_text(v.payload as *mut c_void)),
+        DYN_BYTES => out.push_str(&crate::lkbytes::bytes_text(v.payload as *mut c_void)),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");
@@ -742,6 +803,9 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
             }
         }
         DYN_STR => unsafe { dyn_str(v) }.chars().count() as i64,
+        // SAFETY: as in `dyn_eq_inner`, the tag guarantees the handle kind.
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_len(v.payload as *mut c_void) },
+        DYN_BYTES => unsafe { crate::lkbytes::lkrt_lkbytes_len(v.payload as *mut c_void) },
         _ => crate::panic::raise_str("runtime type error"),
     }
 }

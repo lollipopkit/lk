@@ -106,6 +106,8 @@ pub(crate) fn dyn_boxable_ty(ty: Ty) -> bool {
             | Ty::MapStrI64
             | Ty::MapStrF64
             | Ty::MapStrBool
+            | Ty::Set
+            | Ty::Bytes
             | Ty::MaybeI64
             | Ty::MaybeF64
             | Ty::MaybeStr
@@ -219,6 +221,10 @@ pub(crate) fn to_dyn(
         Ty::Nil => "from_nil",
         Ty::ListDyn => "from_list",
         Ty::MapStrDyn => "from_map",
+        // Both box by tagging the handle in place — no rebuild, so identity and
+        // any mutation ride along.
+        Ty::Set => "from_set",
+        Ty::Bytes => "from_bytes",
         // Typed string maps box via a value-boxing conversion (cold path:
         // a typed map crossing a `try$call` cell boundary).
         Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {

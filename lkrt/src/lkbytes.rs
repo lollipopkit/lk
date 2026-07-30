@@ -148,6 +148,13 @@ pub unsafe extern "C" fn lkrt_lkbytes_utf8_lossy(handle: *mut c_void) -> *mut c_
 /// `handle` must be a live `Bytes` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkbytes_to_str(handle: *mut c_void) -> *mut c_char {
+    out(bytes_text(handle))
+}
+
+/// `Bytes([104,105])` as text — the same rendering [`lkrt_lkbytes_to_str`]
+/// returns, reachable from the boxed-value renderer without going through a
+/// C string and back.
+pub(crate) fn bytes_text(handle: *mut c_void) -> String {
     let bytes = bytes_ref(handle);
     let mut text = String::with_capacity(bytes.len() * 4 + 9);
     text.push_str("Bytes([");
@@ -158,7 +165,7 @@ pub unsafe extern "C" fn lkrt_lkbytes_to_str(handle: *mut c_void) -> *mut c_char
         text.push_str(&alloc::format!("{byte}"));
     }
     text.push_str("])");
-    out(text)
+    text
 }
 
 /// `bytes.slice(b, start[, end])` — a window, copied out as its own `Bytes`.

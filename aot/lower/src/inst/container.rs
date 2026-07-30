@@ -78,6 +78,8 @@ pub(super) fn lower(
                             | Ty::MapStrI64
                             | Ty::MapStrF64
                             | Ty::MapStrBool
+                            | Ty::Set
+                            | Ty::Bytes
                     )
                 })
             {
