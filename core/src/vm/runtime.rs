@@ -48,6 +48,22 @@ pub struct RuntimeModuleState {
     /// recursion cap (see `Executor::max_call_depth`) cannot be reset by
     /// routing recursion through a native boundary.
     pub(crate) call_depth: usize,
+    /// Set on the placeholder that [`super::exec::take_runtime_callable_state`]
+    /// leaves in the mutex while the real state is out on a call.
+    ///
+    /// A module's state is *moved out* of its `Arc<Mutex<…>>` for the duration
+    /// of a call and put back on return, so nothing can enter that module again
+    /// in the meantime — and a method calling another method on `self`, or
+    /// module A calling B which calls back into A, does exactly that. What the
+    /// re-entering call found was `Default::default()`, which is
+    /// indistinguishable from a real state that happens to be empty, so the
+    /// failure surfaced far away as "module expected 83 globals, got 0" — a
+    /// sentence about globals for programs that mention none.
+    ///
+    /// This flag makes "in use" a thing the shell says about itself. It is never
+    /// true of a state a program is running against: `take` clears it on the
+    /// value it hands out and sets it only on what it leaves behind.
+    pub(crate) borrowed_for_call: bool,
 }
 
 impl RuntimeModuleState {
@@ -63,6 +79,7 @@ impl RuntimeModuleState {
             pending_raise_root: None,
             host_roots: Vec::new(),
             call_depth: 0,
+            borrowed_for_call: false,
         }
     }
 

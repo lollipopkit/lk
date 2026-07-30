@@ -664,6 +664,43 @@ mod tests {
         Ok(())
     }
 
+    /// Module A's method may call into B and have B call back into A.
+    ///
+    /// The step past `an_imported_method_may_call_another_method_on_self`: there
+    /// the re-entered module *was* the one executing, so the call could simply
+    /// use the live state. Here it is not — B is — and A's state is out on the
+    /// stack, so neither borrowing it nor reusing the current one is right.
+    ///
+    /// Borrowing was never the only way to run a foreign body, though.
+    /// `call_foreign_module_method` keeps the current heap and swaps in a global
+    /// table shaped like the declaring module's, so it needs A's *module*, not
+    /// A's state. Before that, the re-entering call got the empty placeholder
+    /// and the failure surfaced as "module expected 84 globals, got 0".
+    #[test]
+    fn a_module_may_be_re_entered_through_another_module() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("b.lk"), "fn helper(x) { return x.base() + 100; }\n")?;
+        std::fs::write(
+            temp.path().join("a.lk"),
+            "use { helper } from \"./b.lk\";\n\
+             struct A { v: Int }\n\
+             impl A {\n\
+                 fn base(self) -> Int { return self.v; }\n\
+                 fn viab(self) -> Int { return helper(self); }\n\
+             }\n\
+             fn make(n: Int) -> A { return A { v: n }; }\n",
+        )?;
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(temp.path().to_path_buf());
+        let value = execute_import_source(
+            "use { make } from \"./a.lk\";\nreturn make(5).viab();\n",
+            Arc::new(resolver),
+        )?;
+
+        assert_eq!(value, RuntimeVal::Int(105));
+        Ok(())
+    }
+
     /// `..` is allowed as a way to reach a sibling directory of the same package,
     /// not as a way out of it. The boundary is the package root (nearest
     /// `Lk.toml`), or the importing file's directory when there is no manifest.

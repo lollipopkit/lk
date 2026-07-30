@@ -29,7 +29,8 @@ pub(crate) fn call_runtime_callable_test(
     args: &[RuntimeVal],
     ctx: &mut crate::vm::VmContext,
 ) -> Result<Vec<RuntimeVal>> {
-    let state = take_runtime_callable_state(function)?;
+    let state = take_runtime_callable_state(function)
+        .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let arg_count = checked_arg_count(args.len())?;
     let register_count = function
         .module
@@ -72,7 +73,8 @@ pub fn call_runtime_callable_runtime_named_stack(
     caller_heap: &mut HeapStore,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
-    let state = take_runtime_callable_state(function)?;
+    let state = take_runtime_callable_state(function)
+        .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let function_meta = function
         .module
         .functions
@@ -261,6 +263,21 @@ pub fn call_trait_method(
                     Some(executing),
                     ctx,
                 );
+            }
+            // Same problem one step further out: module A's method calls into B,
+            // and B calls back into A. A is not the module executing here (B
+            // is), so the branch above does not fire — but A's state is out on
+            // the stack, so borrowing it is impossible too.
+            //
+            // Borrowing is not the only way to run a foreign body, though.
+            // `call_foreign_module_method` exists for exactly this shape: it
+            // keeps the *current* heap and swaps in a global table of the
+            // declaring module's shape, so it needs the module, not the module's
+            // state. Taking that route makes A→B→A work, and a body that writes
+            // a global — the one thing the borrowed path could do and this one
+            // cannot — is refused there by name instead of corrupted.
+            if runtime_callable_module_is_executing(callable.as_ref()) {
+                return call_foreign_module_method(&callable.module, callable.function_index, name, pos, state, ctx);
             }
             call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, ctx)
         }
@@ -689,7 +706,8 @@ fn call_runtime_callable_runtime_positional(
     caller_heap: &mut HeapStore,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
-    let state = take_runtime_callable_state(function)?;
+    let state = take_runtime_callable_state(function)
+        .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let function_meta = function
         .module
         .functions
@@ -738,7 +756,8 @@ fn call_runtime_callable_runtime_named_map_positional(
     caller_heap: &mut HeapStore,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
-    let state = take_runtime_callable_state(function)?;
+    let state = take_runtime_callable_state(function)
+        .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let function_meta = function
         .module
         .functions
@@ -796,12 +815,50 @@ fn commit_runtime_callable_state(function: &RuntimeCallable, next_state: Runtime
     Ok(())
 }
 
-fn take_runtime_callable_state(function: &RuntimeCallable) -> Result<RuntimeModuleState> {
-    let mut state = function
+/// Move a module's state out of its shared cell for the duration of one call.
+///
+/// `Err` when the state is already out — i.e. this call re-enters a module that
+/// is live further up the stack. The caller has to decide what that means; what
+/// it must not do is run against the placeholder, which is an empty state that
+/// looks perfectly valid and produces "module expected N globals, got 0" several
+/// frames later.
+fn take_runtime_callable_state(function: &RuntimeCallable) -> Result<RuntimeModuleState, ReentrantModule> {
+    let mut cell = function.state.lock().map_err(|_| ReentrantModule::PoisonedLock)?;
+    if cell.borrowed_for_call {
+        return Err(ReentrantModule::AlreadyExecuting);
+    }
+    let taken = core::mem::take(&mut *cell);
+    cell.borrowed_for_call = true;
+    Ok(taken)
+}
+
+/// Whether a call into this callable's module is already in progress.
+fn runtime_callable_module_is_executing(function: &RuntimeCallable) -> bool {
+    function
         .state
         .lock()
-        .map_err(|_| anyhow!("RuntimeCallable state lock poisoned"))?;
-    Ok(core::mem::take(&mut *state))
+        .map(|cell| cell.borrowed_for_call)
+        .unwrap_or(false)
+}
+
+/// Why a module's state could not be taken.
+enum ReentrantModule {
+    /// A call into this module is already in progress further up the stack.
+    AlreadyExecuting,
+    PoisonedLock,
+}
+
+impl ReentrantModule {
+    fn into_error(self, module: &Module, function_index: u32) -> anyhow::Error {
+        match self {
+            Self::PoisonedLock => anyhow!("RuntimeCallable state lock poisoned"),
+            Self::AlreadyExecuting => anyhow!(
+                "function {function_index} of a module with {} globals was re-entered while that module was already \
+                 executing further up the call stack, and its state cannot be lent to two frames at once",
+                module.globals.len()
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
