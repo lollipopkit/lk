@@ -708,8 +708,23 @@ pub(super) fn collect_native_names(natives: &[NativeEntry]) -> Result<HashMap<St
     Ok(names)
 }
 
+/// Narrow a register number to the 8 bits an instruction has for it.
+///
+/// This is the one place 301 call sites funnel through, and all a program could
+/// ever see from it was `Compiler dst register 256 exceeds u8 encoding` — an
+/// encoding detail, with nothing about the limit being *per function* or what to
+/// do about it. A body with 300 `let`s is a real thing to write; being told the
+/// operand width is not an answer to it. (Lua, with the same design, says "too
+/// many local variables".)
 pub(super) fn checked_u8(name: &str, value: u16) -> Result<u8> {
-    u8::try_from(value).map_err(|_| anyhow!("Compiler {name} register {} exceeds u8 encoding", value))
+    u8::try_from(value).map_err(|_| {
+        anyhow!(
+            "this function needs more than {} registers (it reached {value} for a {name}): \
+             every instruction names its registers in 8 bits, and a function's locals and \
+             temporaries share that one set — split the body into smaller functions",
+            u8::MAX as u16 + 1,
+        )
+    })
 }
 
 #[inline]
