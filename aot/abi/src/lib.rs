@@ -186,6 +186,11 @@ macro_rules! for_each_abi_fn {
             ("rt", "raise_dyn", lkrt_rt_raise_dyn, WritesHost, [DynVal], Nil);
             ("rt", "raise_msg", lkrt_rt_raise_msg, WritesHost, [StrPtr], Nil);
             ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
+            // The raw-handle family: a typed container parked as-is, because
+            // boxing one is an element-wise copy. Tag-checked at both ends.
+            ("rt", "cell_new_raw", lkrt_rt_cell_new_raw, WritesHost, [I64], Ptr);
+            ("rt", "cell_get_raw", lkrt_rt_cell_get_raw, ReadsHost, [Ptr], I64);
+            ("rt", "cell_set_raw", lkrt_rt_cell_set_raw, WritesHost, [Ptr, I64], Nil);
             ("rt", "cell_get", lkrt_rt_cell_get, ReadsHost, [Ptr], DynVal);
             ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
             // Early release of an arena container proven dead (scope drop).

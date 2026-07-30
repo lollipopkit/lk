@@ -34,6 +34,18 @@ pub const DYN_F64: i64 = 3;
 pub const DYN_STR: i64 = 4;
 pub const DYN_LIST: i64 = 5;
 pub const DYN_MAP: i64 = 6;
+/// A **raw handle** parked in a cell — not a value, and never produced by
+/// boxing.
+///
+/// A `try` region carries a register the body assigns back out through a cell,
+/// and a cell holds an `LkDyn`. That works by *boxing*, which for a typed
+/// container is an element-wise conversion: the round trip would hand back a
+/// copy and lose the body's writes. So a typed handle is parked as-is under this
+/// tag instead, and the two cell families (`cell_get` / `cell_get_raw`) check
+/// the tag rather than trusting the caller — reading a raw handle as a value, or
+/// the reverse, is a *loud* failure and not a `Vec<i64>` walked as
+/// `Vec<LkDyn>`.
+pub const DYN_RAW: i64 = 7;
 
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for
 /// Bool, the integer itself for I64, `f64::to_bits` for F64, a `*const

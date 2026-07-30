@@ -22,6 +22,34 @@ enum CellReadBack {
     Unbox(&'static str, &'static str),
 }
 
+/// Whether a register of this type crosses a region as a **raw handle** rather
+/// than a boxed value.
+///
+/// A typed container cannot be boxed and read back: its boxing is an
+/// element-wise conversion, so the round trip is a copy and the body's writes to
+/// the original are lost. It is parked as-is instead, under `DYN_RAW`, and both
+/// ends check the tag — crossing the two families is a loud failure rather than
+/// a `Vec<i64>` walked as `Vec<LkDyn>`.
+///
+/// One function, read by the caller (which seeds and reads back) and by the body
+/// (which writes on each assignment), so the two cannot disagree about a cell.
+pub(crate) fn cell_is_raw(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::MapStrI64
+            | Ty::MapI64I64
+            | Ty::MapStrF64
+            | Ty::MapI64F64
+            | Ty::MapStrBool
+            | Ty::Set
+            | Ty::Bytes
+            | Ty::SliceI64
+    )
+}
+
 fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
     Some(match ty {
         // Already a boxed value: what the cell holds *is* the register's
@@ -484,7 +512,7 @@ pub(crate) fn lower_function(
     // Regions whose body may `return` from this function: the ok edge gets a
     // check block, and a `return` block behind it. Collected here and emitted
     // after the block loop, where this function's own return type is known.
-    let mut try_return_checks: Vec<(usize, ValueId, ValueId)> = Vec::new();
+    let mut try_return_checks: Vec<(usize, ValueId, ValueId, bool)> = Vec::new();
     let mut ret_val: Vec<Option<ValueId>> = vec![None; total_blocks];
     let mut cond_val: Vec<Option<ValueId>> = vec![None; total_blocks];
 
@@ -582,6 +610,14 @@ pub(crate) fn lower_function(
                 // happen in the next call, and the VM shows whatever was
                 // assigned before it. Storing only on the way out would lose
                 // exactly the writes a handler is most likely to look at.
+                if cell_is_raw(ty) {
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "cell_set_raw"),
+                        args: vec![*handle, value],
+                    });
+                    continue;
+                }
                 let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, value, ty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
@@ -707,7 +743,12 @@ pub(crate) fn lower_function(
                     ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
                 }
             }
-            Some(Exit::TryRegion { body, catch_reg, .. }) => {
+            Some(Exit::TryRegion {
+                body,
+                catch_reg,
+                handler: region_handler,
+                fallthrough: region_fallthrough,
+            }) => {
                 // Run the body under a handler, and bind what it raised.
                 //
                 // The caught value is written unconditionally, on both edges.
@@ -744,6 +785,19 @@ pub(crate) fn lower_function(
                 let mut cell_values: Vec<(u8, ValueId, Ty)> = Vec::with_capacity(cell_regs.len());
                 for &reg in &cell_regs {
                     let (v, ty) = ssa.read(reg, bi, start)?;
+                    // A typed container is parked as a raw handle: no boxing, so
+                    // the same handle comes back and the body's writes stand.
+                    if cell_is_raw(ty) {
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("rt", "cell_new_raw"),
+                            args: vec![v],
+                        });
+                        call_args.push(handle);
+                        cell_values.push((reg, handle, ty));
+                        continue;
+                    }
                     // A value crosses back only if it can be taken out of a
                     // cell again. Boxing is universal; unboxing is per type,
                     // and a type with no unboxer is a rejection rather than a
@@ -794,7 +848,13 @@ pub(crate) fn lower_function(
                     None => None,
                 };
                 if let Some((flag, value)) = return_channel {
-                    try_return_checks.push((bi, flag, value));
+                    // A body every path of which returns has no jump over the
+                    // handler, so the region's "fallthrough" *is* the handler —
+                    // there is no ok edge to fall to, and the check's else
+                    // branch is unreachable. It goes to the return block too,
+                    // rather than into the handler on a path that did not raise.
+                    let always_returns = region_handler == region_fallthrough;
+                    try_return_checks.push((bi, flag, value, always_returns));
                 }
                 let ok = ssa.new_val();
                 insts.push(Inst::TryRegionCall {
@@ -806,6 +866,16 @@ pub(crate) fn lower_function(
                 // what the body managed to write — including a body that
                 // raised half way through, which is what the VM shows.
                 for (reg, handle, ty) in cell_values {
+                    if cell_is_raw(ty) {
+                        let raw = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(raw),
+                            callee: AbiRef::new("rt", "cell_get_raw"),
+                            args: vec![handle],
+                        });
+                        ssa.write(reg, bi, (raw, ty));
+                        continue;
+                    }
                     let got = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(got),
@@ -1293,7 +1363,7 @@ pub(crate) fn lower_function(
         // arguments. Rewriting the edge rather than re-keying the phis is what
         // keeps this local — the target's operands are still recorded against
         // this block, and this is where they are read from.
-        if let Some(index) = try_return_checks.iter().position(|(rb, _, _)| *rb == bi)
+        if let Some(index) = try_return_checks.iter().position(|(rb, _, _, _)| *rb == bi)
             && let Term::CondBr {
                 then_blk, then_args, ..
             } = &mut term
@@ -1335,7 +1405,7 @@ pub(crate) fn lower_function(
     // block has been lowered, and the parked value has to come back out of its
     // cell as that type.
     let ret = ret_ty.unwrap_or(Ty::Nil);
-    for (index, (_, flag, value)) in try_return_checks.iter().enumerate() {
+    for (index, (_, flag, value, always_returns)) in try_return_checks.iter().enumerate() {
         let (_, fallthrough_args, fallthrough) = forwarded_args
             .iter()
             .find(|(i, _, _)| *i == index)
@@ -1375,8 +1445,12 @@ pub(crate) fn lower_function(
                 cond: returned,
                 then_blk: BlockId(ret_block_ids[index]),
                 then_args: Vec::new(),
-                else_blk: fallthrough,
-                else_args: fallthrough_args,
+                else_blk: if *always_returns {
+                    BlockId(ret_block_ids[index])
+                } else {
+                    fallthrough
+                },
+                else_args: if *always_returns { Vec::new() } else { fallthrough_args },
             },
         });
 

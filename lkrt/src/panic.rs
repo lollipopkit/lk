@@ -290,6 +290,46 @@ pub unsafe extern "C" fn lkrt_rt_cell_get(cell: *mut c_void) -> LkDyn {
     unsafe { *(cell as *mut LkDyn) }
 }
 
+/// Allocates a cell parking a **raw handle** — a typed container, which cannot
+/// survive being boxed (see [`crate::lkdyn::DYN_RAW`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_rt_cell_new_raw(handle: i64) -> *mut c_void {
+    crate::state::arena_handle(LkDyn {
+        tag: crate::lkdyn::DYN_RAW,
+        payload: handle,
+    })
+}
+
+/// Reads a raw-handle cell. Raises if the cell holds a boxed value instead —
+/// the two families must not be crossed, and this is where that is caught.
+///
+/// # Safety
+/// `cell` must be a live handle from [`lkrt_rt_cell_new_raw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_cell_get_raw(cell: *mut c_void) -> i64 {
+    // SAFETY: `cell` addresses an `LkDyn` from one of the cell constructors.
+    let value = unsafe { *(cell as *mut LkDyn) };
+    if value.tag != crate::lkdyn::DYN_RAW {
+        crate::panic::raise_str("runtime error");
+    }
+    value.payload
+}
+
+/// Writes a raw-handle cell.
+///
+/// # Safety
+/// `cell` must be a live handle from [`lkrt_rt_cell_new_raw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_cell_set_raw(cell: *mut c_void, handle: i64) {
+    // SAFETY: as above.
+    unsafe {
+        *(cell as *mut LkDyn) = LkDyn {
+            tag: crate::lkdyn::DYN_RAW,
+            payload: handle,
+        }
+    };
+}
+
 /// Writes a cell.
 ///
 /// # Safety

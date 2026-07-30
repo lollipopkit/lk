@@ -60,13 +60,19 @@
 //! `docs/aot/aot-gaps-and-lkrt.md` §17 (that one is done, and a `return` inside
 //! a `try` body lowers now); it is a cell round-trip for container handles.
 //!
-//! Half of that arrived straight after (2026-07-30): a container that is
-//! *already boxed* round-trips by pointer, so `List<Any>` and `Map<String, Any>`
-//! cross a region now. A **typed** one still cannot, and not for want of a table
-//! entry — its boxing is an element-wise conversion, so the round trip would
-//! hand back a copy and lose the body's writes. Typed handles need an
-//! identity-preserving cell (a raw slot rather than a boxed one). That is the
-//! remaining prerequisite, and it is a real piece of work rather than a line.
+//! That prerequisite is now met (2026-07-30): a boxed container round-trips by
+//! pointer, and a *typed* one parks as a raw handle under its own tag, so every
+//! container crosses a region.
+//!
+//! The wrap was then tried a second time, and reverted again — this time for the
+//! *return* plumbing rather than the cells. A function whose returns are all
+//! inside the wrapped body has no `Exit::Ret` of its own, so its return type
+//! goes missing; carrying the parked type out to the caller fixes that shape and
+//! breaks the mixed one (a real return *and* a parked one), and the fall-off
+//! path then returns void against a typed signature. Each of those is
+//! answerable; together they are a piece of work of their own, and a
+//! half-finished version of it is how a function silently returns the wrong
+//! thing. The measurements are in `docs/aot/aot-gaps-and-lkrt.md` §17.
 //!
 //! **It may only appear at the top level of a function body.** Not inside an
 //! `if`, a loop, or a nested block. That is what makes the rewrite sound: at the

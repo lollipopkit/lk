@@ -1439,6 +1439,28 @@ fn a_dyn_container_crosses_a_try_region() {
                 "dyn_map_reassigned",
                 "let m = {\"a\": 1, \"b\": \"x\"};\ntry { m = {\"a\": 2, \"b\": \"y\"}; } catch e { }\nprintln(m);\nreturn 0;\n",
             ),
+            // The typed containers, which need the *raw* cell: their boxing is
+            // an element-wise copy, so a boxed round trip would hand back a
+            // different handle.
+            new(
+                "typed_list_reassigned",
+                "let xs = [1];\ntry { xs = [2, 3]; } catch e { }\nprintln(xs);\nreturn 0;\n",
+            ),
+            // One region per case: a *second* region in the same function as a
+            // container one still falls back, which predates the raw cell (a
+            // dyn container had it too). Recorded rather than folded in here.
+            new(
+                "typed_map_reassigned",
+                "let m = {\"k\": 1};\ntry { m = {\"k\": 2}; } catch e { }\nprintln(m[\"k\"] ?? 0);\nreturn 0;\n",
+            ),
+            new(
+                "set_reassigned",
+                "let s = Set([1, 2]);\ntry { s = Set([3]); } catch e { }\nprintln(s.len());\nreturn 0;\n",
+            ),
+            new(
+                "bytes_reassigned",
+                "use bytes;\nlet b = bytes.from_string(\"a\");\ntry { b = bytes.from_string(\"bc\"); } catch e { }\nprintln(bytes.len(b));\nreturn 0;\n",
+            ),
             // The body raises before assigning: the cell still holds the value
             // the caller seeded it with, which is what the VM shows.
             new(
