@@ -246,13 +246,6 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         }
     }
 
-    if body_returns && !has_fallthrough {
-        return Err(Unsupported::TryRegion {
-            pc: begin_pc,
-            reason: "every path through the body returns, so the region has no ok edge",
-        });
-    }
-
     // Jumps must stay inside the body: a `break` out of a loop that encloses
     // the `try` leaves the region, and an outlined body has nowhere to leave
     // to.

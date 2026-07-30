@@ -1451,6 +1451,23 @@ fn a_try_body_may_return_from_its_function() {
                 "return_or_raise",
                 "fn f(n: Int) -> Int {\n  let v = try { if (n > 0) { return 10; } error(\"neg\"); 0 } catch e { -1 };\n  return v;\n}\nprintln(f(1));\nprintln(f(-1));\nreturn 0;\n",
             ),
+            // A body where *every* path returns. It has no ok edge in the
+            // bytecode (the compiler emits no jump over the handler), which I
+            // first read as needing its own protocol — it does not: the ok edge
+            // simply always takes the return branch.
+            new(
+                "every_path_returns",
+                "fn f(n: Int) -> Int {\n  try { return n * 2; } catch e { return -1; }\n}\nprintln(f(3));\nreturn 0;\n",
+            ),
+            new(
+                "every_path_returns_or_raises",
+                "fn f(n: Int) -> Int {\n  try { if (n < 0) { error(\"neg\"); } return n; } catch e { return -1; }\n}\nprintln(f(3));\nprintln(f(-1));\nreturn 0;\n",
+            ),
+            // A handler that falls through while the body returns.
+            new(
+                "body_returns_handler_falls_through",
+                "fn f(n: Int) -> Int {\n  try { return n; } catch e { }\n  return 0;\n}\nprintln(f(7));\nreturn 0;\n",
+            ),
             // Two returns and a fallthrough in one body.
             new(
                 "two_returns_and_a_fallthrough",
