@@ -713,6 +713,45 @@ impl **后面**也算数:先扫全程序收集,再填。
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
 
+## 一个名字一个意思:方法只声明一次(2026-07-30 裁决)
+
+三种撞名以前都是**静默取最后一个**:
+
+```lk
+impl Show for P { fn show(self) -> String { return "a"; } }
+impl Show for P { fn show(self) -> String { return "b"; } }   // 静默赢
+
+impl P { fn get(self) -> Int { return 1; } }
+impl P { fn get(self) -> Int { return 2; } }                  // 静默赢
+```
+
+字段那一种更糟 —— 拿到哪个取决于**实参个数**:
+
+```lk
+struct P { get: Int }
+impl P { fn get(self) -> Int { return 9; } }
+P { get: 1 }.get()      // 以前:1(字段),方法永不可达
+
+struct Q { f: (Int) -> Int }
+impl Q { fn f(self) -> Int { return 9; } }
+q.f(3)                  // 以前:走方法,报 "Method expects 0 arguments",字段闭包永不可达
+```
+
+`p.get(…)` 说不出它指哪个,所以在**声明处**拒绝。两个同名顶层 `fn` 早就是报错的,
+这是同一条规矩。两个**不同 trait** 各声明一个同名方法也拒绝:LK 没有
+`Trait::method(x)` 那种消歧写法,`p.run()` 会没有答案。
+
+判据是**程序级的一遍**,不是有序遍历累积出来的 —— 理由和 `collect_function_names`
+一样:问的是声明的**集合**,而检查器的注册表对重复注册的 `impl` 是**替换**的
+(REPL 的上下文跨次复用),所以它分不出"这里声明了两次"和"又见到一次"。
+
+## trait 必需方法在 `lk check` 就该报(2026-07-30 补)
+
+`TypeRegistry::validate_trait_impl` 一直存在,但只在 **VM 注册 impl 时**跑 ——
+也就是运行时。于是 `lk check`(预检命令)放过一个跑不起来的程序,一句话不说。
+现在检查器的 `Impl` 分支自己查:trait 声明的每个方法都得在。trait 默认实现在这之前
+已经由 `stmt::trait_defaults` 拷进去了,所以"在不在"就是全部问题。
+
 ## 顶层 `let` 不能占用声明已经绑走的名字(2026-07-30 裁决)
 
 ```lk

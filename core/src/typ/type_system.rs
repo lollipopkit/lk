@@ -86,6 +86,11 @@ impl TypeRegistry {
     }
 
     /// Register a trait definition
+    /// A declared trait, by name.
+    pub fn get_trait(&self, name: &str) -> Option<&TraitDef> {
+        self.traits.get(name)
+    }
+
     pub fn register_trait(&mut self, trait_def: TraitDef) {
         self.traits.insert(trait_def.name.clone(), trait_def);
     }

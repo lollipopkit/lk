@@ -360,6 +360,72 @@ mod tests {
         assert!(check_program("fn apply(g: (Int, Int) -> Int, v: Int) -> Int { return g(v, v); }\nlet n = apply(|x| { return x + 1; }, 5);").is_err());
     }
 
+    /// One name, one meaning: an `impl` may not redefine a method, nor take a
+    /// field's name.
+    ///
+    /// Both were resolved by taking the last declaration, silently. The field
+    /// case was worse than that: which one `p.get(…)` meant depended on the
+    /// *argument count* — `p.get()` read the field (the method unreachable),
+    /// while `p.f(3)` called the method (the field's closure unreachable).
+    #[test]
+    fn a_method_name_is_declared_once() {
+        // The same method twice for one type, whether through one trait…
+        assert!(
+            check_program(
+                "trait Show { fn show(self) -> String; }\nstruct P { x: Int }\nimpl Show for P { fn show(self) -> String { return \"a\"; } }\nimpl Show for P { fn show(self) -> String { return \"b\"; } }"
+            )
+            .is_err()
+        );
+        // …two different traits (there is no `Trait::method(x)` to disambiguate
+        // with, so `p.run()` would have no answer)…
+        assert!(
+            check_program(
+                "trait A { fn run(self) -> Int; }\ntrait B { fn run(self) -> Int; }\nstruct P { x: Int }\nimpl A for P { fn run(self) -> Int { return 1; } }\nimpl B for P { fn run(self) -> Int { return 2; } }"
+            )
+            .is_err()
+        );
+        // …or two inherent blocks.
+        assert!(
+            check_program("struct P { x: Int }\nimpl P { fn get(self) -> Int { return 1; } }\nimpl P { fn get(self) -> Int { return 2; } }")
+                .is_err()
+        );
+        // A method named like a field, in both arities.
+        assert!(check_program("struct P { get: Int }\nimpl P { fn get(self) -> Int { return 9; } }").is_err());
+        assert!(
+            check_program("struct P { f: (Int) -> Int }\nimpl P { fn f(self) -> Int { return 9; } }").is_err()
+        );
+
+        // Distinct names on one type, and one name on distinct types, are fine.
+        assert!(
+            check_program("struct P { x: Int }\nimpl P { fn get(self) -> Int { return 1; } fn set(self) -> Int { return 2; } }")
+                .is_ok()
+        );
+        assert!(
+            check_program("struct P { x: Int }\nstruct Q { x: Int }\nimpl P { fn get(self) -> Int { return 1; } }\nimpl Q { fn get(self) -> Int { return 2; } }")
+                .is_ok()
+        );
+    }
+
+    /// A trait's required methods are checked where `lk check` can see them.
+    ///
+    /// The check existed and only ran when the *VM* registered impls, so the
+    /// pre-flight command passed a program that could not run.
+    #[test]
+    fn a_missing_trait_method_is_a_check_error() {
+        let error = check_program(
+            "trait Show { fn show(self) -> String; fn tag(self) -> Int; }\nstruct P { x: Int }\nimpl Show for P { fn show(self) -> String { return \"a\"; } }",
+        )
+        .expect_err("`tag` is missing");
+        assert!(format!("{error:#}").contains("required by trait"), "{error:#}");
+
+        // A trait *default* is copied into the impl before this runs, so
+        // omitting a defaulted method is not an omission.
+        assert!(
+            check_program("trait Greet { fn hi(self) -> String { return \"hi\"; } }\nstruct P { x: Int }\nimpl Greet for P {}")
+                .is_ok()
+        );
+    }
+
     /// An arm an earlier catch-all shadows can never run.
     ///
     /// You wrote a case you believe happens, and it does not — silently, with

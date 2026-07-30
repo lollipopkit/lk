@@ -110,7 +110,7 @@ impl Stmt {
                 Ok(())
             }
             Stmt::Impl {
-                trait_name: _,
+                trait_name,
                 target_type,
                 methods,
             } => {
@@ -139,6 +139,28 @@ impl Stmt {
                          distinguishable from another element type at run time — write `{bare}`",
                         resolved_target.display()
                     ));
+                }
+                // Every method the trait declares has to be here. The check
+                // existed (`TypeRegistry::validate_trait_impl`) and only ran at
+                // *run* time, when the VM registers impls — so `lk check`, the
+                // pre-flight command, passed a program that could not run and
+                // said nothing. Trait defaults are already copied in by
+                // `stmt::trait_defaults`, so "present" is the whole question.
+                if let Some(trait_name) = trait_name
+                    && let Some(trait_def) = type_checker.registry().get_trait(trait_name)
+                {
+                    let declared: Vec<String> = trait_def.methods.keys().cloned().collect();
+                    for required in declared {
+                        let present = methods.iter().any(|method| {
+                            matches!(item_of(method), Stmt::Function { name, .. } if *name == required)
+                        });
+                        if !present {
+                            return Err(anyhow!(format!(
+                                "Method '{required}' required by trait '{trait_name}' not implemented for type '{}'",
+                                target_type.display()
+                            )));
+                        }
+                    }
                 }
                 let prev = type_checker.set_impl_self_type(Some(type_checker.resolve_aliases(target_type)));
                 let result: Result<()> = methods.iter().try_for_each(|method| method.type_check(type_checker));
@@ -1110,8 +1132,72 @@ impl Program {
         }
     }
 
+    /// Every `impl` method name, checked for the two collisions the language
+    /// resolved silently by taking the last one.
+    ///
+    /// A program-level pass rather than something the ordered walk accumulates,
+    /// for the reason `collect_function_names` is one: the question is about the
+    /// *set* of declarations, and the checker's registry deliberately **replaces**
+    /// a re-registered `impl` (a REPL context is reused across runs), so it
+    /// cannot tell "declared twice here" from "seen again".
+    ///
+    /// Two mistakes, one namespace:
+    ///  - the same method defined twice for one type — two `impl Show for P`
+    ///    blocks each with a `show`, or two `impl P` blocks each with a `get`.
+    ///    Two top-level `fn`s of one name were already refused.
+    ///  - a method named like a *field*. `p.get(…)` cannot say which it means,
+    ///    and which one it got depended on the argument count: `p.get()` read
+    ///    the field (the method unreachable), while `p.f(3)` called the method
+    ///    (the field's closure unreachable).
+    fn check_method_name_collisions(&self) -> Result<()> {
+        use crate::compat::collections::{HashMap, HashSet};
+
+        let mut fields_of: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for stmt in &self.statements {
+            if let Stmt::Struct { name, fields } = item_of(stmt) {
+                fields_of.insert(
+                    name.as_str(),
+                    fields.iter().map(|(field, _)| field.as_str()).collect(),
+                );
+            }
+        }
+
+        let mut seen: HashSet<(String, &str)> = HashSet::new();
+        for stmt in &self.statements {
+            let Stmt::Impl {
+                target_type, methods, ..
+            } = item_of(stmt)
+            else {
+                continue;
+            };
+            let target = target_type.display();
+            for method in methods {
+                let Stmt::Function { name, .. } = item_of(method) else {
+                    continue;
+                };
+                if !seen.insert((target.clone(), name.as_str())) {
+                    return Err(anyhow!(format!(
+                        "`{name}` is defined twice for `{target}`: two definitions of one method, \
+                         where only the last one could ever run — remove one"
+                    )));
+                }
+                if fields_of
+                    .get(target.as_str())
+                    .is_some_and(|fields| fields.contains(name.as_str()))
+                {
+                    return Err(anyhow!(format!(
+                        "`{target}` already has a field named `{name}`, so `.{name}(…)` cannot say which \
+                         one it means — rename the method or the field"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        self.check_method_name_collisions()?;
         self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
@@ -1145,6 +1231,11 @@ impl Program {
     /// with it, nor the types recorded for them (see
     /// `TypeChecker::observe_bindings`).
     pub fn type_check_collecting(&self, type_checker: &mut TypeChecker) -> Vec<anyhow::Error> {
+        // Collected like any other, so the LSP reports it and keeps going.
+        let mut collision = Vec::new();
+        if let Err(err) = self.check_method_name_collisions() {
+            collision.push(err);
+        }
         self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
@@ -1153,7 +1244,7 @@ impl Program {
         let previous_defer = type_checker.begin_deferred_strict_function_checks();
 
         let depth = type_checker.scope_depth();
-        let mut errors = Vec::new();
+        let mut errors = collision;
         for stmt in &self.statements {
             if let Err(err) = stmt.type_check(type_checker) {
                 errors.push(err);
