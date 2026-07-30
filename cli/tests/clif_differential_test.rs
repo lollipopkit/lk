@@ -1418,6 +1418,38 @@ fn try_catch_differential() {
     );
 }
 
+/// A container reassigned inside a `try` body, pinned to pure Cranelift.
+///
+/// A register the body assigns crosses back through an output cell, and a
+/// container had no way out of one — so `try { xs = […]; } catch e { }` dropped
+/// the program to the VM. An *already boxed* container round-trips by pointer
+/// (`dyn.from_list` only tags the handle), which is what makes this sound; a
+/// typed one still refuses, because its boxing is an element-wise copy and the
+/// round trip would hand back a different list.
+#[test]
+fn a_dyn_container_crosses_a_try_region() {
+    run_differential(
+        "try_container_cell",
+        &[
+            new(
+                "dyn_list_reassigned",
+                "let xs = [1, \"a\"];\ntry { xs = [2, \"b\"]; } catch e { }\nprintln(xs);\nreturn 0;\n",
+            ),
+            new(
+                "dyn_map_reassigned",
+                "let m = {\"a\": 1, \"b\": \"x\"};\ntry { m = {\"a\": 2, \"b\": \"y\"}; } catch e { }\nprintln(m);\nreturn 0;\n",
+            ),
+            // The body raises before assigning: the cell still holds the value
+            // the caller seeded it with, which is what the VM shows.
+            new(
+                "raised_before_assigning",
+                "let xs = [1, \"a\"];\ntry { error(\"boom\"); xs = [2, \"b\"]; } catch e { }\nprintln(xs);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A `try` body that `return`s from the enclosing function, pinned to pure
 /// Cranelift.
 ///

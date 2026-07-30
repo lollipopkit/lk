@@ -59,7 +59,14 @@
 //! kernel, which is compiled. The prerequisite is therefore not
 //! `docs/aot/aot-gaps-and-lkrt.md` §17 (that one is done, and a `return` inside
 //! a `try` body lowers now); it is a cell round-trip for container handles.
-//! With that, the wrap costs nothing and this becomes a choice.
+//!
+//! Half of that arrived straight after (2026-07-30): a container that is
+//! *already boxed* round-trips by pointer, so `List<Any>` and `Map<String, Any>`
+//! cross a region now. A **typed** one still cannot, and not for want of a table
+//! entry — its boxing is an element-wise conversion, so the round trip would
+//! hand back a copy and lose the body's writes. Typed handles need an
+//! identity-preserving cell (a raw slot rather than a boxed one). That is the
+//! remaining prerequisite, and it is a real piece of work rather than a line.
 //!
 //! **It may only appear at the top level of a function body.** Not inside an
 //! `if`, a loop, or a nested block. That is what makes the rewrite sound: at the

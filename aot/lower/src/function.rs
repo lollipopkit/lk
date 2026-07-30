@@ -41,10 +41,22 @@ fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
         Ty::Bool => CellReadBack::Unbox("dyn", "as_bool"),
         Ty::F64 => CellReadBack::Unbox("dyn", "as_f64"),
         Ty::Str => CellReadBack::Unbox("dyn", "as_str"),
-        // Containers come back as an untyped handle (`dyn.as_list` /
-        // `dyn.as_map` answer `Ptr`), and which *typed* handle that is depends
-        // on the register. Getting it wrong is a container read as the wrong
-        // element type, so they wait until there is a test that pins each one.
+        // A container that is *already* boxed round-trips by pointer:
+        // `dyn.from_list` / `dyn.from_map` only tag the handle, and
+        // `dyn.as_list` / `dyn.as_map` check the tag and hand the same pointer
+        // back — so the register keeps its identity and the mutations it
+        // travelled to carry.
+        //
+        // A **typed** container cannot join them, and the reason is not caution:
+        // its boxing (`dyn_box`) is an element-wise *conversion*
+        // (`list_h::i64_to_dyn` builds a second list), so a round trip would
+        // hand back a copy — a different handle, with the body's writes to the
+        // original lost. Tagging the typed handle as `DYN_LIST` instead is worse
+        // than wrong: a `Vec<i64>` read as a `Vec<LkDyn>` is a memory-safety
+        // bug. Giving them a round trip means an identity-preserving cell (a raw
+        // handle slot, not a boxed one), not another entry in this table.
+        Ty::ListDyn => CellReadBack::Unbox("dyn", "as_list"),
+        Ty::MapStrDyn => CellReadBack::Unbox("dyn", "as_map"),
         _ => return None,
     })
 }
