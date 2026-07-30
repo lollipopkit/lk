@@ -21,7 +21,8 @@ use lk_core::{
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
         compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-        execute_program_with_ctx_and_limits, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+        execute_program_with_ctx_and_limits, vm_runtime_metrics_enabled, vm_runtime_metrics_reset,
+        vm_runtime_metrics_snapshot,
     },
 };
 
@@ -283,15 +284,30 @@ fn maybe_print_vm_profile(enabled: bool) {
     if !enabled {
         return;
     }
-    let metrics = vm_runtime_metrics_snapshot();
-    eprintln!("{}", vm_profile_line(metrics));
+    eprintln!("{}", vm_profile_report());
+}
+
+/// What `LK_VM_PROFILE=1` prints — including when it can't profile.
+///
+/// The recording sites are `#[cfg]`-gated: without `--features vm-profile` they
+/// compile to nothing, so every counter reads 0. This asked the environment
+/// variable and nothing else, so a default build answered `LK_VM_PROFILE=1` with
+/// a full, well-formed profile in which every single number was fiction —
+/// `opcode_steps=0` for a program that had just run four thousand of them.
+/// `lk coverage --runtime` was already checking `vm_runtime_metrics_enabled()`;
+/// one rule, two carriers, one of them following it.
+fn vm_profile_report() -> String {
+    if !vm_runtime_metrics_enabled() {
+        return "VM profile: unavailable — this binary has no profiling counters compiled in. \
+                Rebuild with `cargo build -p lk-cli --features vm-profile`."
+            .to_string();
+    }
+    vm_profile_line(vm_runtime_metrics_snapshot())
 }
 
 fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
-    let heap_clones = metrics.copy_policy_heap_clones;
-    let val_clones = heap_clones;
     format!(
-        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
+        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} register_writes={}",
         metrics.opcode_steps,
         top_opcode_profile(&metrics),
         top_register_write_source_profile(&metrics),
@@ -303,16 +319,7 @@ fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
         metrics.list_ops,
         metrics.map_ops,
         metrics.string_ops,
-        val_clones,
-        heap_clones,
-        metrics.copy_policy_heap_clones,
-        metrics.register_copy_heap_clones,
-        metrics.local_copy_heap_clones,
-        metrics.local_load_heap_clones,
-        metrics.local_store_heap_clones,
-        metrics.const_load_heap_clones,
-        metrics.call_arg_heap_clones,
-        metrics.container_copy_heap_clones
+        metrics.register_writes,
     )
 }
 

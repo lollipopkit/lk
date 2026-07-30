@@ -52,6 +52,74 @@ fn vm_rewrite_guard_blocks_old_vm_compatibility_paths() {
     );
 }
 
+/// A whole module may not be exempted from dead-code analysis.
+///
+/// `vm.rs` carried three of these — `analysis`, `analysis_queries`, `type_info`.
+/// Two turned out to suppress nothing at all; the third was hiding eleven
+/// counters that no longer had a caller, including ten that `lk coverage
+/// --runtime` printed as data. A module-level allow is indiscriminate by
+/// construction: it cannot distinguish "used only under `--features vm-profile`"
+/// from "used by nobody, ever", so it silently absorbs the second forever.
+///
+/// The shape that works is a `#[cfg(...)]` on the item, so the build that
+/// doesn't need it doesn't compile it — then genuinely dead code surfaces on its
+/// own. An item-level `#[allow(dead_code)]` with a reason is still fine; this
+/// guard only rejects the blanket form on a `mod` declaration.
+#[test]
+fn no_module_is_blanket_exempted_from_dead_code() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut violations = Vec::new();
+    for root in [manifest_dir.join("src/vm.rs"), manifest_dir.join("src/vm")] {
+        collect_module_allows(&root, manifest_dir, &mut violations);
+    }
+    assert!(
+        violations.is_empty(),
+        "a module-level allow(dead_code) cannot tell an unused-under-this-cfg item from a dead one — \
+         put a #[cfg(...)] on the items instead:\n{}",
+        violations.join("\n")
+    );
+}
+
+fn collect_module_allows(path: &Path, manifest_dir: &Path, violations: &mut Vec<String>) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.is_dir() {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for entry in paths {
+            collect_module_allows(&entry, manifest_dir, violations);
+        }
+        return;
+    }
+    if path.extension().is_none_or(|ext| ext != "rs") {
+        return;
+    }
+    let Ok(source) = fs::read_to_string(path) else {
+        return;
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("#[allow(dead_code") {
+            continue;
+        }
+        // Only an allow that lands on a `mod` declaration is indiscriminate;
+        // attributes intervening between the two are still the same attachment.
+        let attached = lines[index + 1..]
+            .iter()
+            .find(|next| !next.trim_start().starts_with("#["))
+            .map(|next| next.trim_start())
+            .unwrap_or("");
+        if attached.starts_with("mod ") || attached.starts_with("pub mod ") || attached.starts_with("pub(crate) mod ") {
+            let display = path.strip_prefix(manifest_dir).unwrap_or(path).display();
+            violations.push(format!("{display}:{}: {} on `{attached}`", index + 1, line.trim()));
+        }
+    }
+}
+
 fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<String>) {
     let Ok(metadata) = fs::metadata(path) else {
         return;

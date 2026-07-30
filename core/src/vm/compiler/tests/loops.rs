@@ -14,9 +14,7 @@ fn compiler_for_over_local_string_does_not_clone_iterable_local() {
     )
     .expect("compile source");
 
-    crate::vm::vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
-    let metrics = crate::vm::vm_runtime_metrics_snapshot();
 
     assert!(
         !function.code.iter().any(|instr| instr.opcode() == Opcode::ToIter),
@@ -33,10 +31,6 @@ fn compiler_for_over_local_string_does_not_clone_iterable_local() {
         function.code
     );
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(19)]);
-    assert_eq!(
-        metrics.local_store_heap_clones, 0,
-        "readonly for iterable should use the local string slot directly"
-    );
 }
 
 #[test]

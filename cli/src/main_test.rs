@@ -77,14 +77,7 @@ mod tests {
             string_ops: 8,
             index_key_metrics: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
             register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9],
-            copy_policy_heap_clones: 9,
-            register_copy_heap_clones: 10,
-            local_copy_heap_clones: 12,
-            local_load_heap_clones: 13,
-            local_store_heap_clones: 14,
-            const_load_heap_clones: 15,
-            call_arg_heap_clones: 16,
-            container_copy_heap_clones: 17,
+            register_writes: 45,
             ..VmRuntimeMetrics::default()
         });
 
@@ -100,16 +93,30 @@ mod tests {
         assert!(line.contains(
             "index_keys=known_string_key:12,dynamic_register_key:11,dynamic_int_key:10,dynamic_short_string_key:9,dynamic_object_key:8,dynamic_other_key:7"
         ));
-        assert!(line.contains("val_clones=9"));
-        assert!(line.contains("heap_clones=9"));
-        assert!(line.contains("copy_policy_heap_clones=9"));
-        assert!(line.contains("register_copy_heap_clones=10"));
-        assert!(line.contains("local_copy_heap_clones=12"));
-        assert!(line.contains("local_load_heap_clones=13"));
-        assert!(line.contains("local_store_heap_clones=14"));
-        assert!(line.contains("const_load_heap_clones=15"));
-        assert!(line.contains("call_arg_heap_clones=16"));
-        assert!(line.contains("container_copy_heap_clones=17"));
+        // The ten `*_heap_clones` fields this used to pin are gone. They were
+        // written only by `record_copy_policy_clone`, which had no caller — and
+        // because this test builds the struct by hand, it happily printed 9/10/12
+        // while every real run printed ten zeros in a row. A formatter test cannot
+        // tell you a counter is dead; only a caller scan can.
+        assert!(line.contains("register_writes=45"));
+    }
+
+    #[test]
+    fn the_profile_report_says_so_when_it_cannot_profile() {
+        // `LK_VM_PROFILE=1` used to be answered by a well-formed profile of zeros
+        // on a binary with no counters compiled in — `opcode_steps=0` right after
+        // running four thousand of them. The report has to agree with the build it
+        // is part of, so this test is a `cfg` pair rather than a value check: the
+        // one that can measure must print numbers, the one that can't must say it
+        // can't.
+        let report = vm_profile_report();
+        if vm_runtime_metrics_enabled() {
+            assert!(report.starts_with("VM profile: "), "{report}");
+            assert!(!report.contains("unavailable"), "{report}");
+        } else {
+            assert!(report.contains("unavailable"), "{report}");
+            assert!(report.contains("--features vm-profile"), "{report}");
+        }
     }
 
     #[test]

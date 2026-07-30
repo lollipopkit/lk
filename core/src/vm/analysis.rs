@@ -577,18 +577,25 @@ impl PerformanceFacts {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The counters the VM keeps when metrics are compiled in.
+///
+/// Ten fields were removed here, all of them structurally zero: the copy-policy
+/// clone family (`copy_policy_heap_clones` and its seven per-site siblings) plus
+/// `return_value_moves`. Every one of them was written only inside
+/// `record_copy_policy_clone` / `record_return_value_move`, and **neither had a
+/// caller anywhere** — while `lk coverage --runtime` and the one-line profile
+/// printed all ten. The one-line form was worse than that: it read
+/// `let heap_clones = metrics.copy_policy_heap_clones; let val_clones =
+/// heap_clones;`, so one always-zero value was printed under three names.
+///
+/// They are not missing recording sites — they are retired. `RuntimeVal` became
+/// `Copy`, so a register move copies the value and there is no clone to count;
+/// `execute_records_move_heap_clone_as_register_copy_metric` says exactly that
+/// in its own body while its name still claims otherwise. A counter that
+/// outlives what it measured reports a fact about the program that is not true.
 pub struct VmRuntimeMetrics {
     pub opcode_steps: u64,
-    pub copy_policy_heap_clones: u64,
-    pub register_copy_heap_clones: u64,
-    pub local_copy_heap_clones: u64,
-    pub local_load_heap_clones: u64,
-    pub local_store_heap_clones: u64,
-    pub const_load_heap_clones: u64,
-    pub call_arg_heap_clones: u64,
-    pub container_copy_heap_clones: u64,
     pub register_writes: u64,
-    pub return_value_moves: u64,
     pub branch_ops: u64,
     pub typed_branch_ops: u64,
     pub call_ops: u64,
@@ -688,6 +695,9 @@ pub(crate) enum VmRegisterWriteSource {
     // in a *named* bucket.
 }
 
+// Only the profiling frame indexes a source into its array, and that frame is a
+// unit struct with no-op methods unless metrics are compiled in.
+#[cfg(any(test, feature = "vm-profile"))]
 impl VmRegisterWriteSource {
     #[inline]
     pub(crate) const fn index(self) -> usize {
@@ -709,16 +719,7 @@ impl Default for VmRuntimeMetrics {
     fn default() -> Self {
         Self {
             opcode_steps: 0,
-            copy_policy_heap_clones: 0,
-            register_copy_heap_clones: 0,
-            local_copy_heap_clones: 0,
-            local_load_heap_clones: 0,
-            local_store_heap_clones: 0,
-            const_load_heap_clones: 0,
-            call_arg_heap_clones: 0,
-            container_copy_heap_clones: 0,
             register_writes: 0,
-            return_value_moves: 0,
             branch_ops: 0,
             typed_branch_ops: 0,
             call_ops: 0,
@@ -756,32 +757,12 @@ pub(crate) enum VmContainerMetric {
     String,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum VmValueCopyMetric {
-    Generic,
-    Register,
-    LocalLoad,
-    LocalStore,
-    ConstLoad,
-    CallArg,
-    Container,
-}
-
 // ==================== test mode ====================
 #[cfg(test)]
 impl VmRuntimeMetrics {
     const ZERO: Self = Self {
         opcode_steps: 0,
-        copy_policy_heap_clones: 0,
-        register_copy_heap_clones: 0,
-        local_copy_heap_clones: 0,
-        local_load_heap_clones: 0,
-        local_store_heap_clones: 0,
-        const_load_heap_clones: 0,
-        call_arg_heap_clones: 0,
-        container_copy_heap_clones: 0,
         register_writes: 0,
-        return_value_moves: 0,
         branch_ops: 0,
         typed_branch_ops: 0,
         call_ops: 0,
@@ -869,50 +850,6 @@ pub(crate) fn record_index_key_metrics_batch(sources: &[u64; VM_INDEX_KEY_METRIC
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_copy_policy_clone(kind: VmValueCopyMetric, heap_backed: bool) {
-    if !heap_backed {
-        return;
-    }
-    update_thread_runtime_metrics(|metrics| {
-        metrics.copy_policy_heap_clones += 1;
-        match kind {
-            VmValueCopyMetric::Generic => {}
-            VmValueCopyMetric::Register => metrics.register_copy_heap_clones += 1,
-            VmValueCopyMetric::LocalLoad => {
-                metrics.local_copy_heap_clones += 1;
-                metrics.local_load_heap_clones += 1;
-            }
-            VmValueCopyMetric::LocalStore => {
-                metrics.local_copy_heap_clones += 1;
-                metrics.local_store_heap_clones += 1;
-            }
-            VmValueCopyMetric::ConstLoad => metrics.const_load_heap_clones += 1,
-            VmValueCopyMetric::CallArg => metrics.call_arg_heap_clones += 1,
-            VmValueCopyMetric::Container => metrics.container_copy_heap_clones += 1,
-        }
-    });
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_register_write_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.register_writes += 1);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_register_write() {
-    update_thread_runtime_metrics(|metrics| metrics.register_writes += 1);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_return_value_move() {
-    update_thread_runtime_metrics(|metrics| metrics.return_value_moves += 1);
-}
-
-#[cfg(test)]
-#[inline]
 pub(crate) fn record_branch_op_known_enabled(typed: bool) {
     update_thread_runtime_metrics(|metrics| {
         metrics.branch_ops += 1;
@@ -964,25 +901,16 @@ pub fn vm_runtime_metrics_reset() {
 
 // ==================== vm-profile mode (atomic counters) ====================
 #[cfg(all(not(test), feature = "vm-profile"))]
-static COPY_POLICY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static REGISTER_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static LOCAL_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static LOCAL_LOAD_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static LOCAL_STORE_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static CONST_LOAD_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static CALL_ARG_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static CONTAINER_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
 static REGISTER_WRITES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
-static RETURN_VALUE_MOVES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
 static OPCODE_STEPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(not(test), feature = "vm-profile"))]
@@ -1034,14 +962,6 @@ pub fn vm_runtime_metrics_enabled() -> bool {
 
 #[cfg(all(not(test), feature = "vm-profile"))]
 #[inline(always)]
-fn increment(counter: &AtomicU64) {
-    if runtime_metrics_enabled() {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-#[cfg(all(not(test), feature = "vm-profile"))]
-#[inline(always)]
 pub(crate) fn record_opcode_step_known_enabled() {
     OPCODE_STEPS.fetch_add(1, Ordering::Relaxed);
 }
@@ -1078,59 +998,9 @@ pub(crate) fn record_index_key_metrics_batch(sources: &[u64; VM_INDEX_KEY_METRIC
     }
 }
 
-#[cfg(all(not(test), feature = "vm-profile"))]
-#[inline]
-pub(crate) fn record_copy_policy_clone(kind: VmValueCopyMetric, heap_backed: bool) {
-    if !heap_backed || !runtime_metrics_enabled() {
-        return;
-    }
-    COPY_POLICY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-    match kind {
-        VmValueCopyMetric::Generic => {}
-        VmValueCopyMetric::Register => {
-            REGISTER_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmValueCopyMetric::LocalLoad => {
-            LOCAL_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-            LOCAL_LOAD_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmValueCopyMetric::LocalStore => {
-            LOCAL_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-            LOCAL_STORE_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmValueCopyMetric::ConstLoad => {
-            CONST_LOAD_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmValueCopyMetric::CallArg => {
-            CALL_ARG_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmValueCopyMetric::Container => {
-            CONTAINER_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
-        }
-    };
-}
-
 /// Known-enabled variant: caller has already checked `collect_metrics`,
 /// so this unconditionally increments the counter without reading the
 /// global metrics gate atomically.
-#[cfg(all(not(test), feature = "vm-profile"))]
-#[inline(always)]
-pub(crate) fn record_register_write_known_enabled() {
-    REGISTER_WRITES.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(all(not(test), feature = "vm-profile"))]
-#[inline]
-pub(crate) fn record_register_write() {
-    increment(&REGISTER_WRITES);
-}
-
-#[cfg(all(not(test), feature = "vm-profile"))]
-#[inline]
-pub(crate) fn record_return_value_move() {
-    increment(&RETURN_VALUE_MOVES);
-}
-
 #[cfg(all(not(test), feature = "vm-profile"))]
 #[inline]
 pub(crate) fn record_branch_op_known_enabled(typed: bool) {
@@ -1199,16 +1069,7 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
 
     VmRuntimeMetrics {
         opcode_steps: OPCODE_STEPS.load(Ordering::Relaxed),
-        copy_policy_heap_clones: COPY_POLICY_HEAP_CLONES.load(Ordering::Relaxed),
-        register_copy_heap_clones: REGISTER_COPY_HEAP_CLONES.load(Ordering::Relaxed),
-        local_copy_heap_clones: LOCAL_COPY_HEAP_CLONES.load(Ordering::Relaxed),
-        local_load_heap_clones: LOCAL_LOAD_HEAP_CLONES.load(Ordering::Relaxed),
-        local_store_heap_clones: LOCAL_STORE_HEAP_CLONES.load(Ordering::Relaxed),
-        const_load_heap_clones: CONST_LOAD_HEAP_CLONES.load(Ordering::Relaxed),
-        call_arg_heap_clones: CALL_ARG_HEAP_CLONES.load(Ordering::Relaxed),
-        container_copy_heap_clones: CONTAINER_COPY_HEAP_CLONES.load(Ordering::Relaxed),
         register_writes: REGISTER_WRITES.load(Ordering::Relaxed),
-        return_value_moves: RETURN_VALUE_MOVES.load(Ordering::Relaxed),
         branch_ops: BRANCH_OPS.load(Ordering::Relaxed),
         typed_branch_ops: TYPED_BRANCH_OPS.load(Ordering::Relaxed),
         call_ops: CALL_OPS.load(Ordering::Relaxed),
@@ -1240,16 +1101,7 @@ pub fn vm_runtime_metrics_reset() {
     for counter in &INDEX_KEY_METRICS {
         counter.store(0, Ordering::Relaxed);
     }
-    COPY_POLICY_HEAP_CLONES.store(0, Ordering::Relaxed);
-    REGISTER_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
-    LOCAL_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
-    LOCAL_LOAD_HEAP_CLONES.store(0, Ordering::Relaxed);
-    LOCAL_STORE_HEAP_CLONES.store(0, Ordering::Relaxed);
-    CONST_LOAD_HEAP_CLONES.store(0, Ordering::Relaxed);
-    CALL_ARG_HEAP_CLONES.store(0, Ordering::Relaxed);
-    CONTAINER_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
     REGISTER_WRITES.store(0, Ordering::Relaxed);
-    RETURN_VALUE_MOVES.store(0, Ordering::Relaxed);
     BRANCH_OPS.store(0, Ordering::Relaxed);
     TYPED_BRANCH_OPS.store(0, Ordering::Relaxed);
     CALL_OPS.store(0, Ordering::Relaxed);
@@ -1270,38 +1122,6 @@ pub fn vm_runtime_metrics_reset() {
 pub fn vm_runtime_metrics_enabled() -> bool {
     false
 }
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_opcode_step_known_enabled() {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_opcode_histogram_batch(_histogram: &[u64; VM_OPCODE_COUNT]) {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_register_write_sources_batch(_sources: &[u64; VM_REGISTER_WRITE_SOURCE_COUNT]) {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_index_key_metrics_batch(_sources: &[u64; VM_INDEX_KEY_METRIC_COUNT]) {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_copy_policy_clone(_kind: VmValueCopyMetric, _heap_backed: bool) {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_register_write_known_enabled() {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_register_write() {}
-
-#[cfg(all(not(test), not(feature = "vm-profile")))]
-#[inline(always)]
-pub(crate) fn record_return_value_move() {}
 
 #[cfg(all(not(test), not(feature = "vm-profile")))]
 #[inline(always)]

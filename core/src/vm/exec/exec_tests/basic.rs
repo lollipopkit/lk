@@ -6,7 +6,6 @@ use crate::vm::{
         PerfContainerBuildFact, PerfIndexFact, PerfIndexTargetKind, PerfKeyFact, PerfRegisterCopyFact, PerfValueKind,
         PerformanceFacts,
     },
-    vm_runtime_metrics_reset,
 };
 #[test]
 fn execute_returns_int_arithmetic_result() {
@@ -189,9 +188,12 @@ fn execute_load_heap_const_list_preserves_typed_string_backing() {
 }
 
 #[test]
-fn execute_records_move_heap_clone_as_register_copy_metric() {
-    // RuntimeVal is Copy, so Move just copies the value without clone/move distinction.
-    // The copy policy metrics are no longer tracked by the Move handler.
+fn move_under_a_register_copy_fact_carries_the_heap_value_through() {
+    // Named for what it checks. The old name — `..._records_move_heap_clone_as_
+    // register_copy_metric` — described a recording that stopped happening when
+    // `RuntimeVal` became `Copy`: a register move copies the value, so there is no
+    // clone to count. The counters it named were removed; what is left worth
+    // asserting is that the copy *fact* doesn't corrupt the value it describes.
     let mut performance = PerformanceFacts::default();
     performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
     let function = Function {
@@ -213,17 +215,18 @@ fn execute_records_move_heap_clone_as_register_copy_metric() {
         ..Function::default()
     };
 
-    vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
 
-    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
-    // Move no longer tracks copy policy metrics since RuntimeVal is Copy.
+    // `kind() == Obj` alone would pass even if Move delivered a different string.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "longer-than-seven"
+    );
 }
 
 #[test]
-fn execute_records_move_heap_clone_as_local_store_metric() {
-    // RuntimeVal is Copy, so Move just copies the value.
-    // The local copy/store metrics are tracked by the local store handler, not Move.
+fn move_under_a_local_copy_fact_carries_the_heap_value_through() {
+    // The local-slot counterpart of the test above; same reason for the rename.
     let mut performance = PerformanceFacts::default();
     performance.mark_local_slot(1);
     performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
@@ -247,11 +250,12 @@ fn execute_records_move_heap_clone_as_local_store_metric() {
         ..Function::default()
     };
 
-    vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
 
-    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
-    // Move no longer tracks copy policy metrics since RuntimeVal is Copy.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "longer-than-seven"
+    );
 }
 
 #[test]

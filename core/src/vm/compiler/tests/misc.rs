@@ -1552,3 +1552,22 @@ fn every_call_lands_in_exactly_one_bucket() {
         "the register-write total is the sum of its sources: {metrics:?}"
     );
 }
+
+#[test]
+fn tmp_dump_global_receiver_method() {
+    let program = crate::syntax::parse_program_source(
+        "xs := [1,2];\nfn h() { return xs.len(); }\nreturn h();",
+        crate::syntax::ParseOptions::default(),
+    )
+    .expect("parse");
+    let module =
+        crate::vm::Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), Vec::<String>::new())
+            .expect("compile");
+    for (index, function) in module.functions.iter().enumerate() {
+        println!("=== function {index} ({} regs) ===", function.register_count);
+        for (pc, instr) in function.code.iter().enumerate() {
+            println!("  {pc:3}  {:?}", instr);
+        }
+    }
+    panic!("dump");
+}
