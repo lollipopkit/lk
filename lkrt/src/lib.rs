@@ -172,6 +172,7 @@ pub use lkmap::{
     lkrt_lkmap_str_f64_to_dyn, lkrt_lkmap_str_f64_values, lkrt_lkmap_str_i64_delete, lkrt_lkmap_str_i64_iter_pairs,
     lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_to_dyn, lkrt_lkmap_str_i64_values,
 };
+pub use lkmap::{lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display, lkrt_lkmap_str_i64_display};
 pub use lkset::{
     lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
     lkrt_lkset_has, lkrt_lkset_len, lkrt_lkset_new,

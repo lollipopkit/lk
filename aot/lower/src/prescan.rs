@@ -634,6 +634,7 @@ pub(crate) fn empty_list_elem_guess(func: &FunctionData, start_pc: usize, dst_re
             | Opcode::SliceFrom
             | Opcode::ToIter
             | Opcode::NewList
+            | Opcode::NewMap
             | Opcode::NewObject => {
                 indexed_regs.insert(instr.a());
                 str_regs.remove(&instr.a());

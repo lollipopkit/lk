@@ -84,8 +84,8 @@ pub(crate) fn lower_inst(
 
         LoadCapture | LoadCellVal | StoreCellVal | SetGlobal | GetGlobal => global::lower(ctx, block, insts, instr, pc),
 
-        NewList | GetIndexStrI | SetIndexStrI | LoadHeapConst | Len | SliceFrom | NewRange | ToIter | NewObject
-        | ListPush | GetList | GetIndex | SetIndex | GetFieldK | SetFieldK | Contains | MapRest => {
+        NewList | NewMap | GetIndexStrI | SetIndexStrI | LoadHeapConst | Len | SliceFrom | NewRange | ToIter
+        | NewObject | ListPush | GetList | GetIndex | SetIndex | GetFieldK | SetFieldK | Contains | MapRest => {
             container::lower(ctx, block, insts, instr, pc)
         }
 

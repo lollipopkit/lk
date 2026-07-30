@@ -1418,6 +1418,83 @@ fn try_catch_differential() {
     );
 }
 
+/// A map literal whose values are computed, and the display of a typed map.
+///
+/// Two holes that met in the middle. `NewMap` — the opcode for a literal whose
+/// values are not all constants, `{"k": a}` — had no lowering at all, so a
+/// program that built a record from anything it had computed fell back whole;
+/// the list spelling `[a, a + 1]` always lowered, which is what kept it
+/// invisible. And displaying a *typed* map was refused on a ruling that
+/// predates `lkrt/src/vm_mirror.rs`: the ruling said the two runtimes do not
+/// share a map's iteration order, and the mirror's entire job is that they do.
+/// The `MapStrDyn` arm had already been let through, so `println({"a": 1})`
+/// cost a program its lowering while `println({"a": 1, "b": "x"})` did not.
+///
+/// Pinned to pure Cranelift: byte-exact display is the acceptance criterion —
+/// key quoting, `,`/`:` separators, and above all the entry order.
+#[test]
+fn a_computed_map_literal_lowers_and_a_typed_map_displays() {
+    run_differential(
+        "map_literal_and_display",
+        &[
+            new(
+                "computed_int_values",
+                "let a = 5;\nlet m = {\"i\": a, \"j\": a + 1};\nprintln(m);\nprintln(m[\"j\"] ?? 0);\nreturn 0;\n",
+            ),
+            new(
+                "computed_from_calls",
+                "fn f(x: Int) -> Int { return x * 2; }\nlet m = {\"a\": f(3), \"b\": f(4)};\nprintln(m);\nreturn 0;\n",
+            ),
+            new(
+                "float_and_bool_values",
+                "let f = 1.5;\nlet b = true;\nprintln({\"f\": f, \"g\": f * 2.0});\nprintln({\"b\": b, \"c\": !b});\nreturn 0;\n",
+            ),
+            new(
+                "heterogeneous_values_box",
+                "let a = 5;\nlet s = \"v\";\nlet f = 1.5;\nprintln({\"i\": a, \"s\": s, \"f\": f, \"n\": nil});\nreturn 0;\n",
+            ),
+            // Int keys build and read back natively; *displaying* one stays
+            // out (the mirror's stage-2 rehash does not match the VM's
+            // single-stage `Mixed` table — see `to_display_str`), so this
+            // reads values rather than printing the map.
+            new(
+                "int_keys",
+                "let a = 5;\nlet m = {1: a, 3: a + 1};\nprintln(m[1] ?? 0);\nprintln(m[3] ?? 0);\nprintln(m.len());\nreturn 0;\n",
+            ),
+            // Enough keys to force several table growths, so the order is a
+            // real check rather than one small map's coincidence.
+            new(
+                "many_keys_keep_the_vm_order",
+                "let m = {};\nlet i = 0;\nwhile i < 40 {\n  m[\"k${i}\"] = i * 3;\n  i = i + 1;\n}\nprintln(m);\nprintln(m.len());\nreturn 0;\n",
+            ),
+            // The constant spelling of the same map, which took the display
+            // refusal too.
+            new(
+                "constant_map_displays",
+                "println({\"a\": 1, \"b\": 2});\nprintln({\"a\": 1.5});\nprintln({\"a\": true});\nprintln({});\nreturn 0;\n",
+            ),
+            // A map inside a template and inside a list. The list case is the
+            // one that printed `{\"a\":1}` where the VM printed `[{\"a\":1}]`:
+            // no arm of `NewList` could box a typed map, so the destination
+            // kept only the argument-pack view and the call read *that*.
+            new(
+                "nested_in_a_template_and_a_list",
+                "let a = 1;\nlet m = {\"a\": a};\nprintln(\"m=${m}\");\nprintln([m]);\nprintln([m, m]);\nreturn 0;\n",
+            ),
+            // A duplicate key keeps the last value, both spellings.
+            new(
+                "duplicate_key_keeps_the_last",
+                "let a = 5;\nprintln({\"d\": a, \"d\": a + 1});\nreturn 0;\n",
+            ),
+            new(
+                "container_values_box",
+                "let a = 5;\nprintln({\"n\": [a, a + 1], \"m\": {\"k\": a}});\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A container reassigned inside a `try` body, pinned to pure Cranelift.
 ///
 /// A register the body assigns crosses back through an output cell, and a

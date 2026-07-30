@@ -337,8 +337,45 @@ pub(crate) fn to_display_str(
         // holds another struct, which is why this cannot be spelled out at the
         // display site (see `docs/aot/aot-gaps-and-lkrt.md`).
         //
-        // A *plain* map stays out of the subset: its order is the underlying
-        // hash iteration order, which the two runtimes do not share.
+        // A statically typed map renders inside lkrt from the carrier's own
+        // iteration order.
+        //
+        // This used to say "a plain map stays out of the subset: its order is
+        // the underlying hash iteration order, which the two runtimes do not
+        // share" — a ruling that predates `lkrt/src/vm_mirror.rs`, whose whole
+        // job is to make them share it, and which
+        // `lit_protocol_matches_vm_iteration_order` checks against `lk-core`
+        // directly. The arm right below already displayed a `MapStrDyn`, so the
+        // ruling had been retired for one map type and left standing for the
+        // rest: `println({"a": 1})` cost a program its lowering while
+        // `println({"a": 1, "b": "x"})` did not.
+        // An *int*-keyed map still stays out, and for a reason that is now
+        // written down rather than assumed: the VM does not run stage 2 for a
+        // non-string key (`typed_map_from_entries` returns `Mixed`, which *is*
+        // the stage-1 table), while `lit_finish_i64_*` rehashes into an
+        // `FxMap<i64, _>` — a different hash (`i64` rather than
+        // `RtKey::Int(i64)`) and a second insertion sequence. `{1: 1.5, 2:
+        // 2.5}` iterates `2,1` in the VM and `1,2` natively. Nothing observes
+        // that today (`.keys()` over an int-keyed map does not lower either),
+        // so it is latent — and displaying one is exactly what would make it
+        // live. See `docs/aot/aot-gaps-and-lkrt.md`.
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let display_fn = match ty {
+                Ty::MapStrI64 => "str_i64_display",
+                Ty::MapStrF64 => "str_f64_display",
+                _ => "str_bool_display",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", display_fn),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         Ty::MapStrDyn => {
             let boxed = ssa.new_val();
             insts.push(Inst::Call {

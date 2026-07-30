@@ -436,6 +436,70 @@ map_to_dyn!(
     "The bool map carrier → boxed-value map."
 );
 
+/// `println(m)` for a statically typed map: `{"a":1,"b":2}` / `{3:4,1:2}`.
+///
+/// Rendered from the carrier's own iteration order, with no rebuild — the
+/// order question is therefore not asked twice. That order is the VM's:
+/// `vm_mirror` replays both stages of `typed_map_from_entries` and
+/// `lit_protocol_matches_vm_iteration_order` compares against `lk-core`
+/// directly, so a hasher or layout drift fails there rather than as a
+/// mismatched line of output.
+///
+/// Keys render like the boxed-map arm in `lkdyn`: a string through Rust's
+/// `{:?}` (the VM's quoting and escaping), an int as its decimal text.
+macro_rules! map_display {
+    ($name:ident, $carrier:ty, $key:expr, $val:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_char {
+            let empty = <$carrier>::default();
+            // SAFETY: caller passes a live handle of the matching carrier.
+            let map: &$carrier = if handle.is_null() {
+                &empty
+            } else {
+                unsafe { &*(handle as *mut $carrier) }
+            };
+            let mut out = String::from("{");
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                #[allow(clippy::redundant_closure_call)]
+                out.push_str(&($key)(k));
+                out.push(':');
+                #[allow(clippy::redundant_closure_call)]
+                out.push_str(&($val)(v));
+            }
+            out.push('}');
+            crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
+        }
+    };
+}
+
+map_display!(
+    lkrt_lkmap_str_i64_display,
+    StrI64Map,
+    |k: &String| format!("{k:?}"),
+    |v: &i64| v.to_string(),
+    "`Map<str, i64>` display."
+);
+map_display!(
+    lkrt_lkmap_str_f64_display,
+    StrF64Map,
+    |k: &String| format!("{k:?}"),
+    |v: &f64| v.to_string(),
+    "`Map<str, f64>` display."
+);
+map_display!(
+    lkrt_lkmap_str_bool_display,
+    StrI64Map,
+    |k: &String| format!("{k:?}"),
+    |v: &i64| if *v != 0 { "true" } else { "false" }.to_string(),
+    "The bool map carrier's display."
+);
+
 /// Creates a fresh, empty `Map<i64, i64>` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_i64_i64_new() -> *mut c_void {

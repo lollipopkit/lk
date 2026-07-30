@@ -68,6 +68,16 @@ pub(super) fn lower(
                             | Ty::ListStr
                             | Ty::ListDyn
                             | Ty::MapStrDyn
+                            // The typed maps box through the same `to_dyn`
+                            // family. Leaving them out did not make `[m]`
+                            // reject — no arm fired, so the destination kept
+                            // only the ArgList view, and the call that read it
+                            // printed `{"a":1}` where the VM printed
+                            // `[{"a":1}]`. A missing element type is a wrong
+                            // answer here, not a fallback.
+                            | Ty::MapStrI64
+                            | Ty::MapStrF64
+                            | Ty::MapStrBool
                     )
                 })
             {
@@ -119,10 +129,101 @@ pub(super) fn lower(
                 ssa.list_len.insert(handle, 0);
                 ssa.list_base_len.insert(handle, 0);
                 ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+            } else {
+                // No arm materialized a handle. Falling through here left the
+                // destination with *only* the ArgList view, and a consumer that
+                // reads that view — a call window, which is the other thing
+                // this opcode spells — saw the elements rather than the list.
+                // `println([m])` printed `{"a":1}`. A list whose elements have
+                // no boxing is a fallback, not a silent unpack.
+                return Err(Unsupported::TypeMismatch { pc });
             }
             // Recorded after the write (which clears the slot) so both views
             // coexist: SSA reads see the handle, method dispatch sees elements.
             ssa.builtin_regs.insert((block, instr.a()), GlobalRef::ArgList(elems));
+        }
+        Opcode::NewMap => {
+            // `a` = dst, `b` = base, `c` = entry count: a register window of
+            // interleaved key/value pairs (`read_map_entries`).
+            //
+            // A map literal whose values are all constants is folded into a
+            // heap constant and lowered by `LoadHeapConst` above. This is the
+            // other half — `{"k": a}`, `{"a": f(3)}` — and it was missing
+            // entirely, so a program that built a record from anything it had
+            // computed fell back whole. The list spelling (`[a, a + 1]`) has
+            // always lowered, which is what made the hole invisible: the two
+            // literals read alike and only one of them compiled.
+            //
+            // The same builder as the constant path, deliberately: `lit_new` /
+            // `lit_set` accumulate boxed pairs in literal order and
+            // `lit_finish_<shape>` converts to the typed representation. The
+            // shape choice below therefore only has to mirror the arms there —
+            // and through them the VM's `typed_map_from_entries` — rather than
+            // being a second, independently-drifting classification.
+            let count = instr.c() as usize;
+            let mut entries = Vec::with_capacity(count);
+            for i in 0..count {
+                let key_reg = instr.b().wrapping_add((i * 2) as u8);
+                let val_reg = key_reg.wrapping_add(1);
+                let key = ssa.read(key_reg, block, pc)?;
+                let val = ssa.read(val_reg, block, pc)?;
+                entries.push((key, val));
+            }
+            if entries.is_empty() {
+                // `{}` written as a window rather than a constant. The constant
+                // path types the key by lookahead; there is nothing to look at
+                // here, and a wrong guess only costs a fallback.
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("map_h", "str_i64_new"),
+                    args: Vec::new(),
+                });
+                ssa.write(instr.a(), block, (handle, Ty::MapStrI64));
+                return Ok(());
+            }
+            let all_keys = |t: Ty| entries.iter().all(|&((_, kt), _)| kt == t);
+            let all_vals = |t: Ty| entries.iter().all(|&(_, (_, vt))| vt == t);
+            let (finish_fn, map_ty) = if all_keys(Ty::Str) && all_vals(Ty::Bool) {
+                ("lit_finish_str_bool", Ty::MapStrBool)
+            } else if all_keys(Ty::Str) && all_vals(Ty::I64) {
+                ("lit_finish_str_i64", Ty::MapStrI64)
+            } else if all_keys(Ty::Str) && all_vals(Ty::F64) {
+                ("lit_finish_str_f64", Ty::MapStrF64)
+            } else if all_keys(Ty::I64) && all_vals(Ty::I64) {
+                ("lit_finish_i64_i64", Ty::MapI64I64)
+            } else if all_keys(Ty::I64) && all_vals(Ty::F64) {
+                ("lit_finish_i64_f64", Ty::MapI64F64)
+            } else if all_keys(Ty::Str) {
+                // Heterogeneous values under string keys: the boxed map. Each
+                // value has to survive boxing, which `to_dyn` decides — an
+                // unboxable one rejects there rather than here.
+                ("lit_finish_str_dyn", Ty::MapStrDyn)
+            } else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let lit = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(lit),
+                callee: AbiRef::new("map_h", "lit_new"),
+                args: Vec::new(),
+            });
+            for &((k, kt), (v, vt)) in &entries {
+                let boxed_key = to_dyn(ssa, insts, k, kt, pc)?;
+                let boxed_value = to_dyn(ssa, insts, v, vt, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", "lit_set"),
+                    args: vec![lit, boxed_key, boxed_value],
+                });
+            }
+            let handle = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(handle),
+                callee: AbiRef::new("map_h", finish_fn),
+                args: vec![lit],
+            });
+            ssa.write(instr.a(), block, (handle, map_ty));
         }
         Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
             // Composite string-int key access (`m["n${i}"]`): the key is the
