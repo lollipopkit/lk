@@ -614,7 +614,17 @@ fn main() -> anyhow::Result<()> {
                 }
                 Err(err) => Err(err),
             },
-            None => program.execute_with_ctx(&mut base_env),
+            // The directory, not `None`: `execute_with_ctx` type-checks the
+            // program *again* with a fresh checker, and one without a path to
+            // resolve imports against rejects every name that crosses a module
+            // boundary — so `lk check FILE` passed and `lk FILE` answered
+            // `Unknown type 'P' in parameter 'p'` for the same file. A program
+            // that clears the pre-flight command has to be runnable.
+            //
+            // The check above stays because it is the only one the sandboxed and
+            // cached branches get; that this path now checks twice is a startup
+            // cost, not a correctness one.
+            None => program.execute_with_ctx_from(&mut base_env, safe.parent()),
         }
     };
 

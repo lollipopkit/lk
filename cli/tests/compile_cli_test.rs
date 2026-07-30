@@ -744,6 +744,104 @@ fn test_compile_rejects_what_run_and_check_reject() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// What `lk check FILE` accepts, `lk FILE` must run.
+///
+/// It did not. The run path type-checks the program *twice*: the CLI does it with
+/// the imports seeded, and `execute_with_ctx` then does it again with a fresh
+/// checker and `None` for the directory — so the second one cannot open the files
+/// the program imports and rejects every name that crosses a module boundary.
+/// `lk check` passed this file and `lk` answered `Unknown type 'P' in parameter
+/// 'p'`, which makes the pre-flight command a liar about the one thing it is for.
+///
+/// The CLI's own check stays: it is the only one the sandboxed (`LK_FUEL`) and
+/// bytecode-cache branches get. That this path now checks twice is a startup
+/// cost, not a correctness one.
+#[test]
+fn what_check_accepts_the_run_path_accepts() {
+    let dir = unique_tmp_dir("check_and_run_agree");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "lib.lk",
+        "struct P { x: Int, y: Int }\n\
+         impl P { fn sum(self) -> Int { return self.x + self.y; } }\n\
+         fn make() -> P { return P { x: 10, y: 20 }; }\n",
+    );
+    // The parameter annotation names an imported type, and the body calls a
+    // method the imported `impl` declares — the two things the unseeded check
+    // could not resolve.
+    write_file(
+        &dir,
+        "main.lk",
+        "use \"./lib\";\nfn take(p: P) -> Int { return p.sum(); }\nprintln(take(lib.make()));\n",
+    );
+
+    let checked = run_cli(&dir, ["check", "main.lk"]).output().expect("spawn check");
+    assert!(
+        checked.status.success(),
+        "`lk check` rejected it: {}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "`lk check` passed but running failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "30");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An imported `impl`'s method signatures reach the checker.
+///
+/// A method becomes known to the checker by being *type-checked* — the `Impl`
+/// arm sets the self type and each method body's check registers its signature —
+/// and that only ever happens for the program's own statements. So a call on an
+/// imported type was not merely unchecked, it was *unknown*, and unknown falls
+/// through to `Any`: in one file `impl Show for Int` made `a.show(1, 2)` an
+/// error, and with the impl one `use` away the same call passed the checker and
+/// died at run time.
+///
+/// The signature is read from the declaration, so this only makes the arity and
+/// the annotated types visible — an unannotated parameter stays `Any`, exactly as
+/// it is for an imported free function.
+#[test]
+fn an_imported_impls_signatures_are_checked() {
+    let dir = unique_tmp_dir("imported_impl_sigs");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "lib.lk",
+        "struct P { x: Int }\n\
+         impl P { fn scaled(self, k: Int) -> Int { return self.x * k; } }\n\
+         fn make() -> P { return P { x: 2 }; }\n",
+    );
+
+    for (body, expected) in [
+        ("println(lib.make().scaled());", "Method expects 1 arguments"),
+        ("println(lib.make().scaled(1, 2));", "Method expects 1 arguments"),
+        ("println(lib.make().scaled(\"s\"));", "wrong type"),
+    ] {
+        write_file(&dir, "main.lk", &format!("use \"./lib\";\n{body}\n"));
+        let out = run_cli(&dir, ["check", "main.lk"]).output().expect("spawn check");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && stderr.contains(expected),
+            "`{body}` should be refused with {expected:?}, got: {stderr}"
+        );
+    }
+
+    // And the correct call still passes both.
+    write_file(&dir, "main.lk", "use \"./lib\";\nprintln(lib.make().scaled(3));\n");
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "6");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A `trait` implemented in an imported file must dispatch in the importer.
 ///
 /// It did not: the importer executes an imported file in a throwaway

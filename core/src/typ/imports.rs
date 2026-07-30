@@ -44,6 +44,7 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                     continue;
                 };
                 seed_declared_types(&dep, checker);
+                seed_impl_methods(&dep, checker);
                 for item in items {
                     let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
                     if let Some((signature, function_type)) = signature_of(&dep, &item.name) {
@@ -142,6 +143,7 @@ fn load(base_dir: &Path, import_path: &str) -> Option<Program> {
 /// Registers every stated function signature in `dep` under `namespace`.
 fn seed_namespace(namespace: &str, dep: &Program, checker: &mut TypeChecker) {
     seed_declared_types(dep, checker);
+    seed_impl_methods(dep, checker);
     for stmt in &dep.statements {
         let Stmt::Function { name, .. } = item_of(stmt) else {
             continue;
@@ -191,60 +193,106 @@ fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
     }
 }
 
+/// Register the method signatures an imported module's `impl` blocks declare.
+///
+/// A method reaches the checker by being *type-checked*: `stmt_impl`'s `Impl`
+/// arm sets the impl's self type and each method body's check calls
+/// `add_method_sig`. That only ever happens for the program's own statements, so
+/// a method on an imported type was unknown to the checker — and unknown means
+/// unchecked, not rejected: the call fell through to `Any`. Same file,
+/// `impl Show for Int { fn show(self) -> String … }` and `a.show(1, 2)` was
+/// refused ("Method expects 0 arguments"); with the impl one `use` away the same
+/// call passed.
+///
+/// The signature is read from the declaration, not inferred: an imported body is
+/// not re-checked here, so an unannotated parameter is `Any` exactly as it is for
+/// an imported free function. That keeps this from *tightening* anything — it
+/// only makes the arity and the annotated types visible.
+fn seed_impl_methods(dep: &Program, checker: &mut TypeChecker) {
+    for stmt in &dep.statements {
+        let Stmt::Impl {
+            target_type, methods, ..
+        } = item_of(stmt)
+        else {
+            continue;
+        };
+        // Aliases resolve against the importing checker, which already has the
+        // dependency's `type` declarations (`seed_declared_types` ran first).
+        let self_ty = checker.resolve_aliases(target_type);
+        for method in methods {
+            let Stmt::Function { name, .. } = item_of(method) else {
+                continue;
+            };
+            let Some((_, function_type)) = signature_of_stmt(item_of(method)) else {
+                continue;
+            };
+            checker.add_method_sig(&self_ty, name, function_type);
+        }
+    }
+}
+
 /// The stated signature of a top-level `fn` in `program`.
 fn signature_of(program: &Program, name: &str) -> Option<(FunctionSig, Type)> {
     for stmt in &program.statements {
-        let Stmt::Function {
-            name: declared,
-            params,
-            param_types,
-            named_params,
-            return_type,
-            ..
-        } = item_of(stmt)
-        else {
+        let Stmt::Function { name: declared, .. } = item_of(stmt) else {
             continue;
         };
         if declared != name {
             continue;
         }
-        let positional: Vec<Type> = (0..params.len())
-            .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
-            .collect();
-        let annotated: Vec<bool> = (0..params.len())
-            .map(|i| param_types.get(i).cloned().flatten().is_some())
-            .collect();
-        let named: Vec<NamedParamSig> = named_params
-            .iter()
-            .map(|param| NamedParamSig {
-                name: param.name.clone(),
-                ty: param.type_annotation.clone().unwrap_or(Type::Any),
-                has_default: param.default.is_some(),
-            })
-            .collect();
-        let returns = return_type.clone().unwrap_or(Type::Any);
-        let named_annotations: Vec<FunctionNamedParamType> = named
-            .iter()
-            .map(|param| FunctionNamedParamType {
-                name: param.name.clone(),
-                ty: param.ty.clone(),
-                has_default: param.has_default,
-            })
-            .collect();
-        let function_type = Type::Function {
-            params: positional.clone(),
-            named_params: named_annotations,
-            return_type: Box::new(returns.clone()),
-        };
-        return Some((
-            FunctionSig {
-                positional,
-                named,
-                return_type: Some(returns),
-                annotated,
-            },
-            function_type,
-        ));
+        return signature_of_stmt(item_of(stmt));
     }
     None
+}
+
+/// The stated signature of one `fn` declaration, wherever it stands — top level
+/// or inside an `impl`, where the receiver is simply its first parameter.
+fn signature_of_stmt(stmt: &Stmt) -> Option<(FunctionSig, Type)> {
+    let Stmt::Function {
+        params,
+        param_types,
+        named_params,
+        return_type,
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    let positional: Vec<Type> = (0..params.len())
+        .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
+        .collect();
+    let annotated: Vec<bool> = (0..params.len())
+        .map(|i| param_types.get(i).cloned().flatten().is_some())
+        .collect();
+    let named: Vec<NamedParamSig> = named_params
+        .iter()
+        .map(|param| NamedParamSig {
+            name: param.name.clone(),
+            ty: param.type_annotation.clone().unwrap_or(Type::Any),
+            has_default: param.default.is_some(),
+        })
+        .collect();
+    let returns = return_type.clone().unwrap_or(Type::Any);
+    let named_annotations: Vec<FunctionNamedParamType> = named
+        .iter()
+        .map(|param| FunctionNamedParamType {
+            name: param.name.clone(),
+            ty: param.ty.clone(),
+            has_default: param.has_default,
+        })
+        .collect();
+    let function_type = Type::Function {
+        params: positional.clone(),
+        named_params: named_annotations,
+        return_type: Box::new(returns.clone()),
+    };
+    Some((
+        FunctionSig {
+            positional,
+            named,
+            return_type: Some(returns),
+            annotated,
+        },
+        function_type,
+    ))
 }
