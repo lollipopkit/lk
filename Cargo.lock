@@ -1654,6 +1654,7 @@ dependencies = [
  "sha2",
  "spin",
  "toml",
+ "uuid",
 ]
 
 [[package]]

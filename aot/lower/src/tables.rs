@@ -106,6 +106,11 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         bare_global: true,
         submodule_of: None,
     },
+    ModuleRow {
+        name: "uuid",
+        bare_global: true,
+        submodule_of: None,
+    },
     // The submodule *parents*. They have no typed members of their own, but the
     // name has to bind for `encoding.json.parse(s)` to reach the submodule at
     // all — without these rows the chain stopped at the first dot and the whole
@@ -487,6 +492,17 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
     // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
     // what keeps the two spellings equal.
+    // `uuid`. `v4` has no arguments and a different answer every call — see the
+    // ABI schema for why it must not be `Pure`.
+    abi_row("uuid", "v4", AbiRef::new("uuid", "v4"), &[], Ty::Str),
+    abi_row("uuid", "parse", AbiRef::new("uuid", "parse"), &[Ty::Str], Ty::Str),
+    abi_row(
+        "uuid",
+        "is_valid",
+        AbiRef::new("uuid", "is_valid"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
     abi_row("hash", "sha256", AbiRef::new("hash", "sha256_str"), &[Ty::Str], Ty::Str),
     abi_row(
         "hash",

@@ -70,6 +70,8 @@ mod port;
 mod state;
 mod system;
 mod textcodec;
+#[cfg(feature = "std")]
+mod uuid;
 mod vm_mirror;
 
 pub use abi::{
@@ -111,6 +113,8 @@ pub use textcodec::{
     lkrt_base64_decode, lkrt_base64_encode, lkrt_base64_encode_bytes, lkrt_hex_decode, lkrt_hex_encode,
     lkrt_hex_encode_bytes, lkrt_url_decode_component, lkrt_url_encode_component,
 };
+#[cfg(feature = "std")]
+pub use uuid::{lkrt_uuid_is_valid, lkrt_uuid_parse, lkrt_uuid_v4};
 // Re-exported at the crate root because the ABI conformance macro checks
 // signatures as `crate::$symbol`.
 #[cfg(feature = "std")]

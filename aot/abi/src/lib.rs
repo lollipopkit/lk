@@ -255,6 +255,11 @@ macro_rules! for_each_abi_fn {
             ("hex", "decode", lkrt_hex_decode, WritesHost, [StrPtr], Ptr);
             ("base64", "encode", lkrt_base64_encode, WritesHost, [StrPtr], StrPtr);
             ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
+            // `uuid.v4` is deliberately not `Pure`: two calls are two UUIDs, and
+            // CSE merges equal `Pure` calls in a dominance scope.
+            ("uuid", "v4", lkrt_uuid_v4, WritesHost, [], StrPtr);
+            ("uuid", "parse", lkrt_uuid_parse, WritesHost, [StrPtr], StrPtr);
+            ("uuid", "is_valid", lkrt_uuid_is_valid, Pure, [StrPtr], I64);
             ("base64", "encode_bytes", lkrt_base64_encode_bytes, WritesHost, [Ptr], StrPtr);
             ("hex", "encode_bytes", lkrt_hex_encode_bytes, WritesHost, [Ptr], StrPtr);
             // `hash`, both carriers of each member (`Bytes | String`).
@@ -818,6 +823,32 @@ pub fn find(module: &str, name: &str) -> Option<&'static AbiFn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call that answers something different each time may not be `Pure`.
+    ///
+    /// `Pure` is what the MIR CSE pass keys on: two `Pure` calls with equal
+    /// arguments in one dominance scope become one. For a clock or a UUID that
+    /// is a wrong answer, not a slow one — `let a = uuid.v4(); let b =
+    /// uuid.v4();` would bind the same string twice. These entries take no
+    /// arguments, which is exactly the case CSE collapses most eagerly, so the
+    /// classification is pinned here rather than left to whoever adds the next
+    /// one by copying a neighbouring row.
+    #[test]
+    fn nondeterministic_entries_are_not_pure() {
+        for (module, name) in [
+            ("uuid", "v4"),
+            ("os", "clock"),
+            ("os", "epoch"),
+            ("time", "now"),
+            ("datetime", "now"),
+        ] {
+            let entry = find(module, name).expect("entry exists");
+            assert!(
+                !matches!(entry.effect, AbiEffect::Pure),
+                "{module}.{name} is Pure, so CSE may merge two calls that must answer differently"
+            );
+        }
+    }
 
     #[test]
     fn symbols_are_unique() {

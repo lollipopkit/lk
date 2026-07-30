@@ -4469,3 +4469,39 @@ fn hash_members_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `uuid` parses, validates and raises identically on both ends.
+///
+/// The last one is the reason the native side shares the `uuid` crate rather
+/// than re-implementing the parse: `uuid.parse("nope")` raises `invalid UUID:
+/// invalid character: found `n` at 0`, where everything after the colon is the
+/// crate's own `Display` — and a caught error's message is program output.
+///
+/// `v4` cannot be compared directly (that is the point of it), so what the
+/// second case compares is everything about it that *is* fixed: the length, the
+/// canonical shape as `is_valid` judges it, and that two calls differ — which
+/// also pins the ABI classification, since a `Pure` `v4` would be CSE'd into
+/// one call and print `false`.
+#[test]
+fn uuid_members_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "uuid_members",
+        &[
+            new(
+                "parse_and_validate",
+                "use uuid;\nlet z = \"\";\n\
+                 println(uuid.parse(\"550E8400-E29B-41D4-A716-446655440000\" + z));\n\
+                 println(uuid.parse(\"550e8400e29b41d4a716446655440000\"));\n\
+                 println(uuid.is_valid(\"550e8400-e29b-41d4-a716-446655440000\"));\n\
+                 println(uuid.is_valid(\"nope\"));\nprintln(uuid.is_valid(\"\"));\n\
+                 let r = try { uuid.parse(\"nope\") } catch e { e };\nprintln(r);\nreturn 0;\n",
+            ),
+            new(
+                "v4_shape",
+                "use uuid;\nlet a = uuid.v4();\nlet b = uuid.v4();\n\
+                 println(a.len());\nprintln(uuid.is_valid(a));\nprintln(a != b);\n\
+                 println(uuid.parse(a) == a);\nreturn 0;\n",
+            ),
+        ],
+    );
+}
