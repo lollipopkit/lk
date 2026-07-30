@@ -257,6 +257,12 @@ macro_rules! for_each_abi_fn {
             ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
             // `uuid.v4` is deliberately not `Pure`: two calls are two UUIDs, and
             // CSE merges equal `Pure` calls in a dominance scope.
+            // `regex` compiles through a shared bounded cache, so a call is
+            // `ReadsHost`, not `Pure` — two identical calls are still cheap, but
+            // the cache is process state.
+            ("regex", "is_match", lkrt_regex_is_match, ReadsHost, [StrPtr, StrPtr], I64);
+            ("regex", "split", lkrt_regex_split, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("regex", "replace", lkrt_regex_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             ("uuid", "v4", lkrt_uuid_v4, WritesHost, [], StrPtr);
             ("uuid", "parse", lkrt_uuid_parse, WritesHost, [StrPtr], StrPtr);
             ("uuid", "is_valid", lkrt_uuid_is_valid, Pure, [StrPtr], I64);

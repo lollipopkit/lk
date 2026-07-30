@@ -60,6 +60,8 @@ mod lkbytes;
 mod lkdyn;
 mod lklist;
 mod lkmap;
+#[cfg(feature = "std")]
+mod lkregex;
 mod lkset;
 mod lkslice;
 mod lkstr;
@@ -109,6 +111,8 @@ pub use lkbytes::{
     lkrt_lkbytes_slice, lkrt_lkbytes_take, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8,
     lkrt_lkbytes_utf8_lossy,
 };
+#[cfg(feature = "std")]
+pub use lkregex::{lkrt_regex_is_match, lkrt_regex_replace, lkrt_regex_split};
 pub use textcodec::{
     lkrt_base64_decode, lkrt_base64_encode, lkrt_base64_encode_bytes, lkrt_hex_decode, lkrt_hex_encode,
     lkrt_hex_encode_bytes, lkrt_url_decode_component, lkrt_url_encode_component,

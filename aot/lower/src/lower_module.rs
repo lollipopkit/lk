@@ -533,6 +533,102 @@ pub(crate) fn lower_module_call(
         ssa.write(base, block, (dst, Ty::Bytes));
         return Ok(());
     }
+    let arg_regs: Vec<u8> = (0..argc).map(|i| base.wrapping_add(1).wrapping_add(i as u8)).collect();
+    lower_module_abi_call(ssa, insts, module, name, base, &arg_regs, block, pc)
+}
+
+/// A stdlib module member called with `name: value` arguments.
+///
+/// The window is the same one [`lower_named_call`] reads — callee at `base`,
+/// the positional prefix, then `(name, value)` pairs — and the permutation is
+/// the row's `named` list, which is the stdlib export's own `named(...)`
+/// declaration. Every name is a constant the compiler emitted, so the ordering
+/// is a compile-time fact.
+///
+/// Rejects rather than guesses: a member with no names, a name that is not a
+/// constant, an unknown or duplicated name, or a call that leaves a named
+/// parameter out. That last one is not laziness — an omitted parameter takes
+/// the *default*, and a default lives in the stdlib export wrapper, not in
+/// anything this side can read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_named_module_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    module: &str,
+    name: &str,
+    base: u8,
+    positional_count: usize,
+    named_count: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let reject = || Unsupported::Opcode {
+        pc,
+        op: Opcode::CallNamed,
+    };
+    let argc = positional_count + named_count;
+    let row = module_call_abi_rows(module, name)
+        // The row's `named` list is the member's whole declaration, which can be
+        // longer than what this call passes (`string.replace` declares `all`
+        // too, and this arity leaves it defaulted) — so it bounds the names,
+        // rather than counting them.
+        .find(|row| row.args.len() == argc && row.named.len() >= argc - positional_count)
+        .ok_or_else(reject)?;
+    let mut arg_regs: Vec<Option<u8>> = vec![None; argc];
+    for (i, slot) in arg_regs.iter_mut().enumerate().take(positional_count) {
+        *slot = Some(base.wrapping_add(1).wrapping_add(i as u8));
+    }
+    for pair in 0..named_count {
+        let name_reg = base
+            .wrapping_add(1)
+            .wrapping_add(positional_count as u8)
+            .wrapping_add((pair * 2) as u8);
+        let value_reg = name_reg.wrapping_add(1);
+        let arg_name = ssa
+            .read(name_reg, block, pc)
+            .ok()
+            .and_then(|(v, _)| ssa.const_strs.get(&v).cloned())
+            .or_else(|| ssa.reg_const_str(name_reg, block))
+            .ok_or_else(reject)?;
+        let slot = row
+            .named
+            .iter()
+            .position(|param| *param == arg_name.as_str())
+            .ok_or_else(reject)?
+            + positional_count;
+        // A member may declare more names than this row's arity covers
+        // (`string.replace` declares `all` too, and the row is the arity that
+        // leaves it defaulted), so a name can land past the end. That is a call
+        // this row cannot serve, not an index to trust.
+        if slot >= argc || arg_regs[slot].is_some() {
+            return Err(reject());
+        }
+        arg_regs[slot] = Some(value_reg);
+    }
+    let arg_regs = arg_regs.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
+    lower_module_abi_call(ssa, insts, module, name, base, &arg_regs, block, pc)
+}
+
+/// The table-row half of [`lower_module_call`], with the argument registers
+/// given explicitly rather than assumed consecutive.
+///
+/// A named call (`regex.replace(p, text: t, replacement: r)`) supplies its
+/// arguments out of frame order, so it permutes the registers and lands here.
+/// Everything above this point — the shapes with defaults, dispatch on argument
+/// type, or a variadic tail — stays positional-only: those read fixed register
+/// offsets, and a permuted window would need each of them to agree separately.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_module_abi_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    module: &str,
+    name: &str,
+    base: u8,
+    arg_regs: &[u8],
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let argc = arg_regs.len();
     // A member may have one row per carrier (`hash.sha256` takes `Bytes |
     // String`), so the arity filter comes first and the argument types choose
     // among what is left. The peek is `ssa.read`, which is the same read the
@@ -555,8 +651,7 @@ pub(crate) fn lower_module_call(
             .copied()
             .find(|row| {
                 row.args.iter().enumerate().all(|(i, want)| {
-                    let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
-                    ssa.read(arg_reg, block, pc)
+                    ssa.read(arg_regs[i], block, pc)
                         .is_ok_and(|(_, got)| abi_param_accepts(*want, got))
                 })
             })
@@ -568,7 +663,7 @@ pub(crate) fn lower_module_call(
     let (callee, param_tys, ret_ty) = (row.abi, row.args, row.ret);
     let mut args = Vec::with_capacity(argc);
     for (i, want) in param_tys.iter().enumerate() {
-        let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+        let arg_reg = arg_regs[i];
         // `Number` parameters (schema type F64) accept an Int by promotion,
         // matching the stdlib module's `number_arg` coercion.
         if *want == Ty::F64 {

@@ -18,7 +18,7 @@ default = ["std"]
 # representation, arithmetic, MMIO and CPU control. Files, processes, threads,
 # sockets and the clock drop out — there is nothing on bare metal for them to
 # call.
-std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:chrono", "dep:uuid"]
+std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:chrono", "dep:uuid", "dep:regex"]
 
 [dependencies]
 lk-aot-abi = { path = "../aot/abi", default-features = false }
@@ -37,6 +37,9 @@ crc32fast = { version = "1", default-features = false }
 # byte-identical to the VM's.
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
+# Same crate the stdlib `regex` module uses, so pattern syntax, match
+# semantics and the parse-error text are one rule. `std`-only.
+regex = { workspace = true, optional = true }
 # Same crate the stdlib `uuid` module uses, so the text and the parse-error
 # wording match. `std`-only: v4 needs the OS entropy source.
 uuid = { workspace = true, optional = true }

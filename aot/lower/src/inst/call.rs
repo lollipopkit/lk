@@ -127,6 +127,23 @@ pub(super) fn lower(
             let named_count = (payload >> 7) as usize;
             let callee_idx = match ssa.builtin_ref_at(base, block) {
                 Some(GlobalRef::Lambda(fidx)) | Some(GlobalRef::UserFn(fidx)) => fidx as usize,
+                // A stdlib member called by name — `regex.replace(p, text: t,
+                // replacement: r)`. The names come from the member's own row
+                // rather than from a user function's metadata; everything else
+                // (the permutation, the rejection rules) is the same problem.
+                Some(GlobalRef::ModuleFn(module, name)) => {
+                    return lower_named_module_call(
+                        ssa,
+                        insts,
+                        &module,
+                        &name,
+                        base,
+                        positional_count,
+                        named_count,
+                        block,
+                        pc,
+                    );
+                }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             };
             lower_named_call(

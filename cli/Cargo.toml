@@ -44,6 +44,10 @@ sha2 = { workspace = true }
 # `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
 # feature in lk-core.
 lk-core = { path = "../core", features = ["testing"] }
+# The named-parameter conformance test needs both the lowering's table and the
+# stdlib's declaration in one process; the CLI is the crate that has both.
+lk-aot-lower = { path = "../aot/lower" }
+lk-stdlib = { path = "../stdlib" }
 assert_cmd = "2"
 predicates = "3"
 tempfile = { workspace = true }

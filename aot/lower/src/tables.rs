@@ -107,6 +107,11 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         submodule_of: None,
     },
     ModuleRow {
+        name: "regex",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
         name: "uuid",
         bare_global: true,
         submodule_of: None,
@@ -208,6 +213,18 @@ pub(crate) struct ModuleAbiRow {
     pub(crate) abi: AbiRef,
     pub(crate) args: &'static [Ty],
     pub(crate) ret: Ty,
+    /// The names of the trailing parameters a caller may pass by name, in
+    /// frame order — the stdlib export's `named(...)` list.
+    ///
+    /// Empty means positional-only, which is most members. A member that
+    /// declares names can be *called* by name, and that call is a different
+    /// opcode (`CallNamed`) carrying its arguments in caller order; without
+    /// these the permutation is unknown and the whole program falls back. The
+    /// stdlib marks a member `named` precisely when the positional spelling is
+    /// hard to read — `regex.replace(pattern, text, replacement)` is three
+    /// strings with the subject in the middle — so the spelling that lowers
+    /// would have been the one nobody is meant to write.
+    pub(crate) named: &'static [&'static str],
 }
 
 pub(crate) const fn abi_row(
@@ -223,6 +240,26 @@ pub(crate) const fn abi_row(
         abi,
         args,
         ret,
+        named: &[],
+    }
+}
+
+/// [`abi_row`] for a member whose trailing parameters may be passed by name.
+pub(crate) const fn abi_row_named(
+    module: &'static str,
+    member: &'static str,
+    abi: AbiRef,
+    args: &'static [Ty],
+    ret: Ty,
+    named: &'static [&'static str],
+) -> ModuleAbiRow {
+    ModuleAbiRow {
+        module,
+        member,
+        abi,
+        args,
+        ret,
+        named,
     }
 }
 
@@ -418,12 +455,13 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("math", "log10", AbiRef::new("math", "log10"), &[Ty::F64], Ty::F64),
     abi_row("math", "log2", AbiRef::new("math", "log2"), &[Ty::F64], Ty::F64),
     // `clamp` is `Int`-only in the module schema, so no f64 promotion here.
-    abi_row(
+    abi_row_named(
         "math",
         "clamp",
         AbiRef::new("math", "clamp_i64"),
         &[Ty::I64, Ty::I64, Ty::I64],
         Ty::I64,
+        &["min", "max"],
     ),
     abi_row("math", "exp", AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64),
     abi_row("math", "pow", AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64),
@@ -512,12 +550,29 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("string", "len", AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64),
     // The module spelling of `s.slice(a, b)`, which the method path has always
     // lowered. Two spellings of one operation, and only one of them was fast.
-    abi_row(
+    // `string.replace(text, pattern, with)` — the three-argument form. The
+    // fourth parameter `all` defaults to true, which is what `str::replace`
+    // does, so a call that omits it lowers; a call that passes `all` has a
+    // different arity and no row, and falls back.
+    abi_row_named(
+        "string",
+        "replace",
+        AbiRef::new("str", "replace"),
+        &[Ty::Str, Ty::Str, Ty::Str],
+        Ty::Str,
+        // The stdlib declares three names; this row is the arity that leaves
+        // `all` at its default. A call that does pass `all` has four arguments,
+        // finds no row, and falls back — which is why the *names* list stays
+        // whole while the `args` list does not.
+        &["pattern", "with", "all"],
+    ),
+    abi_row_named(
         "string",
         "slice",
         AbiRef::new("str", "slice_chars"),
         &[Ty::Str, Ty::I64, Ty::I64],
         Ty::Str,
+        &["start", "end"],
     ),
     abi_row(
         "string",
@@ -597,6 +652,31 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
     // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
     // what keeps the two spellings equal.
+    // `regex`. `find`/`find_all`/`captures` stay on the bridge: they answer a
+    // `Map?`, a list of maps, and a list with nils in it, and the ABI has no way
+    // to hand any of those back in one call.
+    abi_row(
+        "regex",
+        "is_match",
+        AbiRef::new("regex", "is_match"),
+        &[Ty::Str, Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "regex",
+        "split",
+        AbiRef::new("regex", "split"),
+        &[Ty::Str, Ty::Str],
+        Ty::ListStr,
+    ),
+    abi_row_named(
+        "regex",
+        "replace",
+        AbiRef::new("regex", "replace"),
+        &[Ty::Str, Ty::Str, Ty::Str],
+        Ty::Str,
+        &["text", "replacement"],
+    ),
     // `uuid`. `v4` has no arguments and a different answer every call — see the
     // ABI schema for why it must not be `Pure`.
     abi_row("uuid", "v4", AbiRef::new("uuid", "v4"), &[], Ty::Str),
@@ -715,12 +795,13 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &[Ty::Bytes, Ty::I64],
         Ty::Dyn,
     ),
-    abi_row(
+    abi_row_named(
         "bytes",
         "slice",
         AbiRef::new("bytes_h", "slice"),
         &[Ty::Bytes, Ty::I64, Ty::I64],
         Ty::Bytes,
+        &["start", "end"],
     ),
     abi_row(
         "bytes",
@@ -776,6 +857,20 @@ pub(crate) fn module_call_abi_rows<'a>(
     MODULE_ABI
         .iter()
         .filter(move |row| row.module == module && row.member == name)
+}
+
+/// Every member whose row carries a `named(...)` list, for the CLI test that
+/// compares this table against the stdlib's own declaration.
+///
+/// The list is a copy — `aot/lower` cannot read the stdlib signature registry,
+/// which is populated at run time by whoever links the standard library, and a
+/// lowering that silently degrades when that has not happened yet is worse than
+/// a copy with a test on it.
+pub fn named_parameter_rows() -> impl Iterator<Item = (&'static str, &'static str, &'static [&'static str])> {
+    MODULE_ABI
+        .iter()
+        .filter(|row| !row.named.is_empty())
+        .map(|row| (row.module, row.member, row.named))
 }
 
 /// Whether a row's declared parameter type accepts an argument the lowering

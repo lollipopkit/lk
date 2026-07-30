@@ -4552,3 +4552,42 @@ fn fs_members_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `regex`, and the named-argument spelling of a stdlib member.
+///
+/// Named arguments are a `CallNamed`, and that opcode only ever resolved a
+/// *user* function — so a stdlib member called by name dropped the whole
+/// program to the VM. The members that allow it are exactly the ones where the
+/// positional spelling is unreadable (`regex.replace(pattern, text,
+/// replacement)` is three strings with the subject in the middle), so the
+/// spelling that lowered was the one nobody is meant to write.
+///
+/// The permutation is what this case is really testing: `text` and
+/// `replacement` swapped would still compile, still run, and answer `banana`
+/// instead of `bXnXnX`.
+#[test]
+fn regex_and_named_arguments_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "regex_named",
+        &[
+            new(
+                "regex_members",
+                "use regex;\nlet z = \"\";\nprintln(regex.is_match(\"a+\", \"baaa\" + z));\n\
+                 println(regex.is_match(\"^z\", \"baaa\"));\nprintln(regex.split(\"[,;]\", \"a,b;c\"));\n\
+                 println(regex.split(\"x\", \"abc\"));\n\
+                 println(regex.replace(\"a+\", \"baaa\", \"X\"));\n\
+                 let e = try { regex.is_match(\"(\", \"x\") } catch err { err };\nprintln(e);\nreturn 0;\n",
+            ),
+            new(
+                "named_arguments",
+                "use regex;\nuse string;\nuse bytes;\nuse math;\nlet z = \"\";\n\
+                 println(regex.replace(\"a\", text: \"banana\" + z, replacement: \"X\"));\n\
+                 println(string.replace(\"banana\", pattern: \"a\", with: \"X\"));\n\
+                 println(string.slice(\"hello\", start: 1, end: 3));\n\
+                 println(bytes.slice(bytes.from_string(\"hello\"), start: 1, end: 3));\n\
+                 println(math.clamp(5, min: 1, max: 3));\n\
+                 println(math.clamp(0, min: 1, max: 3));\nreturn 0;\n",
+            ),
+        ],
+    );
+}
