@@ -971,6 +971,43 @@ pub(super) fn lower(
                     });
                     (false, eq, one)
                 }
+                // Two string-keyed maps — and therefore two structs, which are
+                // marked maps. Both sides box to a `Dyn` map and `dyn.eq`
+                // decides: order-free, key-by-key, recursing with the VM's
+                // numeric coercion (`{"a": 1} == {"a": 1.0}`) and refusing
+                // across struct type marks (`P{x:1} != Q{x:1} != {"x":1}`).
+                //
+                // No map comparison lowered at all before this — not even
+                // `{"a": 1} == {"a": 1}` — while every list pairing did.
+                //
+                // Int-keyed maps stay out: there is no int-keyed `Dyn` map to
+                // normalize to, so they would need their own helper family
+                // rather than this one line. A fallback, not a wrong answer.
+                (
+                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn,
+                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn,
+                ) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    // `to_dyn` of a `MapStrDyn` tags the handle in place, so a
+                    // struct keeps its mark; a *typed* map's conversion
+                    // rebuilds, and a typed map is never a struct.
+                    let a = to_dyn(ssa, insts, lv, lty, pc)?;
+                    let b = to_dyn(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("dyn", "eq"),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
                 // A dyn list against any list: both sides normalize to dyn
                 // lists and compare structurally (`dyn_eq` recurses with the
                 // VM's numeric coercion).

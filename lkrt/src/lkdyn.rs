@@ -460,8 +460,13 @@ fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool) -> 
     true
 }
 
-/// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
-/// instance, or a type with no trait impls).
+/// Reads a boxed value's struct type mark; `0` = not a struct instance.
+///
+/// This used to say "or a type with no trait impls", which stopped being true
+/// when `trait_env_prescan` started giving *every* declared struct an id (a
+/// struct with no methods still has to print). The distinction matters:
+/// equality reads the mark to tell two structurally-identical structs apart,
+/// and it can only do that if being unmarked means "not a struct".
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     if v.tag != DYN_MAP {
@@ -570,6 +575,18 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| dyn_eq_inner(x, y))
         }
         DYN_MAP => {
+            // A struct instance is a marked map, and its *type* is part of
+            // its identity: the VM says `P{x:1} != Q{x:1}` and
+            // `P{x:1} != {"x":1}`, both of which are structurally equal. The
+            // mark answers all three cases at once — every declared struct
+            // gets an id (`trait_env_prescan`), and a plain map has none, so
+            // comparing ids first is exactly the VM's rule.
+            //
+            // Checked before the null guard so a marked-but-empty struct is
+            // not equal to `{}`.
+            if lkrt_dyn_obj_type_id(a) != lkrt_dyn_obj_type_id(b) {
+                return false;
+            }
             if (a.payload as *mut c_void).is_null() || (b.payload as *mut c_void).is_null() {
                 return a.payload == b.payload;
             }

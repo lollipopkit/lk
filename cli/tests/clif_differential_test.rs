@@ -1418,6 +1418,59 @@ fn try_catch_differential() {
     );
 }
 
+/// `==` over maps and structs, pinned to pure Cranelift.
+///
+/// Every *list* pairing compared natively; no *map* pairing did, not even
+/// `{"a": 1} == {"a": 1}`. Both sides now box to a `Dyn` map and `dyn.eq`
+/// decides — order-free, key by key, with the VM's numeric coercion.
+///
+/// That route was not usable as it stood: a struct instance is a marked map,
+/// and `dyn_eq_inner` compared only the entries, so it would have answered
+/// `true` for `P{x:1} == Q{x:1}` and `P{x:1} == {"x":1}` where the VM answers
+/// `false`. The mark decides all three cases at once — every declared struct
+/// has an id and a plain map has none — so it is read first.
+#[test]
+fn maps_and_structs_compare_natively() {
+    run_differential(
+        "map_struct_eq",
+        &[
+            new(
+                "typed_and_boxed_maps",
+                "println({\"a\": 1} == {\"a\": 1});\nprintln({\"a\": 1} == {\"a\": 2});\nprintln({\"a\": 1} == {\"a\": 1, \"b\": 2});\nprintln({\"a\": 1, \"b\": 2} == {\"b\": 2, \"a\": 1});\nprintln({\"a\": 1} == {\"b\": 1});\nprintln({} == {});\nreturn 0;\n",
+            ),
+            // A value's *number* coerces across the two maps' element types,
+            // but a bool is not a number.
+            new(
+                "numeric_coercion_and_bools",
+                "println({\"a\": 1} == {\"a\": 1.0});\nprintln({\"a\": 1.5} == {\"a\": 1.5});\nprintln({\"a\": true} == {\"a\": true});\nprintln({\"a\": 1} == {\"a\": true});\nprintln({\"a\": 1, \"b\": \"x\"} == {\"a\": 1, \"b\": \"x\"});\nreturn 0;\n",
+            ),
+            new(
+                "nested_values",
+                "println({\"a\": [1, 2]} == {\"a\": [1, 2]});\nprintln({\"a\": [1, 2]} == {\"a\": [1, 3]});\nprintln({\"a\": {\"b\": 1}} == {\"a\": {\"b\": 1}});\nreturn 0;\n",
+            ),
+            // The struct mark: same shape, different type, and struct against
+            // the bare map with the same fields.
+            new(
+                "struct_identity",
+                "struct P { x: Int }\nstruct Q { x: Int }\nprintln(P{x:1} == P{x:1});\nprintln(P{x:1} == P{x:2});\nprintln(P{x:1} == Q{x:1});\nprintln(P{x:1} == {\"x\": 1});\nprintln({\"x\": 1} == P{x:1});\nreturn 0;\n",
+            ),
+            // Through a container, where `dyn_eq` recurses into the arm rather
+            // than being called on it directly.
+            new(
+                "struct_identity_nested",
+                "struct P { x: Int }\nstruct Q { x: Int }\nprintln([P{x:1}] == [P{x:1}]);\nprintln([P{x:1}] == [Q{x:1}]);\nprintln({\"k\": P{x:1}} == {\"k\": Q{x:1}});\nreturn 0;\n",
+            ),
+            // `Map<str, Bool>.len()` was missing from the `Len` table, though
+            // it rides the same carrier as `Map<str, Int>`.
+            new(
+                "bool_map_len",
+                "let m = {\"a\": true, \"b\": false};\nprintln(m.len());\nprintln(m);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A map literal whose values are computed, and the display of a typed map.
 ///
 /// Two holes that met in the middle. `NewMap` — the opcode for a literal whose

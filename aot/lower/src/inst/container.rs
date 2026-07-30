@@ -535,6 +535,10 @@ pub(super) fn lower(
                 Ty::ListF64 => ("list_h", "f64_len"),
                 Ty::ListStr => ("list_h", "str_len"),
                 Ty::MapStrI64 => ("map_h", "str_i64_len"),
+                // The bool map rides the `str_i64` carrier, so it is the same
+                // call — it was simply missing from this table, which cost a
+                // program its lowering for `{"a": true}.len()` alone.
+                Ty::MapStrBool => ("map_h", "str_i64_len"),
                 Ty::MapI64I64 => ("map_h", "i64_i64_len"),
                 Ty::MapStrF64 => ("map_h", "str_f64_len"),
                 Ty::MapI64F64 => ("map_h", "i64_f64_len"),
