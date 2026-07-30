@@ -4505,3 +4505,50 @@ fn uuid_members_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// The `fs` surface: same values, same booleans, and the same error text.
+///
+/// Half of these had an lkrt implementation and an ABI row already but no
+/// lowering row, so nothing could call them — and three of the messages
+/// (`read_to_string`, `write`, `canonicalize`) had drifted from the stdlib
+/// module's wording in the meantime. That is what an unreachable code path is:
+/// unverified, not spare.
+///
+/// The cases pin the things that are easy to get subtly wrong: `remove_*`
+/// answers `false` for an absent path instead of raising, `copy` answers a byte
+/// count rather than a bool, `read_dir` sorts, and a raise names the path with
+/// the stdlib's exact sentence.
+#[test]
+fn fs_members_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "fs_members",
+        &[
+            new(
+                "files",
+                "use fs;\nuse bytes;\nlet d = fs.temp_dir() + \"/lk_diff_fs_files\";\n\
+                 fs.remove_dir_all(d);\nprintln(fs.create_dir_all(d + \"/sub\"));\n\
+                 println(fs.write(d + \"/b.txt\", \"bbb\"));\n\
+                 println(fs.write(d + \"/a.txt\", bytes.from_string(\"aaa\")));\n\
+                 println(fs.append(d + \"/a.txt\", \"!\"));\n\
+                 println(fs.read_to_string(d + \"/a.txt\"));\nprintln(fs.read_dir(d));\n\
+                 println(fs.is_file(d + \"/a.txt\"));\nprintln(fs.is_dir(d));\n\
+                 println(fs.is_file(d + \"/nope\"));\n\
+                 println(fs.copy(d + \"/a.txt\", d + \"/c.txt\"));\n\
+                 println(fs.rename(d + \"/c.txt\", d + \"/e.txt\"));\n\
+                 println(fs.remove_file(d + \"/e.txt\"));\n\
+                 println(fs.remove_file(d + \"/e.txt\"));\nprintln(fs.read_dir(d));\n\
+                 println(fs.remove_dir_all(d));\nreturn 0;\n",
+            ),
+            new(
+                "errors_and_env",
+                "use fs;\nuse env;\nlet d = fs.temp_dir() + \"/lk_diff_fs_missing\";\n\
+                 let a = try { fs.read_to_string(d) } catch e { e };\nprintln(a);\n\
+                 let b = try { fs.canonicalize(d) } catch e { e };\nprintln(b);\n\
+                 let c = try { fs.write(d + \"/x/y\", \"a\") } catch e { e };\nprintln(c);\n\
+                 let f = try { fs.rename(d, d + \"2\") } catch e { e };\nprintln(f);\n\
+                 println(fs.exists(d));\nprintln(env.has(\"PATH\"));\n\
+                 println(env.has(\"LK_NO_SUCH_VAR_XYZ\"));\nreturn 0;\n",
+            ),
+        ],
+    );
+}

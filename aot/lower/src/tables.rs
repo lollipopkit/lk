@@ -248,6 +248,111 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("os", "os", AbiRef::new("os", "name"), &[], Ty::Str),
     abi_row("process", "cwd", AbiRef::new("process", "cwd"), &[], Ty::Str),
     abi_row("fs", "temp_dir", AbiRef::new("fs", "temp_dir"), &[], Ty::Str),
+    // The rest of `fs`. Every one of these had an lkrt implementation and an ABI
+    // row already — and no row here, so nothing could reach them: the runtime
+    // was built, and three of its error messages had drifted from the VM's
+    // without anything noticing, because an unreachable path is an *unverified*
+    // path, not a spare one.
+    abi_row(
+        "fs",
+        "read_to_string",
+        AbiRef::new("fs", "read_to_string"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
+    // `fs.write(path, data)` takes `Bytes | String` — one row per carrier.
+    abi_row(
+        "fs",
+        "write",
+        AbiRef::new("fs", "write_str"),
+        &[Ty::Str, Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "write",
+        AbiRef::new("fs", "write_bytes"),
+        &[Ty::Str, Ty::Bytes],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "read_dir",
+        AbiRef::new("fs", "read_dir_list"),
+        &[Ty::Str],
+        Ty::ListStr,
+    ),
+    // `String?`, so it arrives boxed: a resolved path that is not UTF-8 is nil.
+    abi_row(
+        "fs",
+        "canonicalize",
+        AbiRef::new("fs", "canonicalize"),
+        &[Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row("fs", "is_file", AbiRef::new("fs", "is_file"), &[Ty::Str], Ty::Bool),
+    abi_row("fs", "is_dir", AbiRef::new("fs", "is_dir"), &[Ty::Str], Ty::Bool),
+    abi_row(
+        "fs",
+        "append",
+        AbiRef::new("fs", "append_str"),
+        &[Ty::Str, Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "append",
+        AbiRef::new("fs", "append_bytes"),
+        &[Ty::Str, Ty::Bytes],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "create_dir",
+        AbiRef::new("fs", "create_dir"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "create_dir_all",
+        AbiRef::new("fs", "create_dir_all"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    // The `remove_*` trio answers `false` for a path that was not there, and
+    // raises for anything else.
+    abi_row(
+        "fs",
+        "remove_file",
+        AbiRef::new("fs", "remove_file"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "remove_dir",
+        AbiRef::new("fs", "remove_dir"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "remove_dir_all",
+        AbiRef::new("fs", "remove_dir_all"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row(
+        "fs",
+        "rename",
+        AbiRef::new("fs", "rename"),
+        &[Ty::Str, Ty::Str],
+        Ty::Bool,
+    ),
+    // `copy` answers the byte count, not a bool.
+    abi_row("fs", "copy", AbiRef::new("fs", "copy"), &[Ty::Str, Ty::Str], Ty::I64),
+    abi_row("env", "has", AbiRef::new("env", "has"), &[Ty::Str], Ty::Bool),
     // Sorted entry names as List<str> (the VM's exact shape).
     abi_row(
         "fs",
@@ -855,6 +960,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The `fs` surface lowers, and `metadata` is the one member that does not.
+    ///
+    /// Everything here is a call the bridge would answer identically, so the
+    /// differential is blind to losing any of it — and half of these rows were
+    /// missing for exactly that reason, with the lkrt side already written.
+    ///
+    /// `fs.metadata` answers a four-key `Map`, which is a value the ABI has no
+    /// way to hand back in one call; the four `fs.metadata_*` lkrt helpers
+    /// answer the fields individually and nothing composes them yet.
+    #[test]
+    fn the_fs_module_lowers_its_scalar_members() {
+        for member in [
+            "read_to_string",
+            "write",
+            "append",
+            "read_dir",
+            "canonicalize",
+            "exists",
+            "is_file",
+            "is_dir",
+            "create_dir",
+            "create_dir_all",
+            "remove_file",
+            "remove_dir",
+            "remove_dir_all",
+            "rename",
+            "copy",
+            "temp_dir",
+        ] {
+            assert!(
+                module_call_abi_rows("fs", member).next().is_some(),
+                "fs.{member} lost its native lowering — the bridge answers the same, so nothing \
+                 else reports this"
+            );
+        }
+        assert!(
+            module_call_abi_rows("fs", "metadata").next().is_none(),
+            "fs.metadata gained a row; say here how a Map return travels through the ABI"
+        );
     }
 
     #[test]

@@ -89,6 +89,143 @@ pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
     })
 }
 
+/// `fs.is_file(path)` / `fs.is_dir(path)` — `Path::is_file`/`is_dir`, which
+/// answer false rather than raising for a path that does not exist.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_is_file(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.is_file path")?;
+        Ok(i64::from(Path::new(path.as_str()).is_file()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_is_dir(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.is_dir path")?;
+        Ok(i64::from(Path::new(path.as_str()).is_dir()))
+    })
+}
+
+/// `fs.append(path, text)` — creates the file if it is absent, like the stdlib
+/// module's `OpenOptions::new().create(true).append(true)`.
+///
+/// Two error messages, not one: the stdlib distinguishes failing to *open* from
+/// failing to *write*, and both are program-visible text.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_append_str(path: *const c_char, data: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.append path")?;
+        let data = c_str(data, "fs.append data")?;
+        append_bytes(path.as_str(), data.as_bytes())
+    })
+}
+
+/// `fs.append(path, bytes)`.
+///
+/// # Safety
+/// `data` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_fs_append_bytes(path: *const c_char, data: *mut core::ffi::c_void) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.append path")?;
+        let data = crate::lkbytes::bytes_slice(data).to_vec();
+        append_bytes(path.as_str(), &data)
+    })
+}
+
+fn append_bytes(path: &str, data: &[u8]) -> Result<i64, alloc::string::String> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| format!("failed to open file '{path}': {err}"))?;
+    file.write_all(data)
+        .map_err(|err| format!("failed to append file '{path}': {err}"))?;
+    Ok(1)
+}
+
+/// `fs.create_dir(path)` — one level, and `fs.create_dir_all(path)`, the whole
+/// chain. Both report with the stdlib module's single wording.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_create_dir(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.create_dir path")?;
+        fs::create_dir(path.as_str()).map_err(|err| format!("failed to create directory '{path}': {err}"))?;
+        Ok(1)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_create_dir_all(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.create_dir_all path")?;
+        fs::create_dir_all(path.as_str()).map_err(|err| format!("failed to create directory '{path}': {err}"))?;
+        Ok(1)
+    })
+}
+
+/// The three `fs.remove_*` members.
+///
+/// **A missing path is `false`, not a raise** — the stdlib module's
+/// `remove_path` singles out `NotFound` and every other error raises `failed to
+/// remove '{path}'`. Writing the raise for all of them would have turned a
+/// two-valued answer into a control-flow difference between the back ends.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_remove_file(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.remove_file path")?;
+        remove_result(path.as_str(), fs::remove_file(path.as_str()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_remove_dir(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.remove_dir path")?;
+        remove_result(path.as_str(), fs::remove_dir(path.as_str()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_remove_dir_all(path: *const c_char) -> i64 {
+    raising(|| {
+        let path = c_str(path, "fs.remove_dir_all path")?;
+        remove_result(path.as_str(), fs::remove_dir_all(path.as_str()))
+    })
+}
+
+fn remove_result(path: &str, result: std::io::Result<()>) -> Result<i64, alloc::string::String> {
+    match result {
+        Ok(()) => Ok(1),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(format!("failed to remove '{path}': {err}")),
+    }
+}
+
+/// `fs.rename(from, to)` — the error names *from*, as the stdlib module does.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_rename(from: *const c_char, to: *const c_char) -> i64 {
+    raising(|| {
+        let from = c_str(from, "fs.rename from")?;
+        let to = c_str(to, "fs.rename to")?;
+        fs::rename(from.as_str(), to.as_str()).map_err(|err| format!("failed to rename '{from}': {err}"))?;
+        Ok(1)
+    })
+}
+
+/// `fs.copy(from, to)` — answers the byte count, not a bool.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_fs_copy(from: *const c_char, to: *const c_char) -> i64 {
+    raising(|| {
+        let from = c_str(from, "fs.copy from")?;
+        let to = c_str(to, "fs.copy to")?;
+        let copied = fs::copy(from.as_str(), to.as_str()).map_err(|err| format!("failed to copy '{from}': {err}"))?;
+        Ok(copied as i64)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_read(path: *const c_char) -> *mut core::ffi::c_void {
     raising(|| {
@@ -102,7 +239,7 @@ pub extern "C" fn lkrt_fs_read(path: *const c_char) -> *mut core::ffi::c_void {
 pub extern "C" fn lkrt_fs_read_to_string(path: *const c_char) -> *mut c_char {
     raising(|| {
         let path = c_str(path, "fs.read_to_string path")?;
-        let data = fs::read_to_string(path.as_str()).map_err(|err| format!("fs.read_to_string {path}: {err}"))?;
+        let data = fs::read_to_string(path.as_str()).map_err(|err| format!("failed to read file '{path}': {err}"))?;
         owned_c_string(data)
     })
 }
@@ -112,7 +249,7 @@ pub extern "C" fn lkrt_fs_write_str(path: *const c_char, data: *const c_char) ->
     raising(|| {
         let path = c_str(path, "fs.write path")?;
         let data = c_str(data, "fs.write data")?;
-        fs::write(path.as_str(), data.as_bytes()).map_err(|err| format!("fs.write {path}: {err}"))?;
+        fs::write(path.as_str(), data.as_bytes()).map_err(|err| format!("failed to write file '{path}': {err}"))?;
         Ok(1)
     })
 }
@@ -122,7 +259,7 @@ pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: *mut core::ffi:
     raising(|| {
         let path = c_str(path, "fs.write path")?;
         let data = crate::lkbytes::bytes_slice(data).to_vec();
-        fs::write(path.as_str(), &data).map_err(|err| format!("fs.write {path}: {err}"))?;
+        fs::write(path.as_str(), &data).map_err(|err| format!("failed to write file '{path}': {err}"))?;
         Ok(1)
     })
 }
@@ -147,12 +284,28 @@ pub extern "C" fn lkrt_fs_metadata_readonly(path: *const c_char) -> i64 {
     raising(|| fs_metadata_field(path, MetadataField::Readonly))
 }
 
+/// `fs.canonicalize(path)` — the resolved path, or **nil** when it is not
+/// UTF-8.
+///
+/// The nil is the language's answer (`returns = String?`), not a convenience:
+/// canonicalizing follows symlinks, and a Linux path component is arbitrary
+/// bytes, so a resolved path that no LK string can hold is reachable. This used
+/// to hand back `to_string_lossy`, which invents U+FFFD where the VM answers
+/// nil — a different value, not a different rendering.
+///
+/// (`fs.temp_dir` is also `String?` and stays a plain string: its path comes
+/// from the OS's own temp-directory setting, so the same nil is not reachable
+/// through it in the way a user-supplied path is.)
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_fs_canonicalize(path: *const c_char) -> *mut c_char {
+pub extern "C" fn lkrt_fs_canonicalize(path: *const c_char) -> crate::lkdyn::LkDyn {
     raising(|| {
         let path = c_str(path, "fs.canonicalize path")?;
-        let path = fs::canonicalize(path.as_str()).map_err(|err| format!("fs.canonicalize {path}: {err}"))?;
-        owned_c_string(path.to_string_lossy())
+        let resolved =
+            fs::canonicalize(path.as_str()).map_err(|err| format!("failed to canonicalize '{path}': {err}"))?;
+        Ok(match resolved.into_os_string().into_string() {
+            Ok(text) => crate::lkdyn::lkrt_dyn_from_str(owned_c_string(text)?),
+            Err(_) => crate::lkdyn::lkrt_dyn_from_nil(),
+        })
     })
 }
 
@@ -699,9 +852,11 @@ mod tests {
         unsafe { lkrt_string_free(text_ptr) };
         assert_eq!(unsafe { crate::lkrt_lkbytes_len(bytes) }, 5);
 
+        // `canonicalize` answers `String?`, so the result is boxed: a resolved
+        // path that is not UTF-8 is nil, which is the VM's answer too.
         let canonical = lkrt_fs_canonicalize(file.as_ptr());
-        assert!(!canonical.is_null());
-        // SAFETY: the pointer came from an lkrt owned-string return.
-        unsafe { lkrt_string_free(canonical) };
+        assert_eq!(canonical.tag, crate::lkdyn::DYN_STR);
+        // SAFETY: the payload came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(canonical.payload as *mut c_char) };
     }
 }
