@@ -4070,3 +4070,56 @@ fn join_covers_every_carrier_and_agrees_on_how_a_value_looks() {
         ],
     );
 }
+
+/// The carrier a list happens to have does not decide which methods stay native.
+///
+/// A sweep of every list method against every carrier found three holes, each of
+/// a different kind:
+///
+/// * `contains` on `Str` — `str_contains` was declared in the ABI and reached
+///   only from the `in` operator, so `"a" in xs` lowered and `xs.contains("a")`
+///   did not. The comment beside those arms states the invariant it broke: a
+///   carrier whose `index_of` lowers and whose `contains` does not makes
+///   `xs.contains(v)` and `xs.index_of(v) != nil` disagree about which programs
+///   stay native.
+/// * two-argument `slice` — only `Int` had it, and the rule it needs (negative
+///   counts from the tail, everything clamps) now lives in one `slice_bounds`
+///   that all four carriers share, rather than being written out four times.
+/// * `flatten` — only the boxed carrier. A typed list cannot nest, so flatten
+///   there is a copy, which `slice_from(0)` already is.
+#[test]
+fn every_carrier_answers_contains_slice_and_flatten() {
+    run_clif_differential(
+        "list_carrier_parity",
+        &[
+            new(
+                "contains_on_every_carrier",
+                "let n = 3;\nlet i = [1, 2, n];\nlet f = [1.5, 2.5, 3.5];\nlet s = [\"a\", \"b\"];\n\
+                 println(i.contains(2));\nprintln(f.contains(9.5));\nprintln(s.contains(\"b\"));\n\
+                 println(s.contains(\"z\"));\nreturn 0;\n",
+            ),
+            // The spelling that already lowered, so the two agree.
+            new(
+                "contains_agrees_with_the_in_operator",
+                "let s = [\"a\", \"b\"];\nprintln(s.contains(\"a\") == (\"a\" in s));\n\
+                 println(s.contains(\"z\") == (\"z\" in s));\nreturn 0;\n",
+            ),
+            // Every branch of the shared bounds rule: negative, clamped, inverted.
+            new(
+                "two_argument_slice_on_every_carrier",
+                "let n = 4;\nlet i = [1, 2, 3, n];\nlet f = [1.5, 2.5, 3.5];\nlet s = [\"a\", \"b\", \"c\"];\n\
+                 println(i.slice(1, 3));\nprintln(f.slice(0, 2));\nprintln(s.slice(1, 3));\n\
+                 println(s.slice(-2, 3));\nprintln(f.slice(0, 99));\nprintln(i.slice(3, 1));\n\
+                 println(s.slice(-99, 99));\nreturn 0;\n",
+            ),
+            // A typed list has nothing to flatten, and the result is a copy: the
+            // receiver must not move when the answer is pushed to.
+            new(
+                "flatten_of_a_typed_list_copies_it",
+                "let n = 3;\nlet xs = [1, 2, n];\nlet ys = xs.flatten();\nys.push(9);\n\
+                 println(xs);\nprintln(ys);\nprintln([\"a\"].flatten());\n\
+                 println([1.5].flatten());\nreturn 0;\n",
+            ),
+        ],
+    );
+}

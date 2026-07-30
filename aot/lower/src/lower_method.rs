@@ -862,6 +862,20 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Bytes)
         }
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let helper = match receiver_ty {
+                Ty::ListF64 => "f64_slice",
+                Ty::ListStr => "str_slice",
+                _ => "dyn_slice",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, receiver_ty)
+        }
         (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1446,6 +1460,31 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        // `flatten` on a carrier that cannot hold a list is a copy, and that is
+        // exactly what `slice_from(0)` is. A typed list has no nesting to undo by
+        // construction, so this needs no helper of its own — and without it a
+        // program calling `.flatten()` generically fell off a cliff depending on
+        // which carrier the list happened to have, which is not a distinction any
+        // program can see.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "flatten", []) => {
+            let helper = match receiver_ty {
+                Ty::ListI64 => "i64_slice_from",
+                Ty::ListF64 => "f64_slice_from",
+                _ => "str_slice_from",
+            };
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, zero],
+            });
+            (dst, receiver_ty)
+        }
         (Ty::ListDyn, "flatten", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1847,6 +1886,35 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver, boxed],
             });
             (dst, Ty::Dyn)
+        }
+        // `xs.contains(s)` on a string list. `str_contains` was declared in the
+        // ABI and reached only from the `in` operator, so `"a" in xs` lowered and
+        // `xs.contains("a")` did not — two spellings of one question, and the
+        // comment above these arms states the invariant that breaks: a carrier
+        // whose `index_of` lowers and whose `contains` does not makes
+        // `xs.contains(v)` and `xs.index_of(v) != nil` disagree about which
+        // programs stay native.
+        (Ty::ListStr, "contains", [(v, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_contains"),
+                args: vec![receiver, *v],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: dst,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
         }
         (Ty::ListI64, "contains", [(v, Ty::I64)]) => {
             let dst = ssa.new_val();

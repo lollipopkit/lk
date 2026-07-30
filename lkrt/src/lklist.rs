@@ -1218,25 +1218,49 @@ pub unsafe extern "C" fn lkrt_lklist_str_contains(handle: *mut c_void, needle: *
     )
 }
 
-/// Range slice of an `i64` list (`xs[1..5]`), exactly the VM's list slice:
-/// negative indices count from the tail, everything clamps.
+/// The half-open range `[start, end)` a two-argument `slice` names, resolved
+/// against a list of `len` elements.
 ///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let len = values.len() as i64;
-    let start = if start < 0 { (len + start).max(0) } else { start } as usize;
-    let end = (if end < 0 { (len + end).max(0) } else { end } as usize).min(values.len());
-    let start = start.min(end);
-    crate::state::arena_handle(values[start..end].to_vec())
+/// One function because it is one rule (see the negative-position rule the VM
+/// and this crate share): negative counts from the tail, everything clamps, and
+/// an inverted range is empty rather than a panic. Writing it out per carrier is
+/// how four implementations of one rule start.
+pub(crate) fn slice_bounds(len: usize, start: i64, end: i64) -> (usize, usize) {
+    let signed_len = len as i64;
+    let start = if start < 0 { (signed_len + start).max(0) } else { start } as usize;
+    let end = (if end < 0 { (signed_len + end).max(0) } else { end } as usize).min(len);
+    (start.min(end), end)
 }
+
+/// Range slice of a list carrier (`xs[1..5]` / `xs.slice(1, 5)`), exactly the
+/// VM's: negative indices count from the tail, everything clamps.
+macro_rules! list_slice {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+            let values: &[$elem] = if handle.is_null() {
+                &[]
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { &*(handle as *mut Vec<$elem>) }
+            };
+            let (start, end) = slice_bounds(values.len(), start, end);
+            crate::state::arena_handle(values[start..end].to_vec())
+        }
+    };
+}
+
+list_slice!(lkrt_lklist_i64_slice, i64, "`i64` list range slice.");
+list_slice!(lkrt_lklist_f64_slice, f64, "`f64` list range slice.");
+list_slice!(
+    lkrt_lklist_str_slice,
+    *const c_char,
+    "`str` list range slice (elements are interned string-constant pointers)."
+);
 
 /// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the receiver
 /// is untouched).

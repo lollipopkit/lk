@@ -429,6 +429,12 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_index_of", lkrt_lklist_dyn_index_of, ReadsHost, [Ptr, DynVal], DynVal, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            // The other carriers, sharing `slice_bounds` with the one above:
+            // two-argument `slice` lowered only on `Int`, so `xs.slice(1, 3)`
+            // dropped a module to the VM for a reason no program can see.
+            ("list_h", "f64_slice", lkrt_lklist_f64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            ("list_h", "str_slice", lkrt_lklist_str_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            ("list_h", "dyn_slice", lkrt_lklist_dyn_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
             // `.slice(start[, end])` is a **window**, not a copy — see the
             // `slice_h` block below. (`i64_slice` above stays a copy: `xs[1..5]`
             // is a range index, which the VM materializes.)

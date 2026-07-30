@@ -138,9 +138,9 @@ pub use lkdyn::{
     lkrt_lklist_dyn_chain, lkrt_lklist_dyn_chunk, lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display,
     lkrt_lklist_dyn_enumerate, lkrt_lklist_dyn_eq, lkrt_lklist_dyn_filter_fn, lkrt_lklist_dyn_flatten,
     lkrt_lklist_dyn_join, lkrt_lklist_dyn_len, lkrt_lklist_dyn_map_fn, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,
-    lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set, lkrt_lklist_dyn_slice_from, lkrt_lklist_dyn_unique,
-    lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn, lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark,
-    lkrt_struct_type_begin, lkrt_struct_type_field,
+    lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set, lkrt_lklist_dyn_slice, lkrt_lklist_dyn_slice_from,
+    lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn,
+    lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark, lkrt_struct_type_begin, lkrt_struct_type_field,
 };
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_dyn_clear, lkrt_lklist_dyn_drop_last, lkrt_lklist_dyn_index_of,
@@ -149,8 +149,8 @@ pub use lklist::{
     lkrt_lklist_f64_contains_i64, lkrt_lklist_f64_display, lkrt_lklist_f64_drop_last, lkrt_lklist_f64_eq,
     lkrt_lklist_f64_get_pair, lkrt_lklist_f64_index_of, lkrt_lklist_f64_insert, lkrt_lklist_f64_join,
     lkrt_lklist_f64_len, lkrt_lklist_f64_new, lkrt_lklist_f64_push, lkrt_lklist_f64_remove_at, lkrt_lklist_f64_reverse,
-    lkrt_lklist_f64_set, lkrt_lklist_f64_skip, lkrt_lklist_f64_slice_from, lkrt_lklist_f64_sort, lkrt_lklist_f64_take,
-    lkrt_lklist_i64_at, lkrt_lklist_i64_chain, lkrt_lklist_i64_clear, lkrt_lklist_i64_contains,
+    lkrt_lklist_f64_set, lkrt_lklist_f64_skip, lkrt_lklist_f64_slice, lkrt_lklist_f64_slice_from, lkrt_lklist_f64_sort,
+    lkrt_lklist_f64_take, lkrt_lklist_i64_at, lkrt_lklist_i64_chain, lkrt_lklist_i64_clear, lkrt_lklist_i64_contains,
     lkrt_lklist_i64_contains_f64, lkrt_lklist_i64_display, lkrt_lklist_i64_drop_last, lkrt_lklist_i64_eq,
     lkrt_lklist_i64_f64_eq, lkrt_lklist_i64_filter_fn, lkrt_lklist_i64_from_range, lkrt_lklist_i64_get,
     lkrt_lklist_i64_get_pair, lkrt_lklist_i64_index_of, lkrt_lklist_i64_insert, lkrt_lklist_i64_join,
@@ -161,8 +161,9 @@ pub use lklist::{
     lkrt_lklist_str_display, lkrt_lklist_str_drop_last, lkrt_lklist_str_eq, lkrt_lklist_str_filter_fn,
     lkrt_lklist_str_get_pair, lkrt_lklist_str_index_of, lkrt_lklist_str_insert, lkrt_lklist_str_join,
     lkrt_lklist_str_len, lkrt_lklist_str_map_fn, lkrt_lklist_str_new, lkrt_lklist_str_push, lkrt_lklist_str_remove_at,
-    lkrt_lklist_str_reverse, lkrt_lklist_str_skip, lkrt_lklist_str_slice_from, lkrt_lklist_str_sort,
-    lkrt_lklist_str_take, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
+    lkrt_lklist_str_reverse, lkrt_lklist_str_skip, lkrt_lklist_str_slice, lkrt_lklist_str_slice_from,
+    lkrt_lklist_str_sort, lkrt_lklist_str_take, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap,
+    lkrt_str_split,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_f64_iter_pairs, lkrt_lkmap_i64_i64_display,

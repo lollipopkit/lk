@@ -1238,6 +1238,18 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: 
     arena_handle(tail)
 }
 
+/// Range slice of a boxed list, sharing `lklist::slice_bounds` — one rule, not
+/// a fourth copy of "negative counts from the tail and everything clamps".
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+    let values = dyn_slice(handle);
+    let (start, end) = crate::lklist::slice_bounds(values.len(), start, end);
+    arena_handle(values[start..end].to_vec())
+}
+
 /// `xs.chain(ys)` / `xs.concat(ys)` — a fresh concatenation.
 /// # Safety
 /// Both handles must be live dyn-list handles, or null.
