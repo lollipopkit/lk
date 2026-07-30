@@ -130,6 +130,31 @@ pub fn stdlib_signature(path: &str) -> Option<ResolvedStdlibSig> {
     Some(resolve(&declared))
 }
 
+/// Whether some stdlib module declares this exact dotted path.
+///
+/// Membership, not "can I resolve a signature": `stdlib_signature` gives up on
+/// anything that is not single-arity, so asking *it* would call `path.join`
+/// undeclared and reject a working program.
+pub fn stdlib_path_is_declared(path: &str) -> bool {
+    registry()
+        .lock()
+        .map(|registry| registry.contains_key(path))
+        .unwrap_or(false)
+}
+
+/// Whether some stdlib module of this name declares anything.
+///
+/// The question a call site has to ask before saying "no such member": a dotted
+/// call is `a.b.c()` for *any* `a`, so without this a struct field access would
+/// be judged against the standard library.
+pub fn stdlib_module_is_declared(module: &str) -> bool {
+    let prefix = alloc::format!("{module}.");
+    registry()
+        .lock()
+        .map(|registry| registry.keys().any(|path| path.starts_with(&prefix)))
+        .unwrap_or(false)
+}
+
 /// True when any stdlib module has registered signatures.
 ///
 /// Lets a caller tell "this path has no declared signature" apart from "no

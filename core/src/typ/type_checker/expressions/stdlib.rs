@@ -56,6 +56,31 @@ impl TypeChecker {
             return Ok(Some(declared.return_type));
         }
 
+        // A member the module does not have is a mistake here, not something to
+        // discover at run time. `math.sqrtt(2.0)`, `os.name()`, `hash.md5(s)`
+        // and `datetime.year(t)` all type-checked and then died with "nil is not
+        // a function" — a sentence naming neither the module nor the member,
+        // which is how the last three ended up on a list of "missing native
+        // lowerings" until someone tried to run them.
+        //
+        // Three conditions, because a dotted call is `a.b.c()` for *any* `a`:
+        // some standard library must be linked at all (`core`'s own tests and
+        // bare metal have none), the root must be a module that declares
+        // something, and the root must not be shadowed by a binding — a local
+        // named `math` is a value with fields, not the module.
+        if crate::typ::has_stdlib_signatures()
+            && crate::typ::stdlib_module_is_declared(&module)
+            && !crate::typ::stdlib_path_is_declared(&format!("{module}.{field}"))
+            && path.first().is_some_and(|root| self.lookup_binding(root).is_none())
+        {
+            return Err(Self::type_err(
+                &format!("`{module}` has no member `{field}`"),
+                None,
+                None,
+                Some(func.clone()),
+            ));
+        }
+
         let Some((params, named_params, return_type)) = stdlib_function_signature(&module, &field) else {
             return Ok(None);
         };

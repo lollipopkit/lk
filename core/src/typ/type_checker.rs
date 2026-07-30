@@ -866,6 +866,19 @@ impl TypeChecker {
     }
 
     /// The type bound to `name`, searching from the innermost scope outward.
+    /// Whether a name is bound as a value here — a local, or a namespace an
+    /// import brought in.
+    ///
+    /// Asked before judging a dotted call against the standard library: `math`
+    /// is a module *unless* the program bound something to that name, in which
+    /// case `math.f()` is an ordinary field access and none of the library's
+    /// business.
+    pub(crate) fn lookup_binding(&self, name: &str) -> Option<Type> {
+        self.lookup_local(name)
+            .cloned()
+            .or_else(|| self.imported_members.contains_key(name).then_some(Type::Any))
+    }
+
     fn lookup_local(&self, name: &str) -> Option<&Type> {
         self.local_types.iter().rev().find_map(|scope| scope.get(name))
     }
