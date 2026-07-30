@@ -1003,8 +1003,8 @@ pub(super) fn lower(
                 // normalize to, so they would need their own helper family
                 // rather than this one line. A fallback, not a wrong answer.
                 (
-                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn,
-                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn,
+                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64,
+                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64,
                 ) => {
                     if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
                         return Err(Unsupported::TypeMismatch { pc });

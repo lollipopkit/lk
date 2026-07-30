@@ -141,6 +141,7 @@ pub use lkdyn::{
     lkrt_lklist_dyn_take, lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn,
     lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark, lkrt_struct_type_begin, lkrt_struct_type_field,
 };
+pub use lkdyn::{lkrt_dyn_as_typed_map, lkrt_dyn_from_typed_map};
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_chain, lkrt_lklist_f64_contains,
     lkrt_lklist_f64_contains_i64, lkrt_lklist_f64_display, lkrt_lklist_f64_eq, lkrt_lklist_f64_get_pair,
@@ -157,8 +158,8 @@ pub use lklist::{
     lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
 };
 pub use lkmap::{
-    lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_i64_display, lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display,
-    lkrt_lkmap_str_i64_display,
+    lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_f64_iter_pairs, lkrt_lkmap_i64_i64_display,
+    lkrt_lkmap_i64_i64_iter_pairs, lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display, lkrt_lkmap_str_i64_display,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,

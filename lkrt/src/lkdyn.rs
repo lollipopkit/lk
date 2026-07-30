@@ -58,6 +58,48 @@ pub const DYN_SET: i64 = 8;
 /// A `Bytes` handle, boxed. See [`DYN_SET`].
 pub const DYN_BYTES: i64 = 9;
 
+/// A **typed map** handle, boxed in place — one tag per carrier.
+///
+/// `DYN_MAP` means a `str -> Dyn` map, so a typed carrier used to box by
+/// *rebuilding* into one. That is a re-representation, and the fresh table's
+/// iteration order is not the original's once the history includes deletions:
+/// `println([m])` printed entries in an order the VM never would. A wrong
+/// answer, not a fallback — and the rule against it was already written down on
+/// [`DYN_RAW`].
+///
+/// Five tags rather than one because there are five carriers; the tag is the
+/// only thing that says which. `lkmap::KIND_*` is the same numbering, minus the
+/// base.
+pub const DYN_TMAP_BASE: i64 = 10;
+/// One past the last typed-map tag.
+pub const DYN_TMAP_END: i64 = 15;
+
+/// Whether a tag denotes a map of any representation.
+pub(crate) fn is_map_tag(tag: i64) -> bool {
+    tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
+}
+
+/// Boxes a typed map handle under its carrier's tag. `kind` is `lkmap::KIND_*`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_typed_map(handle: *mut c_void, kind: i64) -> LkDyn {
+    if !(0..DYN_TMAP_END - DYN_TMAP_BASE).contains(&kind) {
+        crate::panic::raise_str("runtime type error");
+    }
+    LkDyn {
+        tag: DYN_TMAP_BASE + kind,
+        payload: handle as i64,
+    }
+}
+
+/// Unboxes a typed map handle, checking the carrier matches.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_typed_map(v: LkDyn, kind: i64) -> *mut c_void {
+    if v.tag != DYN_TMAP_BASE + kind {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
 /// Boxes a `Set` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_set(handle: *mut c_void) -> LkDyn {
@@ -612,6 +654,27 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             _ => x.as_f64() == y.as_f64(),
         };
     }
+    // Two maps compare whatever their representations are — a typed carrier
+    // against a boxed one is `{"a": 1} == {"a": 1, "b": "x"}` written twice,
+    // and the tag difference is a storage detail. Both sides take the general
+    // key view, which is a *copy*: sound only because `==` over maps is
+    // order-free (see `lkmap::typed_map_keyed`).
+    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+        // A struct is a marked map and its type is part of its identity; a
+        // typed carrier is never a struct, so its mark is 0.
+        if lkrt_dyn_obj_type_id(a) != lkrt_dyn_obj_type_id(b) {
+            return false;
+        }
+        let keyed = |v: LkDyn| {
+            if v.tag == DYN_MAP {
+                crate::lkmap::boxed_map_keyed(v.payload as *mut c_void)
+            } else {
+                crate::lkmap::typed_map_keyed(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+            }
+        };
+        let (xs, ys) = (keyed(a), keyed(b));
+        return xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)));
+    }
     if a.tag != b.tag {
         return false;
     }
@@ -758,6 +821,14 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
         }
         // Rendered through the same function the unboxed spelling calls, so a
         // set in a list and a set on its own cannot drift apart.
+        // Rendered straight off the carrier — no copy, so the order is the
+        // map's own. This is the arm the rebuild used to route through.
+        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => {
+            out.push_str(&crate::lkmap::typed_map_text(
+                tag - DYN_TMAP_BASE,
+                v.payload as *mut c_void,
+            ));
+        }
         DYN_SET => out.push_str(&crate::lkset::set_text(v.payload as *mut c_void)),
         DYN_BYTES => out.push_str(&crate::lkbytes::bytes_text(v.payload as *mut c_void)),
         other => {
@@ -804,6 +875,9 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
         }
         DYN_STR => unsafe { dyn_str(v) }.chars().count() as i64,
         // SAFETY: as in `dyn_eq_inner`, the tag guarantees the handle kind.
+        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => {
+            crate::lkmap::typed_map_len(tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+        }
         DYN_SET => unsafe { crate::lkset::lkrt_lkset_len(v.payload as *mut c_void) },
         DYN_BYTES => unsafe { crate::lkbytes::lkrt_lkbytes_len(v.payload as *mut c_void) },
         _ => crate::panic::raise_str("runtime type error"),

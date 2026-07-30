@@ -1418,6 +1418,58 @@ fn try_catch_differential() {
     );
 }
 
+/// A typed map boxed into a container keeps its own entry order.
+///
+/// Boxing used to mean `str_i64_to_dyn` — rebuilding the map into a
+/// `str -> Dyn` one by re-inserting in iteration order. A fresh table filled by
+/// a different insertion sequence has a different layout, so once the history
+/// includes deletions the copy iterates differently from the original, and
+/// `println([m])` listed its entries in an order the VM never produces. A
+/// **wrong answer**, not a fallback, and it was reachable two ways: a struct
+/// field holding a map (long-standing) and a map inside a list or map (new with
+/// the boxable-element work).
+///
+/// The rule against it was already written down on `DYN_RAW`: boxing must not
+/// re-represent a container. A typed map now boxes in place under a tag naming
+/// its carrier. The one surviving rebuild is equality's, which is order-free.
+///
+/// The deletions are the point of these cases — without them the two layouts
+/// coincide and the bug hides.
+#[test]
+fn a_boxed_typed_map_keeps_its_order() {
+    run_differential(
+        "typed_map_boxing_order",
+        &[
+            new(
+                "in_a_list_after_deletions",
+                "let m = {};\nlet i = 0;\nwhile i < 200 {\n  m[\"key_number_${i}\"] = i;\n  i = i + 1;\n}\nlet j = 0;\nwhile j < 60 {\n  m.delete(\"key_number_${j * 3}\");\n  j = j + 1;\n}\nm[\"late\"] = 1;\nprintln([m]);\nprintln({\"w\": m});\nreturn 0;\n",
+            ),
+            new(
+                "in_a_struct_field_after_deletions",
+                "struct S { m: Map<String, Int> }\nlet m = {};\nlet i = 0;\nwhile i < 200 {\n  m[\"key_number_${i}\"] = i;\n  i = i + 1;\n}\nlet j = 0;\nwhile j < 60 {\n  m.delete(\"key_number_${j * 3}\");\n  j = j + 1;\n}\nprintln(S { m: m });\nreturn 0;\n",
+            ),
+            // Boxing in place means the box and the original are one map.
+            new(
+                "boxing_keeps_identity",
+                "let m = {\"a\": 1};\nlet holder = [m];\nm[\"b\"] = 2;\nprintln(holder);\nprintln(m);\nreturn 0;\n",
+            ),
+            // Equality still crosses representations: a typed carrier against a
+            // boxed map is the same map written two ways.
+            new(
+                "equality_across_representations",
+                "println({\"a\": 1} == {\"a\": 1.0});\nprintln([{\"a\": 1}] == [{\"a\": 1}]);\nprintln([{\"a\": 1}] == [{\"a\": 2}]);\nprintln({\"k\": {\"a\": 1}} == {\"k\": {\"a\": 1}});\nreturn 0;\n",
+            ),
+            // Int-keyed maps ride the same path: boxed in place, displayed and
+            // iterated off the carrier.
+            new(
+                "int_keyed_maps_box_and_iterate",
+                "let m = {1: 10, 2: 20, 5: 50};\nprintln([m]);\nprintln({\"w\": m});\nprintln(m == {5: 50, 1: 10, 2: 20});\nlet n = 0;\nfor pair in m { n = n + 1; }\nprintln(n);\nfor pair in m { println(pair); }\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `for x in s` over a `Set`, and `for b in bytes`, pinned to pure Cranelift.
 ///
 /// A set's *iteration* order is its hash order — unlike its display order,

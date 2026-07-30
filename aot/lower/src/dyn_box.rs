@@ -106,6 +106,8 @@ pub(crate) fn dyn_boxable_ty(ty: Ty) -> bool {
             | Ty::MapStrI64
             | Ty::MapStrF64
             | Ty::MapStrBool
+            | Ty::MapI64I64
+            | Ty::MapI64F64
             | Ty::Set
             | Ty::Bytes
             | Ty::MaybeI64
@@ -225,25 +227,33 @@ pub(crate) fn to_dyn(
         // any mutation ride along.
         Ty::Set => "from_set",
         Ty::Bytes => "from_bytes",
-        // Typed string maps box via a value-boxing conversion (cold path:
-        // a typed map crossing a `try$call` cell boundary).
-        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {
-            let converter = match ty {
-                Ty::MapStrI64 => "str_i64_to_dyn",
-                Ty::MapStrF64 => "str_f64_to_dyn",
-                _ => "str_bool_to_dyn",
+        // A typed map boxes **in place**, under a tag naming its carrier.
+        //
+        // It used to convert — `str_i64_to_dyn` rebuilds the map into a
+        // `str -> Dyn` one by re-inserting in iteration order. That is a
+        // re-representation, and the copy's layout is not the original's once
+        // deletions are in the history, so `println([m])` listed its entries in
+        // an order the VM never produces. `DYN_RAW`'s doc already said boxing
+        // must not re-represent a container; this is the same rule, applied
+        // where it had been missed.
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => {
+            let kind = match ty {
+                Ty::MapStrI64 => 0,
+                Ty::MapStrF64 => 1,
+                Ty::MapStrBool => 2,
+                Ty::MapI64I64 => 3,
+                _ => 4,
             };
-            let converted = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(converted),
-                callee: AbiRef::new("map_h", converter),
-                args: vec![v],
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
             });
             let boxed = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(boxed),
-                callee: AbiRef::new("dyn", "from_map"),
-                args: vec![converted],
+                callee: AbiRef::new("dyn", "from_typed_map"),
+                args: vec![v, kind_v],
             });
             return Ok(boxed);
         }

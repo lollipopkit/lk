@@ -78,6 +78,8 @@ pub(super) fn lower(
                             | Ty::MapStrI64
                             | Ty::MapStrF64
                             | Ty::MapStrBool
+                            | Ty::MapI64I64
+                            | Ty::MapI64F64
                             | Ty::Set
                             | Ty::Bytes
                     )
@@ -644,11 +646,13 @@ pub(super) fn lower(
                 Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => {
                     ssa.write(instr.a(), block, (v, ty));
                 }
-                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
                     let iter_fn = match ty {
                         Ty::MapStrI64 => "str_i64_iter_pairs",
                         Ty::MapStrF64 => "str_f64_iter_pairs",
                         Ty::MapStrBool => "str_bool_iter_pairs",
+                        Ty::MapI64I64 => "i64_i64_iter_pairs",
+                        Ty::MapI64F64 => "i64_f64_iter_pairs",
                         _ => "str_dyn_iter_pairs",
                     };
                     let dst = ssa.new_val();

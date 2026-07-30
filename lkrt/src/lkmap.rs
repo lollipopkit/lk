@@ -24,6 +24,7 @@ use alloc::{
 use core::ffi::{CStr, c_char, c_void};
 
 use crate::lklist::{LkMaybeF64, LkMaybeI64};
+use crate::vm_mirror::{RtKey, str_key};
 
 // The exact carrier the VM uses (`core::util::fast_map::FastHashMap` =
 // `hashbrown::HashMap` + `FxBuildHasher`, fixed seed): iteration order is a
@@ -435,6 +436,156 @@ map_to_dyn!(
     |v: &i64| crate::lkdyn::lkrt_dyn_from_bool(*v),
     "The bool map carrier → boxed-value map."
 );
+
+/// `for pair in m` over an **int**-keyed map: the same `[key, value]` snapshot
+/// the string-keyed carriers produce, with the key boxed as an `Int`.
+///
+/// Its own function rather than an arm of `map_iter_family!` because that macro
+/// boxes the key with `boxed_str_key` — the key kind is the one thing the two
+/// families do not share.
+macro_rules! int_map_iter {
+    ($name:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: `handle` addresses the matching carrier map.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            pair_list(
+                map.iter()
+                    .map(|(k, v)| (crate::lkdyn::lkrt_dyn_from_i64(k.0), ($box_val)(v)))
+                    .collect(),
+            )
+        }
+    };
+}
+
+int_map_iter!(
+    lkrt_lkmap_i64_i64_iter_pairs,
+    I64I64Map,
+    |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
+    "`for pair in m` snapshot over `Map<i64, i64>`."
+);
+int_map_iter!(
+    lkrt_lkmap_i64_f64_iter_pairs,
+    I64F64Map,
+    |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
+    "`for pair in m` snapshot over `Map<i64, f64>`."
+);
+
+/// A boxed **typed** map: the carrier kind, as the `LkDyn` tag carries it.
+///
+/// Boxing used to mean `*_to_dyn` — rebuilding the map into a `StrDynMap` by
+/// re-inserting in iteration order. That is a *re-representation*, and
+/// `DYN_RAW`'s doc already spells out why it cannot be one: a fresh table filled
+/// by a different insertion sequence has a different layout, so the copy
+/// iterates in a different order than the original. With deletions in the
+/// history the two diverge, and `println([m])` printed its entries in an order
+/// the VM never would — a wrong answer, not a fallback.
+///
+/// So a typed map boxes by tagging its handle in place, and the tag says which
+/// carrier it is. The rebuild survives in exactly one place, [`typed_map_keyed`],
+/// because its one consumer is equality — which is order-free.
+pub(crate) const KIND_STR_I64: i64 = 0;
+pub(crate) const KIND_STR_F64: i64 = 1;
+pub(crate) const KIND_STR_BOOL: i64 = 2;
+pub(crate) const KIND_I64_I64: i64 = 3;
+pub(crate) const KIND_I64_F64: i64 = 4;
+
+/// `{"a":1,"b":2}` / `{3:4,1:2}` — the carrier's own iteration order, no copy.
+pub(crate) fn typed_map_text(kind: i64, handle: *mut c_void) -> String {
+    // SAFETY: the tag the caller decoded `kind` from is only ever set by
+    // `dyn.from_typed_map` on a handle of that carrier.
+    unsafe {
+        let ptr = match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_display(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_display(handle),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_display(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_display(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_display(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        };
+        CStr::from_ptr(ptr).to_str().unwrap_or("").to_string()
+    }
+}
+
+/// Entry count without a copy.
+pub(crate) fn typed_map_len(kind: i64, handle: *mut c_void) -> i64 {
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 | KIND_STR_BOOL => lkrt_lkmap_str_i64_len(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_len(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_len(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_len(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// The entries under the general key type, for **equality only**.
+///
+/// This is a copy, and that is fine here and nowhere else: `==` over maps is
+/// order-free, so a different layout cannot change the answer. Display must
+/// never come through this.
+pub(crate) fn typed_map_keyed(kind: i64, handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {
+    use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    let mut out: FxMap<RtKey, crate::lkdyn::LkDyn> = FxMap::default();
+    if handle.is_null() {
+        return out;
+    }
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => {
+                for (k, v) in (*(handle as *mut StrI64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_i64(*v));
+                }
+            }
+            KIND_STR_F64 => {
+                for (k, v) in (*(handle as *mut StrF64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_f64(*v));
+                }
+            }
+            KIND_STR_BOOL => {
+                for (k, v) in (*(handle as *mut StrI64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_bool(*v));
+                }
+            }
+            KIND_I64_I64 => {
+                for (k, v) in (*(handle as *mut I64I64Map)).iter() {
+                    out.insert(RtKey::Int(k.0), lkrt_dyn_from_i64(*v));
+                }
+            }
+            KIND_I64_F64 => {
+                for (k, v) in (*(handle as *mut I64F64Map)).iter() {
+                    out.insert(RtKey::Int(k.0), lkrt_dyn_from_f64(*v));
+                }
+            }
+            // `kind` is decoded from a tag the range check above admitted, so
+            // this is unreachable — and a loud failure rather than a silent
+            // empty map if the encoding ever drifts.
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+    out
+}
+
+/// The same view of a **boxed** (`str -> Dyn`) map, so equality can compare one
+/// against a typed one.
+pub(crate) fn boxed_map_keyed(handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {
+    let mut out: FxMap<RtKey, crate::lkdyn::LkDyn> = FxMap::default();
+    if handle.is_null() {
+        return out;
+    }
+    // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+    for (k, v) in unsafe { (*(handle as *mut StrDynMap)).iter() } {
+        out.insert(str_key(k), *v);
+    }
+    out
+}
 
 /// `println(m)` for a statically typed map: `{"a":1,"b":2}` / `{3:4,1:2}`.
 ///
