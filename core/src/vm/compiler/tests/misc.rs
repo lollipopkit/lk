@@ -1539,4 +1539,16 @@ fn every_call_lands_in_exactly_one_bucket() {
         classified, metrics.call_ops,
         "every call is counted once and classified once: {metrics:?}"
     );
+
+    // The same identity for register writes. `register_writes` was bumped in one
+    // helper while the sources are recorded at every opcode that writes, so the
+    // report printed a total of 210 above parts summing to 763 — a reader takes
+    // the first line for the sum of the rest. The total is now computed *from*
+    // the breakdown, and this says so.
+    assert!(metrics.register_writes > 0, "the program writes registers: {metrics:?}");
+    assert_eq!(
+        metrics.register_writes,
+        metrics.register_write_sources.iter().sum::<u64>(),
+        "the register-write total is the sum of its sources: {metrics:?}"
+    );
 }

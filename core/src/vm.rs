@@ -2,6 +2,12 @@
 //!
 //! The public surface exposes the canonical `Instr` compiler/executor path.
 
+// Load-bearing for a `cfg` reason, not for a dead-code one: the profiling
+// machinery is compiled always and *used* only under `test` or `vm-profile`, so
+// the default build sees items with no caller. That is also why this hid three
+// real bugs — counters that could never count — until they were looked for by
+// hand. The fix is to gate the items themselves so nothing needs silencing; see
+// the task that records which ones.
 #[allow(dead_code, unused_imports)]
 pub mod analysis;
 #[allow(dead_code, unused_imports)]

@@ -156,7 +156,7 @@ Note: command-line argument paths must be sanitized relative paths.
 
 Editor integrations live under `ecosystem/`.
 
-- VS Code support is a single merged extension under `ecosystem/vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, repeated string argument values, and common receiver methods. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
+- VS Code support is a single merged extension under `ecosystem/vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, repeated string argument values, and common receiver methods. Use `make install` to install the CLI, `lk-lsp` and the extension into every VS Code-family editor found (VS Code / Insiders / VSCodium / Cursor / Windsurf, remote windows included), `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to only build the VSIX.
 - Zed support lives under `ecosystem/zed-ext`. It uses `ecosystem/tree-sitter-lk` for Tree-sitter highlighting and starts `lk-lsp` for diagnostics, completion, hover, goto definition, document symbols, semantic tokens, and inlay hints. Use `make zed-ext-check` to validate the extension crate.
 
 ## License

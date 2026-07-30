@@ -7,31 +7,18 @@ EXAMPLES="$ROOT/examples/lk-example-workspace"
 SERVER="$ROOT/target/debug/lk-lsp"
 USER_DATA_DIR="${LK_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lk-vscode-lsp.XXXXXX")}"
 
+# shellcheck source=lib/vscode_cli.sh
+. "$ROOT/scripts/lib/vscode_cli.sh"
+
 find_code_bin() {
-  if [[ -n "${CODE_BIN:-}" ]]; then
-    printf '%s\n' "$CODE_BIN"
+  local found
+  # launchable: this opens an Extension Development Host window, which the
+  # server-side code-server CLI cannot do.
+  found="$(lk_vscode_cli launchable)"
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found"
     return
   fi
-
-  if command -v code >/dev/null 2>&1; then
-    command -v code
-    return
-  fi
-
-  local candidates=(
-    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-    "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-    "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code"
-    "$HOME/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code"
-  )
-
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
 
   echo "error: VS Code CLI 'code' not found" >&2
   echo "Set CODE_BIN to the VS Code CLI path, for example:" >&2

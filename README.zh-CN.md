@@ -152,7 +152,7 @@ assert_eq!(result.display_first_return(), "true");
 
 编辑器集成统一放在 `ecosystem/` 下。
 
-- VS Code 支持已合并为 `ecosystem/vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
+- VS Code 支持已合并为 `ecosystem/vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make install` 安装 CLI、`lk-lsp` 以及扩展（会装进本机探测到的所有 VS Code 系编辑器：VS Code / Insiders / VSCodium / Cursor / Windsurf，含 remote 窗口），`make debug-lsp-ext` 启动本地 Extension Development Host，或 `make vsix` 只构建 VSIX。
 - Zed 支持位于 `ecosystem/zed-ext`，使用 `ecosystem/tree-sitter-lk` 提供 Tree-sitter 高亮，并启动 `lk-lsp` 提供 diagnostics、completion、hover、goto definition、document symbols、semantic tokens 和 inlay hints。使用 `make zed-ext-check` 验证扩展 crate。
 
 ## 许可证

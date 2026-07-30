@@ -76,7 +76,7 @@ mod tests {
             map_ops: 7,
             string_ops: 8,
             index_key_metrics: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
-            register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9],
             copy_policy_heap_clones: 9,
             register_copy_heap_clones: 10,
             local_copy_heap_clones: 12,
@@ -94,7 +94,9 @@ mod tests {
         assert!(line.contains("branches=3"));
         assert!(line.contains("typed_branches=4"));
         assert!(line.contains("containers=5"));
-        assert!(line.contains("write_sources=other:10,string:9,global:8,call_return:7,index:6,container:5"));
+        // No `other:` any more: every dispatch arm that writes a register
+        // classifies it, so a catch-all bucket could only ever print zero.
+        assert!(line.contains("write_sources=string:9,global:8,call_return:7,index:6,container:5,compare:4"));
         assert!(line.contains(
             "index_keys=known_string_key:12,dynamic_register_key:11,dynamic_int_key:10,dynamic_short_string_key:9,dynamic_object_key:8,dynamic_other_key:7"
         ));

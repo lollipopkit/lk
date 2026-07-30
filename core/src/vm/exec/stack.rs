@@ -7,8 +7,6 @@ use crate::{
     vm::CallWindow,
 };
 
-use crate::vm::analysis::record_register_write_known_enabled;
-
 use super::{Executor, ReturnValues};
 
 impl Executor {
@@ -40,9 +38,6 @@ impl Executor {
     #[inline]
     pub(super) fn write_stack_index(&mut self, index: usize, value: RuntimeVal) {
         self.state.stack[index] = value;
-        if self.collect_metrics {
-            record_register_write_known_enabled();
-        }
     }
 
     #[inline]

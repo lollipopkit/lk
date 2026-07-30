@@ -607,7 +607,7 @@ pub struct VmRuntimeMetrics {
 }
 
 pub const VM_OPCODE_COUNT: usize = 128;
-pub const VM_REGISTER_WRITE_SOURCE_COUNT: usize = 10;
+pub const VM_REGISTER_WRITE_SOURCE_COUNT: usize = 9;
 pub const VM_INDEX_KEY_METRIC_COUNT: usize = 12;
 pub const VM_REGISTER_WRITE_SOURCE_NAMES: [&str; VM_REGISTER_WRITE_SOURCE_COUNT] = [
     "move",
@@ -619,7 +619,6 @@ pub const VM_REGISTER_WRITE_SOURCE_NAMES: [&str; VM_REGISTER_WRITE_SOURCE_COUNT]
     "call_return",
     "global",
     "string",
-    "other",
 ];
 pub const VM_INDEX_KEY_METRIC_NAMES: [&str; VM_INDEX_KEY_METRIC_COUNT] = [
     "known_string_key",
@@ -683,7 +682,10 @@ pub(crate) enum VmRegisterWriteSource {
     CallReturn,
     Global,
     String,
-    Other,
+    // No `Other`: a scan of every dispatch arm that writes a register found all
+    // of them classified, so a catch-all would be a line that can only print
+    // zero — the shape this pass exists to remove. An opcode added later belongs
+    // in a *named* bucket.
 }
 
 impl VmRegisterWriteSource {
@@ -699,7 +701,6 @@ impl VmRegisterWriteSource {
             Self::CallReturn => 6,
             Self::Global => 7,
             Self::String => 8,
-            Self::Other => 9,
         }
     }
 }
@@ -846,6 +847,13 @@ pub(crate) fn record_register_write_sources_batch(sources: &[u64; VM_REGISTER_WR
         for (dst, count) in metrics.register_write_sources.iter_mut().zip(sources.iter()) {
             *dst += count;
         }
+        // The total is *computed from* the breakdown, so the two cannot disagree.
+        // `register_writes` used to be bumped in `write_stack_index` — one helper
+        // among several — while the sources are recorded at every opcode that
+        // writes a register, so the report printed a "total" of 210 above parts
+        // summing to 763. Neither number was wrong on its own; the pairing was,
+        // and a reader takes the first line for the sum of the rest.
+        metrics.register_writes += sources.iter().sum::<u64>();
     });
 }
 
@@ -1051,6 +1059,8 @@ pub(crate) fn record_opcode_histogram_batch(histogram: &[u64; VM_OPCODE_COUNT]) 
 #[cfg(all(not(test), feature = "vm-profile"))]
 #[inline]
 pub(crate) fn record_register_write_sources_batch(sources: &[u64; VM_REGISTER_WRITE_SOURCE_COUNT]) {
+    // See the `cfg(test)` twin: the total is the sum of the breakdown.
+    REGISTER_WRITES.fetch_add(sources.iter().sum::<u64>(), Ordering::Relaxed);
     for (counter, count) in REGISTER_WRITE_SOURCES.iter().zip(sources.iter()) {
         if *count != 0 {
             counter.fetch_add(*count, Ordering::Relaxed);
