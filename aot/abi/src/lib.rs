@@ -337,6 +337,10 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_from_range", lkrt_lklist_i64_from_range, WritesHost, [I64, I64, I64, I64], Ptr, Constructs);
             ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_take", lkrt_lklist_f64_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_skip", lkrt_lklist_f64_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "str_take", lkrt_lklist_str_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "str_skip", lkrt_lklist_str_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
@@ -397,6 +401,9 @@ macro_rules! for_each_abi_fn {
             // only on `Str`. (`join` is *not* — the VM refuses a non-string
             // list, loudly, and the lowering matches that.)
             ("list_h", "i64_index_of", lkrt_lklist_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("list_h", "f64_index_of", lkrt_lklist_f64_index_of, ReadsHost, [Ptr, F64], DynVal, Borrowed);
+            ("list_h", "str_index_of", lkrt_lklist_str_index_of, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("list_h", "dyn_index_of", lkrt_lklist_dyn_index_of, ReadsHost, [Ptr, DynVal], DynVal, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
             // `.slice(start[, end])` is a **window**, not a copy — see the
@@ -404,6 +411,9 @@ macro_rules! for_each_abi_fn {
             // is a range index, which the VM materializes.)
             ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "f64_reverse", lkrt_lklist_f64_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "str_reverse", lkrt_lklist_str_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_reverse", lkrt_lklist_dyn_reverse, WritesHost, [Ptr], Ptr, Constructs);
             // List windows (`lkrt::lkslice`): `xs.slice(a, b)` reads through to
             // `xs` instead of copying it, matching `HeapValue::Slice` in the VM.
             // `ConstructsView` is what keeps the source alive for as long as the

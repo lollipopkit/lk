@@ -602,23 +602,28 @@ pub(crate) fn lower_method_dispatch(
 ) -> Result<Reg, Unsupported> {
     let result: Reg = match (receiver_ty, name, args) {
         // Boxed-element list long tail (runtime-polymorphic receivers).
-        (Ty::ListDyn, "take", [(n, Ty::I64)]) => {
+        // `take` / `skip` over every carrier and both directions. Neither looks
+        // at the element, and they were written out per carrier — which is how
+        // `f64` and `str` ended up with neither, so `[1.5, 2.5].take(1)` dropped
+        // its whole module to the VM.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, name @ ("take" | "skip"), [(n, Ty::I64)]) => {
+            let callee = match (receiver_ty, name) {
+                (Ty::ListI64, "take") => "i64_take",
+                (Ty::ListI64, _) => "i64_skip",
+                (Ty::ListF64, "take") => "f64_take",
+                (Ty::ListF64, _) => "f64_skip",
+                (Ty::ListStr, "take") => "str_take",
+                (Ty::ListStr, _) => "str_skip",
+                (_, "take") => "dyn_take",
+                (_, _) => "dyn_skip",
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_take"),
+                callee: AbiRef::new("list_h", callee),
                 args: vec![receiver, *n],
             });
-            (dst, Ty::ListDyn)
-        }
-        (Ty::ListDyn, "skip", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_skip"),
-                args: vec![receiver, *n],
-            });
-            (dst, Ty::ListDyn)
+            (dst, receiver_ty)
         }
         // `concat` with any dyn-list side: both sides normalize to dyn lists
         // (typed sides convert element-wise, cold path) and chain.
@@ -666,14 +671,24 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListI64)
         }
-        (Ty::ListI64, "reverse", []) => {
+        // `reverse` does not look at the element, so it is one arm over the
+        // carriers rather than four written one at a time — which is how it came
+        // to exist for `Int` and nowhere else, dropping `[1.5, 2.5].reverse()`'s
+        // whole module to the VM.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "reverse", []) => {
+            let callee = match receiver_ty {
+                Ty::ListI64 => "i64_reverse",
+                Ty::ListF64 => "f64_reverse",
+                Ty::ListStr => "str_reverse",
+                _ => "dyn_reverse",
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_reverse"),
+                callee: AbiRef::new("list_h", callee),
                 args: vec![receiver],
             });
-            (dst, Ty::ListI64)
+            (dst, receiver_ty)
         }
         // `.is_empty()` — `len == 0` over the same per-type len ABI.
         (
@@ -1238,24 +1253,6 @@ pub(crate) fn lower_method_dispatch(
             (dst, Ty::MaybeStr)
         }
         // `List<i64>` slicing/concat helpers (VM core_methods semantics).
-        (Ty::ListI64, "take", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_take"),
-                args: vec![receiver, *n],
-            });
-            (dst, Ty::ListI64)
-        }
-        (Ty::ListI64, "skip", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_skip"),
-                args: vec![receiver, *n],
-            });
-            (dst, Ty::ListI64)
-        }
         // `xs.chain(ys)` is `xs + ys`, and the operator path has always covered
         // every list pairing: same-typed keeps its carrier, cross-typed chains
         // boxed (the VM's result there is a Mixed list, which is what
@@ -1761,12 +1758,46 @@ pub(crate) fn lower_method_dispatch(
         // `join` is deliberately *not* alongside it: the VM refuses a
         // non-string list ("ListJoin list must contain only strings"), so
         // accepting one here would make native answer where the VM raises.
+        // One arm per carrier, and each takes exactly the needle its `contains`
+        // takes — in the VM both answer through one `typed_list_position`, so a
+        // carrier that accepts a needle for `contains` and refuses it here would
+        // make `xs.contains(v)` and `xs.index_of(v) != nil` disagree about which
+        // programs lower.
         (Ty::ListI64, "index_of", [(v, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
                 callee: AbiRef::new("list_h", "i64_index_of"),
                 args: vec![receiver, *v],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListF64, "index_of", [(needle, Ty::F64 | Ty::I64)]) => {
+            let needle = coerce_to_f64(ssa, insts, *needle, args[0].1);
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "f64_index_of"),
+                args: vec![receiver, needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListStr, "index_of", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_index_of"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListDyn, "index_of", [(needle, nty)]) => {
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_index_of"),
+                args: vec![receiver, boxed],
             });
             (dst, Ty::Dyn)
         }

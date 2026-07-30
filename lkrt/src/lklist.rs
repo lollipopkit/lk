@@ -110,44 +110,98 @@ pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, in
     crate::state::arena_handle(out)
 }
 
-/// `xs.take(n)` — a fresh list of the first `n` elements. A negative count
+/// `xs.take(n)` / `xs.skip(n)` — a fresh prefix / suffix. A negative count
 /// raises, as in the VM: a count has no negative meaning, and the cast this
 /// used to perform (`-1 as usize`) took the whole list instead.
 ///
-/// # Safety
-/// `handle` must be a live `List<i64>` handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *mut c_void {
-    if n < 0 {
-        crate::panic::raise_str(&format!("list.take() count must be non-negative, got {n}"));
-    }
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        unsafe { &*(handle as *mut Vec<i64>) }
+/// One macro over both directions and every carrier. Neither operation looks at
+/// the element, and the four hand-written copies (`i64` and boxed, take and
+/// skip) spelled that raise message four times while `f64` and `str` had no copy
+/// at all — so `[1.5, 2.5].take(1)` dropped its module to the VM.
+macro_rules! list_window {
+    ($name:ident, $elem:ty, $method:literal, $window:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, n: i64) -> *mut c_void {
+            if n < 0 {
+                crate::panic::raise_str(&format!(
+                    concat!("list.", $method, "() count must be non-negative, got {}"),
+                    n
+                ));
+            }
+            let values: &[$elem] = if handle.is_null() {
+                &[]
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { &*(handle as *mut Vec<$elem>) }
+            };
+            // Clamped once, so both directions see an in-range cut.
+            let cut = (n as usize).min(values.len());
+            let window: fn(&[$elem], usize) -> &[$elem] = $window;
+            crate::state::arena_handle(window(values, cut).to_vec())
+        }
     };
-    let count = (n as usize).min(values.len());
-    crate::state::arena_handle(values[..count].to_vec())
 }
 
-/// `xs.skip(n)` — a fresh list without the first `n` elements. A negative
-/// count raises, as in the VM (see [`lkrt_lklist_i64_take`]).
-///
-/// # Safety
-/// `handle` must be a live `List<i64>` handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *mut c_void {
-    if n < 0 {
-        crate::panic::raise_str(&format!("list.skip() count must be non-negative, got {n}"));
-    }
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let start = (n as usize).min(values.len());
-    crate::state::arena_handle(values[start..].to_vec())
-}
+list_window!(
+    lkrt_lklist_i64_take,
+    i64,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<i64>`."
+);
+list_window!(
+    lkrt_lklist_f64_take,
+    f64,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<f64>`."
+);
+list_window!(
+    lkrt_lklist_str_take,
+    *const c_char,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<str>`."
+);
+list_window!(
+    lkrt_lklist_dyn_take,
+    crate::lkdyn::LkDyn,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a boxed-element list."
+);
+list_window!(
+    lkrt_lklist_i64_skip,
+    i64,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<i64>`."
+);
+list_window!(
+    lkrt_lklist_f64_skip,
+    f64,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<f64>`."
+);
+list_window!(
+    lkrt_lklist_str_skip,
+    *const c_char,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<str>`."
+);
+list_window!(
+    lkrt_lklist_dyn_skip,
+    crate::lkdyn::LkDyn,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a boxed-element list."
+);
 
 /// `words.map(f)` over a `str` list (`fn(*const c_char) -> *const c_char`
 /// callback returning an arena-owned string).
@@ -634,6 +688,13 @@ list_clear!(
      dropping them is not a leak this crate can do anything about (see the \
      module header's ownership note)."
 );
+list_clear!(
+    lkrt_lklist_dyn_clear,
+    crate::lkdyn::LkDyn,
+    "`clear()` on a boxed-element list. This was a hand-written copy in \
+     `lkdyn.rs` — so the macro above claimed to cover every carrier while \
+     covering three, which is the shape it was written to prevent."
+);
 
 /// Appends `value` to the list.
 ///
@@ -924,26 +985,6 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get_pair(handle: *mut c_void, index: i6
         }
     }
 }
-/// `xs.index_of(v)` over an `i64` list — the first position, or **nil** when the
-/// value is absent, boxed as a `LkDyn` because the module answers `Int?`.
-///
-/// The VM has had this on every sequence; the lowering had it only on `Str`, so
-/// `[1, 2, 3].index_of(2)` dropped its module to the VM.
-///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_index_of(handle: *mut c_void, needle: i64) -> crate::lkdyn::LkDyn {
-    if handle.is_null() {
-        return crate::lkdyn::LkDyn::NIL;
-    }
-    // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-    let values = unsafe { &*(handle as *mut Vec<i64>) };
-    match values.iter().position(|value| *value == needle) {
-        Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
-        None => crate::lkdyn::LkDyn::NIL,
-    }
-}
 
 /// Linear membership test: returns `1` if `needle` is an element, else `0` (the
 /// VM's `list.contains` on a typed int list — an exact `==` search).
@@ -1069,19 +1110,111 @@ pub unsafe extern "C" fn lkrt_lklist_i64_sort(handle: *mut c_void) -> *mut c_voi
 
 /// `xs.reverse()` — a fresh reversed copy (non-mutating, like the VM).
 ///
-/// # Safety
-/// `handle` must be a live `i64` list handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_reverse(handle: *mut c_void) -> *mut c_void {
-    let mut values: Vec<i64> = if handle.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { (*(handle as *mut Vec<i64>)).clone() }
+/// Like [`list_clear`], the operation does not look at the element, so it is one
+/// macro over every carrier. It was written for `i64` alone, which is why
+/// `[1.5, 2.5].reverse()` dropped its whole module to the VM.
+macro_rules! list_reverse {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            let mut values: Vec<$elem> = if handle.is_null() {
+                Vec::new()
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { (*(handle as *mut Vec<$elem>)).clone() }
+            };
+            values.reverse();
+            crate::state::arena_handle(values)
+        }
     };
-    values.reverse();
-    crate::state::arena_handle(values)
 }
+
+list_reverse!(lkrt_lklist_i64_reverse, i64, "`reverse()` on a `List<i64>`.");
+list_reverse!(lkrt_lklist_f64_reverse, f64, "`reverse()` on a `List<f64>`.");
+list_reverse!(
+    lkrt_lklist_str_reverse,
+    *const c_char,
+    "`reverse()` on a `List<str>`. The element pointers are arena-owned and \
+     shared with the source list, which is what makes copying them sound."
+);
+list_reverse!(
+    lkrt_lklist_dyn_reverse,
+    crate::lkdyn::LkDyn,
+    "`reverse()` on a boxed-element list."
+);
+
+/// `xs.index_of(v)` — the first position holding `v`, or nil when absent.
+///
+/// The element comparison is the carrier's own, and it has to be *the same one*
+/// its `contains` uses: in the VM both answer through one `typed_list_position`,
+/// so a mismatch here would make `xs.contains(v)` and `xs.index_of(v) != nil`
+/// disagree. Hence the comparison arrives as a function rather than being
+/// spelled inside the macro — for the boxed carrier that means `contains_eq`
+/// (the `in` operator's equality), not `dyn_eq_inner`.
+macro_rules! list_index_of {
+    ($name:ident, $elem:ty, $needle:ty, $position:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, needle: $needle) -> crate::lkdyn::LkDyn {
+            if handle.is_null() {
+                return crate::lkdyn::LkDyn::NIL;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let position: fn(&[$elem], $needle) -> Option<usize> = $position;
+            match position(values.as_slice(), needle) {
+                Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
+                None => crate::lkdyn::LkDyn::NIL,
+            }
+        }
+    };
+}
+
+list_index_of!(
+    lkrt_lklist_i64_index_of,
+    i64,
+    i64,
+    |values, needle| values.iter().position(|value| *value == needle),
+    "`index_of` on a `List<i64>`."
+);
+list_index_of!(
+    lkrt_lklist_f64_index_of,
+    f64,
+    f64,
+    |values, needle| values.iter().position(|value| *value == needle),
+    "`index_of` on a `List<f64>`. An `Int` needle is coerced by the lowering, \
+     the same way `contains` takes one."
+);
+list_index_of!(
+    lkrt_lklist_str_index_of,
+    *const c_char,
+    *const c_char,
+    |values, needle| {
+        if needle.is_null() {
+            return None;
+        }
+        // Converted once, not per element: `CStr::from_ptr` walks to the NUL.
+        let needle = unsafe { CStr::from_ptr(needle) };
+        values
+            .iter()
+            .position(|&p| !p.is_null() && unsafe { CStr::from_ptr(p) } == needle)
+    },
+    "`index_of` on a `List<str>`."
+);
+list_index_of!(
+    lkrt_lklist_dyn_index_of,
+    crate::lkdyn::LkDyn,
+    crate::lkdyn::LkDyn,
+    |values, needle| values.iter().position(|&e| crate::lkdyn::contains_eq(e, needle)),
+    "`index_of` on a boxed-element list."
+);
 
 /// Creates a fresh, empty `f64` list handle.
 #[unsafe(no_mangle)]

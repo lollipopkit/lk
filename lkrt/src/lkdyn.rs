@@ -1071,20 +1071,6 @@ pub extern "C" fn lkrt_lklist_dyn_new() -> *mut c_void {
     arena_handle(Vec::<LkDyn>::new())
 }
 
-/// `xs.clear()` on a boxed list — empties in place, answering nothing (see
-/// `lklist::list_clear!` for why the handle is not returned).
-///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_dyn_clear(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
-    unsafe { (*(handle as *mut Vec<LkDyn>)).clear() };
-}
-
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
@@ -1162,7 +1148,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_eq(a: *mut c_void, b: *mut c_void) -> i
 /// (`1.0 in [1, 2]` is false, unlike `==`), floats by value (`0.0 == -0.0`,
 /// `NaN != NaN`, unlike `unique()`'s to_bits), ShortStr (≤7 bytes) by
 /// content, heap objects (lists/maps/longer strings) by handle.
-fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
+pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
     if a.tag != b.tag {
         return false;
     }
@@ -1216,32 +1202,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: 
     }
     let tail: Vec<LkDyn> = dyn_slice(handle).iter().copied().skip(start as usize).collect();
     arena_handle(tail)
-}
-
-/// `xs.take(n)` — the first `n` elements (mirrors `lkrt_lklist_i64_take`).
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_dyn_take(handle: *mut c_void, n: i64) -> *mut c_void {
-    if n < 0 {
-        crate::panic::raise_str(&format!("list.take() count must be non-negative, got {n}"));
-    }
-    let values = dyn_slice(handle);
-    let count = (n as usize).min(values.len());
-    arena_handle(values[..count].to_vec())
-}
-
-/// `xs.skip(n)` — without the first `n`. A negative count raises, as in the VM.
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_dyn_skip(handle: *mut c_void, n: i64) -> *mut c_void {
-    if n < 0 {
-        crate::panic::raise_str(&format!("list.skip() count must be non-negative, got {n}"));
-    }
-    let values = dyn_slice(handle);
-    let start = (n as usize).min(values.len());
-    arena_handle(values[start..].to_vec())
 }
 
 /// `xs.chain(ys)` / `xs.concat(ys)` — a fresh concatenation.

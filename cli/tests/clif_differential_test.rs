@@ -1463,6 +1463,75 @@ fn clear_covers_every_list_carrier() {
     );
 }
 
+/// `reverse` and `index_of` on every list carrier, pinned to pure Cranelift.
+///
+/// Both existed for `Int` alone, so `[1.5, 2.5].reverse()` dropped its whole
+/// module to the VM — the right answer, three times slower, which is the gap
+/// neither the differential corpus nor the coverage gate can see on its own.
+///
+/// `index_of` takes exactly the needle its `contains` takes on the same carrier,
+/// because in the VM both answer through one `typed_list_position`. That is what
+/// the `2` against a float list checks from both sides: `[1.0, 2.0]` finds it
+/// (an `Int` needle coerces) and `[1.5, 2.5]` does not (2 is not 2.5) — a
+/// lowering that skipped the coercion would answer nil for the first.
+#[test]
+fn reverse_and_index_of_cover_every_list_carrier() {
+    run_differential(
+        "list_reverse_index_of",
+        &[
+            new(
+                "reverse_each_carrier",
+                "println([1, 2, 3].reverse());\nprintln([1.5, 2.5, 3.5].reverse());\n\
+                 println([\"a\", \"b\", \"c\"].reverse());\nprintln([1, \"s\", 2.5].reverse());\n\
+                 println([].reverse());\nreturn 0;\n",
+            ),
+            // Non-mutating: the receiver still reads in its original order.
+            new(
+                "reverse_leaves_the_receiver",
+                "let a = [1.5, 2.5];\nlet b = a.reverse();\nprintln(a);\nprintln(b);\n\
+                 let s = [\"x\", \"y\"];\nprintln(s.reverse());\nprintln(s);\nreturn 0;\n",
+            ),
+            new(
+                "index_of_each_carrier",
+                "println([1, 2, 3].index_of(2));\nprintln([1, 2, 3].index_of(9));\n\
+                 println([1.5, 2.5].index_of(2.5));\nprintln([\"a\", \"bb\"].index_of(\"bb\"));\n\
+                 println([\"a\", \"bb\"].index_of(\"zz\"));\nprintln([1, \"s\", 2.5].index_of(\"s\"));\n\
+                 println([1, \"s\", 2.5].index_of(2.5));\nprintln([1, \"s\"].index_of(9));\n\
+                 println([].index_of(1));\nreturn 0;\n",
+            ),
+            new(
+                "index_of_needle_coercion",
+                "println([1.0, 2.0].index_of(2));\nprintln([1.5, 2.5].index_of(2));\n\
+                 println([1.0, 2.0].contains(2));\nprintln([1.5, 2.5].contains(2));\nreturn 0;\n",
+            ),
+            // `index_of` answers `Int?`, so its result has to survive the things
+            // a nullable does: a comparison, `!`, and `??`.
+            new(
+                "index_of_result_is_nullable",
+                "let i = [\"a\", \"bb\"].index_of(\"bb\");\nprintln(i == 1);\nprintln(i!);\n\
+                 let miss = [1.5].index_of(9.5);\nprintln(miss == nil);\nprintln(miss ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "take_and_skip_each_carrier",
+                "println([1, 2, 3, 4].take(2));\nprintln([1.5, 2.5, 3.5].take(2));\n\
+                 println([\"a\", \"b\", \"c\"].take(2));\nprintln([1, \"s\", 2.5].take(2));\n\
+                 println([1, 2, 3, 4].skip(2));\nprintln([1.5, 2.5, 3.5].skip(2));\n\
+                 println([\"a\", \"b\", \"c\"].skip(2));\nprintln([1, \"s\", 2.5].skip(2));\nreturn 0;\n",
+            ),
+            // A count past the end clamps; a negative one raises, and the message
+            // is stdout here because `catch` renders it.
+            new(
+                "take_and_skip_edges",
+                "println([1.5].take(0));\nprintln([1.5].take(99));\nprintln([1.5].skip(99));\n\
+                 println([].take(1));\n\
+                 println(try { \"${[1.5, 2.5].take(-1)}\" } catch e { \"caught: ${e}\" });\n\
+                 println(try { \"${[\"a\"].skip(-2)}\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Container literals past the instruction's operand ceiling.
 ///
 /// `NewList` names its element window as (u8 base, u8 len) and `NewMap` names
