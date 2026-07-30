@@ -1,14 +1,11 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use alloc::sync::Arc;
 #[cfg(all(not(test), feature = "vm-profile"))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 use crate::val::{LiteralVal, Type};
-use crate::vm::alloc::RegionPlan;
-use crate::vm::ssa::SsaFunction;
 
 /// Classification of how a value escapes during execution.
 ///
@@ -39,22 +36,6 @@ impl EscapeClass {
             (Escapes, _) | (_, Escapes) => Escapes,
             (Local, _) | (_, Local) => Local,
             _ => Trivial,
-        }
-    }
-}
-
-/// Summary of escape behaviour for the current SSA function.
-#[derive(Debug, Clone, Default)]
-pub struct EscapeSummary {
-    pub return_class: EscapeClass,
-    /// SSA values that were classified as escaping.
-    pub escaping_values: Vec<usize>,
-}
-
-impl EscapeSummary {
-    pub fn mark_escaping(&mut self, value: usize) {
-        if !self.escaping_values.contains(&value) {
-            self.escaping_values.push(value);
         }
     }
 }
@@ -586,15 +567,6 @@ impl PerformanceFacts {
             self.registers.resize_with(idx + 1, Option::default);
         }
     }
-}
-
-/// Aggregated analysis artifacts produced by the SSA pipeline.
-#[derive(Debug, Clone, Default)]
-pub struct FunctionAnalysis {
-    pub ssa: Option<SsaFunction>,
-    pub escape: EscapeSummary,
-    pub region_plan: Arc<RegionPlan>,
-    pub perf: PerformanceFacts,
 }
 
 // ---------------------------------------------------------------------------

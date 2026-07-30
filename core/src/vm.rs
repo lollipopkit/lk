@@ -3,8 +3,6 @@
 //! The public surface exposes the canonical `Instr` compiler/executor path.
 
 #[allow(dead_code, unused_imports)]
-pub(crate) mod alloc;
-#[allow(dead_code, unused_imports)]
 pub mod analysis;
 #[allow(dead_code, unused_imports)]
 mod analysis_queries;
@@ -25,7 +23,6 @@ mod repl;
 mod resolver;
 mod runtime;
 #[allow(dead_code)]
-pub(crate) mod ssa;
 mod type_info;
 pub mod verify;
 #[cfg(all(test, feature = "std"))]

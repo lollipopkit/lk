@@ -263,7 +263,6 @@ impl FunctionData {
                 }
                 code
             },
-            analyses: Vec::new(),
             performance: self.performance,
             register_count: self.register_count,
             param_count: self.param_count,

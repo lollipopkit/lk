@@ -14,7 +14,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     val::{RuntimeMapKey, ShortStr},
-    vm::analysis::{FunctionAnalysis, PerformanceFacts},
+    vm::analysis::PerformanceFacts,
 };
 
 use super::runtime::NativeEntry;
@@ -768,7 +768,6 @@ pub fn decode_instr(bytes: &[u8]) -> Result<Vec<Instr>> {
 pub struct Function {
     pub consts: ConstPool,
     pub code: Vec<Instr>,
-    pub analyses: Vec<FunctionAnalysis>,
     pub performance: PerformanceFacts,
     pub register_count: u16,
     pub param_count: u16,

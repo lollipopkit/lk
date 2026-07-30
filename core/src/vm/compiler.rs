@@ -182,7 +182,6 @@ pub struct Compiler {
 
 impl Compiler {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<u16> {
-        self.record_expr_analysis(expr);
         match expr {
             Expr::Paren(inner) => self.lower_expr(inner),
             Expr::Cast(inner, ty) => self.lower_cast(inner, ty),
@@ -520,12 +519,6 @@ impl Compiler {
         self.emit(Instr::abc(super::ir::Opcode::CastTo, encoded, encoded, target as u8));
         self.machine_regs.insert(reg, kind);
         Ok(())
-    }
-
-    pub(super) fn record_expr_analysis(&mut self, expr: &Expr) {
-        if let Some(analysis) = super::ssa::pipeline::analyze_expr(expr) {
-            self.function.analyses.push(analysis);
-        }
     }
 
     pub(super) fn lower_template_string(&mut self, parts: &[TemplateStringPart]) -> Result<u16> {
