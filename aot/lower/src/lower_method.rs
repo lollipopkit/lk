@@ -1111,15 +1111,53 @@ pub(crate) fn lower_method_dispatch(
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
         // `m.has(key)` on a mixed-value map — key membership (stored-nil
         // still counts, see `str_dyn_has`).
-        // `xs.first()` / `xs.last()` — nil when empty: exactly the dynamic-
-        // index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
-        // so both reuse the existing ListGetMaybe machinery, no new ABI.
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "first", []) => {
+        // `xs.first()` / `xs.last()` / `xs.pop()` — nil when empty: exactly the
+        // dynamic-index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
+        // so all three reuse the existing ListGetMaybe machinery, no new read ABI.
+        //
+        // One arm for the three because they differ only in *which* index and
+        // whether the element is then dropped. Written apart, `first`/`last`
+        // covered three carriers and left the boxed one out, and `pop` existed
+        // nowhere at all — so a single `xs.pop()` dropped its module to the VM.
+        //
+        // The boxed carrier reads through `dyn_at`, whose out-of-range answer is
+        // already nil, so its `Maybe` is the `Dyn` itself. That also means an
+        // empty `pop` and a stored nil are the same answer — which is what the VM
+        // says too.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, name @ ("first" | "last" | "pop"), []) => {
             let idx = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: idx,
-                value: Const::I64(0),
-            });
+            if name == "first" {
+                insts.push(Inst::Const {
+                    dst: idx,
+                    value: Const::I64(0),
+                });
+            } else {
+                // `len - 1`, which is -1 for an empty list — and every carrier's
+                // read answers nil for that, so emptiness needs no branch.
+                let len_fn = match receiver_ty {
+                    Ty::ListI64 => "i64_len",
+                    Ty::ListF64 => "f64_len",
+                    Ty::ListStr => "str_len",
+                    _ => "dyn_len",
+                };
+                let len = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(len),
+                    callee: AbiRef::new("list_h", len_fn),
+                    args: vec![receiver],
+                });
+                let one = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: one,
+                    value: Const::I64(1),
+                });
+                insts.push(Inst::IntBin {
+                    dst: idx,
+                    op: IntBinOp::Sub,
+                    lhs: len,
+                    rhs: one,
+                });
+            }
             let dst = ssa.new_val();
             let maybe_ty = match receiver_ty {
                 Ty::ListI64 => {
@@ -1138,7 +1176,7 @@ pub(crate) fn lower_method_dispatch(
                     });
                     Ty::MaybeF64
                 }
-                _ => {
+                Ty::ListStr => {
                     insts.push(Inst::ListGetMaybeStr {
                         dst,
                         handle: receiver,
@@ -1146,61 +1184,64 @@ pub(crate) fn lower_method_dispatch(
                     });
                     Ty::MaybeStr
                 }
+                _ => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", "dyn_at"),
+                        args: vec![receiver, idx],
+                    });
+                    Ty::Dyn
+                }
             };
+            // `pop` is that read plus the drop. Read first: the value has to come
+            // out before the element it names is gone.
+            if name == "pop" {
+                let drop_fn = match receiver_ty {
+                    Ty::ListI64 => "i64_drop_last",
+                    Ty::ListF64 => "f64_drop_last",
+                    Ty::ListStr => "str_drop_last",
+                    _ => "dyn_drop_last",
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("list_h", drop_fn),
+                    args: vec![receiver],
+                });
+            }
             (dst, maybe_ty)
         }
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "last", []) => {
-            let (len_module, len_fn) = match receiver_ty {
-                Ty::ListI64 => ("list_h", "i64_len"),
-                Ty::ListF64 => ("list_h", "f64_len"),
-                _ => ("list_h", "str_len"),
+        // `xs.insert(i, v)` answers the receiver (the VM mutates in place and
+        // evaluates to the list); `xs.remove_at(i)` answers the element it took
+        // out, and raises rather than answering nil when the index is out of
+        // range — so unlike `pop` its result is the element type, not a `Maybe`.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "insert", [(at, _), (value, vty)]) => {
+            let (callee, value) = match receiver_ty {
+                Ty::ListI64 => ("i64_insert", *value),
+                Ty::ListF64 => ("f64_insert", coerce_to_f64(ssa, insts, *value, *vty)),
+                Ty::ListStr => ("str_insert", *value),
+                _ => ("dyn_insert", to_dyn(ssa, insts, *value, *vty, pc)?),
             };
-            let len = ssa.new_val();
             insts.push(Inst::Call {
-                dst: Some(len),
-                callee: AbiRef::new(len_module, len_fn),
-                args: vec![receiver],
+                dst: None,
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver, *at, value],
             });
-            let one = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: one,
-                value: Const::I64(1),
-            });
-            let idx = ssa.new_val();
-            insts.push(Inst::IntBin {
-                dst: idx,
-                op: IntBinOp::Sub,
-                lhs: len,
-                rhs: one,
-            });
-            let dst = ssa.new_val();
-            let maybe_ty = match receiver_ty {
-                Ty::ListI64 => {
-                    insts.push(Inst::ListGetMaybe {
-                        dst,
-                        handle: receiver,
-                        index: idx,
-                    });
-                    Ty::MaybeI64
-                }
-                Ty::ListF64 => {
-                    insts.push(Inst::ListGetMaybeF64 {
-                        dst,
-                        handle: receiver,
-                        index: idx,
-                    });
-                    Ty::MaybeF64
-                }
-                _ => {
-                    insts.push(Inst::ListGetMaybeStr {
-                        dst,
-                        handle: receiver,
-                        index: idx,
-                    });
-                    Ty::MaybeStr
-                }
+            (receiver, receiver_ty)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "remove_at", [(at, Ty::I64)]) => {
+            let (callee, out) = match receiver_ty {
+                Ty::ListI64 => ("i64_remove_at", Ty::I64),
+                Ty::ListF64 => ("f64_remove_at", Ty::F64),
+                Ty::ListStr => ("str_remove_at", Ty::Str),
+                _ => ("dyn_remove_at", Ty::Dyn),
             };
-            (dst, maybe_ty)
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver, *at],
+            });
+            (dst, out)
         }
         // `xs.concat(ys)` — same semantics as chain (the VM implements both
         // as lhs ++ rhs into a fresh list).

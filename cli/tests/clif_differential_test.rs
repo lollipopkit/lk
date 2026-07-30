@@ -1532,6 +1532,79 @@ fn reverse_and_index_of_cover_every_list_carrier() {
     );
 }
 
+/// `pop` / `insert` / `remove_at` on every list carrier, plus `first` / `last`
+/// on the boxed one. Pinned to pure Cranelift.
+///
+/// None of the three mutators had a lowering on *any* carrier, so a single
+/// `xs.pop()` anywhere in a program dropped the whole module to the VM — and
+/// `first`/`last` covered three carriers and left the boxed one out.
+///
+/// The interesting parts are the edges, not the happy path: an empty `pop` is
+/// nil rather than a raise, `insert` accepts `len` (that is where an append
+/// goes) while `remove_at` does not, a negative index counts from the end for
+/// both, and each of the four range failures has its own wording — which a
+/// `catch` turns into stdout, so the text is part of the answer.
+///
+/// The `Int` inserted into a `Float` list is here because the two backends
+/// disagree about the *representation* underneath: the VM rebuilds the list as
+/// mixed and stores an `Int`, the lowering coerces to `f64` and keeps the
+/// carrier. That is unobservable — the static type is `Float` either way, the
+/// display agrees, and `/` is float division regardless — and `push`/`set`
+/// already made the same choice. Pinned so it stays unobservable.
+#[test]
+fn pop_insert_and_remove_at_cover_every_list_carrier() {
+    run_differential(
+        "list_mutators",
+        &[
+            new(
+                "pop_each_carrier",
+                "let a = [1, 2, 3];\nprintln(\"${a.pop()} ${a}\");\n\
+                 let b = [1.5, 2.5];\nprintln(\"${b.pop()} ${b}\");\n\
+                 let c = [\"x\", \"y\"];\nprintln(\"${c.pop()} ${c}\");\n\
+                 let d = [1, \"s\"];\nprintln(\"${d.pop()} ${d}\");\n\
+                 println([].pop());\nreturn 0;\n",
+            ),
+            new(
+                "insert_each_carrier",
+                "let a = [1, 2, 3];\na.insert(1, 9);\nprintln(a);\n\
+                 let b = [1.5];\nb.insert(0, 0.5);\nprintln(b);\n\
+                 let c = [\"b\"];\nc.insert(0, \"a\");\nprintln(c);\n\
+                 let d = [1, \"s\"];\nd.insert(1, 2.5);\nprintln(d);\n\
+                 let e = [1, 2];\ne.insert(2, 9);\nprintln(e);\n\
+                 let f = [1, 2];\nf.insert(-1, 9);\nprintln(f);\nreturn 0;\n",
+            ),
+            new(
+                "remove_at_each_carrier",
+                "let a = [1, 2, 3];\nprintln(\"${a.remove_at(1)} ${a}\");\n\
+                 let b = [1.5, 2.5];\nprintln(\"${b.remove_at(-1)} ${b}\");\n\
+                 let c = [\"a\", \"b\"];\nprintln(\"${c.remove_at(0)} ${c}\");\n\
+                 let d = [1, \"s\"];\nprintln(\"${d.remove_at(0)} ${d}\");\nreturn 0;\n",
+            ),
+            new(
+                "first_and_last_including_the_boxed_carrier",
+                "println([1, 2, 3].first());\nprintln([1, 2, 3].last());\n\
+                 println([1.5, 2.5].first());\nprintln([\"a\", \"b\"].last());\n\
+                 println([1, \"s\"].first());\nprintln([1, \"s\"].last());\n\
+                 println([].first());\nprintln([].last());\nreturn 0;\n",
+            ),
+            new(
+                "mutator_index_edges",
+                "println(try { \"${[1, 2].insert(-9, 5)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${[1, 2].insert(3, 5)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${[1.5].remove_at(-9)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${[\"a\"].remove_at(2)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${[].remove_at(0)}\" } catch e { \"${e}\" });\nreturn 0;\n",
+            ),
+            new(
+                "an_int_into_a_float_list",
+                "let a = [1.5, 2.5];\na.insert(0, 2);\nprintln(a);\nprintln(a[0]);\n\
+                 println(a[0] / 4);\nprintln(a[0] == 2);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Container literals past the instruction's operand ceiling.
 ///
 /// `NewList` names its element window as (u8 base, u8 len) and `NewMap` names

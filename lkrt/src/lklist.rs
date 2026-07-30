@@ -203,6 +203,153 @@ list_window!(
     "`skip(n)` on a boxed-element list."
 );
 
+/// The write position a list *method* names, in the VM's exact wording.
+///
+/// Deliberately not [`store_index_or_raise`]: that is the index-*assignment*
+/// path (`xs[i] = v`, "list index N out of bounds"), and the method path words
+/// the same range failure differently — `list.insert() index N out of bounds
+/// (len=N)`. Which index appears also differs between the two messages: the
+/// before-the-start one names the index *as written* (so a reader sees the `-9`
+/// they typed), the out-of-bounds one names the *resolved* position. A caught
+/// error is printed output, so each wording is part of an answer.
+///
+/// `allow_len` is the caller's upper bound: `insert` accepts `len`, because that
+/// is where an append goes; `remove_at` does not. A null handle is a list of
+/// zero, which makes every index a range failure without a special case.
+fn method_index_or_raise(method: &str, index: i64, len: usize, allow_len: bool) -> usize {
+    let resolved = if index < 0 { len as i64 + index } else { index };
+    if resolved < 0 {
+        crate::panic::raise_str(&alloc::format!(
+            "list.{method}() index {index} is before the start of a list of {len}"
+        ));
+    }
+    let resolved = resolved as usize;
+    if if allow_len { resolved > len } else { resolved >= len } {
+        crate::panic::raise_str(&alloc::format!(
+            "list.{method}() index {resolved} out of bounds (len={len})"
+        ));
+    }
+    resolved
+}
+
+/// `xs.pop()`'s mutation half: drops the last element, answering nothing.
+///
+/// `pop` is a read *and* a drop, and the read already exists — `xs.last()`
+/// lowers to the carrier's `Maybe` machinery, which is verified and, for `f64`,
+/// the only portable shape available: a by-value `{double, i64}` return is a
+/// mixed-class aggregate whose registers differ across targets, so Cranelift's
+/// scalar signatures cannot model it (hence lkrt's `_get_out` shims). A
+/// `*_pop -> LkMaybeF64` would have needed a fifth mechanism for one carrier.
+/// So the lowering reads the last element the way `last()` does and then calls
+/// this, and the empty case needs no special agreement: reading past the end is
+/// already nil, and dropping from empty is already nothing.
+macro_rules! list_drop_last {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            unsafe { (*(handle as *mut Vec<$elem>)).pop() };
+        }
+    };
+}
+
+list_drop_last!(lkrt_lklist_i64_drop_last, i64, "`pop()`'s drop half on a `List<i64>`.");
+list_drop_last!(lkrt_lklist_f64_drop_last, f64, "`pop()`'s drop half on a `List<f64>`.");
+list_drop_last!(
+    lkrt_lklist_str_drop_last,
+    *const c_char,
+    "`pop()`'s drop half on a `List<str>`. The element pointer is arena-owned, so \
+     the value the lowering already read stays valid."
+);
+list_drop_last!(
+    lkrt_lklist_dyn_drop_last,
+    crate::lkdyn::LkDyn,
+    "`pop()`'s drop half on a boxed-element list."
+);
+
+/// `xs.insert(i, v)` — in place, like `push` and `set`. Answers nothing: the VM
+/// evaluates it to the list itself, which the lowering supplies from the
+/// receiver it already holds (see `list_clear!` for why returning the handle
+/// would be wrong).
+macro_rules! list_insert {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, index: i64, value: $elem) {
+            if handle.is_null() {
+                // Still range-checked, so a bad index raises the same message it
+                // would for a real empty list.
+                method_index_or_raise("insert", index, 0, true);
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values = unsafe { &mut *(handle as *mut Vec<$elem>) };
+            let at = method_index_or_raise("insert", index, values.len(), true);
+            values.insert(at, value);
+        }
+    };
+}
+
+list_insert!(lkrt_lklist_i64_insert, i64, "`insert(i, v)` on a `List<i64>`.");
+list_insert!(lkrt_lklist_f64_insert, f64, "`insert(i, v)` on a `List<f64>`.");
+list_insert!(
+    lkrt_lklist_str_insert,
+    *const c_char,
+    "`insert(i, v)` on a `List<str>`."
+);
+list_insert!(
+    lkrt_lklist_dyn_insert,
+    crate::lkdyn::LkDyn,
+    "`insert(i, v)` on a boxed-element list."
+);
+
+/// `xs.remove_at(i)` — removes the element at `i` and answers it. Unlike `pop`
+/// the answer is never nil: an out-of-range index raises first, so there is
+/// always an element to hand back.
+macro_rules! list_remove_at {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, index: i64) -> $elem {
+            if handle.is_null() {
+                // A list of zero: every index is out of range, and this raises
+                // rather than returning.
+                method_index_or_raise("remove_at", index, 0, false);
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values = unsafe { &mut *(handle as *mut Vec<$elem>) };
+            let at = method_index_or_raise("remove_at", index, values.len(), false);
+            values.remove(at)
+        }
+    };
+}
+
+list_remove_at!(lkrt_lklist_i64_remove_at, i64, "`remove_at(i)` on a `List<i64>`.");
+list_remove_at!(lkrt_lklist_f64_remove_at, f64, "`remove_at(i)` on a `List<f64>`.");
+list_remove_at!(
+    lkrt_lklist_str_remove_at,
+    *const c_char,
+    "`remove_at(i)` on a `List<str>`."
+);
+list_remove_at!(
+    lkrt_lklist_dyn_remove_at,
+    crate::lkdyn::LkDyn,
+    "`remove_at(i)` on a boxed-element list."
+);
+
 /// `words.map(f)` over a `str` list (`fn(*const c_char) -> *const c_char`
 /// callback returning an arena-owned string).
 ///

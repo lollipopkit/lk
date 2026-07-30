@@ -348,6 +348,23 @@ macro_rules! for_each_abi_fn {
             // `clear()` on every carrier: the operation does not depend on the
             // element type, so all four rows land together.
             ("list_h", "i64_clear", lkrt_lklist_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            // `pop` / `insert` / `remove_at`: none of the three had a lowering on
+            // any carrier, so a single `xs.pop()` dropped its whole module to the
+            // VM. `drop_last` is `pop`'s mutation half — the read reuses the
+            // carrier's `Maybe` machinery (see `list_drop_last!` for why a
+            // `*_pop` returning `Maybe<f64>` by value is not portable). `insert`
+            // answers nothing for the same reason `clear` does: the VM evaluates
+            // it to the receiver, which the lowering already holds, and a
+            // `Borrowed` pointer return would hand back an unowned handle.
+            ("list_h", "i64_drop_last", lkrt_lklist_i64_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "f64_drop_last", lkrt_lklist_f64_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "str_drop_last", lkrt_lklist_str_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "i64_insert", lkrt_lklist_i64_insert, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
+            ("list_h", "f64_insert", lkrt_lklist_f64_insert, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            ("list_h", "str_insert", lkrt_lklist_str_insert, WritesHost, [Ptr, I64, StrPtr], Nil, Borrowed);
+            ("list_h", "i64_remove_at", lkrt_lklist_i64_remove_at, WritesHost, [Ptr, I64], I64, Borrowed);
+            ("list_h", "f64_remove_at", lkrt_lklist_f64_remove_at, WritesHost, [Ptr, I64], F64, Borrowed);
+            ("list_h", "str_remove_at", lkrt_lklist_str_remove_at, WritesHost, [Ptr, I64], StrPtr, Borrowed);
             ("list_h", "f64_clear", lkrt_lklist_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("list_h", "str_clear", lkrt_lklist_str_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("list_h", "dyn_clear", lkrt_lklist_dyn_clear, WritesHost, [Ptr], Nil, Borrowed);
@@ -644,6 +661,9 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64, Borrowed);
+            ("list_h", "dyn_drop_last", lkrt_lklist_dyn_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "dyn_insert", lkrt_lklist_dyn_insert, WritesHost, [Ptr, I64, DynVal], Nil, Borrowed);
+            ("list_h", "dyn_remove_at", lkrt_lklist_dyn_remove_at, WritesHost, [Ptr, I64], DynVal, Borrowed);
             ("list_h", "dyn_take", lkrt_lklist_dyn_take, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_skip", lkrt_lklist_dyn_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_chain", lkrt_lklist_dyn_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
