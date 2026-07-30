@@ -414,6 +414,28 @@ impl TypeChecker {
                     None,
                 ));
             }
+            // A declared struct is as knowable as a container, and it was the
+            // one shape left unchecked: `p.nonexistent()` type-checked and then
+            // raised at run time. The receiver has to be a struct the registry
+            // *has* — `Type::Named` also spells `Bytes`, `Error`, `Task` and
+            // every resource kind, none of which declare their method surface
+            // here, so treating "named" as "checkable" would reject working
+            // programs.
+            //
+            // A field is not a method but is callable when it holds a function
+            // (`H { cb: (Int) -> Int }` makes `h.cb(21)` an ordinary property
+            // call), so the name has to miss both tables before this fires.
+            if let Type::Named(type_name) = &resolved_receiver
+                && let Some(declared) = self.registry.get_struct(type_name)
+                && !declared.fields.contains_key(method)
+            {
+                return Err(Self::type_err(
+                    &format!("{type_name} has no method '{method}'"),
+                    None,
+                    Some(resolved_receiver.clone()),
+                    None,
+                ));
+            }
             return Ok(None);
         };
         if args.len() < sig.required || args.len() > sig.params.len() {

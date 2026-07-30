@@ -612,6 +612,58 @@ mod tests {
         assert!(resolver.resolve_file_path(&rel.to_string_lossy()).is_err());
     }
 
+    /// A method in an imported module may call another method on `self`.
+    ///
+    /// `take_runtime_callable_state` moves a module's shared state out of its
+    /// mutex for the duration of a call and leaves `Default::default()` behind,
+    /// so the mechanism cannot be re-entered — and a method calling another
+    /// method on `self` re-enters by definition. The outer call took the state,
+    /// the inner call took the empty shell, and the executor refused "a module
+    /// expecting 83 globals against a table of 0" for a program that never
+    /// mentions a global. All three shapes below were broken; each works when
+    /// the same code sits in one file, which is what made it a cross-module bug
+    /// rather than a dispatch bug.
+    #[test]
+    fn an_imported_method_may_call_another_method_on_self() -> Result<()> {
+        let cases = [
+            // A trait default body reaching the impl's own method.
+            (
+                "trait Area { fn area(self) -> Int; fn twice(self) -> Int { return self.area() * 2; } }\n\
+                 impl Area for Sq { fn area(self) -> Int { return self.side * self.side; } }",
+                "twice",
+            ),
+            // An inherent method reaching another inherent method.
+            (
+                "impl Sq { fn area(self) -> Int { return self.side * self.side; } \n\
+                 fn twice(self) -> Int { return self.area() * 2; } }",
+                "twice",
+            ),
+            // An inherent method reaching a trait method.
+            (
+                "trait Area { fn area(self) -> Int; }\n\
+                 impl Area for Sq { fn area(self) -> Int { return self.side * self.side; } }\n\
+                 impl Sq { fn twice(self) -> Int { return self.area() * 2; } }",
+                "twice",
+            ),
+        ];
+        for (index, (impls, method)) in cases.iter().enumerate() {
+            let temp = tempfile::tempdir()?;
+            let dep = temp.path().join("shape.lk");
+            std::fs::write(
+                &dep,
+                format!("struct Sq {{ side: Int }}\n{impls}\nfn make(n: Int) -> Sq {{ return Sq {{ side: n }}; }}\n"),
+            )?;
+            let mut resolver = ModuleResolver::new();
+            resolver.set_base_dir(temp.path().to_path_buf());
+            let value = execute_import_source(
+                &format!("use {{ make }} from \"./shape.lk\";\nreturn make(3).{method}();\n"),
+                Arc::new(resolver),
+            )?;
+            assert_eq!(value, RuntimeVal::Int(18), "case {index}");
+        }
+        Ok(())
+    }
+
     /// `..` is allowed as a way to reach a sibling directory of the same package,
     /// not as a way out of it. The boundary is the package root (nearest
     /// `Lk.toml`), or the importing file's directory when there is no manifest.

@@ -234,6 +234,34 @@ pub fn call_trait_method(
             call_foreign_module_method(declaring, *function, name, pos, state, ctx)
         }
         crate::vm::MethodImpl::Imported(callable) => {
+            // A method reached while its *own* module is the one executing does
+            // not borrow that module's state — it already has it.
+            //
+            // `take_runtime_callable_state` moves the shared state out of its
+            // mutex and leaves a `Default::default()` behind until the call
+            // returns, so the mechanism is non-reentrant by construction. And
+            // "a method that calls another method on `self`" re-enters by
+            // definition: the outer call took the state, the inner call took the
+            // empty shell, and the executor refused a module wanting 83 globals
+            // against a table of 0 — a message about globals for a program that
+            // never mentions one. Every cross-module `impl` was affected the
+            // moment one of its methods called another (trait default body,
+            // inherent method, inherent calling a trait method: all three).
+            //
+            // The `Local` arm one branch up already asks exactly this question
+            // for the same reason; this arm did not.
+            if let Some(executing) = module
+                && core::ptr::eq(Arc::as_ptr(&callable.module), executing as *const Module)
+            {
+                return call_closure_value(
+                    callable.function_index,
+                    Arc::clone(&callable.captures),
+                    pos,
+                    state,
+                    Some(executing),
+                    ctx,
+                );
+            }
             call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, ctx)
         }
     }
