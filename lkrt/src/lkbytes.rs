@@ -190,6 +190,82 @@ pub unsafe extern "C" fn lkrt_lkbytes_slice(handle: *mut c_void, start: i64, end
     crate::state::arena_handle(bytes[from..to].to_vec())
 }
 
+/// `bytes.take(n)` / `bytes.skip(n)` — a prefix and the rest of one.
+///
+/// A separate rule from `slice`: a *count* is not a position, so a negative one
+/// is the loud error the VM gives rather than something measured from the end,
+/// and a count past the end clamps. Same shape as `lklist`'s `list_window!`,
+/// which is where the wording comes from.
+macro_rules! bytes_window {
+    ($name:ident, $method:literal, $window:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live `Bytes` handle.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, n: i64) -> *mut c_void {
+            if n < 0 {
+                crate::panic::raise_str(&alloc::format!(
+                    concat!("bytes.", $method, "() count must be non-negative, got {}"),
+                    n
+                ));
+            }
+            let bytes = bytes_ref(handle);
+            let cut = (n as usize).min(bytes.len());
+            let window: fn(&[u8], usize) -> &[u8] = $window;
+            crate::state::arena_handle(window(bytes, cut).to_vec())
+        }
+    };
+}
+
+bytes_window!(
+    lkrt_lkbytes_take,
+    "take",
+    |bytes, cut| &bytes[..cut],
+    "The first `n` bytes, or all of them."
+);
+bytes_window!(
+    lkrt_lkbytes_skip,
+    "skip",
+    |bytes, cut| &bytes[cut..],
+    "Everything after the first `n` bytes."
+);
+
+/// `bytes.index_of(v)` — the first position holding `v`, or nil.
+///
+/// Nil rather than -1, and returned as a `Dyn` rather than converted by the
+/// caller, because -1 is a legal position: `xs[xs.index_of(v)]` would quietly
+/// answer the *last* byte instead of failing. Same shape as `lklist`'s
+/// `list_index_of!`, whose arms this mirrors.
+///
+/// A needle outside `0..=255` is not a byte, so it is simply absent.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_index_of(handle: *mut c_void, needle: i64) -> crate::lkdyn::LkDyn {
+    if !(0..=255).contains(&needle) {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    let needle = needle as u8;
+    match bytes_ref(handle).iter().position(|&b| b == needle) {
+        Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `bytes.contains(v)` — 1 when present, 0 when not.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_contains(handle: *mut c_void, needle: i64) -> i64 {
+    if !(0..=255).contains(&needle) {
+        return 0;
+    }
+    let needle = needle as u8;
+    i64::from(bytes_ref(handle).contains(&needle))
+}
+
 /// `bytes.from_list(values)` — a `List<Int>` of byte values.
 ///
 /// Out-of-range values raise, matching the stdlib module: a "byte" that is not

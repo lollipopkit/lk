@@ -1783,6 +1783,75 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Bytes)
         }
+        // The rest of `Bytes`. It had a carrier and four methods, so ten of its
+        // fourteen dropped the whole module to the VM — a receiver kind that is
+        // *almost* native is the shape a coverage number cannot show.
+        //
+        // `first`/`last` are `get(0)` / `get(-1)`: the read rule already counts a
+        // negative position from the end, so they need no helper of their own.
+        (Ty::Bytes, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "get"),
+                args: vec![receiver, index],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "take" | "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", if name == "take" { "take" } else { "skip" }),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::Bytes, "to_list", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "to_i64_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::Bytes, "index_of", [(needle, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "index_of"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "contains", [(needle, Ty::I64)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("bytes_h", "contains"),
+                args: vec![receiver, *needle],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
             let dst = ssa.new_val();

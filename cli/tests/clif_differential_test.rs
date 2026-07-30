@@ -4207,3 +4207,53 @@ fn concat_and_index_assignment_do_not_depend_on_the_carrier() {
         ],
     );
 }
+
+/// `Bytes` is a receiver kind, not four methods and a carrier.
+///
+/// It had `len`, `is_empty`, `get` and `slice`; the other ten of its fourteen
+/// declared methods dropped the whole module to the VM. A receiver that is
+/// *almost* native is the shape a coverage percentage cannot show — the corpus
+/// compiles, the number stays 60/60, and every program touching bytes is slow.
+///
+/// `first`/`last` reuse `get` (a negative position already counts from the end).
+/// `take`/`skip` do *not* reuse `slice`: a count is not a position, so a negative
+/// one is the loud error the VM gives rather than something measured from the
+/// tail — which is exactly what the last two cases here pin. `index_of` answers
+/// nil on a miss, never -1, because -1 is a legal position and
+/// `b[b.index_of(v)]` would quietly read the last byte instead of failing.
+#[test]
+fn bytes_answers_its_whole_method_surface_natively() {
+    run_clif_differential(
+        "bytes_methods",
+        &[
+            new(
+                "reads_and_windows",
+                "let b = \"abcde\".bytes();\nprintln(b.len());\nprintln(b.first());\n\
+                 println(b.last());\nprintln(b.take(2));\nprintln(b.skip(2));\n\
+                 println(b.take(99));\nprintln(b.skip(99));\nprintln(b.to_list());\n\
+                 println(b.slice(1, 3));\nreturn 0;\n",
+            ),
+            new(
+                "membership_answers_nil_on_a_miss",
+                "let b = \"abc\".bytes();\nprintln(b.contains(97));\nprintln(b.contains(122));\n\
+                 println(b.index_of(98));\nprintln(b.index_of(122));\n\
+                 println(b.index_of(-1));\nprintln(b.index_of(300));\n\
+                 println(b.contains(300));\nreturn 0;\n",
+            ),
+            new(
+                "an_empty_bytes_reads_as_nil",
+                "let b = \"\".bytes();\nprintln(b.len());\nprintln(b.is_empty());\n\
+                 println(b.first());\nprintln(b.last());\nprintln(b.take(3));\n\
+                 println(b.index_of(97));\nreturn 0;\n",
+            ),
+            // A count is not a position: negative raises, on both ends, with the
+            // same words.
+            new(
+                "a_negative_count_is_the_same_loud_error",
+                "let b = \"abc\".bytes();\n\
+                 println(try { b.take(-1); \"no\" } catch e { \"caught: ${e}\" });\n\
+                 println(try { b.skip(-2); \"no\" } catch e { \"caught: ${e}\" });\nreturn 0;\n",
+            ),
+        ],
+    );
+}

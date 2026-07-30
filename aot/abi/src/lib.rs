@@ -239,6 +239,13 @@ macro_rules! for_each_abi_fn {
             ("bytes_h", "get", lkrt_lkbytes_get, Pure, [Ptr, I64], DynVal);
             ("bytes_h", "concat", lkrt_lkbytes_concat, WritesHost, [Ptr, Ptr], Ptr);
             ("bytes_h", "slice", lkrt_lkbytes_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            // `Bytes` had a carrier and four methods; ten of its fourteen fell
+            // back. A count is not a position, so take/skip get their own guard
+            // rather than borrowing `slice`'s.
+            ("bytes_h", "take", lkrt_lkbytes_take, WritesHost, [Ptr, I64], Ptr);
+            ("bytes_h", "skip", lkrt_lkbytes_skip, WritesHost, [Ptr, I64], Ptr);
+            ("bytes_h", "index_of", lkrt_lkbytes_index_of, ReadsHost, [Ptr, I64], DynVal);
+            ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "utf8", lkrt_lkbytes_utf8, WritesHost, [Ptr], StrPtr);
