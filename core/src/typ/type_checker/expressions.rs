@@ -196,7 +196,7 @@ impl TypeChecker {
         for stmt in leading {
             stmt.type_check(self)?;
         }
-        if let crate::stmt::Stmt::Expr(expr) = last.as_ref() {
+        if let crate::stmt::Stmt::Expr { value: expr, .. } = last.as_ref() {
             return self.check_expr(expr);
         }
         last.type_check(self)?;

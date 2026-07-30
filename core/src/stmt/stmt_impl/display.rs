@@ -210,7 +210,7 @@ impl Display for Stmt {
                     write!(f, "fn {}({}) {{ {} }}", name, parts.join(", "), body_summary)
                 }
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 write!(f, "{};", expr)
             }
             Stmt::Block { statements } => {

@@ -538,4 +538,34 @@ mod tests {
         // A block is a scope: the inner binding is not visible afterwards.
         assert!(check_program("let f = || { let inner = 1; return inner; };\nlet n: Int = f();").is_ok());
     }
+    /// An argument's type error says *where*, like every other type error.
+    ///
+    /// `TypeError::span` is filled by the enclosing statement on the way out, and a
+    /// bare call is a `Stmt::Expr` — the one statement variant that carried no span
+    /// at all. So the same mistake reported `1:1-6` when written as a `let` and
+    /// nothing when written as a call, which in a four-thousand-line program is the
+    /// difference between a diagnostic and a riddle.
+    ///
+    /// Pinned on the *fifth* statement on purpose: an expression carries no position
+    /// of its own, so the tempting repair is to search the token stream for
+    /// something that looks like it — which finds the first match in the file, not
+    /// this one.
+    #[test]
+    fn an_argument_type_error_names_the_line_it_is_on() {
+        let error = check_program(
+            r#"fn f(a: Int) -> Int { return a; }
+               f(1);
+               f(2);
+               f(3);
+               f("wrong");"#,
+        )
+        .expect_err("a String is not an Int");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Argument 1 has the wrong type"), "{message}");
+        assert!(
+            message.contains("(5:"),
+            "the error must point at the fifth line: {message}"
+        );
+    }
 }

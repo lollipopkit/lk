@@ -12,7 +12,7 @@ impl Compiler {
             // boxing the register into a cell, and a type with no unboxer is a
             // rejection. Reserving a value nobody reads would have taken
             // `try { f(); } catch e { … }` off the native path.
-            Stmt::Expr(expr) if matches!(expr.as_ref(), Expr::Try { .. }) => {
+            Stmt::Expr { value: expr, .. } if matches!(expr.as_ref(), Expr::Try { .. }) => {
                 let Expr::Try {
                     body,
                     catch_var,
@@ -23,7 +23,7 @@ impl Compiler {
                 };
                 self.lower_try_stmt(body, catch_var, handler)?;
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 let watermark = self.next_reg;
                 if !self.try_lower_rewritten_set_index_expr(expr)?
                     && !self.try_lower_builtin_method_statement(expr)?

@@ -26,7 +26,7 @@ impl<'a> StmtParser<'a> {
             return_type: None,
             body: Box::new(operand),
         };
-        Ok(Stmt::Expr(Box::new(Expr::Call(
+        Ok(Stmt::expr(Box::new(Expr::Call(
             "spawn".to_string(),
             vec![Box::new(closure)],
         ))))
@@ -63,7 +63,7 @@ impl<'a> StmtParser<'a> {
             bail!("`catch` body must be a block");
         };
 
-        Ok(Stmt::Expr(Box::new(Expr::Try {
+        Ok(Stmt::expr(Box::new(Expr::Try {
             body,
             catch_var,
             handler,
@@ -204,7 +204,7 @@ impl<'a> StmtParser<'a> {
             return Ok(None);
         }
         self.pos = end;
-        Ok(Some(Stmt::Expr(Box::new(expr))))
+        Ok(Some(Stmt::expr(Box::new(expr))))
     }
 
     /// Parse a *trailing* `if … { … }` as an expression statement, or answer

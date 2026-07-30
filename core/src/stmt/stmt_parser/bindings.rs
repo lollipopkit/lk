@@ -248,7 +248,7 @@ impl<'a> StmtParser<'a> {
                 Box::new(Expr::Var("__lk_set_index".to_string())),
                 vec![Box::new(Expr::Var(name)), Box::new(key), Box::new(value)],
             );
-            Ok(Some(Stmt::Expr(Box::new(map_set))))
+            Ok(Some(Stmt::expr(Box::new(map_set))))
         }
     }
 

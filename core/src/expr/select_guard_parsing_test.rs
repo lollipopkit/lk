@@ -30,7 +30,7 @@ mod tests {
                 call_args = Some(args);
             }
         }
-        let Some(Stmt::Expr(dispatch)) = statements.last().map(|s| s.as_ref()) else {
+        let Some(Stmt::Expr { value: dispatch, .. }) = statements.last().map(|s| s.as_ref()) else {
             panic!("desugared select must end in a dispatch expression");
         };
         (

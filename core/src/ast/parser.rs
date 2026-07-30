@@ -123,7 +123,7 @@ fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<E
         Box::new(Expr::Literal(LiteralVal::Nil)),
         Box::new(call),
     );
-    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
+    Expr::Block(vec![binding, Box::new(Stmt::expr(Box::new(check)))])
 }
 
 /// Build the desugared AST for a postfix `!` unwrap (see `parse_postfix`).
@@ -150,7 +150,7 @@ fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
         )),
         Box::new(Expr::Var(name)),
     );
-    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
+    Expr::Block(vec![binding, Box::new(Stmt::expr(Box::new(check)))])
 }
 
 /// Build the desugared AST for a parsed `select` (see `parse_select` for the
@@ -243,7 +243,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         let arm_body = match binding {
             Some(name) => Expr::Block(vec![
                 let_stmt(name, index(index(Expr::Var(result_name.clone()), 2), 1)),
-                Box::new(Stmt::Expr(Box::new(body))),
+                Box::new(Stmt::expr(Box::new(body))),
             ]),
             None => body,
         };
@@ -262,7 +262,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         Box::new(default_case.unwrap_or_else(nil_lit)),
         Box::new(dispatch),
     );
-    statements.push(Box::new(Stmt::Expr(Box::new(top))));
+    statements.push(Box::new(Stmt::expr(Box::new(top))));
     Expr::Block(statements)
 }
 

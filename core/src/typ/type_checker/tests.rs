@@ -325,14 +325,14 @@ fn test_while_statement_type_checking() {
     // Test while statement with boolean condition
     let while_stmt = Stmt::While {
         condition: Box::new(Expr::Literal(LiteralVal::Bool(true))),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
     assert!(while_stmt.type_check(&mut checker).is_ok());
 
     // Test while statement with non-boolean condition
     let while_stmt_invalid = Stmt::While {
         condition: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int instead of Bool
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
     assert!(while_stmt_invalid.type_check(&mut checker).is_ok());
 }
@@ -348,7 +348,7 @@ fn test_for_statement_type_checking() {
             Box::new(Expr::Literal(LiteralVal::Int(1))),
             Box::new(Expr::Literal(LiteralVal::Int(2))),
         ])),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     assert!(for_stmt.type_check(&mut checker).is_ok());
 
@@ -356,7 +356,7 @@ fn test_for_statement_type_checking() {
     let for_stmt_invalid = Stmt::For {
         pattern: ForPattern::Variable("item".to_string()),
         iterable: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int is not iterable
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     let result = for_stmt_invalid.type_check(&mut checker);
     assert!(result.is_err());

@@ -159,7 +159,7 @@ impl Compiler {
     ) -> Result<bool> {
         let (statements, tail) = match (value_reg, statements.split_last()) {
             (Some(_), Some((last, leading))) => match last.as_ref() {
-                Stmt::Expr(expr) => (leading, Some(expr.as_ref())),
+                Stmt::Expr { value: expr, .. } => (leading, Some(expr.as_ref())),
                 _ => (statements, None),
             },
             _ => (statements, None),
@@ -643,5 +643,8 @@ impl Compiler {
 /// Whether a statement sequence ends in an expression — its *value*, by the
 /// same rule a block expression uses.
 fn ends_in_expression(statements: &[Box<Stmt>]) -> bool {
-    matches!(statements.last().map(|stmt| stmt.as_ref()), Some(Stmt::Expr(_)))
+    matches!(
+        statements.last().map(|stmt| stmt.as_ref()),
+        Some(Stmt::Expr { .. })
+    )
 }

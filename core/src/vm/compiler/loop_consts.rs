@@ -171,7 +171,7 @@ fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
         Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => collect_stmt_scalar_consts(item, keys),
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => collect_expr_scalar_consts(expr, keys),
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => collect_expr_scalar_consts(expr, keys),
         Stmt::Return { value: None } => {}
         Stmt::Let { value, .. } | Stmt::Define { value, .. } => collect_expr_scalar_consts(value, keys),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => collect_expr_scalar_consts(value, keys),
@@ -353,7 +353,9 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
             collect_expr_folded_int_consts(value, locals, keys);
             locals.remove(name);
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => collect_expr_folded_int_consts(expr, locals, keys),
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
+            collect_expr_folded_int_consts(expr, locals, keys)
+        }
         Stmt::Return { value: None }
         | Stmt::Empty
         | Stmt::Break
@@ -558,7 +560,7 @@ fn collect_stmt_inline_call_scalar_consts(
         }
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
             collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
         }
         Stmt::Return { value: None } => {}
@@ -764,7 +766,7 @@ fn collect_stmt_const_map_get_scalar_consts(
         }
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
             collect_expr_const_map_get_scalar_consts(expr, const_maps, keys)?;
         }
         Stmt::Return { value: None } => {}

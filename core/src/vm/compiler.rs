@@ -727,7 +727,7 @@ impl Compiler {
         let mut last = None;
         for stmt in statements {
             match stmt.as_ref() {
-                Stmt::Expr(expr) => {
+                Stmt::Expr { value: expr, .. } => {
                     last = Some(self.lower_expr(expr)?);
                 }
                 Stmt::Return { .. } => {

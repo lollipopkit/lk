@@ -136,7 +136,7 @@ fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>,
             Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
                 collect_single_stmt_free_vars(item, bound, free)
             }
-            Stmt::Expr(expr) => collect_expr_free_vars(expr, bound, free),
+            Stmt::Expr { value: expr, .. } => collect_expr_free_vars(expr, bound, free),
             Stmt::Return { value: Some(value) } => collect_expr_free_vars(value, bound, free),
             Stmt::Return { value: None } | Stmt::Empty | Stmt::Break | Stmt::Continue => {}
             Stmt::Let { pattern, value, .. } => {
@@ -331,7 +331,7 @@ pub(super) fn collect_stmt_closure_captures(stmt: &Stmt, out: &mut Vec<String>) 
             collect_expr_closure_captures(iterable, out);
             collect_stmt_closure_captures(body, out);
         }
-        Stmt::Expr(expr) => collect_expr_closure_captures(expr, out),
+        Stmt::Expr { value: expr, .. } => collect_expr_closure_captures(expr, out),
         Stmt::Return { value: Some(value) } => collect_expr_closure_captures(value, out),
         Stmt::Return { value: None } => {}
         // A nested `fn` captures nothing from locals (functions are compiled

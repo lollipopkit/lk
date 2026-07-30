@@ -225,7 +225,7 @@ impl Compiler {
             } => self.lower_inline_if(condition, then_stmt, else_stmt.as_deref(), result, returns),
             Stmt::While { condition, body } => self.lower_inline_while(condition, body, result, returns),
             Stmt::Return { value: Some(value) } => self.lower_inline_return(value, result, returns, tail_position),
-            Stmt::Expr(expr) if inline_dead_expr_is_supported(expr) => {
+            Stmt::Expr { value: expr, .. } if inline_dead_expr_is_supported(expr) => {
                 self.lower_expr(expr)?;
                 Ok(())
             }
@@ -380,7 +380,7 @@ fn inline_stmt_is_supported(stmt: &Stmt) -> bool {
         }
         Stmt::While { condition, body } => inline_expr_is_supported(condition) && inline_stmt_is_supported(body),
         Stmt::Return { value: Some(value) } => inline_expr_is_supported(value),
-        Stmt::Expr(expr) => inline_dead_expr_is_supported(expr),
+        Stmt::Expr { value: expr, .. } => inline_dead_expr_is_supported(expr),
         _ => false,
     }
 }
@@ -514,7 +514,7 @@ pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
         Stmt::Return { value } => value.as_ref().is_some_and(|value| expr_contains_call_to(value, target)),
         Stmt::Function { body, .. } => stmt_contains_call_to(body, target),
         Stmt::Block { statements } => statements.iter().any(|stmt| stmt_contains_call_to(stmt, target)),
-        Stmt::Expr(expr) => expr_contains_call_to(expr, target),
+        Stmt::Expr { value: expr, .. } => expr_contains_call_to(expr, target),
         Stmt::Empty
         | Stmt::Import(_)
         | Stmt::Struct { .. }
@@ -656,7 +656,7 @@ fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_assigned_names(stmt, names);
             }
         }
-        Stmt::Expr(expr) => collect_assigned_names_in_expr(expr, names),
+        Stmt::Expr { value: expr, .. } => collect_assigned_names_in_expr(expr, names),
         Stmt::Return { value: Some(value) } => collect_assigned_names_in_expr(value, names),
         _ => {}
     }

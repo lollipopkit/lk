@@ -345,7 +345,7 @@ impl ResolverCore {
 
                 children_out.push(child_layout);
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 self.resolve_expr(expr);
             }
             Stmt::Struct { .. } => {
@@ -492,7 +492,7 @@ impl ResolverCore {
                                 &mut Vec::new(),
                             );
                         }
-                        _ => this.resolve_stmt(&Stmt::Expr(body.clone()), &mut Vec::new()),
+                        _ => this.resolve_stmt(&Stmt::expr(body.clone()), &mut Vec::new()),
                     }
                 });
                 // Attach as an anonymous child of the current function

@@ -200,13 +200,37 @@ pub enum Stmt {
         methods: Vec<Stmt>,
     },
     /// expression;
-    Expr(Box<Expr>),
+    ///
+    /// Carries a span for the same reason `Let` does, and for one more: this is
+    /// where a bare call statement lives, so it is where argument type errors
+    /// are raised. It was the one statement variant with no position at all, and
+    /// `TypeError::span` is filled by the enclosing statement on the way out —
+    /// so `f("x");` reported "Argument 1 has the wrong type (expected Int, got
+    /// String) at `x`" and nothing else. In a four-thousand-line program that is
+    /// not a diagnostic; the same mistake in a `let` said `1:1-6`.
+    Expr {
+        value: Box<Expr>,
+        span: Option<Span>,
+    },
     /// { statements }
     Block {
         statements: Vec<Box<Stmt>>,
     },
     /// 空语句 (用于处理解析时的占位)
     Empty,
+}
+
+impl Stmt {
+    /// A bare expression statement whose position is not known yet.
+    ///
+    /// Most construction sites are desugarings and tests, which have no source
+    /// text to point at; the parser fills the span in where the statement really
+    /// was written. Having the constructor keeps those sites from each having to
+    /// spell `span: None`, and keeps the field from drifting back to "there is
+    /// no position here" by default in the one place that does have one.
+    pub fn expr(value: Box<Expr>) -> Self {
+        Self::Expr { value, span: None }
+    }
 }
 
 /// 程序结构 - 包含语句列表

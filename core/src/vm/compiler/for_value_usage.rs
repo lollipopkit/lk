@@ -11,7 +11,7 @@ pub(super) fn stmt_uses_for_binding_value(stmt: &Stmt, name: &str) -> bool {
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
             false
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => expr_uses_for_binding_value(expr, name),
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => expr_uses_for_binding_value(expr, name),
         Stmt::Return { value: None } => false,
         Stmt::Let { value, .. } => expr_uses_for_binding_value(value, name),
         Stmt::Define { value, .. } => expr_uses_for_binding_value(value, name),
@@ -206,7 +206,7 @@ pub(super) fn stmt_shadows_name_deep(stmt: &Stmt, name: &str) -> bool {
         Stmt::Block { statements } => statements.iter().any(|stmt| stmt_shadows_name_deep(stmt, name)),
         // `try { … } catch e { … }` is an expression, so it arrives wrapped —
         // and `e` shadows for the length of the handler.
-        Stmt::Expr(expr) => match expr.as_ref() {
+        Stmt::Expr { value: expr, .. } => match expr.as_ref() {
             Expr::Try {
                 body,
                 catch_var,

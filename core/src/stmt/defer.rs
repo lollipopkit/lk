@@ -148,7 +148,7 @@ fn descend(stmt: &mut Stmt) -> Result<(), String> {
             Ok(())
         }
         // `try { … } catch e { … }` — an expression now, so it arrives wrapped.
-        Stmt::Expr(expr) => match expr.as_mut() {
+        Stmt::Expr { value: expr, .. } => match expr.as_mut() {
             Expr::Try { body, handler, .. } => {
                 for inner in body.iter_mut().chain(handler.iter_mut()) {
                     reject_stray(inner)?;
@@ -276,17 +276,17 @@ fn with_releases(stmt: Stmt, pending: &[Box<Stmt>]) -> Stmt {
             iterable,
             body: Box::new(with_releases(*body, pending)),
         },
-        Stmt::Expr(expr) => match *expr {
+        Stmt::Expr { value: expr, .. } => match *expr {
             Expr::Try {
                 body,
                 catch_var,
                 handler,
-            } => Stmt::Expr(Box::new(Expr::Try {
+            } => Stmt::expr(Box::new(Expr::Try {
                 body: map_releases(body, pending),
                 catch_var,
                 handler: map_releases(handler, pending),
             })),
-            other => Stmt::Expr(Box::new(other)),
+            other => Stmt::expr(Box::new(other)),
         },
         // A nested function's `return` leaves *it*, not the enclosing function.
         other => other,

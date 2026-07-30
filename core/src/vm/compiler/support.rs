@@ -387,7 +387,7 @@ fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_mutated_names(method, names);
             }
         }
-        Stmt::Expr(expr) => collect_mutated_names_in_expr(expr, names),
+        Stmt::Expr { value: expr, .. } => collect_mutated_names_in_expr(expr, names),
         Stmt::Return { value } => {
             if let Some(value) = value {
                 collect_mutated_names_in_expr(value, names);

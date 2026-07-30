@@ -43,7 +43,12 @@ impl Stmt {
             Stmt::Let { span, .. }
             | Stmt::Assign { span, .. }
             | Stmt::CompoundAssign { span, .. }
-            | Stmt::Define { span, .. } => span.clone(),
+            | Stmt::Define { span, .. }
+            // The variant a bare call statement is, and therefore the one every
+            // argument type error is raised under. It carried no span, so those
+            // errors carried no position — the same mistake written as a `let`
+            // said `1:1-6`, and written as a call said nothing.
+            | Stmt::Expr { span, .. } => span.clone(),
             _ => None,
         }
     }
@@ -864,7 +869,7 @@ impl Stmt {
 
                 Ok(())
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 // 表达式语句，只检查类型，不使用结果
                 expr.type_check(type_checker)?;
                 Ok(())

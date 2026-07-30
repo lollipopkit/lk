@@ -285,7 +285,7 @@ impl<'a> Parser<'a> {
         let mut statements = program.statements;
         if tail == BlockTail::Return
             && let Some(last) = statements.last_mut()
-            && let Stmt::Expr(expr) = last.as_ref()
+            && let Stmt::Expr { value: expr, .. } = last.as_ref()
         {
             let value = expr.clone();
             **last = Stmt::Return { value: Some(value) };

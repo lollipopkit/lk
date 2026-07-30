@@ -460,7 +460,7 @@ fn collect_generated_expr_origins_from_stmt(
                 collect_generated_expr_origins_from_stmt(method, span.clone(), origins);
             }
         }
-        Stmt::Expr(expr) => {
+        Stmt::Expr { value: expr, .. } => {
             push_generated_statement_origin("stmt expr", span.clone(), origins);
             push_generated_statement_origin("stmt expr_value", span.clone(), origins);
             collect_generated_expr_origins(expr, span, origins);

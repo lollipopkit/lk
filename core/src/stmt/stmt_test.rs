@@ -1132,7 +1132,7 @@ mod tests {
     fn go_statement_desugars_to_spawn_closure() {
         use crate::expr::Expr;
         let program = parse_program("go f(1, 2);");
-        let Stmt::Expr(call) = program.statements[0].as_ref() else {
+        let Stmt::Expr { value: call, .. } = program.statements[0].as_ref() else {
             panic!("go must desugar to an expression statement");
         };
         let Expr::Call(name, args) = call.as_ref() else {

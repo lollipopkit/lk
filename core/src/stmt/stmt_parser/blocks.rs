@@ -27,6 +27,12 @@ impl<'a> StmtParser<'a> {
     }
 
     pub fn parse_expr_stmt(&mut self) -> Result<Stmt> {
+        // Taken before the expression is parsed, and ended before the `;`: this
+        // is the one statement whose span exists so that an *argument* type
+        // error has somewhere to point. `f("x");` used to report the mistake
+        // with no position at all, because a bare call is a `Stmt::Expr` and
+        // that was the only variant carrying none.
+        let start_pos = self.pos;
         let expr = self.parse_statement_expression()?;
         // An expression that *ends in a block* needs no `;`.
         //
@@ -43,7 +49,10 @@ impl<'a> StmtParser<'a> {
         } else {
             self.expect_token(Token::Semicolon)?;
         }
-        Ok(Stmt::Expr(Box::new(expr)))
+        Ok(Stmt::Expr {
+            value: Box::new(expr),
+            span: self.span_covering(start_pos, self.pos.saturating_sub(1)),
+        })
     }
 
     pub fn parse_expression(&mut self) -> Result<Expr> {

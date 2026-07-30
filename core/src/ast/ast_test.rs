@@ -727,7 +727,7 @@ mod test {
             panic!("unsafe should wrap a block");
         };
         assert!(
-            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr(_))),
+            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr { .. })),
             "the tail must stay an expression, not become a return: {statements:?}"
         );
     }
