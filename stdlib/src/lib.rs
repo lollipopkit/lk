@@ -41,6 +41,8 @@ mod math_test;
 #[cfg(test)]
 mod os_test;
 #[cfg(test)]
+mod platform_surface_test;
+#[cfg(test)]
 mod select_test;
 #[cfg(test)]
 mod spawn_test;

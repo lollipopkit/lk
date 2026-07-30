@@ -906,6 +906,11 @@ fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Both callers (`run_bundle` and `native_compile`'s staticlib builder) are
+/// `#[cfg(feature = "aot")]`, so this is too — a helper that outlives the only
+/// configuration that calls it is dead code, and CI builds the CLI *without*
+/// `aot` (the bare-metal step needs a `lk` that only compiles bytecode).
+#[cfg(feature = "aot")]
 fn workspace_root() -> anyhow::Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1638,6 +1643,7 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
 /// `impl` in this module defines could dispatch to anything — a type may have
 /// its own `contains` that sorts first — so a name that is also a user method is
 /// not treated as the builtin it resembles.
+#[cfg(feature = "aot")]
 fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> bool {
     const PURE_READS: &[&str] = &[
         "len",
