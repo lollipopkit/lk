@@ -1418,6 +1418,46 @@ fn try_catch_differential() {
     );
 }
 
+/// `slice` and `contains` on the non-`Int` list carriers, pinned to pure
+/// Cranelift.
+///
+/// A list-method sweep (6 list shapes x 34 methods) found no wrong answers and
+/// 62 fallbacks, and the fallbacks were lopsided: `Int` lists lacked 5 methods,
+/// `Float` 18 and `String` 15. Two of those were pure dispatch-table gaps —
+/// `list_h.{f64,str,dyn}_slice_from` and `{f64,dyn}_contains` had been in the
+/// ABI all along, and only the `i64` arm was written. The rest need runtime
+/// helpers that do not exist yet.
+///
+/// `i64` slices to a *window*; these slice to a fresh list. Both are what
+/// `slice` means — the window is an optimisation the other carriers lack, not a
+/// different answer, which is what pinning them against the VM checks.
+#[test]
+fn slice_and_contains_cover_the_other_carriers() {
+    run_differential(
+        "list_carrier_methods",
+        &[
+            new(
+                "slice_from_on_each_carrier",
+                "println([1.5, 2.5, 3.5].slice(1));\nprintln([\"a\", \"b\", \"c\"].slice(1));\nprintln([1, \"b\", 2.5].slice(1));\nreturn 0;\n",
+            ),
+            new(
+                "slice_edges",
+                "println([1.5, 2.5].slice(0));\nprintln([1.5, 2.5].slice(9));\nprintln([\"a\"].slice(1));\nreturn 0;\n",
+            ),
+            new(
+                "contains_on_float_and_dyn",
+                "println([1.5, 2.5].contains(2.5));\nprintln([1.5, 2.5].contains(9.5));\nprintln([1, \"b\"].contains(1));\nprintln([1, \"b\"].contains(\"b\"));\nprintln([1, \"b\"].contains(7));\nreturn 0;\n",
+            ),
+            // An Int needle against a Float list coerces, as `==` does.
+            new(
+                "contains_coerces_numbers",
+                "println([1.0, 2.0].contains(2));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// `xs.chain(ys)` over every list pairing, pinned to pure Cranelift.
 ///
 /// `chain` is `+` spelled as a method, and the operator path has always covered

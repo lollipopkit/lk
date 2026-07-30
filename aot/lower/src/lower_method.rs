@@ -734,6 +734,74 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::SliceI64)
         }
+        // The other element types slice through `*_slice_from`, which has been
+        // in the ABI all along — only the dispatch table stopped at `i64`. Same
+        // shape as `chain`: the runtime could do it, nothing asked.
+        //
+        // `i64` above answers a *window* (`SliceI64`); these answer a fresh
+        // list. Both are what `slice` means — the window is an optimisation the
+        // other carriers do not have, not a different result.
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "slice", [(start, Ty::I64)]) => {
+            let helper = match receiver_ty {
+                Ty::ListF64 => "f64_slice_from",
+                Ty::ListStr => "str_slice_from",
+                _ => "dyn_slice_from",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, *start],
+            });
+            (dst, receiver_ty)
+        }
+        // `contains` likewise: the helpers exist for every carrier.
+        (Ty::ListF64, "contains", [(needle, Ty::F64 | Ty::I64)]) => {
+            let needle = coerce_to_f64(ssa, insts, *needle, args[0].1);
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "f64_contains"),
+                args: vec![receiver, needle],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::ListDyn, "contains", [(needle, nty)]) => {
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "dyn_contains"),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
         (Ty::Bytes, "slice", [(from, Ty::I64)]) => {
             let end = ssa.new_val();
             insts.push(Inst::Call {
