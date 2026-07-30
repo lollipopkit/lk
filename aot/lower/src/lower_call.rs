@@ -134,13 +134,35 @@ pub(crate) fn lower_merge_fields(
     let (bv, bty) = ssa.read(base.wrapping_add(1), block, pc)?;
     let (ov, oty) = ssa.read(base.wrapping_add(2), block, pc)?;
     let base_map = to_dyn_map_handle(ssa, insts, bv, bty, pc)?;
-    let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
     let dst = ssa.new_val();
-    insts.push(Inst::Call {
-        dst: Some(dst),
-        callee: AbiRef::new("map_h", "str_dyn_merge"),
-        args: vec![base_map, overlay_map],
-    });
+    // The overlay is walked where it lives rather than converted. A struct
+    // update's overlay is the `{x: 42}` field literal — a *typed* map — and
+    // converting it meant re-inserting its entries into a fresh table in its
+    // iteration order, which is not the sequence that built it. The overlay's
+    // order is the tail of the merged result's, so that was a reorder waiting
+    // to be noticed (see `map_h.str_dyn_merge_typed`).
+    match typed_map_kind(oty) {
+        Some(kind) => {
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
+            });
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_merge_typed"),
+                args: vec![base_map, ov, kind_v],
+            });
+        }
+        None => {
+            let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_merge"),
+                args: vec![base_map, overlay_map],
+            });
+        }
+    }
     ssa.write(base, block, (dst, Ty::MapStrDyn));
     Ok(())
 }

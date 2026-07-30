@@ -258,6 +258,82 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge(base: *mut c_void, overlay: *m
     crate::state::arena_handle(out)
 }
 
+/// `merge(base, overlay)` where the **overlay is a typed carrier**, iterated in
+/// place.
+///
+/// The lowering used to convert the overlay to a `str -> Dyn` map first, with the
+/// claim that "the rebuild replays the source order". Re-inserting a table's
+/// entries into a fresh table in its *iteration* order is a different insertion
+/// sequence from the one that built it, so the copy does not always iterate the
+/// same way — and the overlay's order is the tail of the merged result's.
+///
+/// Struct update syntax (`P { ..base, x: 42 }`) is what reaches this: the
+/// overlay is the `{x: 42}` field literal, which is a typed map. Refusing it
+/// would cost the feature its lowering; copying it is the thing that is wrong.
+/// So nothing is copied — the overlay is walked where it lives.
+///
+/// # Safety
+/// `base` must be a live `StrDynMap` handle or null; `overlay` a live handle of
+/// the carrier `kind` names, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge_typed(
+    base: *mut c_void,
+    overlay: *mut c_void,
+    kind: i64,
+) -> *mut c_void {
+    let empty = StrDynMap::default();
+    // SAFETY: caller passes a live `StrDynMap` handle (or null).
+    let base: &StrDynMap = if base.is_null() {
+        &empty
+    } else {
+        unsafe { &*(base as *mut StrDynMap) }
+    };
+    // The overlay's keys, in its own order — borrowed, not rebuilt.
+    let overlay_pairs = typed_map_pairs(kind, overlay);
+    let mut out = StrDynMap::default();
+    for (key, &value) in base {
+        if !overlay_pairs.iter().any(|(k, _)| k == key) {
+            out.insert(key.clone(), value);
+        }
+    }
+    for (key, value) in overlay_pairs {
+        out.insert(key, value);
+    }
+    crate::state::arena_handle(out)
+}
+
+/// A typed string-keyed map's entries **in its own iteration order**, boxed.
+///
+/// A `Vec`, not a map: the order is the payload here, and a hash table would
+/// impose its own. See [`typed_map_keyed`] for the order-free counterpart that
+/// equality uses.
+fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(String, crate::lkdyn::LkDyn)> {
+    use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    if handle.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `kind` names the carrier the caller tagged this handle with.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_STR_F64 => (*(handle as *mut StrF64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            KIND_STR_BOOL => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_bool(*v)))
+                .collect(),
+            // An int-keyed overlay has no string keys to merge into a field map;
+            // the VM refuses it before this can be reached.
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 /// Fresh zero-capacity rebuild in `src`'s iteration order — the VM's
 /// `__lk_make_struct` copies the merged field map into the new object
 /// (`runtime_object_fields_from_map`), so the native carrier replays the

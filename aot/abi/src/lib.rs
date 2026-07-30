@@ -573,6 +573,7 @@ macro_rules! for_each_abi_fn {
             // Struct update (`P { ..base, k: v }`): the VM's merge_field_maps
             // two-step insertion + make_struct's fresh field copy.
             ("map_h", "str_dyn_merge", lkrt_lkmap_str_dyn_merge, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_merge_typed", lkrt_lkmap_str_dyn_merge_typed, WritesHost, [Ptr, Ptr, I64], Ptr, Constructs);
             ("map_h", "str_dyn_rebuild", lkrt_lkmap_str_dyn_rebuild, WritesHost, [Ptr], Ptr, Constructs);
             // Map-literal protocol (VM-order mirror, plan D1): stage-1 build
             // in source order, then finish into the typed carrier — the

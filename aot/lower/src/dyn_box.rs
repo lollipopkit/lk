@@ -1,9 +1,37 @@
 use super::*;
 
-/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn`
-/// passes through, a typed string-keyed map converts (iteration order is
-/// preserved — the rebuild replays the source order, `vm_mirror`'s
-/// argument), `nil` becomes an empty map (the VM accepts a nil merge base).
+/// The `lkmap::KIND_*` number for a typed string-keyed map carrier, or `None`
+/// for anything else (a boxed map, a non-map).
+///
+/// One table, read by everything that tags a typed map handle: boxing
+/// (`dyn.from_typed_map`) and the merge overlay both need the same numbering,
+/// and a second copy of it would be a silent mismatch rather than an error.
+pub(crate) fn typed_map_kind(ty: Ty) -> Option<i64> {
+    Some(match ty {
+        Ty::MapStrI64 => 0,
+        Ty::MapStrF64 => 1,
+        Ty::MapStrBool => 2,
+        Ty::MapI64I64 => 3,
+        Ty::MapI64F64 => 4,
+        _ => return None,
+    })
+}
+
+/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn` passes
+/// through and `nil` becomes an empty map (the VM accepts a nil merge base).
+///
+/// A **typed** map rejects, and the reason is worth keeping: it used to convert,
+/// with the claim that "iteration order is preserved — the rebuild replays the
+/// source order". It does not. Re-inserting a map's entries into a fresh table
+/// *in its iteration order* is a different insertion sequence from the one that
+/// built it, and once deletions are in the history the two tables iterate
+/// differently — the same mistake `DYN_RAW`'s doc warns about and that
+/// `a_boxed_typed_map_keeps_its_order` pins for the boxing path.
+///
+/// Here the copy is unavoidable (the merge helper wants a real `StrDynMap`), so
+/// the arm is *gone* rather than fixed: a fallback is correct, a silent reorder
+/// is not. Supporting it means a typed-map-aware merge in lkrt, with its own
+/// order-conformance test — separate work, not a table entry.
 pub(crate) fn to_dyn_map_handle(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -11,11 +39,8 @@ pub(crate) fn to_dyn_map_handle(
     ty: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
-    let helper = match ty {
-        Ty::MapStrDyn => return Ok(v),
-        Ty::MapStrI64 => "str_i64_to_dyn",
-        Ty::MapStrF64 => "str_f64_to_dyn",
-        Ty::MapStrBool => "str_bool_to_dyn",
+    match ty {
+        Ty::MapStrDyn => Ok(v),
         Ty::Nil => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -23,17 +48,10 @@ pub(crate) fn to_dyn_map_handle(
                 callee: AbiRef::new("map_h", "str_dyn_new"),
                 args: Vec::new(),
             });
-            return Ok(dst);
+            Ok(dst)
         }
-        _ => return Err(Unsupported::TypeMismatch { pc }),
-    };
-    let dst = ssa.new_val();
-    insts.push(Inst::Call {
-        dst: Some(dst),
-        callee: AbiRef::new("map_h", helper),
-        args: vec![v],
-    });
-    Ok(dst)
+        _ => Err(Unsupported::TypeMismatch { pc }),
+    }
 }
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
@@ -237,13 +255,7 @@ pub(crate) fn to_dyn(
         // must not re-represent a container; this is the same rule, applied
         // where it had been missed.
         Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => {
-            let kind = match ty {
-                Ty::MapStrI64 => 0,
-                Ty::MapStrF64 => 1,
-                Ty::MapStrBool => 2,
-                Ty::MapI64I64 => 3,
-                _ => 4,
-            };
+            let kind = typed_map_kind(ty).expect("checked by the arm");
             let kind_v = ssa.new_val();
             insts.push(Inst::Const {
                 dst: kind_v,

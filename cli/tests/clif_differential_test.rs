@@ -1418,6 +1418,49 @@ fn try_catch_differential() {
     );
 }
 
+/// Struct update syntax with a typed-map overlay, pinned to pure Cranelift.
+///
+/// The sixth instance of one mistake: `to_dyn_map_handle` converted a typed map
+/// to the boxed carrier and claimed "iteration order is preserved — the rebuild
+/// replays the source order". Re-inserting a table's entries into a fresh table
+/// in its *iteration* order is a different insertion sequence from the one that
+/// built it, so the copy need not iterate the same way.
+///
+/// `P { ..base, x: 42 }` reaches it: the overlay is the `{x: 42}` field literal,
+/// a typed map, and the overlay's order is the tail of the merged result's. The
+/// overlay is now walked where it lives — nothing is copied, so there is no
+/// order to lose.
+#[test]
+fn a_struct_update_keeps_the_field_order() {
+    run_differential(
+        "struct_update_order",
+        &[
+            new(
+                "int_overlay",
+                "struct P { a: Int, b: Int, c: Int }\nlet p = P { a: 1, b: 2, c: 3 };\nlet q = P { ..p, b: 9 };\nprintln(q);\nprintln(q.b);\nreturn 0;\n",
+            ),
+            // A wide struct, so the field maps grow past one table size and the
+            // insertion sequence actually matters.
+            new(
+                "many_fields",
+                "struct W { f0: Int, f1: Int, f2: Int, f3: Int, f4: Int, f5: Int, f6: Int, f7: Int, f8: Int, f9: Int }\nlet w = W { f0: 0, f1: 1, f2: 2, f3: 3, f4: 4, f5: 5, f6: 6, f7: 7, f8: 8, f9: 9 };\nprintln(W { ..w, f5: 50 });\nprintln(W { ..w, f0: 100, f9: 900 });\nreturn 0;\n",
+            ),
+            // Float and Bool overlays ride different carriers.
+            new(
+                "float_and_bool_overlays",
+                "struct F { x: Float, y: Float }\nlet f = F { x: 1.5, y: 2.5 };\nprintln(F { ..f, y: 9.5 });\nstruct B { p: Bool, q: Bool }\nlet b = B { p: true, q: false };\nprintln(B { ..b, q: true });\nreturn 0;\n",
+            ),
+            // A mixed overlay is the boxed carrier, which was always fine —
+            // here to keep both paths under the same gate.
+            new(
+                "mixed_overlay",
+                "struct M { a: Int, b: String }\nlet m = M { a: 1, b: \"x\" };\nprintln(M { ..m, a: 2, b: \"y\" });\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// A **caught** error's message, pinned to pure Cranelift.
 ///
 /// The loud-failure contract compares success and stdout, not the text of a
