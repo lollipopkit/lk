@@ -1465,17 +1465,70 @@ impl TypeChecker {
             // string arm all along. Only this rule said no, so the one way to
             // ask a string which came first was to sort a two-element list.
             (Type::String, Type::String) => Ok(()),
+            // A String against something else. The fall-through below reported
+            // "the left operand must be numeric", which blames the wrong thing:
+            // a String *is* orderable, just not against a number. An ordering
+            // compares two of a kind.
+            (Type::String, other) => self.orders_against_a_string(other, right_expr),
+            (other, Type::String) => self.orders_against_a_string(other, left_expr),
             _ => {
-                self.ensure_numeric_operand(left_ty, left_expr, "the left operand")?;
-                self.ensure_numeric_operand(right_ty, right_expr, "the right operand")?;
+                self.ensure_orderable_operand(left_ty, left_expr)?;
+                self.ensure_orderable_operand(right_ty, right_expr)?;
                 Ok(())
             }
         }
     }
 
-    fn ensure_numeric_operand(&mut self, ty: &Type, expr: &Expr, label: &'static str) -> Result<NumericClass> {
+    /// One side of an ordering: a number or a string.
+    ///
+    /// This position used to borrow `classify_numeric_operand`, which is
+    /// *arithmetic's* rule and reports the expected set as
+    /// `Int | Float | Box<Any>` — a set that stopped being right when strings
+    /// became orderable. It also answered the wrong question about `[1,2] < [1,3]`:
+    /// the point is that a list has no ordering at all, not that it is not a
+    /// number. Arithmetic keeps that rule, which is correct there (a string
+    /// concatenates through a different arm).
+    fn ensure_orderable_operand(&mut self, ty: &Type, expr: &Expr) -> Result<()> {
         let resolved = self.resolve_aliases(ty);
-        self.classify_numeric_operand(ty, &resolved, expr, label)
+        if NumericHierarchy::classify(&resolved).is_some() || matches!(resolved, Type::String) {
+            return Ok(());
+        }
+        if ty.contains_variables() {
+            self.inference_engine.add_constraint(ty.clone(), Type::Int);
+            return Ok(());
+        }
+        if matches!(resolved, Type::Any | Type::Boxed(_)) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            "`<`, `<=`, `>` and `>=` order numbers and strings; this type has no ordering",
+            None,
+            Some(resolved),
+            Some(expr.clone()),
+        ))
+    }
+
+    /// The other side of an ordering whose one side is a `String`.
+    ///
+    /// Unresolved becomes a `String` — this is a comparison of strings, which is
+    /// the only thing a string orders against. Dynamic (`Any`, a box) is decided
+    /// at run time, as everywhere else. Anything concrete and not a string is the
+    /// mistake, and the report names the *pair* rather than accusing one side of
+    /// not being a number.
+    fn orders_against_a_string(&mut self, other: &Type, other_expr: &Expr) -> Result<()> {
+        match other {
+            Type::Variable(_) => {
+                self.inference_engine.add_constraint(other.clone(), Type::String);
+                Ok(())
+            }
+            Type::Any | Type::Boxed(_) => Ok(()),
+            _ => Err(Self::type_err(
+                "an ordering compares two of a kind: a String orders against a String, a number against a number",
+                Some(Type::String),
+                Some(other.clone()),
+                Some(other_expr.clone()),
+            )),
+        }
     }
 
     /// Check logical operation types (&&, ||)

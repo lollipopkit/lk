@@ -64,10 +64,15 @@
 
 | 程序 | 期望 | 说明 |
 |------|------|------|
-| `let x = 2; let y = 0; return x / y;` | 失败,stdout 空 | 整数除零。native 侧禁止直接依赖 LLVM `sdiv` UB,必须走 `lkrt_i64_div_checked` guard |
-| `x % 0` | 失败,stdout 空 | 整数模零,同上 |
-| `1.0 / 0.0` | 失败,stdout 空 | 浮点除零是响亮失败,**不是** IEEE `inf`(native guard 与 VM 对齐) |
+| `x % 0` | 失败,stdout 空 | 整数模零。native 侧禁止直接依赖 LLVM `srem` 的 UB,必须走 `lkrt` 的 guard |
+| `1 << 64` | 失败,stdout 空 | 移位量越界(`0..63`),两端文本逐字一致 |
 | `let m = {"a": 1}; return m["z"] + 1;` | 失败,stdout 空 | 缺失值(nil)参与算术 = halt。VM 报 `Add expected numbers…got Nil` |
+
+**这张表里曾经有两条退休的裁决,2026-07-30 删掉**:"整数除零 → 失败" 和
+"浮点除零是响亮失败,**不是** IEEE `inf`"。`/` 早就是**浮点除法**了(见上面的数值
+表),所以 `2 / 0` 和 `1.0 / 0.0` 都是 `inf`,`0.0 / 0.0` 是 `NaN`,两端逐字一致
+(2026-07-30 复核)。留在原地的退休裁决不是无害的注释 —— `lkrt` 的通道容量就是照着
+一条退休的裁决写的(见 channel 容量那节),两端因此给了不同答案。
 
 **宿主错误是语言错误。** `fs.read_dir("/nope")` 这类 IO 失败在 VM 里是可以
 `try`/`catch` 住的 raise;native 侧此前经 `aborting()` 直接终止进程,同一个程序
@@ -287,7 +292,7 @@ argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 
 | 程序 | 期望 stdout | 说明 |
 |------|-------------|------|
 | `datetime.now()` | — | 返回 Unix epoch **秒**(非微秒;datetime_demo 曾因此假设而自身断言失败) |
-| `std.write(out, "a")` | `a`,返回 `1` | `write`/`writeln` 返回写入字节数(writeln 含换行 = len+1);`flush` 恒返回 `true` |
+| `std.write(out, "a")` | `a`,返回 `1` | `write`/`writeln` 返回写入字节数(writeln 含换行 = len+1);`flush` 恒返回 `true`。`std` 是 `io` 的**子模块** —— 写 `use { std } from io;` 或 `io.std.write(…)`,裸 `std` 不是全局(2026-07-30 更正) |
 | `std.write` 与 `println` 交错 | 程序序 | **stdout 顺序契约**:native 侧 Rust 写者先 `fflush(NULL)` 再写、写后 flush 自身流,保证与 C `printf` 缓冲的输出保持程序序 |
 | `math.sqrt(-4.0)` | 响亮失败 | 负参是致命错误(双方 loud),不是 NaN |
 
@@ -712,6 +717,25 @@ impl **后面**也算数:先扫全程序收集,再填。
 `List<Any>` 下、对 `[1,2]` 的调用查 `List<Int>` —— 方法存在却找不到,还在运行
 时之前就被拒了。`String` 和 `Map` 能用只是因为它们不走这条路(`String` 无
 参;`Map` 有"entries 即 fields"的旁路)。两边现在用同一个键。
+
+## 排序说的是排序的规矩(2026-07-30 裁决)
+
+`<` / `<=` / `>` / `>=` 排的是**数字和字符串**,两边要**同类**。规矩没变,报错以前
+说的是别的:
+
+- `1 < "a"` 报 "**the left operand** must be numeric types" —— 一句话怪错了两次:
+  这里的左操作数**就是**数字,而换成字符串本来是合法的。现在报
+  "an ordering compares two of a kind: a String orders against a String, a number
+  against a number"。
+- `[1,2] < [1,3]` 报 "must be numeric types(expected `Int | Float | Box<Any>`)" ——
+  期望集合里**漏了 String**(字符串早就可排序了),而且答的是错的问题:列表的问题
+  是它根本**没有序**,不是它不是数字。现在报 "`<`, `<=`, `>` and `>=` order numbers
+  and strings; this type has no ordering"。
+
+根因是排序复用了**算术**那条判据(`ensure_numeric_operand`)。算术里"必须是数值"是
+对的(字符串走的是拼接那条臂),排序里不对 —— 所以排序现在有自己的
+`ensure_orderable_operand`。一条规矩变了(字符串可排序),而复用它的第二个地方没跟上,
+这是本会话反复出现的那个形状。
 
 ## 关键字可以当成员名(2026-07-30 补)
 

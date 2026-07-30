@@ -51,10 +51,14 @@ pub(crate) const MODULE_TABLE: &[ModuleRow] = &[
         bare_global: true,
         submodule_of: None,
     },
+    // `std` is a **submodule of `io`** (`use { std } from io;`), not a bare
+    // global: a bare `std` does not resolve at all. This row claimed otherwise —
+    // harmlessly, because it has no members here, but this table is documented
+    // as the single source of truth for how a module name binds.
     ModuleRow {
         name: "std",
-        bare_global: true,
-        submodule_of: None,
+        bare_global: false,
+        submodule_of: Some("io"),
     },
     ModuleRow {
         name: "iter",

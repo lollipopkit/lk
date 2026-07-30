@@ -483,8 +483,19 @@ fn ordering_accepts_two_strings_and_still_rejects_mixed_operands() {
         .check_expr(&compare(text("a"), BinOp::Ge, text("b")))
         .expect("two strings order");
 
+    // Mixed still refuses — and says what the rule is. It used to report "the
+    // left operand must be numeric types", which blames the wrong thing twice:
+    // the left operand here *is* a number, and a String would have been fine.
     let err = checker
         .check_expr(&compare(Expr::Literal(LiteralVal::Int(1)), BinOp::Lt, text("a")))
         .expect_err("Int against String");
-    assert!(err.to_string().contains("must be numeric types"), "{err}");
+    assert!(err.to_string().contains("compares two of a kind"), "{err}");
+
+    // A type with no ordering at all is told that, rather than being told it is
+    // not a number — and the expected set no longer omits String.
+    let list = Expr::List(vec![Box::new(Expr::Literal(LiteralVal::Int(1)))]);
+    let err = checker
+        .check_expr(&compare(list.clone(), BinOp::Lt, list))
+        .expect_err("lists have no ordering");
+    assert!(err.to_string().contains("has no ordering"), "{err}");
 }
