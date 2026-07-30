@@ -311,29 +311,30 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
 /// VM's loud type error.
 /// The type name a *caught* type error names its operand by.
 ///
-/// The VM formats `RuntimeVal::kind()`, which reports the **representation**:
-/// a string of <= 7 bytes is `String` (it is an inline `ShortStr`) and a longer
-/// one is `Object`, as is every list, map, set and byte buffer. That is a wart
-/// on the VM's side — its own doc says a caller with the heap should use
-/// `HeapValue::type_name` — but it is what a program that prints a caught error
-/// sees today, and the two backends have to print the same thing.
-///
-/// Filed separately as the VM-side fix; mirrored exactly here so the divergence
-/// is gone either way.
+/// The VM used to format `RuntimeVal::kind()`, which reports the
+/// **representation**: a string of <= 7 bytes was `String` and a longer one
+/// `Object`, as was every list, map and set. Its own doc said a caller with the
+/// heap should use `HeapValue::type_name` — so the VM now does, and this is the
+/// mirror of *that*: the language's type name, one per kind.
 fn kind_name(v: LkDyn) -> &'static str {
     match v.tag {
         DYN_NIL => "Nil",
         DYN_BOOL => "Bool",
         DYN_I64 => "Int",
         DYN_F64 => "Float",
-        // SAFETY: a `DYN_STR` payload is a live NUL-terminated arena string.
-        DYN_STR if unsafe { dyn_str(v) }.len() <= 7 => "String",
+        DYN_STR => "String",
+        DYN_LIST => "List",
+        DYN_SET => "Set",
+        DYN_BYTES => "Bytes",
+        tag if is_map_tag(tag) => "Map",
         _ => "Object",
     }
 }
 
 /// A binary type error in the VM's wording. `verb` is the operator as the VM
-/// spells it in this message — which is not uniform: `Sub`, `*`, `CmpLtInt`.
+/// spells it — the source operator where one exists (`operator_symbol`), which
+/// is now every case the AOT can reach. `Sub` is the one that still names an
+/// opcode, and it does so in the VM too.
 fn binary_type_error(verb: &str, tail: &str, a: LkDyn, b: LkDyn) -> ! {
     crate::panic::raise_str(&format!("{verb} {tail}, got {} and {}", kind_name(a), kind_name(b)))
 }
@@ -820,10 +821,10 @@ macro_rules! dyn_ord {
         }
     };
 }
-dyn_ord!(lkrt_dyn_lt, <, "CmpLtInt");
-dyn_ord!(lkrt_dyn_le, <=, "CmpLeInt");
-dyn_ord!(lkrt_dyn_gt, >, "CmpGtInt");
-dyn_ord!(lkrt_dyn_ge, >=, "CmpGeInt");
+dyn_ord!(lkrt_dyn_lt, <, "<");
+dyn_ord!(lkrt_dyn_le, <=, "<=");
+dyn_ord!(lkrt_dyn_gt, >, ">");
+dyn_ord!(lkrt_dyn_ge, >=, ">=");
 
 // ── Display (two modes, matching the VM's two display paths) ───────────
 

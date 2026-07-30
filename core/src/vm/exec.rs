@@ -409,7 +409,7 @@ impl Executor {
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
-                        lhs => bail!("AddIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("AddIntI expected Int lhs, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::MulIntI => {
@@ -421,7 +421,7 @@ impl Executor {
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
-                        lhs => bail!("MulIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("MulIntI expected Int lhs, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::ModIntI => {
@@ -440,7 +440,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        lhs => bail!("% expects an Int on the left, got {:?}", lhs.kind()),
+                        lhs => bail!("% expects an Int on the left, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::MinInt => {
@@ -452,9 +452,9 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MinInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MinInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -467,9 +467,9 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MaxInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MaxInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -486,10 +486,10 @@ impl Executor {
                             self.pc += 1;
                         }
                         (acc, lhs, rhs) => bail!(
-                            "AddMulInt expected Int operands, got {:?}, {:?}, and {:?}",
-                            acc.kind(),
-                            lhs.kind(),
-                            rhs.kind()
+                            "AddMulInt expected Int operands, got {}, {}, and {}",
+                            self.value_type_name(acc),
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -506,10 +506,10 @@ impl Executor {
                             self.pc += 1;
                         }
                         (acc, lhs, rhs) => bail!(
-                            "Add2Int expected Int operands, got {:?}, {:?}, and {:?}",
-                            acc.kind(),
-                            lhs.kind(),
-                            rhs.kind()
+                            "Add2Int expected Int operands, got {}, {}, and {}",
+                            self.value_type_name(acc),
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -522,20 +522,17 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MidInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MidInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
                 Opcode::AddListInt | Opcode::SubListInt => {
                     let acc_idx = self.stack_index_unchecked(instr.a());
                     let RuntimeVal::Int(acc) = self.state.stack[acc_idx] else {
-                        bail!(
-                            "{:?} expected Int accumulator, got {:?}",
-                            instr.opcode(),
-                            self.state.stack[acc_idx].kind()
-                        );
+                        let got = self.value_type_name(&self.state.stack[acc_idx]);
+                        bail!("{:?} expected Int accumulator, got {got}", instr.opcode());
                     };
                     let item = self.read_known_int_list_index(instr.b(), instr.c())?;
                     let value = if instr.opcode() == Opcode::AddListInt {
@@ -874,7 +871,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrEqZeroInt expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrEqZeroInt expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrNeZeroInt => {
@@ -888,7 +885,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrNeZeroInt expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrNeZeroInt expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrEqIntI4 => {
@@ -903,7 +900,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrEqIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrEqIntI4 expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrNeIntI4 => {
@@ -918,7 +915,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrNeIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrNeIntI4 expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrModEqZeroIntI4 => {
@@ -936,7 +933,10 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrModEqZeroIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!(
+                            "BrModEqZeroIntI4 expected Int operand, got {}",
+                            self.value_type_name(value)
+                        ),
                     }
                 }
                 Opcode::BrModNeZeroIntI4 => {
@@ -954,7 +954,10 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrModNeZeroIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!(
+                            "BrModNeZeroIntI4 expected Int operand, got {}",
+                            self.value_type_name(value)
+                        ),
                     }
                 }
                 Opcode::TestEqInt => {

@@ -129,25 +129,41 @@ fn operator_symbol(opcode: Opcode) -> Option<&'static str> {
         Opcode::MulInt | Opcode::MulIntI | Opcode::MulFloat => "*",
         Opcode::DivInt | Opcode::DivFloat => "/",
         Opcode::ModInt | Opcode::ModIntI => "%",
+        Opcode::MidInt => "//",
+        Opcode::FloorDivInt => "//",
+        // The comparisons had the same problem and never got the same fix:
+        // `1 < "a"` reported `CmpLtInt expected Int, Float, or String`, naming
+        // the compiler's typed guess. A program only ever writes the operator.
+        Opcode::CmpInt => "==",
+        Opcode::CmpNeInt => "!=",
+        Opcode::CmpLtInt => "<",
+        Opcode::CmpLeInt => "<=",
+        Opcode::CmpGtInt => ">",
+        Opcode::CmpGeInt => ">=",
         _ => return None,
     })
 }
 
-/// "`%` expects Int or Float, got String and Int" — or, for an opcode with no
-/// source spelling, the opcode, because then it is a compiler/executor mismatch
-/// and the variant name is the useful one.
-fn arith_operand_error(opcode: Opcode, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
-    match operator_symbol(opcode) {
-        Some(symbol) => anyhow::anyhow!(
-            "{symbol} expects Int or Float, got {:?} and {:?}",
-            lhs.kind(),
-            rhs.kind()
-        ),
-        None => anyhow::anyhow!(
-            "{opcode:?} expected Int or Float, got {:?} and {:?}",
-            lhs.kind(),
-            rhs.kind()
-        ),
+impl Executor {
+    /// "`%` expects Int or Float, got String and Int" — or, for an opcode with
+    /// no source spelling, the opcode, because then it is a compiler/executor
+    /// mismatch and the variant name is the useful one.
+    ///
+    /// A method rather than a free function because the operand *type* name
+    /// needs the heap (see [`Executor::value_type_name`]).
+    #[cold]
+    fn arith_operand_error(&self, opcode: Opcode, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
+        self.operand_error(opcode, "expects Int or Float", lhs, rhs)
+    }
+
+    /// The same, with the operation's own list of what it accepts.
+    #[cold]
+    fn operand_error(&self, opcode: Opcode, accepts: &str, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
+        let (lhs, rhs) = (self.value_type_name(lhs), self.value_type_name(rhs));
+        match operator_symbol(opcode) {
+            Some(symbol) => anyhow::anyhow!("{symbol} {accepts}, got {lhs} and {rhs}"),
+            None => anyhow::anyhow!("{opcode:?} {accepts}, got {lhs} and {rhs}"),
+        }
     }
 }
 
@@ -192,9 +208,9 @@ impl Executor {
                 self.runtime_value_from_string(Arc::<str>::from(format!("{lhs}{rhs}")))
             }
             _ => bail!(
-                "Add expected numbers or strings, got {:?} and {:?}",
-                lhs.kind(),
-                rhs.kind()
+                "Add expected numbers or strings, got {} and {}",
+                self.value_type_name(&lhs),
+                self.value_type_name(&rhs)
             ),
         };
         self.write(instr.a(), value)?;
@@ -248,9 +264,9 @@ impl Executor {
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ => bail!(
-                "Sub expected numbers or list/map lhs, got {:?} and {:?}",
-                lhs.kind(),
-                rhs.kind()
+                "Sub expected numbers or list/map lhs, got {} and {}",
+                self.value_type_name(&lhs),
+                self.value_type_name(&rhs)
             ),
         };
         self.write(instr.a(), value)?;
@@ -271,7 +287,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs as f64, *rhs)),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs as f64)),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs)),
-            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -292,7 +308,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs / *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs / *rhs),
-            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -310,7 +326,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 % *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs % *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
-            (lhs, rhs) => return Err(arith_operand_error(instr.opcode(), lhs, rhs)),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -344,12 +360,7 @@ impl Executor {
                 if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
                     compare_string_values(instr.opcode(), &lhs, &rhs)?
                 } else {
-                    bail!(
-                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
-                        instr.opcode(),
-                        lhs.kind(),
-                        rhs.kind()
-                    )
+                    return Err(self.operand_error(instr.opcode(), "expected Int, Float, or String", lhs, rhs));
                 }
             }
         };
@@ -371,12 +382,7 @@ impl Executor {
                 if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
                     compare_string_values(opcode, &lhs, &rhs)
                 } else {
-                    bail!(
-                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
-                        opcode,
-                        lhs.kind(),
-                        rhs.kind()
-                    )
+                    Err(self.operand_error(opcode, "expected Int, Float, or String", lhs, rhs))
                 }
             }
         }

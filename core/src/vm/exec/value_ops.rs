@@ -217,6 +217,27 @@ impl Executor {
         ))
     }
 
+    /// The **language type** name of a value, for an error message a program
+    /// can print.
+    ///
+    /// `RuntimeVal::kind().type_name()` cannot answer this: a handle is
+    /// `Object`, and its own doc says a caller that has the heap should reach
+    /// for `HeapValue::type_name` instead. Every arithmetic/compare error
+    /// message formatted the kind, so `"ab" - 1` said `String` and
+    /// `"aaaaaaaaaa" - 1` said `Object` — the same type, two names, decided by
+    /// whether the string fit in seven bytes. A list, map and set were all
+    /// `Object` too.
+    ///
+    /// The representation is not secret — `RuntimeValKind::repr_name` exists and
+    /// names itself — it is just not what an error about a *type* should say.
+    #[cold]
+    pub(super) fn value_type_name(&self, value: &RuntimeVal) -> &'static str {
+        match value {
+            RuntimeVal::Obj(handle) => self.state.heap.get(*handle).map_or("Object", |value| value.type_name()),
+            other => other.kind().type_name(),
+        }
+    }
+
     #[cold]
     pub(super) fn runtime_value_is_map(&self, value: &RuntimeVal) -> Result<bool> {
         let RuntimeVal::Obj(handle) = value else {

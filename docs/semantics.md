@@ -325,10 +325,23 @@ println(r);
 侧都是一句 `runtime type error`(VM 会说出运算符和两个操作数的种类)、越界写说
 `runtime error`(VM 说 `list index 9 out of bounds`)。
 
-措辞以 VM 为准,**连它的 wart 一起**:8 字节的字符串报 `Object`、7 字节的报
-`String`,因为 VM 格式化的是值的**表示**而不是类型;`CmpLtInt` 这种融合 opcode 名
-也会漏给用户,而用户写的是 `<`。这些是 VM 一侧的问题,单独立项 —— 先镜像,分歧
-就先没了。
+措辞以 VM 为准。立这条时 VM 自己有两处毛病,随后一并修了(见下),两边一起动 ——
+这正是"先立门禁再改"的好处:门禁保证它们不会各改各的。
+
+### 消息里的名字:类型,不是表示;运算符,不是 opcode(2026-07-30 修)
+
+- **类型不是表示。** 消息格式化的是 `RuntimeVal::kind()`,它对堆句柄只会说
+  `Object`。于是 `"ab" - 1` 说 `String`(≤7 字节,内联)而
+  `"aaaaaaaaaa" - 1` 说 `Object` —— 同一个类型两个名字,分界线是它塞不塞得进七个
+  字节;list / map / Set 也全是 `Object`。`RuntimeValKind::Obj` 的注释**早就写着**
+  "拿得到堆的调用方应该用 `HeapValue::type_name`",只是没有一个调用点照做。
+  现在有 `Executor::value_type_name`。
+- **运算符不是 opcode。** `1 < "a"` 报 `CmpLtInt expected ...` —— 那是编译器挑的
+  融合形式,源码里没有任何东西叫 `CmpLtInt`,而且它可以在程序没变的情况下改变。
+  `operator_symbol` 这个映射**本来就在**,注释里连理由都写好了(算术那批就是这么
+  修的),只是比较那批没跟上。现在跟上了。
+
+两条都是同一个模式:规矩已经写下来了,调用点没遵守。
 
 ## 容器 display
 
