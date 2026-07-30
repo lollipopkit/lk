@@ -97,8 +97,9 @@ pub use encoding::lkrt_json_parse;
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
 pub use isr::lkrt_cpu_raise_interrupt;
 pub use lkbytes::{
-    lkrt_lkbytes_concat, lkrt_lkbytes_eq, lkrt_lkbytes_from_str, lkrt_lkbytes_get, lkrt_lkbytes_is_empty,
-    lkrt_lkbytes_len, lkrt_lkbytes_slice, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
+    lkrt_lkbytes_concat, lkrt_lkbytes_eq, lkrt_lkbytes_from_i64_list, lkrt_lkbytes_from_str, lkrt_lkbytes_get,
+    lkrt_lkbytes_is_empty, lkrt_lkbytes_len, lkrt_lkbytes_slice, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str,
+    lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
 };
 pub use textcodec::{
     lkrt_base64_decode, lkrt_base64_encode, lkrt_hex_decode, lkrt_hex_encode, lkrt_url_decode_component,

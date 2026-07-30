@@ -50,4 +50,12 @@ assert(escaped == "a%20b%26c%3Dd");
 assert(encoding.url.decode_component(escaped) == raw);
 assert(encoding.url.decode_component("a+b") == "a+b");
 
+// 7. List interop, both directions.
+assert(bytes.from_list([104, 105]) == hi);
+assert(bytes.to_list(hi) == [104, 105]);
+assert(bytes.to_list(bytes.from_string("")) == []);
+// A value that is not a byte is a mistake, not something to truncate.
+let out_of_range = try { bytes.from_list([300]); "no" } catch e { "caught" };
+assert(out_of_range == "caught");
+
 println("bytes_codec: all assertions passed");

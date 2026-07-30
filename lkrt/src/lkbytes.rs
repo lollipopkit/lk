@@ -183,6 +183,40 @@ pub unsafe extern "C" fn lkrt_lkbytes_slice(handle: *mut c_void, start: i64, end
     crate::state::arena_handle(bytes[from..to].to_vec())
 }
 
+/// `bytes.from_list(values)` — a `List<Int>` of byte values.
+///
+/// Out-of-range values raise, matching the stdlib module: a "byte" that is not
+/// one is a mistake, not something to truncate silently.
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null (→ empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_from_i64_list(handle: *mut c_void) -> *mut c_void {
+    if handle.is_null() {
+        return crate::state::arena_handle(LkBytes::new());
+    }
+    // SAFETY: the caller passes a live `List<i64>` handle.
+    let values = unsafe { &*(handle as *const Vec<i64>) };
+    let mut bytes = LkBytes::with_capacity(values.len());
+    for &value in values {
+        match u8::try_from(value) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => crate::panic::raise_str(&alloc::format!("bytes.from_list() value {value} is not a byte (0-255)")),
+        }
+    }
+    crate::state::arena_handle(bytes)
+}
+
+/// `bytes.to_list(b)` — the byte values as a `List<Int>`.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_to_i64_list(handle: *mut c_void) -> *mut c_void {
+    let values: Vec<i64> = bytes_ref(handle).iter().map(|&byte| i64::from(byte)).collect();
+    crate::state::arena_handle(values)
+}
+
 /// The bytes behind a handle — for the host writers (`fs.write`, `tcp.write`),
 /// which need the content without taking ownership of it.
 ///

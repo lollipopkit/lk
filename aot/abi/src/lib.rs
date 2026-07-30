@@ -227,6 +227,8 @@ macro_rules! for_each_abi_fn {
             ("bytes_h", "get", lkrt_lkbytes_get, Pure, [Ptr, I64], DynVal);
             ("bytes_h", "concat", lkrt_lkbytes_concat, WritesHost, [Ptr, Ptr], Ptr);
             ("bytes_h", "slice", lkrt_lkbytes_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
+            ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "utf8", lkrt_lkbytes_utf8, WritesHost, [Ptr], StrPtr);
             ("bytes_h", "utf8_lossy", lkrt_lkbytes_utf8_lossy, WritesHost, [Ptr], StrPtr);
             ("bytes_h", "to_str", lkrt_lkbytes_to_str, WritesHost, [Ptr], StrPtr);

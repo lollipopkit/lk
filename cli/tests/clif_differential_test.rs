@@ -1613,6 +1613,13 @@ fn bytes_are_a_native_value() {
                 "indexing_and_slicing",
                 "use bytes;\nlet b = bytes.from_string(\"abcde\");\nprintln(b[0]);\nprintln(b[-1]);\nprintln(b[9] ?? -1);\nprintln(b.get(-1) ?? -1);\nprintln(bytes.slice(b, 1));\nprintln(bytes.slice(b, 1, -1));\nprintln(b.slice(1, -1));\nreturn 0;\n",
             ),
+            // List interop, the last two members of the module — and the
+            // out-of-range raise, which is the whole point of `from_list`
+            // taking bytes rather than truncating whatever it is handed.
+            new(
+                "list_interop",
+                "use bytes;\nlet b = bytes.from_list([104,105]);\nprintln(b);\nprintln(bytes.to_list(b));\nprintln(bytes.from_list([]));\nprintln(bytes.to_list(bytes.from_string(\"\")));\ntry { bytes.from_list([300]); println(\"no\"); } catch e { println(\"caught\"); }\ntry { bytes.from_list([-1]); println(\"no\"); } catch e { println(\"caught\"); }\nreturn 0;\n",
+            ),
             // Content equality, not handle identity.
             new(
                 "content_equality",

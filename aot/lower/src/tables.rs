@@ -446,6 +446,20 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("bytes", "len", AbiRef::new("bytes_h", "len"), &[Ty::Bytes], Ty::I64),
     abi_row(
         "bytes",
+        "from_list",
+        AbiRef::new("bytes_h", "from_i64_list"),
+        &[Ty::ListI64],
+        Ty::Bytes,
+    ),
+    abi_row(
+        "bytes",
+        "to_list",
+        AbiRef::new("bytes_h", "to_i64_list"),
+        &[Ty::Bytes],
+        Ty::ListI64,
+    ),
+    abi_row(
+        "bytes",
         "is_empty",
         AbiRef::new("bytes_h", "is_empty"),
         &[Ty::Bytes],
