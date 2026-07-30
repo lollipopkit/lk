@@ -989,6 +989,8 @@ line2""#,
 /// `parser.match(x)` and `struct Row { type: String }` were syntax errors.
 #[test]
 fn every_keyword_can_name_a_member() {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::token::{Token, keyword_as_name};
 
     for (token, word) in [

@@ -150,12 +150,13 @@ core::arch::global_asm!(
 // stub is three bytes; the padding is what makes the stride derivable, and the
 // caller divides `end - start` by 256 rather than being told.
 
-/// One stub per vector: `int n` and return.
-///
-/// `.byte 0xcd` then the vector, rather than `int $n`, because the assembler
-/// will happily encode `int 3` as the one-byte breakpoint `0xcc` — a different
-/// instruction, on the one vector a debugger is most likely to be watching.
-/// Writing the opcode out means all 256 slots are the same two instructions.
+// One stub per vector: `int n` and return. (A plain comment, not a doc comment:
+// `global_asm!` is a macro invocation, and a `///` on one documents nothing.)
+//
+// `.byte 0xcd` then the vector, rather than `int $n`, because the assembler
+// will happily encode `int 3` as the one-byte breakpoint `0xcc` — a different
+// instruction, on the one vector a debugger is most likely to be watching.
+// Writing the opcode out means all 256 slots are the same two instructions.
 #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
 core::arch::global_asm!(
     ".section .text, \"ax\"",

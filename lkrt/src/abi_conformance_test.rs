@@ -13,6 +13,14 @@
 //! LLVM `ptr` and are calling-convention-identical; the distinction in the
 //! schema is documentation, not ABI.
 
+// `alloc`, not the std prelude: this crate builds without an OS, and this test
+// had never been compiled in that configuration — `cargo clippy --all-targets`
+// in CI runs with `--all-features`, so the no_std side of the *test* code was
+// never checked at all. That is a hole in the gate, not a detail: this file is
+// what guarantees the ABI schema names the symbols lkrt actually exports.
+use alloc::vec;
+use alloc::vec::Vec;
+
 use lk_aot_abi::{ABI_FUNCTIONS, AbiType, for_each_abi_fn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

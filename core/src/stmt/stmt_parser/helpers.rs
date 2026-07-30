@@ -56,7 +56,8 @@ impl<'a> StmtParser<'a> {
     /// the closure parser — this had been the only copy until a lambda needed
     /// the same thing in a position that cannot reach this parser.
     pub(super) fn parse_type_annotation(&mut self) -> Result<Type> {
-        let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union)
+        let Some((ty, end)) =
+            crate::type_syntax::parse_type_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union)
         else {
             // Two different reports, told apart by whether anything
             // type-shaped was there at all — an empty position is a missing

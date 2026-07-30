@@ -6,6 +6,8 @@
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::{ast::Parser, expr::Expr, stmt::Stmt, token::Tokenizer, val::LiteralVal};
 
     fn parse(code: &str) -> Expr {

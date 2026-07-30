@@ -391,14 +391,14 @@ mod tests {
         );
         // A method named like a field, in both arities.
         assert!(check_program("struct P { get: Int }\nimpl P { fn get(self) -> Int { return 9; } }").is_err());
-        assert!(
-            check_program("struct P { f: (Int) -> Int }\nimpl P { fn f(self) -> Int { return 9; } }").is_err()
-        );
+        assert!(check_program("struct P { f: (Int) -> Int }\nimpl P { fn f(self) -> Int { return 9; } }").is_err());
 
         // Distinct names on one type, and one name on distinct types, are fine.
         assert!(
-            check_program("struct P { x: Int }\nimpl P { fn get(self) -> Int { return 1; } fn set(self) -> Int { return 2; } }")
-                .is_ok()
+            check_program(
+                "struct P { x: Int }\nimpl P { fn get(self) -> Int { return 1; } fn set(self) -> Int { return 2; } }"
+            )
+            .is_ok()
         );
         assert!(
             check_program("struct P { x: Int }\nstruct Q { x: Int }\nimpl P { fn get(self) -> Int { return 1; } }\nimpl Q { fn get(self) -> Int { return 2; } }")
@@ -421,8 +421,10 @@ mod tests {
         // A trait *default* is copied into the impl before this runs, so
         // omitting a defaulted method is not an omission.
         assert!(
-            check_program("trait Greet { fn hi(self) -> String { return \"hi\"; } }\nstruct P { x: Int }\nimpl Greet for P {}")
-                .is_ok()
+            check_program(
+                "trait Greet { fn hi(self) -> String { return \"hi\"; } }\nstruct P { x: Int }\nimpl Greet for P {}"
+            )
+            .is_ok()
         );
     }
 
@@ -480,7 +482,9 @@ mod tests {
         assert!(check_program("let x = 1;\nlet x = 2;").is_ok());
         // And inside a callable body it is ordinary shadowing — the local is
         // order-sensitive within its scope, the declaration is outside it.
-        assert!(check_program("fn pick() -> Int { return 1; }\nfn use_it() -> Int { let pick = 2; return pick; }").is_ok());
+        assert!(
+            check_program("fn pick() -> Int { return 1; }\nfn use_it() -> Int { let pick = 2; return pick; }").is_ok()
+        );
         assert!(check_program("fn pick() -> Int { return 1; }\nlet f = || { let pick = 2; return pick; };").is_ok());
     }
 
@@ -490,8 +494,9 @@ mod tests {
     /// a construct the grammar accepted.
     #[test]
     fn a_function_cannot_be_declared_inside_another() {
-        let error = check_program("fn outer() -> Int {\n  fn helper(n: Int) -> Int { return n + 1; }\n  return helper(5);\n}")
-            .expect_err("a nested fn is refused");
+        let error =
+            check_program("fn outer() -> Int {\n  fn helper(n: Int) -> Int { return n + 1; }\n  return helper(5);\n}")
+                .expect_err("a nested fn is refused");
         let text = format!("{error:#}");
         assert!(text.contains("cannot be declared inside another"), "{text}");
         // The message names both ways to say it instead.

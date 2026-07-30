@@ -1,4 +1,6 @@
 use super::stdlib_sig::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::val::Type;
 
 #[test]

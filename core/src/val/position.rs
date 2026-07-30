@@ -16,9 +16,6 @@
 //! The native side keeps its own mirror (`lkrt::lkslice::resolve_position`),
 //! which is the documented pattern: lkrt must not depend on the front end.
 
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
-
 use crate::val::RuntimeVal;
 use anyhow::{Result, bail};
 
@@ -79,7 +76,10 @@ mod tests {
     fn a_negative_position_counts_from_the_end() {
         let five = 5;
         assert_eq!(read_position(&RuntimeVal::Int(-1), five, "ctx").expect("ok"), 4);
-        assert_eq!(element_position(&RuntimeVal::Int(-1), five, "ctx").expect("ok"), Some(4));
+        assert_eq!(
+            element_position(&RuntimeVal::Int(-1), five, "ctx").expect("ok"),
+            Some(4)
+        );
         assert_eq!(write_position(&RuntimeVal::Int(-1), five, "ctx").expect("ok"), 4);
     }
 

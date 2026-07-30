@@ -1,6 +1,4 @@
-use crate::{
-    abi::{c_str, owned_c_string, raising, status, write_out},
-};
+use crate::abi::{c_str, owned_c_string, raising, status, write_out};
 use core::ffi::c_char;
 use std::{
     fs,

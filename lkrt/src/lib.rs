@@ -37,15 +37,17 @@ macro_rules! rt_eprintln {
 }
 
 mod abi;
-#[cfg(test)]
+// The schema describes the **host** runtime: an AOT-compiled binary links a
+// `std` lkrt. Without `std` this crate deliberately exports a subset (no
+// channels, no sockets, no host handles), so asserting that every schema symbol
+// exists is only a question with an answer there.
+#[cfg(all(test, feature = "std"))]
 mod abi_conformance_test;
 mod arith;
 #[cfg(feature = "std")]
 mod chan;
 mod cpu;
 mod encoding;
-mod lkbytes;
-mod textcodec;
 #[cfg(feature = "std")]
 mod host;
 #[cfg(feature = "std")]
@@ -53,6 +55,7 @@ mod io;
 #[cfg(not(feature = "std"))]
 mod io_bare;
 mod isr;
+mod lkbytes;
 mod lkdyn;
 mod lklist;
 mod lkmap;
@@ -65,6 +68,7 @@ mod panic;
 mod port;
 mod state;
 mod system;
+mod textcodec;
 mod vm_mirror;
 
 pub use abi::{
@@ -77,9 +81,9 @@ pub use arith::{
 };
 #[cfg(feature = "std")]
 pub use chan::{
-    lkrt_chan_capacity, lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv, lkrt_chan_select,
-    lkrt_chan_send, lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn_arg, lkrt_spawn_args_new, lkrt_spawn_args_push,
-    lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
+    lkrt_chan_capacity, lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv,
+    lkrt_chan_select, lkrt_chan_send, lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn_arg, lkrt_spawn_args_new,
+    lkrt_spawn_args_push, lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
 };
 pub use cpu::{
     lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_timestamp,
@@ -89,6 +93,9 @@ pub use cpu::{
 // rest of them, because it *is* one of them: `isr.rs` holds both directions of
 // the same obstacle — a vector that cannot be an operand, answered by a table.
 pub use encoding::lkrt_json_parse;
+#[cfg(feature = "std")]
+pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
+pub use isr::lkrt_cpu_raise_interrupt;
 pub use lkbytes::{
     lkrt_lkbytes_concat, lkrt_lkbytes_eq, lkrt_lkbytes_from_str, lkrt_lkbytes_get, lkrt_lkbytes_is_empty,
     lkrt_lkbytes_len, lkrt_lkbytes_slice, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
@@ -97,9 +104,6 @@ pub use textcodec::{
     lkrt_base64_decode, lkrt_base64_encode, lkrt_hex_decode, lkrt_hex_encode, lkrt_url_decode_component,
     lkrt_url_encode_component,
 };
-#[cfg(feature = "std")]
-pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
-pub use isr::lkrt_cpu_raise_interrupt;
 // Re-exported at the crate root because the ABI conformance macro checks
 // signatures as `crate::$symbol`.
 #[cfg(feature = "std")]
@@ -185,8 +189,8 @@ pub use lkstr::{
 };
 #[cfg(feature = "std")]
 pub use net::{
-    lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
-    lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,
+    lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect, lkrt_tcp_read, lkrt_tcp_write_bytes,
+    lkrt_tcp_write_str,
 };
 pub use panic::{
     lkrt_rt_cell_get, lkrt_rt_cell_new, lkrt_rt_cell_set, lkrt_rt_current_error, lkrt_rt_handle_release,

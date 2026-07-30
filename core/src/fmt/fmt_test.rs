@@ -1,4 +1,6 @@
 use super::{FormatOptions, format_source};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 fn fmt(src: &str) -> String {
     format_source(src, FormatOptions::default()).expect("source should tokenize")

@@ -362,7 +362,13 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("chan", "try_recv", AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn),
     // The blocking pair. Both were reachable only as bare globals until the
     // module grew them, so neither had a row here either.
-    abi_row("chan", "send", AbiRef::new("chan", "send"), &[Ty::I64, Ty::Dyn], Ty::Nil),
+    abi_row(
+        "chan",
+        "send",
+        AbiRef::new("chan", "send"),
+        &[Ty::I64, Ty::Dyn],
+        Ty::Nil,
+    ),
     abi_row("chan", "recv", AbiRef::new("chan", "recv"), &[Ty::I64], Ty::Dyn),
     // The module spelling of the global `chan(capacity)`. Same lkrt entry; the
     // optional type-string argument is a checker hint the VM drops too, so only
@@ -374,13 +380,7 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // The `String -> String` half of `base64`/`hex`/`url`. The `decode` halves
     // answer `Bytes`, which has no native carrier yet, so they keep falling back
     // — a member with no row is an ordinary fallback, not a wrong answer.
-    abi_row(
-        "base64",
-        "encode",
-        AbiRef::new("base64", "encode"),
-        &[Ty::Str],
-        Ty::Str,
-    ),
+    abi_row("base64", "encode", AbiRef::new("base64", "encode"), &[Ty::Str], Ty::Str),
     abi_row("hex", "encode", AbiRef::new("hex", "encode"), &[Ty::Str], Ty::Str),
     abi_row(
         "url",
@@ -416,7 +416,13 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     ),
     // Answers a `Bytes` **value**, not the one-shot host handle it used to: a
     // `Bytes` you can only read once is not the language's `Bytes`.
-    abi_row("tcp", "read", AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::Bytes),
+    abi_row(
+        "tcp",
+        "read",
+        AbiRef::new("tcp", "read"),
+        &[Ty::I64, Ty::I64],
+        Ty::Bytes,
+    ),
     abi_row("tcp", "close", AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64),
     // The `bytes` module over the `Bytes` handle. `from_list` / `to_list` /
     // `slice` need list interop and stay out for now — a member with no row is

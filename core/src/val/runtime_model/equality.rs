@@ -373,6 +373,8 @@ fn sets_equal(left: &RuntimeSet, right: &RuntimeSet) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::val::HeapValue;
 
     /// The bug that made one implementation two: a list element longer than

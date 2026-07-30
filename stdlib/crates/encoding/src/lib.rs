@@ -365,7 +365,16 @@ mod component_tests {
     /// `%XX`, so `decode(encode("a b"))` was `"a+b"`.
     #[test]
     fn a_component_round_trips() {
-        for original in ["a b&c=d", "", "plain", "+literal+", "100%", "héllo", "a/b?c#d", "~*'()!-_."] {
+        for original in [
+            "a b&c=d",
+            "",
+            "plain",
+            "+literal+",
+            "100%",
+            "héllo",
+            "a/b?c#d",
+            "~*'()!-_.",
+        ] {
             let encoded = percent_encode_component(original);
             let decoded = percent_decode_component(&encoded).expect("own output decodes");
             assert_eq!(decoded, original, "round trip of {original:?} through {encoded:?}");

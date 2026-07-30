@@ -168,7 +168,8 @@ impl<'a> Parser<'a> {
         // is the only place the arrow can appear.
         let return_type = if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
             self.pos += 1;
-            let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureReturn) else {
+            let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureReturn)
+            else {
                 return Err(anyhow!(self.err("Expected a return type after '->' in closure")));
             };
             self.pos = end;

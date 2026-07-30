@@ -151,9 +151,9 @@ impl Stmt {
                 {
                     let declared: Vec<String> = trait_def.methods.keys().cloned().collect();
                     for required in declared {
-                        let present = methods.iter().any(|method| {
-                            matches!(item_of(method), Stmt::Function { name, .. } if *name == required)
-                        });
+                        let present = methods
+                            .iter()
+                            .any(|method| matches!(item_of(method), Stmt::Function { name, .. } if *name == required));
                         if !present {
                             return Err(anyhow!(format!(
                                 "Method '{required}' required by trait '{trait_name}' not implemented for type '{}'",
@@ -1155,10 +1155,7 @@ impl Program {
         let mut fields_of: HashMap<&str, HashSet<&str>> = HashMap::new();
         for stmt in &self.statements {
             if let Stmt::Struct { name, fields } = item_of(stmt) {
-                fields_of.insert(
-                    name.as_str(),
-                    fields.iter().map(|(field, _)| field.as_str()).collect(),
-                );
+                fields_of.insert(name.as_str(), fields.iter().map(|(field, _)| field.as_str()).collect());
             }
         }
 

@@ -24,6 +24,18 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: cargo clippy (no_std)
+        # `--all-features` never compiles the `no_std` side, so the code that
+        # only exists there — `io_bare`, the interrupt stubs, every `#[cfg(not(
+        # feature = "std"))]` branch, and *all* of the test code in that profile
+        # — was never linted. It was not clean when this step was added: a raw
+        # pointer dereferenced in a safe `extern "C" fn`, a doc comment on a
+        # macro invocation, and four test files that had never compiled without
+        # `std` at all. The bare-metal *build* steps below do not catch these:
+        # they build the lib, not `--all-targets`, and without the lint.
+        run: |
+          cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings
+          cargo clippy -p lkrt --no-default-features --all-targets -- -D warnings
       - name: wasm32 smoke (L0 no_std crates + browser playground)
         run: |
           rustup target add wasm32-unknown-unknown
