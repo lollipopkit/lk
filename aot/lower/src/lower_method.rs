@@ -1265,16 +1265,14 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListI64)
         }
-        // `xs.join(sep)` on a string list → one string.
-        (Ty::ListStr, "join", [(sep, Ty::Str)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "str_join"),
-                args: vec![receiver, *sep],
-            });
-            (dst, Ty::Str)
-        }
+        // `xs.join(sep)` → one string, on every carrier that has one.
+        //
+        // The numeric arms were absent on purpose: the VM raised "list must
+        // contain only strings", so lowering them would have made native answer
+        // where the VM refused. That rule is gone — the VM writes each element
+        // the way it writes it everywhere else — and the helpers here render the
+        // same way the `*_display` ones do, which is what keeps the two ends
+        // agreeing about `1.0` and `-0.0`.
         // `xs.get(i)` — safe index: nil on OOB, i.e. exactly the dynamic-
         // index Maybe model (reused, no new ABI).
         (Ty::ListI64, "get", [(idx, Ty::I64)]) => {
@@ -1807,9 +1805,6 @@ pub(crate) fn lower_method_dispatch(
         // the VM — same answer, just slower, which is the kind of gap neither
         // the differential corpus nor the coverage gate can see.
         //
-        // `join` is deliberately *not* alongside it: the VM refuses a
-        // non-string list ("ListJoin list must contain only strings"), so
-        // accepting one here would make native answer where the VM raises.
         // One arm per carrier, and each takes exactly the needle its `contains`
         // takes — in the VM both answer through one `typed_list_position`, so a
         // carrier that accepts a needle for `contains` and refuses it here would

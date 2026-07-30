@@ -4026,3 +4026,47 @@ fn an_extern_function_calls_the_named_symbol() {
         "the object should name the symbol it calls"
     );
 }
+
+/// `join` writes every element the way the language writes it.
+///
+/// It used to raise "ListJoin list must contain only strings" for any carrier
+/// but `Str` — so `[1, 2].join(",")` type-checked and failed at run time, while
+/// `"${[1, 2]}"` had been printing `[1,2]` all along. Worse, the AOT lowering
+/// declined `join` on the numeric carriers *citing that rule*, which is how one
+/// arbitrary restriction becomes two.
+///
+/// The values below are the ones where two renderers drift apart if there are
+/// two: a float that is integral (`2.0` → `2`), a negative zero, an exponent,
+/// and a NaN. Both ends go through the renderer their own display path uses, so
+/// this is the test that says they are the same renderer.
+#[test]
+fn join_covers_every_carrier_and_agrees_on_how_a_value_looks() {
+    run_clif_differential(
+        "list_join",
+        &[
+            new(
+                "join_each_carrier",
+                "println([1, 2, 3].join(\"-\"));\nprintln([1.5, 2.0].join(\",\"));\n\
+                 println([\"a\", \"b\"].join(\", \"));\nprintln([1, \"a\", nil, true].join(\"|\"));\n\
+                 return 0;\n",
+            ),
+            new(
+                "join_of_an_empty_list_is_an_empty_string",
+                "println([].join(\",\"));\nprintln([1].join(\",\"));\n\
+                 println(([1, 2].join(\"\")).len());\nreturn 0;\n",
+            ),
+            // Where a second renderer would show: integral floats, signed zero,
+            // exponents, NaN and infinity.
+            new(
+                "join_writes_floats_the_way_display_does",
+                "println([2.0, -0.0, 1e20, 1e-7].join(\" \"));\n\
+                 println([0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0].join(\" \"));\nreturn 0;\n",
+            ),
+            // The separator is not a delimiter the elements may contain.
+            new(
+                "a_separator_that_occurs_in_the_elements",
+                "println([\"a,b\", \"c\"].join(\",\"));\nprintln([11, 1].join(\"1\"));\nreturn 0;\n",
+            ),
+        ],
+    );
+}

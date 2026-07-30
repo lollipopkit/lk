@@ -109,17 +109,36 @@ pub(super) fn lower(
             ssa.write(instr.a(), block, (result, Ty::Str));
         }
         Opcode::ListJoin => {
-            // `a` = dst, `b` = list, `c` = separator. The VM joins a *string* list; we
-            // support `List<str>` with a `Str` separator → a fresh `Str`.
+            // `a` = dst, `b` = list, `c` = separator → a fresh `Str`.
+            //
+            // Only `ListStr` was accepted here, because the VM raised "list must
+            // contain only strings" for every other carrier: an arbitrary rule
+            // in one back end, faithfully reproduced as a second one in the
+            // other. The VM writes each element the way it writes it everywhere
+            // else now, and each helper below renders the way that carrier's
+            // `display` helper does — same renderer per carrier, which is what
+            // makes `2.0`, `-0.0` and `nan` come out identical on both ends.
+            //
+            // This is the *only* place `join` is lowered: the bytecode compiler
+            // matches the method by name alone (`call.rs`'s intrinsic table), so
+            // no `CallMethodK` named "join" can exist and the arm that sat in
+            // `lower_method.rs` beside `contains`/`index_of` was unreachable by
+            // construction. It was also what the old comment there reasoned
+            // about when it declined the numeric carriers — a decision argued
+            // from a branch that never ran.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
-            if list_ty != Ty::ListStr {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let helper = match list_ty {
+                Ty::ListStr => "str_join",
+                Ty::ListI64 => "i64_join",
+                Ty::ListF64 => "f64_join",
+                Ty::ListDyn => "dyn_join",
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
             let sep = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "str_join"),
+                callee: AbiRef::new("list_h", helper),
                 args: vec![handle, sep],
             });
             ssa.write(instr.a(), block, (dst, Ty::Str));

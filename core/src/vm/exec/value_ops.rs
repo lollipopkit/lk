@@ -168,9 +168,23 @@ impl Executor {
                 self.value_type_name(&separator)
             );
         };
-        let joined = match self
-            .state
-            .heap
+        // Every element is written the way the language writes it anywhere else.
+        //
+        // This used to raise "ListJoin list must contain only strings" for any
+        // carrier but `String` — so `[1, 2].join(",")` type-checked and then
+        // failed at run time, while `"${[1, 2]}"` had been printing `[1,2]` all
+        // along. The restriction was arbitrary in a language that renders every
+        // value, and it did not stay put: the AOT lowering refuses `join` on
+        // numeric carriers *because the VM refuses*, so one arbitrary rule became
+        // a second one in another back end.
+        //
+        // `display_runtime_value` is that one renderer, so there is no second
+        // spelling of "how does an Int look" to drift. The `String` carrier keeps
+        // its direct path: it is already what the renderer would produce (a bare
+        // string renders unquoted; only *inside* a container is it quoted), and
+        // it avoids an allocation per element.
+        let heap = &self.state.heap;
+        let joined = match heap
             .get(handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
@@ -179,17 +193,26 @@ impl Executor {
                 .map(|value| value.as_ref())
                 .collect::<Vec<_>>()
                 .join(separator.as_ref()),
-            HeapValue::List(TypedList::Mixed(values)) => {
-                let mut parts = Vec::with_capacity(values.len());
-                for value in values {
-                    let Some(value) = self.runtime_value_to_string(value)? else {
-                        bail!("ListJoin list must contain only strings");
-                    };
-                    parts.push(value.to_string());
-                }
-                parts.join(separator.as_ref())
-            }
-            HeapValue::List(_) => bail!("ListJoin list must contain only strings"),
+            HeapValue::List(TypedList::Int(values)) => values
+                .iter()
+                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Int(*value), heap))
+                .collect::<Vec<_>>()
+                .join(separator.as_ref()),
+            HeapValue::List(TypedList::Float(values)) => values
+                .iter()
+                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Float(*value), heap))
+                .collect::<Vec<_>>()
+                .join(separator.as_ref()),
+            HeapValue::List(TypedList::Bool(values)) => values
+                .iter()
+                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Bool(*value), heap))
+                .collect::<Vec<_>>()
+                .join(separator.as_ref()),
+            HeapValue::List(TypedList::Mixed(values)) => values
+                .iter()
+                .map(|value| crate::vm::display_runtime_value(value, heap))
+                .collect::<Vec<_>>()
+                .join(separator.as_ref()),
             other => bail!("ListJoin target must be list, got {:?}", HeapValue::type_name(other)),
         };
         self.write_string(dst, joined)

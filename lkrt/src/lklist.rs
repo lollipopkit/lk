@@ -1568,6 +1568,58 @@ pub unsafe extern "C" fn lkrt_lklist_str_join(handle: *mut c_void, separator: *c
     crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
 }
 
+/// Joins an `i64` list with `separator`, elements written as the VM writes them.
+///
+/// `[1, 2].join("-")` used to raise in the VM ("list must contain only strings")
+/// and was therefore left unlowered here on purpose — one arbitrary rule turning
+/// into a second one in another back end. The VM renders every element now, so
+/// this renders them the same way: `i64::to_string`, exactly what
+/// `lkrt_lklist_i64_display` puts between its brackets.
+///
+/// # Safety
+/// See [`lkrt_lklist_str_join`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    use alloc::ffi::CString;
+    let sep = join_separator(separator);
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let parts: Vec<String> = values.iter().map(i64::to_string).collect();
+    crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
+}
+
+/// Joins an `f64` list with `separator`; see [`lkrt_lklist_i64_join`].
+///
+/// # Safety
+/// See [`lkrt_lklist_str_join`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    use alloc::ffi::CString;
+    let sep = join_separator(separator);
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<f64>` created by `lkrt_lklist_f64_new`.
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    let parts: Vec<String> = values.iter().map(f64::to_string).collect();
+    crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
+}
+
+/// The separator a `join` was handed; null and invalid UTF-8 both mean empty,
+/// matching the three `*_join` entry points that share it.
+fn join_separator<'a>(separator: *const c_char) -> &'a str {
+    if separator.is_null() {
+        return "";
+    }
+    // SAFETY: caller guarantees a valid C string.
+    unsafe { CStr::from_ptr(separator) }.to_str().unwrap_or("")
+}
+
 /// Structural equality for two `i64` lists (1 = equal), the VM's typed-list
 /// `==`: same length and element-wise `==`. Null handles compare as empty.
 ///

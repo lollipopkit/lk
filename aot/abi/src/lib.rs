@@ -414,9 +414,15 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64, Borrowed);
             ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr, Borrowed);
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            // `join` on the numeric carriers. It was absent because the VM
+            // refused a non-string list — one arbitrary rule reproduced as a
+            // second one here. The VM renders every element now, and these
+            // render them the same way the display helpers do.
+            ("list_h", "i64_join", lkrt_lklist_i64_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            ("list_h", "f64_join", lkrt_lklist_f64_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            ("list_h", "dyn_join", lkrt_lklist_dyn_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
             // `index_of` is on every sequence in the VM; the lowering had it
-            // only on `Str`. (`join` is *not* — the VM refuses a non-string
-            // list, loudly, and the lowering matches that.)
+            // only on `Str`.
             ("list_h", "i64_index_of", lkrt_lklist_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
             ("list_h", "f64_index_of", lkrt_lklist_f64_index_of, ReadsHost, [Ptr, F64], DynVal, Borrowed);
             ("list_h", "str_index_of", lkrt_lklist_str_index_of, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);

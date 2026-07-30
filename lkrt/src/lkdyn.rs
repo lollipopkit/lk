@@ -1081,6 +1081,40 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_push(handle: *mut c_void, value: LkDyn)
     unsafe { (*(handle as *mut Vec<LkDyn>)).push(value) };
 }
 
+/// Joins a boxed list with `separator`, each element written bare.
+///
+/// `display_into(.., quoted = false)` is the same renderer `lkrt_dyn_display`
+/// uses, which is the one the VM's `join` uses too: a string element joins
+/// unquoted, while the *quoted* form is what an element gets when it is printed
+/// inside a list. Sharing the renderer is the point — the alternative is a
+/// second opinion on how `2.0` or `nil` looks.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null;
+/// `separator` a valid C string, or null for empty.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    let sep = if separator.is_null() {
+        ""
+    } else {
+        // SAFETY: caller guarantees a valid C string.
+        unsafe { core::ffi::CStr::from_ptr(separator) }.to_str().unwrap_or("")
+    };
+    if handle.is_null() {
+        return arena_c_string(CString::default());
+    }
+    // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
+    let values = unsafe { &*(handle as *mut Vec<LkDyn>) };
+    let mut out = String::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push_str(sep);
+        }
+        display_into(&mut out, *value, false);
+    }
+    arena_c_string(CString::new(out).unwrap_or_default())
+}
+
 /// VM indexing semantics: negative counts from the tail, out-of-bounds reads
 /// yield nil (not an error) — the Dyn carrier holds the nil itself.
 /// # Safety
