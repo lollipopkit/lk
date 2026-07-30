@@ -236,7 +236,13 @@ jobs:
           # says the font renderer drew. The '...' are timer interrupts handled
           # by an LK function — three in a row, where one could be a fluke.
           for expected in \
-            "display at pci slot" \
+            # `SS.F`, not a slot number: enumeration walks functions as well as
+            # devices, so what identifies the display is its (bus, device,
+            # function) address. This line said "slot" for as long as the x86
+            # step could not get past *building* the kernel — an assertion that
+            # never runs is not a gate, and this one went stale unnoticed
+            # because upstream failures kept it from ever being reached.
+            "display at pci 2.0" \
             "framebuffer 0xfd000000" \
             "half 44" \
             "pixels 00001428 00ffc040" \
