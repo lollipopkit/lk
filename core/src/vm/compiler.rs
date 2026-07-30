@@ -1284,6 +1284,19 @@ fn string_int_template_key(expr: &Expr) -> Option<(&str, &Expr)> {
     }
 }
 
+/// Whether a `"…${suffix}"` map key's suffix is a proven `Int`.
+///
+/// It gates a speculative lowering: `try_lower_string_int_key_for_map` lowers the
+/// suffix and *then* checks a register fact, so an answer of `None` after that
+/// point leaves the emitted instructions in the stream and the caller lowers the
+/// key again — the operand would run twice. What keeps that unreachable is the
+/// shape list below: a literal, a name, and arithmetic over them are all free to
+/// lower twice (`Compiler::is_free_to_lower_twice` says the same thing for the
+/// fused branch forms, which had exactly this bug).
+///
+/// So widening this — accepting, say, a call annotated `-> Int` — would
+/// reintroduce it. Whatever is added here has to be free to lower twice as well,
+/// or the lowering has to stop deciding after it emits.
 fn string_int_key_suffix_is_int_like(
     expr: &Expr,
     locals: &crate::compat::collections::HashMap<String, u16>,

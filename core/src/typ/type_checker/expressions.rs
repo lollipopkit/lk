@@ -1073,16 +1073,28 @@ impl TypeChecker {
                     self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
                 }
             }
-            BinOp::Mul if self.is_string_like(&left_type) || self.is_string_like(&right_type) => {
-                let left_string = self.is_string_like(&left_type);
-                let right_string = self.is_string_like(&right_type);
-                let left_int = matches!(self.resolve_aliases(&left_type), Type::Int);
-                let right_int = matches!(self.resolve_aliases(&right_type), Type::Int);
-                if (left_string && right_int) || (left_int && right_string) {
-                    Ok(Type::String)
-                } else {
-                    self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
-                }
+            // `"ab" * 3` is a type error, and says so with the operation the
+            // language actually has.
+            //
+            // This arm used to answer `String` — a string-repetition rule that
+            // **no executor implements**: `lk check` passed the program and
+            // running it raised `* expects Int or Float, got String and Int`.
+            // The checker's core promise is that it catches this before the run,
+            // so a rule for a feature that does not exist is worse than no rule.
+            //
+            // Removed rather than implemented, because the operation is already
+            // here: `"ab".repeat(3)` answers `"ababab"`. Adding the operator
+            // would give one operation two spellings.
+            BinOp::Mul
+                if (self.is_string_like(&left_type) && matches!(self.resolve_aliases(&right_type), Type::Int))
+                    || (matches!(self.resolve_aliases(&left_type), Type::Int) && self.is_string_like(&right_type)) =>
+            {
+                Err(Self::type_err(
+                    "`*` does not repeat a string — write `text.repeat(count)`",
+                    None,
+                    Some(Type::String),
+                    Some(left_expr.clone()),
+                ))
             }
             BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
