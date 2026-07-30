@@ -91,15 +91,6 @@ pub extern "C" fn lkrt_dyn_from_typed_map(handle: *mut c_void, kind: i64) -> LkD
     }
 }
 
-/// Unboxes a typed map handle, checking the carrier matches.
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_dyn_as_typed_map(v: LkDyn, kind: i64) -> *mut c_void {
-    if v.tag != DYN_TMAP_BASE + kind {
-        crate::panic::raise_str("runtime type error");
-    }
-    v.payload as *mut c_void
-}
-
 /// Boxes a `Set` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_set(handle: *mut c_void) -> LkDyn {
@@ -109,15 +100,6 @@ pub extern "C" fn lkrt_dyn_from_set(handle: *mut c_void) -> LkDyn {
     }
 }
 
-/// Unboxes a `Set` handle; any other tag is the VM's loud type error.
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_dyn_as_set(v: LkDyn) -> *mut c_void {
-    if v.tag != DYN_SET {
-        crate::panic::raise_str("runtime type error");
-    }
-    v.payload as *mut c_void
-}
-
 /// Boxes a `Bytes` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_bytes(handle: *mut c_void) -> LkDyn {
@@ -125,15 +107,6 @@ pub extern "C" fn lkrt_dyn_from_bytes(handle: *mut c_void) -> LkDyn {
         tag: DYN_BYTES,
         payload: handle as i64,
     }
-}
-
-/// Unboxes a `Bytes` handle; any other tag is the VM's loud type error.
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_dyn_as_bytes(v: LkDyn) -> *mut c_void {
-    if v.tag != DYN_BYTES {
-        crate::panic::raise_str("runtime type error");
-    }
-    v.payload as *mut c_void
 }
 
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for

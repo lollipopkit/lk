@@ -107,6 +107,13 @@ pub struct AbiFn {
 }
 
 /// Invokes the given callback macro with every ABI table entry, in order. This is
+/// An entry with no emitter is not "available", it is **unverified**: nothing
+/// exercises its argument marshalling or its receiver class, so the first caller
+/// is the one that finds out whether the row is right. Three such rows
+/// (`dyn.as_typed_map`, `dyn.as_set`, `dyn.as_bytes`) were added for symmetry
+/// with their `from_*` counterparts and deleted unused — add the row with the
+/// call site, not before it.
+///
 /// the single source of truth (RFC aot-redesign §3.3): the [`ABI_FUNCTIONS`] const
 /// table below and `lkrt`'s compile-time signature-conformance checks both expand
 /// from it, so a signature can no longer drift between the schema, the codegen
@@ -539,11 +546,8 @@ macro_rules! for_each_abi_fn {
             // could not enter a mixed container, a struct field, or a bridged
             // return at all.
             ("dyn", "from_typed_map", lkrt_dyn_from_typed_map, Pure, [Ptr, I64], DynVal);
-            ("dyn", "as_typed_map", lkrt_dyn_as_typed_map, WritesHost, [DynVal, I64], Ptr, Constructs);
             ("dyn", "from_set", lkrt_dyn_from_set, Pure, [Ptr], DynVal);
-            ("dyn", "as_set", lkrt_dyn_as_set, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "from_bytes", lkrt_dyn_from_bytes, Pure, [Ptr], DynVal);
-            ("dyn", "as_bytes", lkrt_dyn_as_bytes, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
@@ -609,9 +613,6 @@ macro_rules! for_each_abi_fn {
             // Typed map → `Map<str, Dyn>` conversion (cold: a typed map
             // crossing a `try$call` cell boundary boxes). Replayed inserts in
             // iteration order keep the layout — same keys, same order.
-            ("map_h", "str_i64_to_dyn", lkrt_lkmap_str_i64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
-            ("map_h", "str_f64_to_dyn", lkrt_lkmap_str_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
-            ("map_h", "str_bool_to_dyn", lkrt_lkmap_str_bool_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr, Constructs);
