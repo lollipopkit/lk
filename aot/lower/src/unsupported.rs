@@ -67,9 +67,18 @@ pub enum Unsupported {
     },
     /// A register (or virtual cell slot) was read with no reaching definition
     /// on any predecessor path.
+    ///
+    /// `body` names the try body whose poison caused it, when one did — the
+    /// register held a value that body wrote in its own frame and did not carry
+    /// back. That is the body that needs a cell for it, and *only* that body:
+    /// attributing the read to every region in the function gave a cell to
+    /// regions whose bodies merely reused the register as a scratch, and the
+    /// parent then had to seed a cell from a register it had never defined.
+    /// `None` is an ordinary undefined read, which no cell can fix.
     UndefinedOperand {
         pc: usize,
         reg: usize,
+        body: Option<u32>,
     },
     /// An empty `[]` literal's guessed element type was contradicted by a
     /// later consumer: retriable — the fixpoint re-lowers with the literal
@@ -152,7 +161,7 @@ impl Unsupported {
                 format!("global `{name}` (read at pc {pc}) does not resolve to anything natively lowerable")
             }
             Unsupported::BadConst { pc } => format!("unsupported constant operand at pc {pc}"),
-            Unsupported::UndefinedOperand { pc, reg } => {
+            Unsupported::UndefinedOperand { pc, reg, .. } => {
                 format!("register r{reg} is read at pc {pc} before any definition")
             }
             Unsupported::OperandType { pc, want, got } => {

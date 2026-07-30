@@ -944,7 +944,7 @@ pub(crate) fn lower_function(
                 };
                 for reg in rebound {
                     if reg != catch_reg && !cell_regs.contains(&reg) {
-                        ssa.poison(reg, bi);
+                        ssa.poison(reg, bi, body);
                     }
                 }
                 let caught = ssa.new_val();

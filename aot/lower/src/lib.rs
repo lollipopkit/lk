@@ -328,18 +328,20 @@ pub fn lower_bundled(
                     // this feature: "does anything after the region read what
                     // the body wrote" is a liveness question, and the SSA is
                     // already the thing that answers it.
-                    Err(Unsupported::UndefinedOperand { reg, .. }) if reg < 256 => {
-                        let regions: Vec<usize> = sig
-                            .try_bodies
-                            .keys()
-                            .filter(|(parent, _)| *parent == fi as u32)
-                            .map(|(_, pc)| *pc)
-                            .collect();
-                        for begin_pc in regions {
-                            if let Some(&body) = sig.try_bodies.get(&(fi as u32, begin_pc)) {
-                                sig.try_body_extra_cells.entry(body).or_default().insert(reg as u8);
-                            }
-                        }
+                    //
+                    // Which region: the one whose poison the read hit, which
+                    // the error names. It used to name none, so the cell went
+                    // to *every* region in the function — and a second region
+                    // in the same function then got a cell for a register the
+                    // first body had merely used as a scratch. The parent has
+                    // no definition for such a register at its own region's
+                    // start, so seeding the cell read it before pc 0 and the
+                    // whole function fell back. An unattributed read is an
+                    // ordinary undefined read: no cell fixes it.
+                    Err(Unsupported::UndefinedOperand {
+                        reg, body: Some(body), ..
+                    }) if reg < 256 => {
+                        sig.try_body_extra_cells.entry(body).or_default().insert(reg as u8);
                     }
                     _ => {}
                 }

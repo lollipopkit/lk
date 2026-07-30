@@ -192,7 +192,10 @@ pub(crate) struct Ssa {
     /// "is anything reading this after the region?" — a liveness question that
     /// would otherwise need a table of every opcode's read operands — into a
     /// question the SSA answers by being asked.
-    pub(crate) poisoned: Vec<Vec<bool>>,
+    /// `Some(body)` names the try body whose write was left behind, so the
+    /// read's failure can say which region needs the cell rather than making
+    /// every region in the function guess.
+    pub(crate) poisoned: Vec<Vec<Option<u32>>>,
     pub(crate) sealed: Vec<bool>,
     pub(crate) filled: Vec<bool>,
     pub(crate) phis: Vec<Vec<Phi>>,
@@ -283,7 +286,7 @@ impl Ssa {
             spawned_isolate: false,
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
-            poisoned: vec![vec![false; slot_count]; total_blocks],
+            poisoned: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
             filled: vec![false; total_blocks],
             phis: (0..total_blocks).map(|_| Vec::new()).collect(),
@@ -321,7 +324,7 @@ impl Ssa {
     pub(crate) fn write_slot(&mut self, slot: usize, block: usize, value: Reg) {
         if slot < self.slot_count {
             // A write is a definition, so it clears the absence.
-            self.poisoned[block][slot] = false;
+            self.poisoned[block][slot] = None;
             self.current_def[block][slot] = Some(value);
             if slot < self.reg_count {
                 self.builtin_regs.remove(&(block, slot as u8));
@@ -338,8 +341,12 @@ impl Ssa {
         // `read_recursive` — which is the whole point: the stale value is
         // reachable through the predecessors, and it is exactly what must not
         // be returned.
-        if self.poisoned[block][slot] {
-            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
+        if let Some(body) = self.poisoned[block][slot] {
+            return Err(Unsupported::UndefinedOperand {
+                pc,
+                reg: slot,
+                body: Some(body),
+            });
         }
         if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
@@ -352,10 +359,10 @@ impl Ssa {
     /// See [`Ssa::poisoned`]. Applied after a `try` region's write-backs, so a
     /// register the region *did* carry back keeps the definition it was just
     /// given.
-    pub(crate) fn poison(&mut self, reg: u8, block: usize) {
+    pub(crate) fn poison(&mut self, reg: u8, block: usize, body: u32) {
         if (reg as usize) < self.reg_count {
             self.current_def[block][reg as usize] = None;
-            self.poisoned[block][reg as usize] = true;
+            self.poisoned[block][reg as usize] = Some(body);
         }
     }
 
@@ -500,7 +507,11 @@ impl Ssa {
                 return Ok(self.read_slot(slot, p, pc)?.1);
             }
         }
-        Err(Unsupported::UndefinedOperand { pc, reg: slot })
+        Err(Unsupported::UndefinedOperand {
+            pc,
+            reg: slot,
+            body: None,
+        })
     }
 
     pub(crate) fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
@@ -527,7 +538,11 @@ impl Ssa {
             let p = self.preds[block][0];
             self.read_slot(slot, p, pc)?
         } else if self.preds[block].is_empty() {
-            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
+            return Err(Unsupported::UndefinedOperand {
+                pc,
+                reg: slot,
+                body: None,
+            });
         } else {
             let ty = self.phi_ty(slot, block, pc)?;
             let ty = if self.dyn_loop_slots.contains(&(block, slot)) {

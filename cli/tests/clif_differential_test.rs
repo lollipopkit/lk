@@ -1446,9 +1446,6 @@ fn a_dyn_container_crosses_a_try_region() {
                 "typed_list_reassigned",
                 "let xs = [1];\ntry { xs = [2, 3]; } catch e { }\nprintln(xs);\nreturn 0;\n",
             ),
-            // One region per case: a *second* region in the same function as a
-            // container one still falls back, which predates the raw cell (a
-            // dyn container had it too). Recorded rather than folded in here.
             new(
                 "typed_map_reassigned",
                 "let m = {\"k\": 1};\ntry { m = {\"k\": 2}; } catch e { }\nprintln(m[\"k\"] ?? 0);\nreturn 0;\n",
@@ -1466,6 +1463,56 @@ fn a_dyn_container_crosses_a_try_region() {
             new(
                 "raised_before_assigning",
                 "let xs = [1, \"a\"];\ntry { error(\"boom\"); xs = [2, \"b\"]; } catch e { }\nprintln(xs);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
+/// Several regions in one function, pinned to pure Cranelift.
+///
+/// A body that writes a register and does not carry it back leaves the parent's
+/// copy poisoned, and a later read of one is how the fixpoint discovers which
+/// registers need a cell. The read used to say only *which register*, so the
+/// cell went to every region in the function — including regions whose body had
+/// merely reused that register number as a scratch. The parent has no
+/// definition for such a register at its own region's start, so seeding its
+/// cell read it before pc 0 and the whole function fell back: adding a second
+/// `try` to a function that had one cost the *first* one its lowering.
+///
+/// The poison now names the body that left it, so the cell goes to that one.
+#[test]
+fn several_try_regions_share_a_function() {
+    run_differential(
+        "try_multi_region",
+        &[
+            // The shape that failed: a container region, then an unrelated
+            // scalar one. The container body's literal lands in a scratch
+            // register that the scalar variable happens to reuse.
+            new(
+                "container_region_then_scalar_region",
+                "let a = [1];\ntry { a = [2]; } catch e { }\nlet b = 3;\ntry { b = 4; } catch e { }\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "three_regions_three_types",
+                "let a = [1];\nlet m = {\"k\": 1};\nlet s = \"x\";\ntry { a = [2, 3]; } catch e { }\ntry { m = {\"k\": 9, \"j\": 2}; } catch e { }\ntry { s = \"y\"; a = [7]; } catch e { }\nprintln(\"${a} ${m[\"k\"] ?? 0} ${s}\");\nreturn 0;\n",
+            ),
+            // A region inside a loop, after a region outside it: the poison is
+            // per block, and the loop header's phi has to see the cell's value.
+            new(
+                "region_then_region_in_a_loop",
+                "let a = [1];\ntry { a = [5]; } catch e { }\nlet n = 0;\nfor i in 0..4 {\n  try { n = n + i + a[0]!; } catch e { }\n}\nprintln(n);\nreturn 0;\n",
+            ),
+            // Both regions raise: each cell keeps what the parent seeded.
+            new(
+                "both_regions_raise",
+                "let a = [1];\nlet b = 3;\ntry { error(\"x\"); a = [2]; } catch e { }\ntry { error(\"y\"); b = 4; } catch e { }\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            // Inside a called function rather than the entry, and the second
+            // region reads what the first one wrote.
+            new(
+                "regions_in_a_function_chained",
+                "fn f(k: Int) -> Int {\n  let acc = [0];\n  try { acc = [k, k + 1]; } catch e { }\n  let t = 0;\n  try { t = acc[1]! * 2; } catch e { t = -1; }\n  return t + acc[0]!;\n}\nprintln(f(3));\nprintln(f(10));\nreturn 0;\n",
             ),
         ],
         NativePath::PureCranelift,
