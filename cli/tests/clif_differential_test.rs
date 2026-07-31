@@ -4208,6 +4208,62 @@ fn concat_and_index_assignment_do_not_depend_on_the_carrier() {
     );
 }
 
+/// Every sequence carrier answers the same question the same way at the edges.
+///
+/// The edges are where the four carriers had drifted before, one pair at a
+/// time: `bytes.slice(b, 2, 1)` raised where the method clamped, `s[-1]`
+/// counted back from the *byte* length, `index_of` answered `-1` on one side
+/// and nil on the other. Each was found by writing that one case down; this is
+/// the grid, so the next one is found by the corpus instead.
+///
+/// A reversed window is empty, a position past either end is nil, a *count*
+/// past the end clamps — and a negative count is a refusal, because a count is
+/// not a position. The programs print values rather than comparisons: two
+/// carriers agreeing on a wrong answer is exactly what a comparison hides.
+#[test]
+fn every_sequence_reads_the_same_edge_positions() {
+    run_clif_differential(
+        "sequence_edges",
+        &[
+            new(
+                "reversed_and_out_of_range_windows",
+                "use bytes;\nlet z = \"\";\nlet s = \"abcde\" + z;\nlet xs = [1, 2, 3, 4, 5];\n\
+                 let b = bytes.from_string(s);\nlet w = xs.slice(0, 5);\n\
+                 println(s.slice(3, 1));\nprintln(xs.slice(3, 1).to_list());\n\
+                 println(b.slice(3, 1));\nprintln(w.slice(3, 1).to_list());\n\
+                 println(s.slice(-1, -3));\nprintln(xs.slice(-1, -3).to_list());\n\
+                 println(b.slice(-1, -3));\n\
+                 println(s.slice(-99, 99));\nprintln(xs.slice(-99, 99).to_list());\n\
+                 println(b.slice(-99, 99));\nreturn 0;\n",
+            ),
+            new(
+                "positions_past_either_end_are_nil",
+                "use bytes;\nlet z = \"\";\nlet s = \"abc\" + z;\nlet xs = [1, 2, 3];\n\
+                 let b = bytes.from_string(s);\n\
+                 println(s.get(-1));\nprintln(xs.get(-1));\nprintln(b.get(-1));\n\
+                 println(s.get(-99));\nprintln(xs.get(-99));\nprintln(b.get(-99));\n\
+                 println(s.get(99));\nprintln(xs.get(99));\nprintln(b.get(99));\n\
+                 println(s.index_of(\"z\"));\nprintln(xs.index_of(99));\nprintln(b.index_of(122));\n\
+                 println(\"\".first());\nprintln([].first());\nprintln(\"\".bytes().first());\n\
+                 println(\"\".last());\nprintln([].last());\nprintln(\"\".bytes().last());\nreturn 0;\n",
+            ),
+            new(
+                "a_count_clamps_past_the_end_and_refuses_a_negative",
+                "use bytes;\nlet z = \"\";\nlet s = \"abc\" + z;\nlet xs = [1, 2, 3];\n\
+                 let b = bytes.from_string(s);\n\
+                 println(s.take(99));\nprintln(xs.take(99));\nprintln(b.take(99));\n\
+                 println(s.skip(99));\nprintln(xs.skip(99));\nprintln(b.skip(99));\n\
+                 println(try { \"${s.take(0 - 1)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${xs.take(0 - 1)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${b.take(0 - 1)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${s.skip(0 - 1)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${xs.skip(0 - 1)}\" } catch e { \"${e}\" });\n\
+                 println(try { \"${b.skip(0 - 1)}\" } catch e { \"${e}\" });\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
 /// `Bytes` is a receiver kind, not four methods and a carrier.
 ///
 /// It had `len`, `is_empty`, `get` and `slice`; the other ten of its fourteen

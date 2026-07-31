@@ -113,6 +113,49 @@ pub unsafe extern "C" fn lkrt_str_slice_chars(s: *const c_char, start: i64, end:
     arena_c_string(CString::new(sliced).unwrap_or_default())
 }
 
+/// `s.take(n)` / `s.skip(n)` — a prefix in *characters*, and the rest of one.
+///
+/// A separate symbol from `slice_chars`, and that is the whole point: a **count
+/// is not a position**, so a negative one is the refusal the VM gives rather
+/// than something measured from the tail. Lowered as `slice_chars(s, 0, n)`,
+/// `"abc".take(-1)` answered `"ab"` compiled and raised interpreted — while
+/// `xs.take(-1)` and `b.take(-1)` raised on both ends, because those two
+/// carriers have their own guarded helpers. This is String's.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_take(s: *const c_char, count: i64) -> *mut c_char {
+    str_window(s, count, true)
+}
+
+/// The `skip` half of [`lkrt_str_take`].
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_skip(s: *const c_char, count: i64) -> *mut c_char {
+    str_window(s, count, false)
+}
+
+fn str_window(s: *const c_char, count: i64, take: bool) -> *mut c_char {
+    if count < 0 {
+        // Raised before anything is allocated: a raise longjmps past drops.
+        crate::panic::raise_str(&alloc::format!(
+            "string.{}() count must be non-negative, got {count}",
+            if take { "take" } else { "skip" }
+        ));
+    }
+    let text = view(s);
+    let count = count as usize;
+    let kept: String = if take {
+        text.chars().take(count).collect()
+    } else {
+        text.chars().skip(count).collect()
+    };
+    arena_c_string(CString::new(kept).unwrap_or_default())
+}
+
 /// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
 /// (the sign of the ordering). The caller compares the result against `0` to
 /// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison

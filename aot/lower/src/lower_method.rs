@@ -1747,32 +1747,17 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
-        (Ty::Str, "take", [(count, Ty::I64)]) => {
-            let zero = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: zero,
-                value: Const::I64(0),
-            });
+        // Not `slice_chars(s, 0, n)`: a count is not a position, so a negative
+        // one is a refusal rather than a window measured from the tail. Written
+        // that way, `"abc".take(-1)` answered `"ab"` compiled and raised
+        // interpreted — the List and Bytes carriers had guarded helpers all
+        // along, and String is the one that reused the window.
+        (Ty::Str, "take" | "skip", [(count, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("str", "slice_chars"),
-                args: vec![receiver, zero, *count],
-            });
-            (dst, Ty::Str)
-        }
-        (Ty::Str, "skip", [(count, Ty::I64)]) => {
-            let end = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(end),
-                callee: AbiRef::new("str", "char_len"),
-                args: vec![receiver],
-            });
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("str", "slice_chars"),
-                args: vec![receiver, *count, end],
+                callee: AbiRef::new("str", if name == "take" { "take" } else { "skip" }),
+                args: vec![receiver, *count],
             });
             (dst, Ty::Str)
         }

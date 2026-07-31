@@ -643,6 +643,10 @@ macro_rules! for_each_abi_fn {
             ("str", "to_int", lkrt_str_to_int, Pure, [StrPtr, I64], DynVal);
             ("str", "to_float", lkrt_str_to_float, Pure, [StrPtr], DynVal);
             ("str", "count", lkrt_str_count, Pure, [StrPtr, StrPtr], I64);
+            // Guarded counts: `WritesHost` because a negative one raises, which
+            // is an observable effect codegen must not optimize away.
+            ("str", "take", lkrt_str_take, WritesHost, [StrPtr, I64], StrPtr);
+            ("str", "skip", lkrt_str_skip, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "capitalize", lkrt_str_capitalize, WritesHost, [StrPtr], StrPtr);
             ("str", "title", lkrt_str_title, WritesHost, [StrPtr], StrPtr);
             ("str", "char_at", lkrt_str_char_at, WritesHost, [StrPtr, I64], DynVal);
