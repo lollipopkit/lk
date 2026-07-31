@@ -64,6 +64,7 @@ pub(crate) fn call_runtime_callable_test(
     Ok(returns)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn call_runtime_callable_runtime_named_stack(
     function: &RuntimeCallable,
     positional: &[RuntimeVal],
@@ -71,8 +72,10 @@ pub fn call_runtime_callable_runtime_named_stack(
     named_start: usize,
     named_count: u16,
     caller_heap: &mut HeapStore,
+    caller_module: Option<&Arc<Module>>,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
+    let mode = crossing_mode(caller_module);
     let state = take_runtime_callable_state(function)
         .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let function_meta = function
@@ -108,6 +111,7 @@ pub fn call_runtime_callable_runtime_named_stack(
                 caller_heap,
                 heap,
                 frame,
+                &mode,
             )?;
             Ok(function_meta.param_count)
         },
@@ -120,7 +124,17 @@ pub fn call_runtime_callable_runtime_named_stack(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
+    // The way back is the same crossing as the way in, and the module is known
+    // here without asking anyone: it is the callee's own. Without this
+    // `fn make_adder(n) -> (Int) -> Int` could not hand its closure back —
+    // returning a function was refused while passing one had just started
+    // working.
+    let value = copy_runtime_value_with(
+        &value,
+        &result.state.heap,
+        caller_heap,
+        &ClosureCopy::Promote(Arc::clone(&function.module)),
+    )?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -769,7 +783,17 @@ fn call_runtime_callable_runtime_positional(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
+    // The way back is the same crossing as the way in, and the module is known
+    // here without asking anyone: it is the callee's own. Without this
+    // `fn make_adder(n) -> (Int) -> Int` could not hand its closure back —
+    // returning a function was refused while passing one had just started
+    // working.
+    let value = copy_runtime_value_with(
+        &value,
+        &result.state.heap,
+        caller_heap,
+        &ClosureCopy::Promote(Arc::clone(&function.module)),
+    )?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -834,7 +858,17 @@ fn call_runtime_callable_runtime_named_map_positional(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
+    // The way back is the same crossing as the way in, and the module is known
+    // here without asking anyone: it is the callee's own. Without this
+    // `fn make_adder(n) -> (Int) -> Int` could not hand its closure back —
+    // returning a function was refused while passing one had just started
+    // working.
+    let value = copy_runtime_value_with(
+        &value,
+        &result.state.heap,
+        caller_heap,
+        &ClosureCopy::Promote(Arc::clone(&function.module)),
+    )?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -1194,6 +1228,7 @@ fn copy_named_stack_args_to_frame(
     caller_heap: &HeapStore,
     callee_heap: &mut HeapStore,
     frame: &mut [RuntimeVal],
+    mode: &ClosureCopy,
 ) -> Result<()> {
     if frame.len() < function.param_count as usize {
         bail!(
@@ -1215,7 +1250,7 @@ fn copy_named_stack_args_to_frame(
     }
 
     for (slot, value) in frame.iter_mut().take(positional_count).zip(positional) {
-        *slot = copy_runtime_value(value, caller_heap, callee_heap)?;
+        *slot = copy_runtime_value_with(value, caller_heap, callee_heap, mode)?;
     }
     let mut seen = vec![false; function.param_count as usize - positional_count];
     let named_end = named_start + named_count as usize * 2;
@@ -1237,7 +1272,7 @@ fn copy_named_stack_args_to_frame(
             }
             offset
         };
-        frame[positional_count + offset] = copy_runtime_value(&pair[1], caller_heap, callee_heap)?;
+        frame[positional_count + offset] = copy_runtime_value_with(&pair[1], caller_heap, callee_heap, mode)?;
     }
 
     if let Some(index) = seen.iter().position(|seen| !*seen) {

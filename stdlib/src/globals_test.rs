@@ -169,10 +169,21 @@ mod tests {
                 "assert_eq() expects 2 or 3 arguments",
             ),
             ("assert_ne(1);", "assert_ne() expects 2 or 3 arguments"),
-            (
-                "assert(cond: true);",
-                "Compiler missing named-call signature for `assert`",
-            ),
+            // A builtin declares no named parameters, and now says so itself.
+            //
+            // This used to be caught earlier, but by accident and in the wrong
+            // words: the compiler bailed with `Compiler missing named-call
+            // signature for `assert`` — a sentence about its own bookkeeping —
+            // because signatures are collected from the program's own
+            // declarations and a builtin has none there. The same gap made
+            // `use { f } from "m"; f(a: 1)` fail to compile for a perfectly
+            // good call, which is why the bail is gone.
+            //
+            // Wrong *arity* on a builtin was always a run-time error too (see
+            // the rows above), so the two now agree; catching either at check
+            // time wants the globals' parameter metadata, which does not carry
+            // named-parameter information yet.
+            ("assert(cond: true);", "assert() does not accept named arguments"),
         ] {
             let err = execute_with_stdlib_globals(source).expect_err("expected assertion argument error");
             assert!(

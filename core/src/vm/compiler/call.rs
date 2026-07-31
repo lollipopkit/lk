@@ -716,11 +716,22 @@ impl Compiler {
             bail!("Compiler named call `{function_name}` is shadowed by a local binding");
         }
 
-        let signature = self
-            .function_signatures
-            .get(function_name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Compiler missing named-call signature for `{function_name}`"))?;
+        let Some(signature) = self.function_signatures.get(function_name).cloned() else {
+            // A name with no signature *here* is normally an imported function:
+            // signatures are collected from this program's own declarations, and
+            // an import has none to collect. The call still has everything it
+            // needs — the names are constants and the callee's own metadata
+            // says the order — so it goes out as a dynamic `CallNamed`, which is
+            // the same opcode a call through a variable uses.
+            //
+            // Without this, `use { scale } from "m"; scale(value: 3, by: 4)`
+            // failed to *compile*, with a sentence about the compiler's
+            // bookkeeping; the identical call to a local function worked.
+            if self.global_names.contains_key(function_name) {
+                return self.lower_dynamic_named_arg_call(callee, positional, named);
+            }
+            bail!("undefined function `{function_name}` called with named arguments");
+        };
         if positional.len() != signature.positional_count {
             bail!(
                 "Compiler named call `{function_name}` expects {} positional args, got {}",

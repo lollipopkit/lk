@@ -212,6 +212,9 @@ impl Executor {
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
+                // Same as the positional path: only the executor can say which
+                // module a function among these arguments came from.
+                let caller_module = self.shared_module.clone();
                 let result = runtime_callable::call_runtime_callable_runtime_named_stack(
                     function.as_ref(),
                     &self.state.stack[args],
@@ -219,6 +222,7 @@ impl Executor {
                     named_start,
                     named_count,
                     &mut self.state.heap,
+                    caller_module.as_ref(),
                     ctx.as_deref_mut(),
                 );
                 result

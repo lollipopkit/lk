@@ -131,3 +131,89 @@ fn a_function_that_writes_a_module_global_is_refused_as_a_write() {
         "the refusal should name the write: {stderr}"
     );
 }
+
+/// The way back: a function *returned* by an imported function.
+///
+/// `make_adder(5)` builds a closure inside the other module and hands it over.
+/// This direction needs no help from the executor — the module is the callee's
+/// own — but it was refused for exactly as long as the argument direction was,
+/// and fixing one without the other would have made `apply(make_adder(5), 1)`
+/// half-work.
+#[test]
+fn a_function_can_be_returned_from_another_module() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("mk.lk"),
+        "fn make_adder(n: Int) -> (Int) -> Int { return |x| x + n; }\n\
+         fn apply(f: (Int) -> Int, x: Int) -> Int { return f(x); }\n\
+         fn pass_through(f: (Int) -> Int, x: Int) -> Int { return apply(f, x); }\n",
+    )
+    .expect("write module");
+    let (stdout, stderr, ok) = run(
+        dir.path(),
+        "use { make_adder, apply, pass_through } from \"mk\";\n\
+         fn double(x: Int) -> Int { return x * 2; }\n\
+         let add5 = make_adder(5);\n\
+         println(add5(1));\n\
+         println(apply(add5, 1));\n\
+         println(pass_through(double, 4));\n\
+         let fs = [double, double];\n\
+         println(apply(fs[0], 3));\n\
+         struct Box { f: (Int) -> Int }\n\
+         let b = Box { f: double };\n\
+         println(apply(b.f, 6));\n",
+    );
+    assert!(ok, "the program should run: {stderr}");
+    assert_eq!(stdout, "6\n6\n8\n6\n12\n", "stderr: {stderr}");
+}
+
+/// Named arguments cross too — including a function passed by name.
+///
+/// Two separate things had to be true. The compiler collects named-call
+/// signatures from *this* program's declarations, so an imported function had
+/// none and the call failed to compile with a sentence about the compiler's
+/// bookkeeping (`Compiler missing named-call signature`) — while the identical
+/// call to a local function worked. And the named argument path had its own
+/// copy of the argument copying, which still refused a function.
+#[test]
+fn named_arguments_cross_a_module_boundary() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("named.lk"),
+        "fn scale({value: Int, by: Int}) -> Int { return value * by; }\n\
+         fn apply({f: (Int) -> Int, x: Int}) -> Int { return f(x); }\n",
+    )
+    .expect("write module");
+    let (stdout, stderr, ok) = run(
+        dir.path(),
+        "use { scale, apply } from \"named\";\n\
+         fn double(x: Int) -> Int { return x * 2; }\n\
+         println(scale(value: 3, by: 4));\n\
+         println(apply(f: double, x: 5));\n",
+    );
+    assert!(ok, "the program should run: {stderr}");
+    assert_eq!(stdout, "12\n10\n", "stderr: {stderr}");
+}
+
+/// A crossing that cannot name its source module still refuses — and says which
+/// crossing it was.
+///
+/// A channel payload is copied by a function that is handed two heaps and
+/// nothing else, so there is no module to promote against. The message says so
+/// rather than describing the argument case it no longer applies to.
+#[test]
+fn a_channel_payload_still_refuses_a_function_and_says_why() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, stderr, ok) = run(
+        dir.path(),
+        "use chan;\n\
+         fn double(x: Int) -> Int { return x * 2; }\n\
+         let c = chan.new(1);\n\
+         chan.send(c, double);\n",
+    );
+    assert!(!ok, "a function through a channel must not run");
+    assert!(
+        stderr.contains("a channel payload"),
+        "the refusal should name the crossing it is about: {stderr}"
+    );
+}
