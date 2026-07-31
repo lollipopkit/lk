@@ -75,6 +75,38 @@ mod tests {
         );
     }
 
+    /// Every closed-channel refusal reads the same, whichever spelling raised
+    /// it — and the same as the native runtime's.
+    ///
+    /// A caught message is printed output, so three spellings of one operation
+    /// is three answers: `chan.try_send` decorated the runtime's error into
+    /// "Failed to send to channel: Channel is closed" while `send`, `chan.send`
+    /// and `chan.try_recv` all said the short form. `lkrt::chan` raises the
+    /// short form too, so the decorated one was also a VM/native divergence.
+    #[test]
+    fn every_closed_channel_refusal_reads_the_same() {
+        let program = r#"
+            use chan;
+            let c = chan.new(1);
+            chan.close(c);
+            let out = [];
+            out = out.push(try { "${chan.try_send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.try_recv(c)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.recv(c)}" } catch e { "${e}" });
+            out = out.push(try { "${recv(c)}" } catch e { "${e}" });
+            return out;
+        "#;
+        let result = run(program).expect("program runs");
+        let rendered = lk_core::vm::display_runtime_value(result.first_return(), result.state.heap());
+        assert_eq!(
+            rendered,
+            "[\"send on closed channel\",\"send on closed channel\",\"send on closed channel\",\
+             \"receive on closed channel\",\"receive on closed channel\",\"receive on closed channel\"]"
+        );
+    }
+
     /// `try_recv`: value when ready, nil when empty (not an error) — postfix
     /// `!` turns "must have a value" into an assertion.
     /// The module is usable on its own: `use chan;` shadows the `chan` global,

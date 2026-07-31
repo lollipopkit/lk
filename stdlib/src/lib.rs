@@ -613,10 +613,11 @@ fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
+    // See `chan.try_send`: the closed-channel wording is the language's, so it
+    // is propagated rather than decorated.
     let sent = runtime
         .async_runtime()
-        .with(|runtime| runtime.try_send(channel_id, value))
-        .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
+        .with(|runtime| runtime.try_send(channel_id, value))?;
     Ok(RuntimeVal::Bool(sent))
 }
 

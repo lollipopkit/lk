@@ -2796,6 +2796,28 @@ fn a_window_answers_its_whole_read_surface_natively() {
     );
 }
 
+/// Every closed-channel refusal reads the same on both ends.
+///
+/// A caught message is printed output. `chan.try_send` decorated the runtime's
+/// error into "Failed to send to channel: Channel is closed" where `lkrt::chan`
+/// raises "send on closed channel" — one operation, two answers, and the
+/// interpreter did not even agree with its own `chan.send`.
+#[test]
+fn closed_channel_refusals_read_the_same_on_both_ends() {
+    run_clif_differential(
+        "chan_closed_text",
+        &[new(
+            "every_spelling",
+            "use chan;\nlet z = 0;\nlet c = chan.new(1 + z);\nchan.close(c);\n\
+             println(try { \"${chan.try_send(c, 1)}\" } catch e { \"${e}\" });\n\
+             println(try { \"${chan.send(c, 1)}\" } catch e { \"${e}\" });\n\
+             println(try { \"${chan.try_recv(c)}\" } catch e { \"${e}\" });\n\
+             println(try { \"${chan.recv(c)}\" } catch e { \"${e}\" });\n\
+             println(chan.is_closed(c));\nprintln(chan.len(c));\nreturn 0;\n",
+        )],
+    );
+}
+
 /// A window is a value: it boxes, so it can enter a list, a map or a `try`.
 ///
 /// A carrier with no `Dyn` tag cannot be boxed at all, and boxing is how a

@@ -233,6 +233,14 @@ impl Runtime {
     }
 
     /// Attempt to send a value without blocking.
+    ///
+    /// A closed channel is the *language's* error, worded as the language words
+    /// it (`send on closed channel`, which is also what `blocking_send_value`
+    /// raises and what `lkrt::chan` raises natively). Callers propagate it with
+    /// `?` rather than wrapping: `chan.try_send` used to decorate it into
+    /// "Failed to send to channel: Channel is closed", so the one operation had
+    /// three spellings — one per caller — and a caught message is printed
+    /// output.
     pub fn try_send(&self, channel_id: u64, value: RuntimePayload) -> Result<bool> {
         let (sender, closed_flag) = {
             let channels = self.channels.lock().unwrap();
@@ -246,17 +254,17 @@ impl Runtime {
                 Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     closed_flag.store(true, Ordering::SeqCst);
-                    Err(anyhow!("Channel is closed"))
+                    Err(anyhow!("send on closed channel"))
                 }
             },
             ChannelSender::Unbounded(sender) => match sender.send(value) {
                 Ok(()) => Ok(true),
                 Err(_) => {
                     closed_flag.store(true, Ordering::SeqCst);
-                    Err(anyhow!("Channel is closed"))
+                    Err(anyhow!("send on closed channel"))
                 }
             },
-            ChannelSender::Closed => Err(anyhow!("Channel is closed")),
+            ChannelSender::Closed => Err(anyhow!("send on closed channel")),
         }
     }
 

@@ -184,10 +184,11 @@ impl ChannelModule {
         let values = args.as_slice();
         let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
         let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
+        // Propagated, not wrapped: the closed-channel wording is the
+        // language's and lives in `rt::try_send`.
         let sent = runtime
             .async_runtime()
-            .with(|runtime| runtime.try_send(channel.id, value))
-            .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
+            .with(|runtime| runtime.try_send(channel.id, value))?;
         Ok(RuntimeVal::Bool(sent))
     }
 
