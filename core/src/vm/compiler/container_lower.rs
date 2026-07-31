@@ -36,8 +36,16 @@ impl Compiler {
         let len = elements.len();
         let window = if len > u8::MAX as usize { 0 } else { len };
         let base = self.alloc_regs(window)?;
+        // Each element's *temporaries* are handed back before the next one is
+        // lowered — the window itself stays, the scratch behind it does not.
+        // Without this every element's leftovers stacked up, so a literal cost
+        // one register per element plus one for every temporary any element
+        // ever used: 27 elements of `f(a) == a.f()` reached the 256 ceiling and
+        // the program was refused for a list a quarter that size.
+        let watermark = self.next_reg;
         for (offset, element) in elements[..window].iter().enumerate() {
             self.lower_expr_to_register(base + offset as u16, element, "list element")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
         let dst = self.alloc_reg();
         let pc = self.function.code.len();
@@ -102,10 +110,13 @@ impl Compiler {
                 .checked_mul(2)
                 .ok_or_else(|| anyhow!("Compiler map entry overflow"))?,
         )?;
+        // Per entry, as in `lower_list`: the window stays, the scratch does not.
+        let watermark = self.next_reg;
         for (offset, (key, value)) in entries[..window].iter().enumerate() {
             let key_dst = base + (offset as u16 * 2);
             self.lower_expr_to_register(key_dst, key, "map key")?;
             self.lower_expr_to_register(key_dst + 1, value, "map value")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
         let dst = self.alloc_reg();
         let pc = self.function.code.len();
@@ -175,10 +186,13 @@ impl Compiler {
 
         let base = self.alloc_regs(1 + window * 2)?;
         self.emit_literal_to_register(base, &LiteralVal::from_str(name))?;
+        // Per field, as in `lower_list`.
+        let watermark = self.next_reg;
         for (offset, (key, value)) in fields[..window].iter().enumerate() {
             let key_dst = base + 1 + (offset as u16 * 2);
             self.emit_literal_to_register(key_dst, &LiteralVal::from_str(key))?;
             self.lower_expr_to_register(key_dst + 1, value, "object value")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
 
         let dst = self.alloc_reg();

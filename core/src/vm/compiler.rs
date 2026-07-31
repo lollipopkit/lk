@@ -1052,6 +1052,16 @@ impl Compiler {
         //
         // Lowering `rhs` before `lhs` reorders nothing observable: only an integer
         // literal reaches `commuted_int_immediate_operand`.
+        // Where the operands' scratch registers are handed back.
+        //
+        // A register VM needs one temporary for a chain of `+`, not one per
+        // term: the result may be written over the left operand, which is
+        // exactly what `x += 1` has always compiled to (`AddIntI r0 r0 …`). It
+        // did not, and a 300-term chain — or 27 list elements each holding a
+        // comparison — hit the 256-register ceiling and the program was
+        // refused. Locals live below `live_register_floor()`, so nothing that
+        // outlives the expression can be reused here.
+        let watermark = self.next_reg;
         let mut commuted_rhs = None;
         if static_flavor == NumericFlavor::Int
             && let Some(immediate) = support::commuted_int_immediate_operand(op, lhs)
@@ -1062,6 +1072,7 @@ impl Compiler {
             // type says otherwise.
             if self.function.performance.value_kind(rhs) == PerfValueKind::Int && !self.machine_regs.contains_key(&rhs)
             {
+                self.next_reg = self.live_register_floor().max(watermark);
                 let dst = self.alloc_reg();
                 return self.emit_int_immediate_to_register(dst, op, rhs, immediate);
             }
@@ -1072,13 +1083,17 @@ impl Compiler {
             && let Some(immediate) = int_immediate_operand(op, rhs)
             && !self.machine_regs.contains_key(&lhs)
         {
-            let dst = self.alloc_reg();
             let flavor = if self.function.performance.value_kind(lhs) == PerfValueKind::Int {
                 Some(NumericFlavor::Int)
             } else {
                 None
             };
+            // The destination is named only once this path is taken: it used to
+            // be allocated first, so an attempt that fell through left a
+            // register nobody would ever write.
             if flavor == Some(static_flavor) {
+                self.next_reg = self.live_register_floor().max(watermark);
+                let dst = self.alloc_reg();
                 return self.emit_int_immediate_to_register(dst, op, lhs, immediate);
             }
         }
@@ -1089,10 +1104,19 @@ impl Compiler {
         // A literal beside a machine integer takes its width, so the wrap below
         // has two proven operands to agree about.
         self.adopt_machine_width_for_literal(lhs, rhs, lhs_is_literal, rhs_is_literal)?;
-        let dst = self.alloc_reg();
+        // Both facts about the operands are read **before** the destination is
+        // named, because naming it may take one of their registers back — and
+        // `alloc_reg` ends a register's facts, which is what makes the reuse
+        // safe in the first place. Read after, `a + 1` in `fn f(a: u8)` lost the
+        // width it had just proven and answered 256.
         let flavor =
             numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(static_flavor);
-        self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)
+        let machine_width = binary_machine_width(op)
+            .then(|| self.shared_machine_width(lhs, rhs))
+            .flatten();
+        self.next_reg = self.live_register_floor().max(watermark);
+        let dst = self.alloc_reg();
+        self.emit_bin_op_with_width(dst, op, lhs, rhs, flavor, machine_width)
     }
 
     /// The unsigned form of an operator, when both operands fill the carrier.
@@ -1186,15 +1210,24 @@ impl Compiler {
         rhs: u16,
         flavor: NumericFlavor,
     ) -> Result<u16> {
-        // Only the operators that can *produce* a machine int are wrapped.
-        // A comparison of two `u8`s is a `Bool`, and running it through the
-        // width path both emitted a pointless `CastTo` on a 0/1 and recorded
-        // the destination register as holding a `u8` — a stale width fact that
-        // a later, unrelated value in the same register would inherit.
-        let produces_machine_int = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
-        let machine_width = produces_machine_int
+        let machine_width = binary_machine_width(op)
             .then(|| self.shared_machine_width(lhs, rhs))
             .flatten();
+        self.emit_bin_op_with_width(dst, op, lhs, rhs, flavor, machine_width)
+    }
+
+    /// [`emit_bin_op_to_register_with_flavor`] with the operands' shared width
+    /// already read — for the caller that reuses an operand's register as the
+    /// destination and so must ask before it does.
+    pub(in crate::vm::compiler) fn emit_bin_op_with_width(
+        &mut self,
+        dst: u16,
+        op: &BinOp,
+        lhs: u16,
+        rhs: u16,
+        flavor: NumericFlavor,
+        machine_width: Option<crate::val::IntKind>,
+    ) -> Result<u16> {
         let dst = self.emit_bin_op_unwrapped(dst, op, lhs, rhs, flavor)?;
         // Machine-int arithmetic wraps to its width. The operation itself runs
         // at 64 bits and is normalised afterwards, reusing the `as` path: two
@@ -1280,6 +1313,17 @@ impl Compiler {
         self.set_register_kind(dst, PerfValueKind::Int);
         Ok(dst)
     }
+}
+
+/// Whether an operator can *produce* a machine integer, and so needs its result
+/// wrapped to the width.
+///
+/// A comparison of two `u8`s is a `Bool`, and running it through the width path
+/// both emitted a pointless `CastTo` on a 0/1 and recorded the destination
+/// register as holding a `u8` — a stale width fact that a later, unrelated value
+/// in the same register would inherit.
+fn binary_machine_width(op: &BinOp) -> bool {
+    matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
 }
 
 fn impl_method_type(

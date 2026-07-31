@@ -1271,6 +1271,52 @@ fn compile_object_rejects_an_unknown_triple() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// One expression's scratch registers are handed back as it goes.
+///
+/// A register VM needs *one* temporary for `a + b + c + …`, not one per term:
+/// the result is written over the left operand, which is what `x += 1` has
+/// always compiled to. Every intermediate kept its own register instead, so a
+/// single expression could exhaust the 256 a frame has — and the failure was a
+/// refusal to compile a program that is nothing unusual. 300 terms and 40 list
+/// elements are both well past where it used to stop (~250 and 27).
+///
+/// The answers are checked, not just the exit status: reusing an operand's
+/// register is only safe because the opcodes read both operands before writing
+/// the destination, and a compiler that got that wrong would still compile.
+#[test]
+fn one_expression_reuses_its_scratch_registers() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("wide_expr.lk");
+    let chain = (1..=300).map(|i| format!("({i} * 2)")).collect::<Vec<_>>().join(" + ");
+    let elements = (0..40)
+        .map(|i| format!("(\"abc\".count(\"a\") + {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        &path,
+        format!(
+            "let total = {chain};
+let xs = [{elements}];
+println(\"${{total}} ${{xs.len()}} ${{xs[39]}}\");
+"
+        ),
+    )
+    .expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&path)
+        .output()
+        .expect("run lk");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 2 * (1 + … + 300) = 90300; the last element is 1 + 39.
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "90300 40 40");
+}
+
 /// A struct literal is not capped at a number nobody could reach.
 ///
 /// The guard said "max 127 fields", but `NewObject` reads its fields from a
