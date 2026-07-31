@@ -418,7 +418,7 @@ fn register_runtime_builtin(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
-    register_global_name(name);
+    register_global_name(name, arity);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::Plain(function), arity);
 }
@@ -430,19 +430,54 @@ fn register_runtime_builtin_full_state(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
-    register_global_name(name);
+    register_global_name(name, arity);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
 }
 
-/// Tells the type checker this name is a builtin global.
+/// Tells the type checker this name is a builtin global, and how many
+/// arguments it takes.
 ///
-/// Separate from the metadata above, and unconditional: a global with no
-/// metadata is still a global, and the one rule the checker enforces about them
-/// — no named arguments — holds for all of them.
-fn register_global_name(name: &'static str) {
-    lk_core::typ::register_stdlib_global_name(name);
+/// The count comes from the registry arity the call sites already state, so
+/// there is nothing new to keep in sync — except for the handful whose real
+/// range the registry could not express (`assert` is 1 or 2, not "any"), which
+/// now state it through [`ARITY_RANGES`] and use the same constant in their
+/// own check.
+fn register_global_name(name: &'static str, arity: u16) {
+    let (min, max) = match ARITY_RANGES.iter().find(|(global, _, _)| *global == name) {
+        Some((_, min, max)) => (*min, Some(*max)),
+        None if arity == NativeEntry::VARIADIC => (0, None),
+        None => (arity, Some(arity)),
+    };
+    lk_core::typ::register_stdlib_global(name, min, max);
 }
+
+/// The globals whose argument count is a *range*, which the registry's single
+/// `arity` cannot say.
+///
+/// Registered as `VARIADIC` because the call machinery only knows "exactly N or
+/// anything", and then checked again inside each body — so the real bound lived
+/// only there, and `lk check` passed `assert(true, "a", "b")`. The numbers are
+/// the ones those bodies use; `assert_arity_ranges_match_the_native_checks`
+/// keeps the two together.
+pub(crate) const ARITY_RANGES: &[(&str, u16, u16)] = &[
+    (
+        "assert",
+        lk_stdlib_common::language::ASSERT_ARITY.0,
+        lk_stdlib_common::language::ASSERT_ARITY.1,
+    ),
+    (
+        "assert_eq",
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.0,
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.1,
+    ),
+    (
+        "assert_ne",
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.0,
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.1,
+    ),
+    ("chan", lk_stdlib_chan::CHAN_ARITY.0, lk_stdlib_chan::CHAN_ARITY.1),
+];
 
 fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMetadata>) {
     let Some(metadata) = metadata else {

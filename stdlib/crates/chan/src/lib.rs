@@ -27,8 +27,14 @@ pub struct ChannelModule;
 /// after `use chan;` the name is the module, so `chan(3)` stopped being a call
 /// at all and there was no way left to make a channel. One implementation, two
 /// names, and the module is now complete on its own.
+/// `chan(capacity[, type])` — a capacity, and an optional type hint.
+///
+/// Public because the registration tells the type checker the same numbers, and
+/// they are these ones.
+pub const CHAN_ARITY: (u16, u16) = (1, 2);
+
 pub fn create_channel_value(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.is_empty() || args.len() > 2 {
+    if args.len() < CHAN_ARITY.0 as usize || args.len() > CHAN_ARITY.1 as usize {
         bail!("chan() expects 1 or 2 arguments: capacity[, type_str]");
     }
     let values = args.as_slice();

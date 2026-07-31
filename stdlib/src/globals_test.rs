@@ -161,6 +161,10 @@ mod tests {
     #[test]
     fn test_global_assertions_reject_bad_arity_and_named_args() {
         for (source, expected) in [
+            // These are now *check-time* errors too: the arity each body
+            // enforces is the same constant the registration hands the type
+            // checker, so `lk check` catches them and the body stays as the
+            // guard for anything that reaches the native another way.
             ("assert();", "assert() expects 1 or 2 arguments"),
             ("assert(true, \"ok\", \"extra\");", "assert() expects 1 or 2 arguments"),
             ("assert_eq(1);", "assert_eq() expects 2 or 3 arguments"),
@@ -181,9 +185,6 @@ mod tests {
             // which names the standard library registers as globals, and none
             // of them takes named arguments.
             //
-            // Wrong *arity* is still only a run-time error (see the rows
-            // above): that needs each global's parameter list, which the
-            // globals' metadata does not carry yet.
             ("assert(cond: true);", "assert() does not accept named arguments"),
         ] {
             let err = execute_with_stdlib_globals(source).expect_err("expected assertion argument error");

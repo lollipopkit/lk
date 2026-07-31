@@ -134,6 +134,44 @@ impl TypeChecker {
         }
 
         if let Expr::Var(name) = func {
+            // Argument count for a builtin global, from the one place that
+            // knows it: the standard library states it when it registers the
+            // global. Before this the same fact lived in the registry, in the
+            // native's own body, and in a hand-written arm here — and only
+            // three globals had an arm, so `lk check` passed
+            // `assert(true, "a", "b")`.
+            //
+            // Skipped when the program owns the name: its own function, or a
+            // local holding a callable, answers to its own signature.
+            if !self.has_local_binding(name)
+                && !self.has_user_function(name)
+                && self.registry.get_struct(name).is_none()
+                && let Some(arity) = crate::typ::stdlib_global_arity(name)
+            {
+                let count = args.len();
+                let too_few = count < arity.min as usize;
+                let too_many = arity.max.is_some_and(|max| count > max as usize);
+                if too_few || too_many {
+                    // The runtime's wording, including "1 argument" —
+                    // `expects exactly 1 arguments` is the kind of thing a
+                    // generated message says and a hand-written one did not.
+                    let plural = |count: u16| if count == 1 { "argument" } else { "arguments" };
+                    return Err(Self::type_err(
+                        &match arity.max {
+                            Some(max) if max == arity.min => {
+                                alloc::format!("{name}() expects exactly {} {}", arity.min, plural(arity.min))
+                            }
+                            Some(max) => alloc::format!("{name}() expects {} or {max} {}", arity.min, plural(max)),
+                            None => {
+                                alloc::format!("{name}() expects at least {} {}", arity.min, plural(arity.min))
+                            }
+                        },
+                        None,
+                        None,
+                        Some(func.clone()),
+                    ));
+                }
+            }
             match name.as_str() {
                 "Set" => {
                     if args.len() > 1 {
@@ -242,9 +280,9 @@ impl TypeChecker {
                     }
                 }
                 "recv" => {
-                    if args.len() != 1 {
-                        return Err(Self::type_err("recv() expects exactly 1 argument", None, None, None));
-                    }
+                    // Arity is checked generically from the registry — see
+                    // `check_builtin_global_arity`. What is left here is the
+                    // part that is `recv`'s own: the argument must be a channel.
                     let channel_ty = self.check_expr(&args[0])?;
                     return match self.resolve_aliases(&channel_ty) {
                         Type::Channel(inner) => Ok((*inner).clone()),
@@ -263,9 +301,7 @@ impl TypeChecker {
                     };
                 }
                 "spawn" => {
-                    if args.len() != 1 {
-                        return Err(Self::type_err("spawn() expects exactly 1 argument", None, None, None));
-                    }
+                    // As above: arity generically, "must be callable" here.
                     let callable_ty = self.check_expr(&args[0])?;
                     match self.resolve_aliases(&callable_ty) {
                         Type::Function { .. } => {}

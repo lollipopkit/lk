@@ -18,7 +18,7 @@ use crate::{
     compat::{once::OnceLock, sync::Mutex},
     val::{FunctionNamedParamType, Type},
 };
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 
 /// One parameter of a stdlib callable, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,22 +138,46 @@ pub fn stdlib_signature(path: &str) -> Option<ResolvedStdlibSig> {
 /// global is a bare name whose parameters are checked inside its own body. What
 /// the checker can still say about one is the rule that holds for *all* of
 /// them, and there is exactly one: a builtin global takes no named arguments.
-fn global_names() -> &'static Mutex<HashSet<&'static str>> {
-    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    NAMES.get_or_init(|| Mutex::new(HashSet::new()))
+/// How many positional arguments a builtin global accepts.
+///
+/// `max: None` is genuinely variadic — `println` takes what it is given. The
+/// bounded ones state their real range here, which is the point: the same fact
+/// used to live in up to three places (the registry's arity, the native body's
+/// own check, and a hand-written arm in the type checker), and only three
+/// globals had it in the one place the checker could see.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StdlibGlobalArity {
+    pub min: u16,
+    pub max: Option<u16>,
 }
 
-/// Records a builtin global's name. Called once per global at registration.
-pub fn register_stdlib_global_name(name: &'static str) {
+fn global_arities() -> &'static Mutex<HashMap<&'static str, StdlibGlobalArity>> {
+    static ARITIES: OnceLock<Mutex<HashMap<&'static str, StdlibGlobalArity>>> = OnceLock::new();
+    ARITIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Records a builtin global and how many arguments it takes. Called once per
+/// global at registration.
+pub fn register_stdlib_global(name: &'static str, min: u16, max: Option<u16>) {
     // Written as a combinator for the reason `register_stdlib_signatures` gives:
     // the lock is fallible on std (a poisoned mutex) and infallible on the
     // no_std shim, so a `let Ok(..) else` reads as an irrefutable pattern there.
-    let _ = global_names().lock().map(|mut names| names.insert(name));
+    let _ = global_arities()
+        .lock()
+        .map(|mut arities| arities.insert(name, StdlibGlobalArity { min, max }));
 }
 
 /// Whether the standard library registers a global callable of this name.
 pub fn stdlib_global_is_declared(name: &str) -> bool {
-    global_names().lock().map(|names| names.contains(name)).unwrap_or(false)
+    global_arities()
+        .lock()
+        .map(|arities| arities.contains_key(name))
+        .unwrap_or(false)
+}
+
+/// The declared argument count of a builtin global.
+pub fn stdlib_global_arity(name: &str) -> Option<StdlibGlobalArity> {
+    global_arities().lock().ok()?.get(name).copied()
 }
 
 /// Whether some stdlib module declares this exact dotted path.

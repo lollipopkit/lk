@@ -156,7 +156,7 @@ fn joined_display(values: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Res
 /// The message text matters as much as the outcome: a program can `catch` a
 /// failed assertion and read it.
 pub fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 1, 2, "assert")?;
+    expect_assert_args(args, ASSERT_ARITY.0 as usize, ASSERT_ARITY.1 as usize, "assert")?;
     let values = args.as_slice();
     if truthy(&values[0]) {
         return Ok(RuntimeVal::Nil);
@@ -169,7 +169,12 @@ pub fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<R
 }
 
 pub fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_eq")?;
+    expect_assert_args(
+        args,
+        ASSERT_PAIR_ARITY.0 as usize,
+        ASSERT_PAIR_ARITY.1 as usize,
+        "assert_eq",
+    )?;
     let values = args.as_slice();
     if crate::runtime_native::runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
@@ -182,7 +187,12 @@ pub fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
 }
 
 pub fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_ne")?;
+    expect_assert_args(
+        args,
+        ASSERT_PAIR_ARITY.0 as usize,
+        ASSERT_PAIR_ARITY.1 as usize,
+        "assert_ne",
+    )?;
     let values = args.as_slice();
     if !crate::runtime_native::runtime_values_equal(&values[0], &values[1], runtime.heap())? {
         return Ok(RuntimeVal::Nil);
@@ -285,6 +295,15 @@ fn append_note(
     }
     Ok(())
 }
+
+/// How many arguments each assertion takes.
+///
+/// Public because the registration says the same thing to the type checker, and
+/// it says it *from here* — the numbers used to live only inside the check
+/// below, which is why `lk check` passed `assert(true, "a", "b")`.
+pub const ASSERT_ARITY: (u16, u16) = (1, 2);
+/// `assert_eq` / `assert_ne`: two values, and an optional note.
+pub const ASSERT_PAIR_ARITY: (u16, u16) = (2, 3);
 
 fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
     if args.has_named() {

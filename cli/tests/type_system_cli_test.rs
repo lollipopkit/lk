@@ -217,3 +217,50 @@ fn named_arguments_to_a_builtin_are_a_check_time_error() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// `lk check` catches a builtin called with the wrong number of arguments —
+/// including the ones whose range only its own body used to know.
+///
+/// The count is stated once, where the native enforces it, and handed to the
+/// checker at registration. Before that it lived in three places (the
+/// registry's single `arity`, the body's own check, a hand-written arm in the
+/// checker) and only three globals had the third — so `assert(true, "a", "b")`
+/// type-checked and then failed.
+#[test]
+fn builtin_arity_is_a_check_time_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (source, expected) in [
+        ("assert(true, \"a\", \"b\");\n", "assert() expects 1 or 2 arguments"),
+        (
+            "assert_eq(1, 1, \"a\", \"b\");\n",
+            "assert_eq() expects 2 or 3 arguments",
+        ),
+        ("spawn(|| 1, 2);\n", "spawn() expects exactly 1 argument"),
+        ("recv();\n", "recv() expects exactly 1 argument"),
+    ] {
+        let path = dir.path().join("case.lk");
+        std::fs::write(&path, source).expect("write");
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run lk check");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "`{source}` must not check");
+        assert!(stderr.contains(expected), "`{source}` reported `{stderr}`");
+    }
+
+    // A genuinely variadic builtin takes what it is given.
+    let ok = dir.path().join("ok.lk");
+    std::fs::write(&ok, "println(1, 2, 3);\nprint();\n").expect("write");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg("check")
+        .arg(&ok)
+        .output()
+        .expect("run lk check");
+    assert!(
+        output.status.success(),
+        "println is variadic: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
