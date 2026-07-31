@@ -38,7 +38,7 @@
 
 use { mmio_layout } from "layout";
 use { pci_find, pci_bar, pci_command_set,
-      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
+    PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
 
 const E1000_VENDOR = 0x8086;
 const E1000_DEVICE = 0x100e;
@@ -566,4 +566,3 @@ fn e1000_receive_within(state: Int, out: Int, capacity: Int, attempts: Int) -> I
     }
     return 0;
 }
-

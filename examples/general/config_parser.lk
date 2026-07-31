@@ -26,15 +26,15 @@ assert(t.ssl.cert == "/etc/ssl/cert.pem");
 
 // 4. Merge configs into a unified structure
 fn build_dsn(db_cfg) {
-  return "${db_cfg.host}:${db_cfg.port}";
+    return "${db_cfg.host}:${db_cfg.port}";
 }
 let dsn = build_dsn(j);
 assert(dsn == "db.example.com:5432");
 
 // 5. Feature flag check from TOML
 fn is_feature_enabled(cfg, feature) {
-  if (!cfg.ssl.has(feature)) { return false; }
-  return cfg.ssl[feature] == true;
+    if (!cfg.ssl.has(feature)) { return false; }
+    return cfg.ssl[feature] == true;
 }
 assert(is_feature_enabled(t, "enabled"));
 

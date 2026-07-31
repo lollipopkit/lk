@@ -4,11 +4,11 @@
 struct Pt { x: Int, y: Int }
 
 trait Norm {
-  fn norm(self) -> Int;
+    fn norm(self) -> Int;
 }
 
 impl Norm for Pt {
-  fn norm(self) -> Int { return self.x + self.y; }
+    fn norm(self) -> Int { return self.x + self.y; }
 }
 
 fn manhattan(p: Pt) -> Int { return p.x + p.y; }

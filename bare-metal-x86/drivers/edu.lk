@@ -24,7 +24,7 @@
 // one that can only toggle ports.
 
 use { pci_find, pci_bar, pci_bar_size, pci_command_set, pci_interrupt_line,
-      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
+    PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
 
 const EDU_VENDOR = 0x1234;
 const EDU_DEVICE = 0x11e8;

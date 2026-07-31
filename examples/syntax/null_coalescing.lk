@@ -24,9 +24,9 @@ assert(timeout == 1000);
 let user = { "name": "Alice", "address": nil };
 let city = nil;
 if (user.address != nil) {
-  city = user.address.city;
+    city = user.address.city;
 } else {
-  city = nil;
+    city = nil;
 }
 assert(city == nil);
 
@@ -34,17 +34,17 @@ assert(city == nil);
 let data = { "a": { "b": nil } };
 let deep_result = nil;
 if (data.a != nil) {
-  if (data.a.b != nil) {
-    deep_result = data.a.b.c;
-  }
+    if (data.a.b != nil) {
+        deep_result = data.a.b.c;
+    }
 }
 assert(deep_result == nil);
 
 // 6. ?? in function defaults
 fn get_config({host: String? = nil, port: Int? = nil}) {
-  let h = host ?? "localhost";
-  let p = port ?? 8080;
-  return "${h}:${p}";
+    let h = host ?? "localhost";
+    let p = port ?? 8080;
+    return "${h}:${p}";
 }
 assert(get_config(host: "prod.io") == "prod.io:8080");
 assert(get_config() == "localhost:8080");
@@ -57,7 +57,7 @@ assert(items.len() == 0);
 // 8. Truthiness in if/while — nil is falsy, only false and nil are falsy
 let maybe_empty = 0;
 if (maybe_empty) {
-  assert(true);
+    assert(true);
 }
 
 println("null_coalescing: all assertions passed");

@@ -26,34 +26,34 @@ assert(u2.active == false);
 
 // 4. Trait definition and implementation
 trait Area {
-  fn area(self) -> Int;
+    fn area(self) -> Int;
 }
 
 impl Area for Rect {
-  fn area(self) -> Int { return self.w * self.h; }
+    fn area(self) -> Int { return self.w * self.h; }
 }
 
 assert(r.area() == 200);
 
 // 5. Multiple traits
 trait Describe {
-  fn describe(self) -> String;
+    fn describe(self) -> String;
 }
 
 impl Describe for Rect {
-  fn describe(self) -> String { return "Rect(${self.w}x${self.h})"; }
+    fn describe(self) -> String { return "Rect(${self.w}x${self.h})"; }
 }
 assert(r.describe() == "Rect(10x20)");
 
 // 6. Same trait, different types
 impl Area for Circle {
-  fn area(self) -> Int { return 3 * self.r * self.r; } // approximate
+    fn area(self) -> Int { return 3 * self.r * self.r; } // approximate
 }
 let c_area = c.area();
 assert(c_area == 75);
 
 impl Describe for Circle {
-  fn describe(self) -> String { return "Circle(r=${self.r})"; }
+    fn describe(self) -> String { return "Circle(r=${self.r})"; }
 }
 assert(c.describe() == "Circle(r=5)");
 
@@ -66,8 +66,8 @@ assert(areas == [12, 300]);
 // The default body is written in terms of the trait's other methods, which is
 // what a default is for.
 trait Scaled {
-  fn base(self) -> Int;
-  fn doubled(self) -> Int { return self.base() * 2; }
+    fn base(self) -> Int;
+    fn doubled(self) -> Int { return self.base() * 2; }
 }
 impl Scaled for Rect { fn base(self) -> Int { return self.w; } }
 assert(r.doubled() == 20);

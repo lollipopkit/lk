@@ -69,6 +69,14 @@ jobs:
             fi
           done
           exit $fail
+      - name: every LK source is `lk fmt` shape
+        # `lk fmt --check` shipped as a CI feature and no workflow ran it, so
+        # 36 of the repo's 97 `.lk` files were not in the shape the tool
+        # produces — including the ones the formatter is demonstrated on. A
+        # formatter nobody can run is not one.
+        #
+        # This reuses the `lk` the step above builds, so it must stay after it.
+        run: ./target/debug/lk fmt --check
       - name: thumbv7em MCU smoke (bare + alloc L0 profiles on bare-metal ARM)
         # Proves the L0 foundations cross-compile to a real Cortex-M MCU target
         # (no OS, no allocator provided): lk-values is the `alloc` profile

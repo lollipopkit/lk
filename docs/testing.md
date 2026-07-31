@@ -15,6 +15,7 @@ gates pass" and a regression shipped past it.
 | Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | CI injects `RUSTFLAGS=-D warnings`, so **test-target** warnings fail CI; a plain `cargo clippy --workspace` does not compile tests. |
 | Lint, `no_std` faces | `cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings`, same for `-p lkrt` | `--all-features` never compiles the `no_std` face; the bare-metal targets do. |
 | `no_std` build | `cargo build -p lk-core --no-default-features` | A `use` deleted from under its `#[cfg(feature = "std")]` makes the *next* item std-only, silently. |
+| LK source formatting | `lk fmt --check` | 36 of 97 `.lk` files were not in the shape the tool produces — the feature shipped and no workflow ran it. |
 | AOT native-lowering coverage | `AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh` | A program that stops lowering natively still prints the right answer, ~3x slower. **No differential test can see it.** |
 | AOT differential suites | `cargo test -p lk-cli --test aot_differential_test --test clif_differential_test --test hybrid_compile_test` | VM vs. native disagreement on the pinned corpus. |
 | Generative differential fuzz | see below | Feature *combinations* nobody wrote a case for. |

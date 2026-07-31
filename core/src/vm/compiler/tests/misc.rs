@@ -1450,11 +1450,28 @@ fn compiling_many_functions_stays_linear() {
         out
     }
 
+    // The **fastest** of several runs, not one run.
+    //
+    // A wall-clock ratio is the only cheap way to say "not quadratic", and one
+    // sample of it is a coin flip: this assertion failed once inside
+    // `cargo test --workspace --all-features` — where a few dozen test threads
+    // share the cores — and passed five times in a row on its own. A gate that
+    // fails for reasons the change did not cause is worse than no gate, because
+    // the habit it teaches is to re-run it.
+    //
+    // The minimum is the right estimator here: scheduler noise, page faults and
+    // frequency scaling can only ever make a run *slower*, so the smallest
+    // sample is the closest one to the work actually being measured.
     let time = |n: usize| {
         let program = parse_program(&source(n));
-        let start = std::time::Instant::now();
-        crate::vm::Compiler::compile_module(&program).expect("compile module");
-        start.elapsed()
+        (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                crate::vm::Compiler::compile_module(&program).expect("compile module");
+                start.elapsed()
+            })
+            .min()
+            .expect("five samples")
     };
 
     // Warm the allocator so the first measurement is not the outlier.

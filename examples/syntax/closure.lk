@@ -22,7 +22,7 @@ assert(apply(square, 5) == 25);
 
 // 5. Returning closures from functions
 fn multiplier(n) {
-  return |x| x * n;
+    return |x| x * n;
 }
 let triple = multiplier(3);
 let quintuple = multiplier(5);
@@ -40,9 +40,9 @@ assert(total == 55);
 
 // 7. Composing operations with a helper function
 fn process_list(xs) {
-  let filtered = xs.filter(|x| x > 3);
-  let mapped = filtered.map(|x| x * x);
-  return mapped.reduce(0, |a, b| a + b);
+    let filtered = xs.filter(|x| x > 3);
+    let mapped = filtered.map(|x| x * x);
+    return mapped.reduce(0, |a, b| a + b);
 }
 assert(process_list([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) == 371);
 
@@ -85,9 +85,9 @@ assert(container_param([1, 2, 3]) == 3);
 // variable, one cell, however many levels down.
 let ledger = 0;
 let record = |amount| {
-  let apply = |delta| { ledger = ledger + delta; };
-  apply(amount);
-  apply(amount);
+    let apply = |delta| { ledger = ledger + delta; };
+    apply(amount);
+    apply(amount);
 };
 record(5);
 assert(ledger == 10);

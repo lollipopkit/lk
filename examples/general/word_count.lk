@@ -13,12 +13,12 @@ let lower_words = words.map(|w| w.lower());
 // 3. Count word frequencies using a map
 let freq = {};
 for word in lower_words {
-  let current = freq.get(word);
-  if (current == nil) {
-    freq.set(word, 1);
-  } else {
-    freq.set(word, current + 1);
-  }
+    let current = freq.get(word);
+    if (current == nil) {
+        freq.set(word, 1);
+    } else {
+        freq.set(word, current + 1);
+    }
 }
 
 // 4. Verify counts
@@ -31,12 +31,12 @@ assert(freq.get("brown") == 1);
 let max_word = "";
 let max_count = 0;
 for pair in freq {
-  let word = pair[0];
-  let count = pair[1];
-  if (count > max_count) {
-    max_count = count;
-    max_word = word;
-  }
+    let word = pair[0];
+    let count = pair[1];
+    if (count > max_count) {
+        max_count = count;
+        max_word = word;
+    }
 }
 assert(max_word == "the");
 assert(max_count == 3);
@@ -47,23 +47,23 @@ assert(unique_words.len() == 9);
 
 // 7. Sort words alphabetically (simple selection sort for small lists)
 fn sort_words(xs) {
-  let result = [];
-  let remaining = xs;
-  while (remaining.len() > 0) {
-    // find min
-    let min_idx = 0;
-    let i = 1;
-    while (i < remaining.len()) {
-      if (remaining[i] < remaining[min_idx]) {
-        min_idx = i;
-      }
-      i += 1;
+    let result = [];
+    let remaining = xs;
+    while (remaining.len() > 0) {
+        // find min
+        let min_idx = 0;
+        let i = 1;
+        while (i < remaining.len()) {
+            if (remaining[i] < remaining[min_idx]) {
+                min_idx = i;
+            }
+            i += 1;
+        }
+        result.push(remaining[min_idx]);
+        // remove element at min_idx
+        remaining = remaining.take(min_idx).concat(remaining.skip(min_idx + 1));
     }
-    result.push(remaining[min_idx]);
-    // remove element at min_idx
-    remaining = remaining.take(min_idx).concat(remaining.skip(min_idx + 1));
-  }
-  return result;
+    return result;
 }
 let sorted = sort_words(unique_words);
 assert(sorted[0] == "brown");

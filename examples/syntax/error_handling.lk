@@ -3,8 +3,8 @@
 
 // 1. Return nil on failure
 fn safe_divide(a, b) {
-  if (b == 0) { return nil; }
-  return a / b;
+    if (b == 0) { return nil; }
+    return a / b;
 }
 assert(safe_divide(10, 2) > 4.9);
 assert(safe_divide(10, 0) == nil);
@@ -15,9 +15,9 @@ assert(result == 0);
 
 // 3. Chain of operations with nil propagation
 fn get_nested(data, key1, key2) {
-  let level1 = data.get(key1);
-  if (level1 == nil) { return nil; }
-  return level1.get(key2);
+    let level1 = data.get(key1);
+    if (level1 == nil) { return nil; }
+    return level1.get(key2);
 }
 let obj = { "user": { "email": "alice@example.com" } };
 assert(get_nested(obj, "user", "email") == "alice@example.com");
@@ -27,16 +27,16 @@ assert(email == "no-email");
 
 // 4. Validation using ?? with defaults
 fn validate_name(name) {
-  return name ?? "name required";
+    return name ?? "name required";
 }
 assert(validate_name("Alice") == "Alice");
 assert(validate_name(nil) == "name required");
 
 // 5. Result list — [ok, value_or_error] pair
 fn safe_lookup(map, key) {
-  let val = map.get(key);
-  if (val == nil) { return [false, "key not found"]; }
-  return [true, val];
+    let val = map.get(key);
+    if (val == nil) { return [false, "key not found"]; }
+    return [true, val];
 }
 let config = { "host": "localhost", "port": 8080 };
 let [ok1, val1] = safe_lookup(config, "host");
@@ -48,9 +48,9 @@ assert(val2 == "key not found");
 
 // 6. Range check — returns error string or nil
 fn check_range(n, lo, hi, label) {
-  if (n < lo) { return "${label} too low (min ${lo})"; }
-  if (n > hi) { return "${label} too high (max ${hi})"; }
-  return nil;
+    if (n < lo) { return "${label} too low (min ${lo})"; }
+    if (n > hi) { return "${label} too high (max ${hi})"; }
+    return nil;
 }
 assert(check_range(5, 0, 10, "age") == nil);
 assert(check_range(-1, 0, 10, "age") == "age too low (min 0)");

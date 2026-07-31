@@ -18,8 +18,8 @@ assert(vals.len() == 3);
 
 // 4. Nested maps
 let config = {
-  "db": { "host": "localhost", "port": 5432 },
-  "cache": { "ttl": 300 },
+    "db": { "host": "localhost", "port": 5432 },
+    "cache": { "ttl": 300 },
 };
 assert(config.db.host == "localhost");
 assert(config.db["port"] == 5432);
@@ -42,7 +42,7 @@ assert(m.len() == 2);
 let inventory = { "apples": 10, "bananas": 5, "cherries": 20 };
 let total_items = 0;
 for pair in inventory {
-  total_items += pair[1];
+    total_items += pair[1];
 }
 assert(total_items == 35);
 

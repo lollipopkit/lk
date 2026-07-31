@@ -21,11 +21,11 @@ println("2b. match map destruct = {} (expected: Alice)", r3);
 let score = 75;
 let g = "";
 if (score >= 90) {
-  g = "A";
+    g = "A";
 } else if (score >= 70) {
-  g = "C";
+    g = "C";
 } else {
-  g = "F";
+    g = "F";
 }
 println("3. g = {} (prints C)", g);
 println("3. g == \"C\" = {} (expected: true)", g == "C");
@@ -81,7 +81,7 @@ println("10b. pow(2,10) == 1024.0 = {} (Float == Float)", p == 1024.0);
 // ── 11. for comma pattern destructures iterable pair items ──
 let pair_total = 0;
 for i, item in [[0, 10], [1, 20], [2, 30]] {
-  pair_total += i + item;
+    pair_total += i + item;
 }
 println("11. for i, item total = {} (expected: 63)", pair_total);
 
@@ -115,7 +115,7 @@ println("16b. assign_p.x = {} (expected: 10)", assign_p.x);
 
 // ── 17. Default positional parameters ──
 fn greet_default(name, greeting = "hello") {
-  return greeting + ", " + name;
+    return greeting + ", " + name;
 }
 println("17. default positional = {} (expected: hello, Bob)", greet_default("Bob"));
 println("17b. default positional override = {} (expected: hi, Bob)", greet_default("Bob", "hi"));

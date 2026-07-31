@@ -74,7 +74,7 @@ const FIELD_SCALE = 100;
 
 fn rtc_pack(year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int) -> Int {
     return ((((year * FIELD_SCALE + month) * FIELD_SCALE + day) * FIELD_SCALE + hour)
-        * FIELD_SCALE + minute) * FIELD_SCALE + second;
+            * FIELD_SCALE + minute) * FIELD_SCALE + second;
 }
 
 // Reads the clock, or 0 if it will not settle.
