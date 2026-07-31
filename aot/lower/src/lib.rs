@@ -164,7 +164,6 @@ pub fn lower_bundled(
         try_body_extra_cells: std::collections::HashMap::new(),
         try_body_returns: std::collections::HashSet::new(),
         conflict: false,
-        observations_are_real: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
         cell_captures: std::collections::HashSet::new(),
@@ -302,7 +301,32 @@ pub fn lower_bundled(
             // re-route path; the parameter lattice never got it. Skipping the
             // whole first pass is the same rule applied here, and it costs
             // nothing: pass 1's *output* is discarded either way.
-            sig.observations_are_real = passes > 0;
+            // The first pass's observations are made from *provisional* types —
+            // a callee's return type is still its `I64` default until its body
+            // has been lowered once — and the parameter lattice joins
+            // monotonically, so a provisional observation is permanent:
+            //
+            //     fn mk() -> List<Int> { return [1]; }
+            //     fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }
+            //     add(mk(), 2)
+            //
+            // pass 1 saw `mk()` as `I64`, pass 2 saw the real `list<i64>`, the
+            // two joined to `Dyn`, and `add` took a boxed argument forever —
+            // from a fact that was never true. A boxed typed list is a *copy*
+            // (`list_h.i64_to_dyn` rebuilds it), so the push was lost.
+            //
+            // Discarded once, at the start of pass 2, rather than suppressed in
+            // pass 1: the table is also what decides a callee's rendered arity
+            // (hidden environment and capture arguments observe through it), and
+            // a pass that records nothing renders a signature the call sites do
+            // not match — `call to lk_fn_6 passes 2 machine argument(s),
+            // declared with 3`, which the fuzzer found on three seeds. Every
+            // pass from the second on accumulates exactly as before.
+            if passes == 1 {
+                sig.param_obs
+                    .iter_mut()
+                    .for_each(|slots| slots.iter_mut().for_each(|slot| *slot = None));
+            }
             sig.conflict = false;
             for fi in 0..funcs.len() {
                 if !reachable[fi] {
