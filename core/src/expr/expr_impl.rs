@@ -437,16 +437,25 @@ impl Expr {
             Expr::NullishCoalescing(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 let e2 = (*e2_box).fold_constants();
-                // `nil ?? e` discards only the literal `nil`, so it folds. The
-                // other direction discards `e`, so it needs `e` to be a literal
-                // as well.
-                if let Expr::Literal(value) = &e1 {
-                    if *value == LiteralVal::Nil {
-                        return e2;
-                    }
-                    if matches!(e2, Expr::Literal(_)) {
-                        return e1;
-                    }
+                // `nil ?? e` discards only the literal `nil`, so it folds.
+                //
+                // The other direction does **not**, even with two literals. It
+                // discards `e` — and `??` requires its two sides to unify, so
+                // discarding one hides a type error that only the checker can
+                // see:
+                //
+                // ```lk
+                // let a = 7 ?? "ab";        // folded to 7
+                // let b = maybe_int() ?? "ab";   // Cannot unify Int with String
+                // ```
+                //
+                // That was fourteen of the operator/type pairs in the fold-vs-run
+                // differential, and every one of them the same shape as the
+                // string-repeat fold: the folder deciding a typing question it
+                // has no business deciding. Folding `7 ?? 0` bought one branch
+                // at run time in code nobody writes.
+                if let Expr::Literal(LiteralVal::Nil) = &e1 {
+                    return e2;
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
             }

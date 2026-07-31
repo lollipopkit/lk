@@ -309,6 +309,20 @@ mod test {
             !matches!(&folded, Expr::Literal(_)),
             "`\"ha\" * 3` must reach the type checker, not fold to a string: {folded:?}"
         );
+
+        // `??` requires its two sides to unify, so folding `a ?? b` to `a`
+        // deletes the side the checker needs. `7 ?? "ab"` answered 7 while
+        // `maybe_int() ?? "ab"` is `Cannot unify Int with String`.
+        let folded = Expr::try_from(r#"7 ?? "ab""#).expect("parses");
+        assert!(
+            !matches!(&folded, Expr::Literal(_)),
+            "`7 ?? \"ab\"` must reach the type checker: {folded:?}"
+        );
+        // `nil ?? e` still folds — it discards only the literal `nil`.
+        assert!(matches!(
+            Expr::try_from(r#"nil ?? "ab""#).expect("parses"),
+            Expr::Literal(_)
+        ));
     }
 
     #[test]

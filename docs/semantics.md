@@ -1444,7 +1444,21 @@ thread 'main' panicked at core/src/expr/expr_impl.rs:775: attempt to add with ov
 要么碰巧折对 —— 取决于 `lk` 自己是用哪个 profile 编的。现在一律 `wrapping_*`,把
 规则写出来。
 
-`constant_folding_answers_what_the_executors_answer` 钉住两条。
+**三、`a ?? b` 折成 `a`,把 `b` 从检查器眼前删了。** `??` 要求两侧能 unify,所以丢
+掉一侧就是丢掉那条类型错误:
+
+```lk
+let a = 7 ?? "ab";              // 折成 7
+let b = maybe_int() ?? "ab";    // Cannot unify Int with String
+```
+
+把折叠器和运行时按「14 个运算符 × 5 种字面量类型」做全矩阵差分,**14 处不一致全部
+是这一条**。现在只折 `nil ?? e`(它丢掉的只有字面量 `nil`);`7 ?? 0` 少折一次的代
+价,是运行时多走一个分支 —— 而这种写法没人写。
+
+三条是同一件事:**折叠器在替类型系统做决定,而它没有类型系统。**
+
+`constant_folding_answers_what_the_executors_answer` 钉住三条。
 
 ## 维护约定
 
