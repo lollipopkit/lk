@@ -244,14 +244,14 @@ impl ModuleResolver {
     }
 
     pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport> {
-        self.resolve_source_runtime_with_base(src, None, crate::vm::TypeScope::anonymous())
+        self.resolve_source_runtime_with_base(src, None, crate::val::TypeScope::anonymous())
     }
 
     fn resolve_source_runtime_with_base(
         &self,
         src: &str,
         base_dir: Option<PathBuf>,
-        type_scope: crate::vm::TypeScope,
+        type_scope: crate::val::TypeScope,
     ) -> Result<RuntimeExport> {
         let seed_dir = base_dir.clone();
         let program = parse_program_source(
@@ -360,11 +360,11 @@ impl ModuleResolver {
         }
         // The normalized path is this module's type identity: the compiler has
         // no idea what file it is compiling, so the loader is the only place
-        // that can supply it (`vm::TypeScope`).
+        // that can supply it (`val::TypeScope`).
         resolver.resolve_source_runtime_with_base(
             &src,
             path.parent().map(Path::to_path_buf),
-            crate::vm::TypeScope::from_path(&path.to_string_lossy()),
+            crate::val::TypeScope::from_path(&path.to_string_lossy()),
         )
     }
 }
@@ -464,7 +464,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
     // module `main` never named, so dispatch failed outright ("Object has no
     // method"). Registering the resolver's whole loaded set closes that: it is
     // already the transitive closure, and scope-keyed entries mean the extra
-    // modules cannot clobber anything (see `vm::TypeScope`).
+    // modules cannot clobber anything (see `val::TypeScope`).
     #[cfg(feature = "std")]
     for module in resolver.loaded_file_modules() {
         env.register_imported_types(&module)?;

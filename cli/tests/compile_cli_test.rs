@@ -1121,7 +1121,7 @@ fn test_local_trait_impl_dispatches_inside_an_imported_function() {
 /// for the whole context: `A.mk(1).tag()` answered `"B"`. A locally declared
 /// `Point` hijacked the imported one the same way. Both halves of a declared
 /// type's identity — the declaring module and the name — now travel with the
-/// value (`lk_core::vm::TypeScope`).
+/// value (`lk_core::val::TypeScope`).
 #[test]
 fn test_same_type_name_in_two_modules_dispatches_separately() {
     let dir = unique_tmp_dir("type_scope_collision");

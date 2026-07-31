@@ -131,7 +131,7 @@ pub struct Executor {
     /// executor constructs (`NewObject`). Tracked here rather than read off
     /// `shared_module` because the plain `run_module*` entries pass the module
     /// by reference and never populate the shared handle.
-    type_scope: crate::vm::TypeScope,
+    type_scope: crate::val::TypeScope,
     /// Field order for each `struct` the executing module declares — what
     /// `display` prints an instance's fields in. Tracked here for the same
     /// reason as `type_scope`: the plain `run_module*` entries never populate
@@ -142,7 +142,7 @@ pub struct Executor {
     /// hits this every iteration, so the shared `Arc` is allocated once instead
     /// of per object — which also removes the per-object `Arc<str>` the type
     /// name used to cost.
-    last_declared_type: Option<Arc<crate::vm::DeclaredType>>,
+    last_declared_type: Option<Arc<crate::val::DeclaredType>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
@@ -217,7 +217,7 @@ impl Executor {
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
             shared_module: None,
-            type_scope: crate::vm::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
             struct_decls: Vec::new(),
             last_declared_type: None,
             instruction_budget: None,

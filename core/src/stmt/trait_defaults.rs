@@ -6,7 +6,7 @@
 //! gets a copy of the trait's bodies for the methods it left out.
 //!
 //! **Copied per implementing type, not shared.** Dispatch in this language is
-//! indexed by the *target type* (see `vm::TypeScope`), and `self` in a default
+//! indexed by the *target type* (see `val::TypeScope`), and `self` in a default
 //! body is the implementing type — so a copy is both the simplest lowering and
 //! the correct one. The cost is one compiled function per implementor, which is
 //! what writing the method out by hand would have cost anyway.

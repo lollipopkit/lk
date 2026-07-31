@@ -323,8 +323,8 @@ mod tests {
 
     use super::*;
     use crate::util::fast_map::fast_hash_map_from_iter;
+    use crate::val::{DeclaredType, TypeScope};
     use crate::val::{MAX_VALUE_DEPTH, RuntimeObject};
-    use crate::vm::{DeclaredType, TypeScope};
 
     fn object_of(fields: &[(&str, RuntimeVal)]) -> RuntimeObject {
         RuntimeObject::new(

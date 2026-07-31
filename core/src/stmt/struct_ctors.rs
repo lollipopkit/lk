@@ -6,7 +6,7 @@
 //! let its users make one — every such module had to hand-write a `make`.
 //!
 //! The reason it could not simply be allowed is that a type's identity carries
-//! its defining module (`vm::TypeScope`): a `Pt` built in the importer is *not*
+//! its defining module (`val::TypeScope`): a `Pt` built in the importer is *not*
 //! the `Pt` that `impl Norm for Pt` was registered against, and it would not
 //! dispatch. `NewObject` names only the type, and the executor scopes it to
 //! whichever module is running.

@@ -1011,7 +1011,7 @@ impl<'a> Parser<'a> {
     /// `module.Type { field: value, … }` — the constructor call it desugars to.
     ///
     /// The object has to be built *by the module that declares the type*: a
-    /// type's identity carries its defining module (`vm::TypeScope`), and one
+    /// type's identity carries its defining module (`val::TypeScope`), and one
     /// built here would not be the type `impl … for Type` was registered
     /// against. So this becomes `module.Type$new(field: value, …)`, the
     /// constructor `stmt::struct_ctors` puts beside every `struct` — an

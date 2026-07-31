@@ -8,8 +8,8 @@ use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
 use alloc::sync::Arc;
 
+use crate::val::DeclaredType;
 use crate::val::{ShortStr, Type};
-use crate::vm::DeclaredType;
 
 mod equality;
 mod heap;
@@ -388,7 +388,7 @@ pub struct RuntimeObject {
     /// This object's type identity: the declaring module *and* the name. The
     /// name alone is only unique within one module, so dispatching on it made
     /// two modules' identically-named structs the same type (see
-    /// [`crate::vm::TypeScope`]).
+    /// [`crate::val::TypeScope`]).
     ///
     /// Shared by `Arc` rather than stored inline — see [`DeclaredType`] for why
     /// this struct's width is worth caring about.
@@ -416,7 +416,7 @@ impl RuntimeObject {
     }
 
     #[inline]
-    pub fn type_scope(&self) -> &crate::vm::TypeScope {
+    pub fn type_scope(&self) -> &crate::val::TypeScope {
         &self.ty.scope
     }
 

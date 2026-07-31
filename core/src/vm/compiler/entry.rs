@@ -105,7 +105,7 @@ impl Compiler {
             type_info: crate::vm::TypeInfo::default(),
             // Stamped by the caller, which knows what file this is
             // (`compile_program_module_with_ctx`); the compiler does not.
-            type_scope: crate::vm::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
         };
 
         let mut entry = Self::with_names(

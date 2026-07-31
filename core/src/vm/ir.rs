@@ -807,8 +807,8 @@ pub struct Module {
     /// reconstruct it from bytecode.
     pub type_info: super::TypeInfo,
     /// Identity of this module as a *declarer of types* — see
-    /// [`super::TypeScope`].
-    pub type_scope: super::TypeScope,
+    /// [`crate::val::TypeScope`].
+    pub type_scope: crate::val::TypeScope,
 }
 
 impl Module {
@@ -820,7 +820,7 @@ impl Module {
             globals: Vec::new(),
             entry: 0,
             type_info: super::TypeInfo::default(),
-            type_scope: super::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
         }
     }
 

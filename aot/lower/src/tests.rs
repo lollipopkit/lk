@@ -7,7 +7,7 @@ fn artifact(consts: ConstPoolData, code: Vec<u32>, register_count: u16) -> Modul
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -72,7 +72,7 @@ fn lowers_zero_capture_lambda_global_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["inc".to_string()],
@@ -117,7 +117,7 @@ fn lowers_local_lambda_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -161,7 +161,7 @@ fn rejects_capturing_closure() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -203,7 +203,7 @@ fn rejects_reassigned_lambda_global() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["f".to_string()],
@@ -240,7 +240,7 @@ fn lowers_direct_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["add".to_string()],
@@ -349,7 +349,7 @@ fn dead_function_is_skipped() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["dead".to_string()],
@@ -395,7 +395,7 @@ fn monomorphizes_f64_parameter() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["f".to_string()],

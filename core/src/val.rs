@@ -3,6 +3,10 @@ pub mod position;
 pub mod ser;
 
 mod runtime_model;
+// A value's type identity — the declaring module plus the name — is a property
+// of the value, not of the executor. It lived under `vm/` and was the reason
+// `val` named `vm` for anything other than a callable payload.
+mod type_info;
 
 #[cfg(test)]
 mod de_test;
@@ -16,3 +20,4 @@ pub use lk_values::{
     NumericHierarchy, PRIMITIVE_TYPES, ShortStr, ShortStrOrStr, TYPE_SPELLINGS, Type,
 };
 pub use runtime_model::*;
+pub use type_info::*;

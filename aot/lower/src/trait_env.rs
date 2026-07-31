@@ -15,7 +15,7 @@ pub(crate) struct TraitEnv {
     /// Method name → dispatch arms `(type id, impl fn)`, declaration order.
     pub(crate) methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
     /// Type name → its field names in **declaration order**, which is the order
-    /// `display` prints them in (see `vm::DeclaredType::fields`).
+    /// `display` prints them in (see `val::DeclaredType::fields`).
     ///
     /// Emitted into the entry prologue as `obj_ty.begin`/`obj_ty.field` calls so
     /// the runtime can render a marked instance. Ordered by type id, so the

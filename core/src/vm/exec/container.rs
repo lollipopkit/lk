@@ -153,7 +153,7 @@ impl Executor {
     /// Memoized on the last one built: a loop constructing the same struct
     /// names the same type every iteration, so this allocates once for the
     /// whole loop rather than once per object.
-    fn declared_type(&mut self, base: u8) -> Result<Arc<crate::vm::DeclaredType>> {
+    fn declared_type(&mut self, base: u8) -> Result<Arc<crate::val::DeclaredType>> {
         let name = self.to_runtime_string(base)?;
         if let Some(cached) = &self.last_declared_type
             && cached.scope.is_same(&self.type_scope)
@@ -173,7 +173,7 @@ impl Executor {
                 .collect(),
             None => Arc::from([] as [Arc<str>; 0]),
         };
-        let ty = Arc::new(crate::vm::DeclaredType::with_fields(
+        let ty = Arc::new(crate::val::DeclaredType::with_fields(
             self.type_scope.clone(),
             name,
             fields,

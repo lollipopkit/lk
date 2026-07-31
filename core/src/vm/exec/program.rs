@@ -103,7 +103,7 @@ pub fn compile_program_module_with_ctx_and_data_globals<S: AsRef<str>>(
     // The compiler has no idea which file it is compiling; the loader does, and
     // it put that on the context before handing the program over. Stamping here
     // is what gives this module's declared types an identity distinct from an
-    // identically-named type in any other module (`vm::TypeScope`).
+    // identically-named type in any other module (`val::TypeScope`).
     module.type_scope = ctx.type_scope().clone();
     Ok(Arc::new(module))
 }

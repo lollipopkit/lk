@@ -38,7 +38,7 @@ use super::{
 // consumer with an empty table rather than a wrong one — still a semantic
 // difference, hence the bump.
 // Version 11: `ModuleData.type_scope` carries the identity of the module as a
-// declarer of types (see `super::TypeScope`). A v10 artifact has no scope, so a
+// declarer of types (see `crate::val::TypeScope`). A v10 artifact has no scope, so a
 // v11 consumer would file every one of its declared types under the anonymous
 // scope and collide them with the host program's — exactly the wrong-dispatch
 // bug the scope exists to close, hence a rejection rather than a default.
@@ -128,11 +128,11 @@ pub struct ModuleData {
     #[serde(default, skip_serializing_if = "super::TypeInfo::is_empty")]
     pub type_info: super::TypeInfo,
     /// Identity of this module as a declarer of types; see
-    /// [`super::TypeScope`]. Not skippable — an absent scope would silently
+    /// [`crate::val::TypeScope`]. Not skippable — an absent scope would silently
     /// mean "anonymous", which is a *different* type identity, not a missing
     /// one.
     #[serde(default)]
-    pub type_scope: super::TypeScope,
+    pub type_scope: crate::val::TypeScope,
 }
 
 impl ModuleData {

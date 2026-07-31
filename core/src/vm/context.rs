@@ -74,28 +74,28 @@ pub struct VmContext {
     /// The outer key is what makes the table *correct* rather than merely fast.
     /// Keyed by type name alone, two modules that both declare `Point` shared
     /// one entry and the later registration silently won for both of them (see
-    /// [`crate::vm::TypeScope`]). Scoping it also makes registration
+    /// [`crate::val::TypeScope`]). Scoping it also makes registration
     /// order-independent, which is what lets the transitive closure of loaded
     /// modules be registered wholesale without any of them clobbering another.
     ///
     /// Nested rather than tuple-keyed so a lookup borrows every part of the
     /// key: a flat map forced two `String` allocations on *every* dynamic
     /// method dispatch just to build a throwaway probe.
-    methods: FastHashMap<crate::vm::TypeScope, FastHashMap<String, FastHashMap<String, MethodImpl>>>,
+    methods: FastHashMap<crate::val::TypeScope, FastHashMap<String, FastHashMap<String, MethodImpl>>>,
     /// Identity to stamp on the module compiled in this context, and therefore
     /// on every object it constructs. Set by the loader, which knows the path;
-    /// the compiler does not (see [`crate::vm::TypeScope`]).
-    type_scope: crate::vm::TypeScope,
+    /// the compiler does not (see [`crate::val::TypeScope`]).
+    type_scope: crate::val::TypeScope,
     /// Which module declared each `impl Trait for <builtin>` — keyed by
     /// `(type name, trait name)`.
     ///
     /// A builtin type has no declaring module, so every module's impls for it
-    /// share one scope (see [`crate::vm::TypeScope::builtin`]) and the later
+    /// share one scope (see [`crate::val::TypeScope::builtin`]) and the later
     /// registration used to overwrite the earlier one *silently*: with two
     /// modules implementing `Doubler for Int`, `(5).dbl()` answered whichever
     /// was imported last, so moving a `use` line changed the result. Recording
     /// the owner turns the overlap into an error at registration.
-    builtin_impl_owner: FastHashMap<(String, String), crate::vm::TypeScope>,
+    builtin_impl_owner: FastHashMap<(String, String), crate::val::TypeScope>,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -138,7 +138,7 @@ impl VmContext {
             type_checker: None,
             structs: fast_hash_map_new(),
             methods: fast_hash_map_new(),
-            type_scope: crate::vm::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
             builtin_impl_owner: fast_hash_map_new(),
             call_stack: Vec::new(),
             async_runtime: crate::rt::AsyncRuntimeHandle::new(),
@@ -220,15 +220,15 @@ impl VmContext {
     }
 
     /// Identity to stamp on the module compiled here (see
-    /// [`crate::vm::TypeScope`]). The loader sets this before compiling a file
+    /// [`crate::val::TypeScope`]). The loader sets this before compiling a file
     /// module; anything else keeps the anonymous scope.
-    pub fn with_type_scope(mut self, type_scope: crate::vm::TypeScope) -> Self {
+    pub fn with_type_scope(mut self, type_scope: crate::val::TypeScope) -> Self {
         self.type_scope = type_scope;
         self
     }
 
     #[inline]
-    pub fn type_scope(&self) -> &crate::vm::TypeScope {
+    pub fn type_scope(&self) -> &crate::val::TypeScope {
         &self.type_scope
     }
 
@@ -506,7 +506,7 @@ impl VmContext {
     /// The scope is not optional and there is deliberately no name-only
     /// fallback: falling back would re-admit exactly the cross-module
     /// collision this key exists to prevent, and would do it silently.
-    pub fn trait_method(&self, scope: &crate::vm::TypeScope, type_name: &str, method: &str) -> Option<&MethodImpl> {
+    pub fn trait_method(&self, scope: &crate::val::TypeScope, type_name: &str, method: &str) -> Option<&MethodImpl> {
         self.methods.get(scope)?.get(type_name)?.get(method)
     }
 
@@ -520,8 +520,8 @@ impl VmContext {
     /// is fine — it is the *same* owner.
     fn claim_builtin_impl(
         &mut self,
-        scope: &crate::vm::TypeScope,
-        declaring: &crate::vm::TypeScope,
+        scope: &crate::val::TypeScope,
+        declaring: &crate::val::TypeScope,
         type_name: &str,
         trait_name: Option<&str>,
     ) -> Result<()> {
@@ -691,30 +691,30 @@ impl VmContext {
 ///
 /// A user-declared type (`Type::Named`) belongs to the module that declared it;
 /// anything else is a builtin, shared by every module (see
-/// [`crate::vm::TypeScope::builtin`]). An unparseable target is treated as
+/// [`crate::val::TypeScope::builtin`]). An unparseable target is treated as
 /// declared — the conservative side, since filing it under the builtin scope
 /// would let it collide with every other module's.
-fn impl_target_scope(target_type: &str, declaring: &crate::vm::TypeScope) -> crate::vm::TypeScope {
+fn impl_target_scope(target_type: &str, declaring: &crate::val::TypeScope) -> crate::val::TypeScope {
     match Type::parse(target_type) {
         // A user *generic* (`Wrapper<Int>` → `Type::Generic`) is as module-local
         // as a plain `Named`: two modules may each declare their own `Wrapper`.
         // Lumping it in with the builtins made them share one coherence key and
         // conflict with each other.
         Some(Type::Named(_)) | Some(Type::Generic { .. }) | None => declaring.clone(),
-        Some(_) => crate::vm::TypeScope::builtin(),
+        Some(_) => crate::val::TypeScope::builtin(),
     }
 }
 
 /// The scope to dispatch `receiver`'s methods in: its own, if it is a declared
 /// type; the builtin scope otherwise. Only a heap `Object` carries a declared
 /// type — every other receiver is an `Int`, a `List`, a string, and so on.
-pub fn receiver_type_scope(receiver: &RuntimeVal, heap: &HeapStore) -> crate::vm::TypeScope {
+pub fn receiver_type_scope(receiver: &RuntimeVal, heap: &HeapStore) -> crate::val::TypeScope {
     if let RuntimeVal::Obj(handle) = receiver
         && let Some(HeapValue::Object(object)) = heap.get(*handle)
     {
         return object.type_scope().clone();
     }
-    crate::vm::TypeScope::builtin()
+    crate::val::TypeScope::builtin()
 }
 
 fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
@@ -757,7 +757,7 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         }
     };
 
-    let ty = Arc::new(crate::vm::DeclaredType::new(type_scope, type_name));
+    let ty = Arc::new(crate::val::DeclaredType::new(type_scope, type_name));
     Ok(RuntimeVal::Obj(
         runtime
             .heap_mut()
@@ -1435,11 +1435,11 @@ mod tests {
     use crate::vm::{Module, RuntimeModuleState};
 
     fn module_with_impl(type_name: &str, method: &str, function: u32) -> Arc<Module> {
-        scoped_module_with_impl(crate::vm::TypeScope::anonymous(), type_name, method, function)
+        scoped_module_with_impl(crate::val::TypeScope::anonymous(), type_name, method, function)
     }
 
     fn scoped_module_with_impl(
-        type_scope: crate::vm::TypeScope,
+        type_scope: crate::val::TypeScope,
         type_name: &str,
         method: &str,
         function: u32,
@@ -1474,7 +1474,7 @@ mod tests {
         // entry has to name the module it indexes into. Re-registering the
         // *same* scope replaces the entry (the REPL and the hybrid bridge both
         // do it); it must still point at the module it came from.
-        let scope = crate::vm::TypeScope::from_path("a.lk");
+        let scope = crate::val::TypeScope::from_path("a.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         let first = scoped_module_with_impl(scope.clone(), "Sq", "area", 3);
         ctx.register_module_types(&first).expect("register first module");
@@ -1498,9 +1498,9 @@ mod tests {
     fn same_type_name_in_two_modules_keeps_two_entries() {
         // `struct Point` in `a.lk` and in `b.lk` are different types. Keyed by
         // the bare name they shared one slot and the later registration won for
-        // both, so `a`'s value ran `b`'s method body (see `vm::TypeScope`).
-        let a = crate::vm::TypeScope::from_path("a.lk");
-        let b = crate::vm::TypeScope::from_path("b.lk");
+        // both, so `a`'s value ran `b`'s method body (see `val::TypeScope`).
+        let a = crate::val::TypeScope::from_path("a.lk");
+        let b = crate::val::TypeScope::from_path("b.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         let from_a = scoped_module_with_impl(a.clone(), "Point", "tag", 3);
         let from_b = scoped_module_with_impl(b.clone(), "Point", "tag", 9);
@@ -1524,7 +1524,7 @@ mod tests {
         // `impl Doubler for Int` has no declaring module to be scoped to — the
         // receiver is a bare `5` — so it is filed under the shared builtin
         // scope and found from anywhere.
-        let declaring = crate::vm::TypeScope::from_path("a.lk");
+        let declaring = crate::val::TypeScope::from_path("a.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         ctx.register_module_types(&scoped_module_with_impl(declaring.clone(), "Int", "dbl", 2))
             .expect("register");
@@ -1533,7 +1533,7 @@ mod tests {
             "a builtin target does not belong to the declaring module's scope"
         );
         assert!(matches!(
-            ctx.trait_method(&crate::vm::TypeScope::builtin(), "Int", "dbl"),
+            ctx.trait_method(&crate::val::TypeScope::builtin(), "Int", "dbl"),
             Some(MethodImpl::Local { function: 2, .. })
         ));
     }
@@ -1568,7 +1568,7 @@ mod tests {
         ctx.register_module_types(&module_with_impl("Sq", "area", 1))
             .expect("register without a checker");
         assert!(matches!(
-            ctx.trait_method(&crate::vm::TypeScope::anonymous(), "Sq", "area"),
+            ctx.trait_method(&crate::val::TypeScope::anonymous(), "Sq", "area"),
             Some(MethodImpl::Local { function: 1, .. })
         ));
     }

@@ -146,7 +146,7 @@ impl<'a> Comparison<'a> {
     /// Two structs: the same declared type, and every field equal.
     ///
     /// The type check is by `DeclaredType` — module *and* name — because a name
-    /// alone is only unique within one module (see `vm::TypeScope`), and two
+    /// alone is only unique within one module (see `val::TypeScope`), and two
     /// modules' identically-shaped `Point`s are not the same type.
     fn objects(&self, left: &super::RuntimeObject, right: &super::RuntimeObject, depth: u32) -> Result<bool> {
         // Scope and name, not the whole `DeclaredType`: its `fields` list is
