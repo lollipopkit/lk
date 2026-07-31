@@ -751,6 +751,10 @@ macro_rules! for_each_abi_fn {
             ("obj_ty", "begin", lkrt_struct_type_begin, WritesHost, [I64, StrPtr], Nil);
             ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
+            // `typeof(x)` where the carrier could be a struct instance at run
+            // time (`Dyn`, `MapStrDyn`): the answer is the declared name, which
+            // only the runtime's type table has.
+            ("dyn", "type_name", lkrt_dyn_type_name, ReadsHost, [DynVal], StrPtr);
             ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);

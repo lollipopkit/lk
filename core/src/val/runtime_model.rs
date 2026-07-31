@@ -266,8 +266,32 @@ pub enum HeapValue {
 }
 
 impl HeapValue {
+    /// The type name a program would use, including a struct instance's
+    /// *declared* name.
+    ///
+    /// This is the function [`RuntimeValKind::scalar_type_name`] tells callers
+    /// to reach for instead of saying `Object` — and it said `Object` itself,
+    /// for every struct instance, at all thirty-odd `bail!` sites that took the
+    /// advice. Third time the same rule has been fixed one layer further down
+    /// (`scalar_type_name`, then [`RuntimeVal::type_name_in`], now here), so:
+    /// **the language's name for a struct instance is what the `struct` was
+    /// called**, and the variant's own spelling lives in
+    /// [`Self::representation_name`] under a name that says so.
     #[inline]
-    pub fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> &str {
+        match self {
+            Self::Object(object) => object.type_name(),
+            other => other.representation_name(),
+        }
+    }
+
+    /// The variant's own spelling — the representation, not the language's
+    /// type. `Object` for every struct instance, whatever it was declared as.
+    ///
+    /// Only [`Self::type_name`] and code genuinely talking about the
+    /// representation (a heap dump, a GC statistic) should want this.
+    #[inline]
+    pub fn representation_name(&self) -> &'static str {
         match self {
             Self::String(_) => "String",
             Self::Bytes(_) => "Bytes",

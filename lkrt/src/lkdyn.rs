@@ -316,7 +316,15 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
 /// `Object`, as was every list, map and set. Its own doc said a caller with the
 /// heap should use `HeapValue::type_name` — so the VM now does, and this is the
 /// mirror of *that*: the language's type name, one per kind.
-fn kind_name(v: LkDyn) -> &'static str {
+fn kind_name(v: LkDyn) -> String {
+    // A marked struct instance answers the name it was *declared* with. The
+    // mirrored function got this right and this one did not, so `typeof(p)` on
+    // a struct read `Map` compiled and `P` interpreted, and a type error
+    // naming that operand said `Map` too. Third layer of the same rule: the
+    // language's name for a struct instance is the struct's name.
+    if let Some(name) = struct_type_name(v) {
+        return name;
+    }
     match v.tag {
         DYN_NIL => "Nil",
         DYN_BOOL => "Bool",
@@ -330,6 +338,27 @@ fn kind_name(v: LkDyn) -> &'static str {
         tag if is_map_tag(tag) => "Map",
         _ => "Object",
     }
+    .to_string()
+}
+
+/// The declared name of a marked struct instance, or `None` for anything else
+/// (including a struct whose declaration never reached this runtime).
+fn struct_type_name(v: LkDyn) -> Option<String> {
+    let type_id = lkrt_dyn_obj_type_id(v);
+    if type_id == 0 {
+        return None;
+    }
+    with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone()))
+}
+
+/// `typeof(x)` on a boxed value — the VM's `RuntimeVal::type_name_in`.
+///
+/// The lowering answers from the proven MIR type where it can; a `Dyn` or a
+/// `MapStrDyn` cannot be decided statically (either may be a struct instance at
+/// run time), so it asks here.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_type_name(v: LkDyn) -> *mut c_char {
+    arena_c_string(CString::new(kind_name(v)).unwrap_or_default())
 }
 
 /// A binary type error in the VM's wording. `verb` is the operator as the VM

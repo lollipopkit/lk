@@ -1148,6 +1148,12 @@ fn program_execute_installs_core_method_helper_by_default() {
     assert_eq!(result.display_first_return(), "red|blue");
 }
 
+/// `typeof` on a struct instance names the struct.
+///
+/// It answered `Object` — the heap representation, which is not a type the
+/// language has, and the same answer for every struct in the program. That made
+/// `typeof` useless on exactly the values a program most wants to ask about.
+/// `HeapValue::type_name` is the carrier of that rule and had the hole itself.
 #[test]
 fn execute_program_imports_typeof_as_runtime_native() {
     let tokens = crate::token::Tokenizer::tokenize(
@@ -1161,7 +1167,7 @@ fn execute_program_imports_typeof_as_runtime_native() {
 
     let result = execute_program_with_ctx(&program, &mut ctx).expect("execute");
 
-    assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Object"));
+    assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Box"));
 }
 
 /// A `Set` is a map's key set, so it rejects what a map rejects. It used to

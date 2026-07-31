@@ -752,9 +752,9 @@ pub(crate) fn lower_builtin_call(
                 Ty::Str => Some("String"),
                 Ty::Nil => Some("Nil"),
                 Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => Some("List"),
-                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
-                    Some("Map")
-                }
+                // `MapStrDyn` is deliberately absent: it is also the struct
+                // carrier, so it has no static answer (see the arms below).
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => Some("Map"),
                 Ty::Set => Some("Set"),
                 Ty::Bytes => Some("Bytes"),
                 Ty::SliceI64 => Some("Slice"),
@@ -786,6 +786,29 @@ pub(crate) fn lower_builtin_call(
                         then_v,
                         else_v,
                         ty: Ty::Str,
+                    });
+                    dst
+                }
+                // A struct instance the lowering can name: answer the declared
+                // name, statically. Its carrier is `MapStrDyn`, and the static
+                // table said `Map` — so `typeof(p)` read `Map` compiled and
+                // `P` interpreted, a divergence no example happened to cover.
+                _ if ssa.struct_types.contains_key(&v) => {
+                    let name = ssa.struct_types[&v].clone();
+                    materialize_key(ssa, insts, globals, &name)
+                }
+                // A carrier that *may* be a struct at run time but is not
+                // proven one — a plain map and a struct instance share
+                // `MapStrDyn`, and a `Dyn` is anything. The runtime reads the
+                // type mark; guessing `Map` here would be a wrong answer half
+                // the time.
+                Ty::MapStrDyn | Ty::Dyn => {
+                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "type_name"),
+                        args: vec![boxed],
                     });
                     dst
                 }

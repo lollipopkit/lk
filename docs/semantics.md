@@ -1293,6 +1293,32 @@ Rust 的启动代码没跑过,于是它按 Unix 惯例被 SIGPIPE 杀掉(shell �
 
 `cli/tests/broken_pipe_test.rs` 钉住这条,并且正反两向验过。
 
+## `typeof` 说结构体的名字,不说 `Object`(2026-07-31 裁决)
+
+```lk
+struct S { a: Int }
+typeof(S { a: 1 })   // "S"
+typeof({"a": 1})     // "Map"
+```
+
+此前 **两个执行器给的都是错答案,而且互不相同**:解释器答 `Object`(堆表示的
+名字,不是语言里的类型),原生答 `Map`(结构体和普通 map 共用 `MapStrDyn` 载
+体,静态表就照载体答)。`typeof` 对最想问的那类值恰好没用。
+
+这是同一条规矩第三次在下一层被发现有洞:
+`RuntimeValKind::scalar_type_name` 的注释写着"手里有堆的调用者请改用
+`HeapValue::type_name`",而 `HeapValue::type_name` 自己对每个结构体实例答
+`Object`;lkrt 里那份"镜像"(`kind_name`)也一样。三处都改了 ——
+`HeapValue::type_name` 答声明名,变体自己的拼写挪到 `representation_name`;
+lkrt 读运行时的 type 标记。
+
+原生侧的静态表因此**去掉了 `MapStrDyn`**:它同时是结构体载体,静态答不出来。
+降低时若能指名结构体(`ssa.struct_types`)就发字面量,否则装箱调
+`dyn.type_name` 让运行时读标记 —— 猜 `Map` 有一半时候是错的。
+
+顺带,所有拿 `HeapValue::type_name` 拼错误消息的地方(三十余处)也跟着说对了:
+`p.len()` 现在报 "`len()` has no answer for S",不再是 `Object`。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

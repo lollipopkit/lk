@@ -769,19 +769,22 @@ fn core_typeof_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) ->
     let value = args
         .get(0)
         .ok_or_else(|| anyhow!("typeof(value) expects exactly one argument"))?;
-    let name = match value {
-        RuntimeVal::Int(_) => "Int",
-        RuntimeVal::Float(_) => "Float",
-        RuntimeVal::Bool(_) => "Bool",
-        RuntimeVal::ShortStr(_) => "String",
-        RuntimeVal::Nil => "Nil",
+    // Owned before `heap_mut()`: a struct instance's name borrows the heap
+    // (it is the declared name, not a `&'static str`).
+    let name: alloc::string::String = match value {
+        RuntimeVal::Int(_) => "Int".into(),
+        RuntimeVal::Float(_) => "Float".into(),
+        RuntimeVal::Bool(_) => "Bool".into(),
+        RuntimeVal::ShortStr(_) => "String".into(),
+        RuntimeVal::Nil => "Nil".into(),
         RuntimeVal::Obj(handle) => runtime
             .heap()
             .get(*handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            .type_name(),
+            .type_name()
+            .into(),
     };
-    Ok(runtime_string_value(name, runtime.heap_mut()))
+    Ok(runtime_string_value(&name, runtime.heap_mut()))
 }
 
 fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {

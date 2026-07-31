@@ -899,6 +899,21 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // `typeof` names the struct, and both engines agree about which
+            // carriers it can decide statically. A struct instance and a plain
+            // map share `MapStrDyn`, so the static table's `Map` was a wrong
+            // answer for structs: `typeof(p)` read `Map` compiled and `Object`
+            // interpreted — two engines, two wrong answers, neither of them the
+            // struct's name.
+            new(
+                "typeof_names_the_struct",
+                "struct S { a: Int }\nfn name_of(x: Any) -> String { return typeof(x); }\n\
+                 let m = {\"a\": 1, \"b\": \"x\"};\nlet p = S { a: 1 };\n\
+                 println(typeof(p));\nprintln(typeof(m));\nprintln(name_of(p));\nprintln(name_of(m));\n\
+                 println(name_of(1));\nprintln(name_of(\"s\"));\nprintln(name_of([1]));\n\
+                 println(typeof(1));\nprintln(typeof(1.5));\nprintln(typeof(true));\nprintln(typeof(nil));\n\
+                 return 0;\n",
+            ),
             // The receiver whose type the lowering *cannot* name — two call
             // sites passing different structs into one parameter, or a mixed
             // list — dispatches at run time off the arena type mark instead of
