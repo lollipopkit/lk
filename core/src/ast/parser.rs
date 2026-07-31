@@ -1217,6 +1217,8 @@ impl<'a> Parser<'a> {
                 self.parse_template_string_content(content)
             }
             Token::LBracket => self.parse_list(),
+            // `{` opens a map *or* a block — see `brace_opens_a_block`.
+            Token::LBrace if self.brace_opens_a_block() => self.parse_brace_block(BlockTail::Value),
             Token::LBrace => self.parse_map(),
             Token::Select => self.parse_select(),
             Token::Unsafe => self.parse_unsafe_block(),

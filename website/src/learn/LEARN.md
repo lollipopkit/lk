@@ -228,6 +228,19 @@ if score > 90 {
 }
 ```
 
+`if` is an expression, and so is a block — `{ … }` in value position evaluates
+to its last expression:
+
+```lk
+let grade = if score > 90 { "A" } else { "B" };
+let area = { let w = 3; let h = 4; w * h };   // 12
+```
+
+`{` still opens a **map** wherever a map is possible: `{}` is the empty map, and
+`{"a": 1}` is a map. The brace is a block when what follows it cannot be a map —
+a statement keyword (`let`, `return`, `for`, …), or no `:` before the first `;`
+or `}`.
+
 ### Loops
 
 ```lk

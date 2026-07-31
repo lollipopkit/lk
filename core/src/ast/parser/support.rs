@@ -486,6 +486,74 @@ impl<'a> Parser<'a> {
     /// drifts: `Unsafe` and `Match` were missing, which is why
     /// `|x| match x { … }` was a syntax error while `let a = match x { … };`
     /// parsed fine. Adding a primary form means adding it here too.
+    /// Whether the `{` at the cursor opens a **block**, not a map literal.
+    ///
+    /// `{` is the one token that starts two different things, and the parser
+    /// used to commit to "map" — so `Expr::Block`, which every `if` arm and
+    /// every function body is, could not be *written* where a value was
+    /// expected: `let x = { let a = 1; a + 1 };` was "Invalid map key start:
+    /// Let". A macro whose template needs a temporary has no other spelling,
+    /// which is where this surfaced.
+    ///
+    /// Two rules, in order:
+    ///
+    /// 1. A statement keyword right after the brace is a block. Every keyword
+    ///    in that list is statement-*only* — none of them can start an
+    ///    expression, so none can be a map key, and there is nothing to
+    ///    disambiguate against. The rule comes first because a `let`'s own type
+    ///    annotation puts a colon at depth 0 (`{ let a: Int = 1; a }`), which
+    ///    rule 2 would read as a map key.
+    /// 2. Otherwise: whichever of `:` / `;` / `}` appears first at depth 0. A
+    ///    map *must* have `key: value`, and cannot contain a `;` at all, so a
+    ///    `;` or a closing brace first means block. `{ }` is decided before
+    ///    either rule — it is the empty map, as it always was.
+    pub(super) fn brace_opens_a_block(&self) -> bool {
+        let statement_keyword = |token: &Token| {
+            matches!(
+                token,
+                Token::Let
+                    | Token::Const
+                    | Token::Return
+                    | Token::While
+                    | Token::For
+                    | Token::Break
+                    | Token::Continue
+                    | Token::Use
+                    | Token::Struct
+                    | Token::Trait
+                    | Token::Impl
+                    | Token::Go
+            )
+        };
+        let first = self.pos + 1;
+        // `{}` is the empty map, as it always was — and it has to be decided
+        // here, because rule 2 sees the closing brace first and would call it a
+        // block (whose value is nil).
+        if self.tokens.get(first) == Some(&Token::RBrace) {
+            return false;
+        }
+        if self.tokens.get(first).is_some_and(statement_keyword) {
+            return true;
+        }
+        let (mut paren, mut bracket, mut brace) = (0usize, 0usize, 0usize);
+        for token in &self.tokens[first..] {
+            match token {
+                Token::LParen => paren += 1,
+                Token::RParen => paren = paren.saturating_sub(1),
+                Token::LBracket => bracket += 1,
+                Token::RBracket => bracket = bracket.saturating_sub(1),
+                Token::LBrace => brace += 1,
+                Token::RBrace if brace > 0 => brace -= 1,
+                _ if paren + bracket + brace > 0 => {}
+                Token::Colon => return false,
+                Token::Semicolon | Token::RBrace => return true,
+                _ => {}
+            }
+        }
+        // Unterminated: let the map parser report it, as it did before.
+        false
+    }
+
     pub(super) fn is_valid_expr_start(&self) -> bool {
         if self.eof() {
             return false;

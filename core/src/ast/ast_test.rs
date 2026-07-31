@@ -49,6 +49,49 @@ mod test {
         assert_eq!(parsed, expr);
     }
 
+    /// `{` opens a block where a map cannot be, and a map everywhere it was.
+    ///
+    /// `Expr::Block` is what every `if` arm and every function body is, and it
+    /// could not be *written* in value position: `let x = { let a = 1; a + 1 };`
+    /// was "Invalid map key start: Let", because `{` committed to a map
+    /// literal. A macro whose template needs a temporary has no other spelling.
+    ///
+    /// The map cases are the point of the test: this rule must not take one
+    /// away.
+    #[test]
+    fn a_brace_opens_a_block_only_where_a_map_cannot_be() {
+        let block = |source: &str| {
+            let tokens = Tokenizer::tokenize(source).expect("tokenize");
+            match Parser::new(&tokens).parse().expect(source) {
+                Expr::Block(_) => true,
+                Expr::Map(_) => false,
+                other => panic!("{source} parsed as neither a block nor a map: {other:?}"),
+            }
+        };
+
+        // A statement keyword after the brace: a block, whatever punctuation
+        // follows. `let a: Int = …` puts a colon at depth 0, which the scan
+        // below would read as a map key — hence the keyword rule comes first.
+        assert!(block("{ let a = 1; a + 1 }"));
+        assert!(block("{ let a: Int = 1; a }"));
+        assert!(block("{ return 1; }"));
+        // No keyword: whichever of `:` / `;` / `}` comes first at depth 0.
+        assert!(block("{ f(); 2 }"));
+        assert!(block("{ 7 }"));
+        assert!(block("{ xs[0] }"));
+        // Maps, all of which still parse as maps.
+        assert!(!block("{}"));
+        assert!(!block("{\"a\": 1}"));
+        assert!(!block("{\"a\": {\"b\": 2}}"));
+        assert!(!block("{f(x): 1}"));
+        assert!(!block("{xs[0]: 1}"));
+        // A statement keyword cannot be a map key in the first place —
+        // `{let: 1}` was a syntax error before this rule and still is — so the
+        // keyword check has nothing to disambiguate against.
+        let tokens = Tokenizer::tokenize("{let: 1}").expect("tokenize");
+        assert!(Parser::new(&tokens).parse().is_err());
+    }
+
     #[test]
     fn paren() {
         let r = r#"
