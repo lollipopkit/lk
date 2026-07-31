@@ -4638,6 +4638,23 @@ fn the_string_module_spelling_lowers_like_the_method() {
                  println(\"中文\".pad_left(4, \"-\"));\nprintln(\"a\".pad_left(5, \"xy\"));\n\
                  println(\"abcdef\".pad_left(3, \"-\"));\nprintln(\"a\".pad_right(4));\nreturn 0;\n",
             ),
+            // `format` was the last `string` member lowering on neither
+            // spelling — variadic, with arguments of differing types. It is the
+            // same compile-time expansion `println` does with its own template,
+            // so the interesting cases are the *leftovers*: an unfilled `{}`
+            // stays literal, and an unconsumed argument appends space
+            // separated (with the leading space only when the rendered
+            // template is non-empty).
+            new(
+                "format_expands_like_println",
+                "use string;\nprintln(\"a {} b {}\".format(1, \"x\"));\n\
+                 println(\"{}\".format(3.5));\nprintln(\"{} {} {}\".format(1));\n\
+                 println(\"no holes\".format(7, 8));\nprintln(\"\".format(9));\n\
+                 println(\"{}{}\".format(true, false));\n\
+                 println(string.format(\"{}-{}\", 2, 3));\n\
+                 let n = 42;\nprintln(\"n={} m={}\".format(n, n * 2));\n\
+                 println(\"{}\".format(\"\"));\nreturn 0;\n",
+            ),
             // The refusals, whose text is stdout once it is caught.
             new(
                 "pad_refusals_read_the_same",

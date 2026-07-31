@@ -799,7 +799,18 @@ pub(crate) fn print_parts(
         }
         return Err(Unsupported::TypeMismatch { pc });
     };
-    let rest = &args[1..];
+    format_parts(&fmt, &args[1..], pc)
+}
+
+/// Expand one *constant* format template against its arguments.
+///
+/// This is the half of `println`'s lowering that `"{} and {}".format(a, b)`
+/// needs too: `format`'s receiver *is* the template, so the two spellings are
+/// the same expansion producing the same pieces. `println` hands the pieces to
+/// [`emit_print`]; `format` folds them into a value with [`fold_parts_to_str`].
+/// Sharing this is what keeps the two from drifting — the leftover-argument
+/// rule below is subtle enough that a copy would.
+pub(crate) fn format_parts(fmt: &str, rest: &[(ValueId, Ty)], pc: usize) -> Result<Vec<PrintPart>, Unsupported> {
     let mut parts: Vec<PrintPart> = Vec::new();
     let mut lit = String::new();
     let mut chars = fmt.chars().peekable();
@@ -859,6 +870,25 @@ pub(crate) fn emit_print(
     newline: bool,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    let (value, fresh) = fold_parts_to_str(ssa, insts, globals, parts, pc)?;
+    insts.push(Inst::PrintStr { value, newline });
+    if fresh {
+        free_owned_str(insts, value);
+    }
+    Ok(())
+}
+
+/// Fold [`PrintPart`]s into one string value, answering whether the result is a
+/// fresh allocation the caller now owns (as opposed to an interned constant).
+///
+/// `println` frees it after printing; `format` keeps it as the method's result.
+pub(crate) fn fold_parts_to_str(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    parts: Vec<PrintPart>,
+    pc: usize,
+) -> Result<(ValueId, bool), Unsupported> {
     pub(crate) fn lit_value(ssa: &mut Ssa, insts: &mut Vec<Inst>, globals: &mut Vec<String>, text: &str) -> ValueId {
         let gid = intern_global(globals, text);
         let dst = ssa.new_val();
@@ -913,9 +943,5 @@ pub(crate) fn emit_print(
             (acc, acc_fresh)
         }
     };
-    insts.push(Inst::PrintStr { value, newline });
-    if fresh {
-        free_owned_str(insts, value);
-    }
-    Ok(())
+    Ok((value, fresh))
 }

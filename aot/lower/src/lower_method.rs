@@ -1875,6 +1875,30 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Dyn)
         }
+        // `"a {} b".format(x, …)` — the receiver is the template, which makes
+        // this the same compile-time expansion `println("a {} b", x)` already
+        // does. Both go through `format_parts`, so the placeholder rules
+        // (leftover `{}` stay literal, leftover arguments append space
+        // separated) cannot drift between the two spellings.
+        //
+        // Variadic, and its arguments' types vary — the reason it was the last
+        // `string` member lowering on neither spelling. Neither matters once
+        // the expansion is static: each argument is display-converted at its
+        // own type, exactly as a `println` argument is.
+        (Ty::Str, "format", _) => {
+            // The template has to be a constant, for the same reason `println`'s
+            // does: the pieces are decided at compile time. A computed template
+            // falls back.
+            let Some(fmt) = ssa.const_strs.get(&receiver).cloned() else {
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "format needs a constant template to expand at compile time",
+                });
+            };
+            let parts = crate::lower_module::format_parts(&fmt, args, pc)?;
+            let (value, _fresh) = crate::lower_module::fold_parts_to_str(ssa, insts, globals, parts, pc)?;
+            (value, Ty::Str)
+        }
         // Fresh-string unary transforms (VM core_methods semantics: `lower`/
         // `upper` are Unicode `to_lowercase`/`to_uppercase`, `reverse` is
         // char-wise, `trim` is Rust `str::trim`).

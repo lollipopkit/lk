@@ -82,6 +82,12 @@ exists — they are what a new container type should be checked against:
 `take`/`skip`/`bytes` 六个只有方法拼写,两边各写各的地方就是漂移的来源
 (`count("")` 一边按字节数一边按字符数,差了两倍)。
 
+`format` 是这批里最后一个两种拼写都还落回 VM 的成员(它是变参,实参类型还
+各不相同)。它现在按**编译期展开**降低,走的正是 `println("a {} b", x)` 早就
+在走的那条路 —— `format_parts` 一份代码同时服务两者,所以"多余的 `{}` 保持
+字面、多余的实参空格分隔追加"这套规矩不会在两种写法之间漂。代价是模板必须是
+常量:模板由运行时算出来的 `t.format(x)` 照旧回落,和 `println(t, x)` 一样。
+
 `string.char_at` 因此改叫 `string.get`:元素访问在每个序列载体上都拼作
 `get`(`xs.get(i)`、`bytes.get(b, i)`、`s.get(i)`),第三个名字也意味着
 第三套规矩 —— `char_at` 拒绝负数,而 `s[-1]`、`s.get(-1)` 和原生的

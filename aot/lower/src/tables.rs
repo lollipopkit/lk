@@ -1113,7 +1113,7 @@ pub(crate) fn forwards_to_method(module: &str, name: &str) -> Option<&'static st
             "len" | "is_empty" | "lower" | "upper" | "trim" | "reverse" | "repeat" | "starts_with" | "ends_with"
             | "contains" | "slice" | "index_of" | "get" | "first" | "last" | "take" | "skip" | "replace" | "split"
             | "chars" | "bytes" | "byte_at" | "capitalize" | "title" | "count" | "strip" | "strip_prefix"
-            | "strip_suffix" | "pad_left" | "pad_right" => Some(name_of(name)),
+            | "strip_suffix" | "pad_left" | "pad_right" | "format" => Some(name_of(name)),
             _ => None,
         },
         _ => None,
@@ -1164,6 +1164,7 @@ fn name_of(name: &str) -> &'static str {
         "strip_suffix",
         "pad_left",
         "pad_right",
+        "format",
     ];
     NAMES
         .iter()
