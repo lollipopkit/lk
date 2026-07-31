@@ -1574,14 +1574,24 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let expr = self.parse_expr()?;
             if self.eof() || self.tokens[self.pos] != Token::RParen {
-                let msg = format!(
-                    "Expecting ')', found {:?}",
-                    if self.eof() {
-                        &Token::Nil
-                    } else {
-                        &self.tokens[self.pos]
-                    }
-                );
+                // A comma here is almost always somebody writing a tuple. The
+                // language has none — `Tuple<A, B>` is a *type*, and the value
+                // it describes is a list — so "Expecting ')'" left the reader
+                // to guess what to write instead.
+                let msg = if !self.eof() && self.tokens[self.pos] == Token::Comma {
+                    "there is no tuple literal — a value with several elements is a list, written `[a, b]`. \
+                     (`Tuple<A, B>` is a type for exactly that, not a second kind of value)"
+                        .to_string()
+                } else {
+                    format!(
+                        "Expecting ')', found {:?}",
+                        if self.eof() {
+                            &Token::Nil
+                        } else {
+                            &self.tokens[self.pos]
+                        }
+                    )
+                };
                 return Err(anyhow!(self.err(&msg)));
             }
             self.pos += 1;

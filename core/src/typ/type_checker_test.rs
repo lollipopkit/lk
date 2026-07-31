@@ -630,4 +630,27 @@ mod tests {
             "the error must point at the fifth line: {message}"
         );
     }
+
+    /// `Tuple<A, B>` describes a list, and a list satisfies it — in both
+    /// directions.
+    ///
+    /// `Tuple<Int, Int>` used to be a type nothing could inhabit: `[1, 2]` is
+    /// `List<Int>` (its elements do not differ, so no tuple is inferred) and
+    /// `is_assignable_to` had only the Tuple→List half. `Tuple<Int, String>`
+    /// hid it, because a heterogeneous literal infers `Tuple` directly and
+    /// never needed the conversion.
+    ///
+    /// The unifier had both directions in one arm all along, so this was also
+    /// the two of them disagreeing.
+    #[test]
+    fn a_list_satisfies_a_tuple_annotation_of_the_same_element_types() {
+        check_program("let t: Tuple<Int, Int> = [1, 2];").expect("a two-Int list is a Tuple<Int, Int>");
+        check_program("fn f() -> Tuple<Int, Int> { return [1, 2]; }").expect("and so is a returned one");
+        check_program("let t: Tuple<Int, String> = [1, \"a\"];").expect("the heterogeneous case still works");
+        check_program("let xs: List<Int> = [1, 2];\nlet t: Tuple<Int, Int> = xs;")
+            .expect("through a variable too — the type is what is checked, not the literal");
+        check_program("let t: List<Int> = [1, 2];\nlet u: List = t;").expect("Tuple -> List still holds");
+
+        check_program("let t: Tuple<Int, Int> = [\"a\", \"b\"];").expect_err("element types are still checked");
+    }
 }

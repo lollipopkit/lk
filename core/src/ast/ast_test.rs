@@ -829,4 +829,33 @@ mod test {
             assert!(text.contains("no macro named `nope`"), "{source} → {text}");
         }
     }
+
+    /// A parenthesised comma says the language has no tuple literal, and what
+    /// to write instead.
+    ///
+    /// `(1, 2)` is what somebody coming from Python or Rust writes first. The
+    /// message was `Expecting ')', found Comma` — true, and no help at all:
+    /// there is a `Tuple<A, B>` *type* in this language, so "no tuples" is not
+    /// the answer either. The value it describes is a list.
+    #[test]
+    fn a_parenthesised_comma_names_the_missing_tuple_literal() {
+        for source in ["let t = (1, 2);", "f((1, 2));", "return (a, b);"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let error = crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .expect_err("there is no tuple literal");
+            let text = format!("{error:#}");
+            assert!(text.contains("there is no tuple literal"), "{source} → {text}");
+            assert!(text.contains("`[a, b]`"), "{source} → {text}");
+        }
+
+        // An unbalanced parenthesis that is *not* a comma keeps the plain
+        // report — the hint is about one mistake, not about every `)`.
+        let tokens = crate::token::Tokenizer::tokenize("let t = (1;").expect("tokenize");
+        let error = crate::stmt::StmtParser::new(&tokens)
+            .parse_program()
+            .expect_err("unbalanced");
+        let text = format!("{error:#}");
+        assert!(text.contains("Expecting ')'"), "{text}");
+    }
 }

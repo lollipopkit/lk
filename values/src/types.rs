@@ -837,6 +837,22 @@ impl Type {
             // ordinary list in a language whose lists are heterogeneous — was
             // rejected by the annotation written to describe it.
             (Type::Tuple(elems), Type::List(target)) => elems.iter().all(|elem| elem.is_assignable_to(target)),
+            // And the way back, which was missing — so `Tuple<Int, Int>` was a
+            // type nothing could satisfy: `[1, 2]` is `List<Int>` (its elements
+            // do not differ, so no tuple is inferred), and without this rule it
+            // was not assignable to the annotation written to describe it.
+            // `Tuple<Int, String>` looked fine only because a *heterogeneous*
+            // literal infers `Tuple` directly and never needed the conversion.
+            //
+            // The unifier has had both directions all along, in one arm with
+            // both orders — so this was also the two of them disagreeing, which
+            // is the thing the note over there says must not happen.
+            //
+            // Length is deliberately not part of it: a `List<T>` type carries no
+            // length, so there is nothing to compare against the tuple's arity.
+            // The precision a tuple adds is *per-position element types*, and
+            // that is what this checks.
+            (Type::List(source), Type::Tuple(elems)) => elems.iter().all(|elem| source.is_assignable_to(elem)),
             // Function types (contravariant parameters, covariant return)
             (
                 Type::Function {
