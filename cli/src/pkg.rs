@@ -141,7 +141,12 @@ fn fetch_dependencies(only: Option<String>) -> anyhow::Result<()> {
             .git_url()
             .ok_or_else(|| anyhow::anyhow!("dependency '{name}' has no git source"))?;
         let dir = cache_dir_for_source(&source);
-        fetch_git_dependency(&source, &dir, &spec)?;
+        // Named here: `git failed with status exit status: 128` says which
+        // *process* failed, not which dependency — and with several of them the
+        // reader has to guess. git's own message above already explains the
+        // cause; this says what LK was doing when it appeared.
+        fetch_git_dependency(&source, &dir, &spec)
+            .with_context(|| format!("fetching dependency `{name}` from {source}"))?;
         let rev = git_output(&dir, ["rev-parse", "HEAD"])?;
         locked.insert(
             name.clone(),
@@ -201,7 +206,12 @@ fn fetch_git_dependency(source: &str, dir: &Path, spec: &DependencySpec) -> anyh
 fn git_status(cmd: &mut Command) -> anyhow::Result<()> {
     let status = cmd.status().context("run git")?;
     if !status.success() {
-        anyhow::bail!("git failed with status {status}");
+        // git has already printed its own diagnosis to stderr; repeating the
+        // exit status adds nothing a reader can act on, so this only names the
+        // command. The caller supplies which dependency it was for.
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        anyhow::bail!("`{program} {}` failed (see git's message above)", args.join(" "));
     }
     Ok(())
 }
