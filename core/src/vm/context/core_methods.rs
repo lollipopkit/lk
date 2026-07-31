@@ -222,6 +222,24 @@ pub fn core_call_method_windowed(
     args: &[RuntimeVal],
     runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
+    // The receiver's own method wins over a same-named key or field.
+    //
+    // This used to run *after* the key lookup, which made the documented rule
+    // ("方法优先", docs/semantics.md) true for exactly one method: `len`, and
+    // only because the compiler emits a dedicated opcode for it.
+    // `{"keys": 5, "z": 1}.keys()` answered `5`, `{"is_empty": 5}.is_empty()`
+    // answered `5` — the key had shadowed the method, and which of the two you
+    // got depended on whether the method happened to have its own opcode.
+    //
+    // Method-first is the rule because the other order makes a builtin method
+    // vanish from *some* maps with no diagnostic, while a shadowed key still
+    // has an unambiguous spelling (`m["len"]`).
+    if let Some(result) = dispatch_builtin_method_slice(&receiver, method_name, args, runtime)? {
+        return Ok(result);
+    }
+    // No builtin of that name: the key (or struct field) may hold the callable,
+    // or be a plain value read with `()` — `m.f(1)` where `f` is a stored
+    // function is the shape this exists for.
     if !is_list_hof(method_name)
         && let Some(prop) = runtime_access(&receiver, method_name, runtime.heap_mut())?
     {
@@ -235,9 +253,6 @@ pub fn core_call_method_windowed(
         if args.is_empty() {
             return Ok(prop);
         }
-    }
-    if let Some(result) = dispatch_builtin_method_slice(&receiver, method_name, args, runtime)? {
-        return Ok(result);
     }
     // Rare tails share the list-shaped generic path.
     let positional = match materialize_positional_list(args, runtime.heap_mut()) {

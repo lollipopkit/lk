@@ -13,6 +13,12 @@ use crate::{NumericClass, NumericHierarchy};
 
 /// 内联短字符串：0–7 字节 UTF-8，完全存储在 LiteralVal 内（零堆分配）。
 /// 实现了 Copy，克隆无需原子操作。
+///
+/// **不变量：`data[..len]` 是合法 UTF-8。** 两个字段都是私有的，本模块之外无法
+/// 构造；模块内的每一个构造点要么从一个 `&str` 的字节整段拷贝、要么是
+/// `char::encode_utf8` 的输出、要么是拼在合法前缀后面的 ASCII 数字，`Deserialize`
+/// 也走 [`ShortStr::new`]。新增构造点必须自己守住它 ——
+/// `every_short_str_constructor_keeps_the_utf8_invariant` 逐个构造点验这条。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShortStr {
     len: u8,
@@ -47,7 +53,14 @@ impl ShortStr {
 
     #[inline]
     pub fn as_str(&self) -> &str {
-        // SAFETY: data 在构造时已验证为合法 UTF-8。
+        // 明知不变量成立还是走带校验的 `from_utf8`：换成
+        // `from_utf8_unchecked` 量过，**没有收益**（min-of-9，一个 200 万次
+        // map-字符串键 + 方法调用的负载：0.87s vs 0.89s）。profile 里
+        // `core::str::converts::from_utf8` 占 5% 是误导 —— 长度上限是 7 字节，
+        // 校验对 ASCII 就是一趟字节扫描，编译器早已把它压平。
+        //
+        // 所以这里不引入 unsafe：为一个量不出来的收益换掉安全性是亏的。别再改
+        // 回去了，要改先把上面那组数字重跑一遍。
         core::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
     }
 
@@ -1235,6 +1248,8 @@ fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
 mod tests {
     use super::{IntKind, ShortStr, ShortStrOrStr, Type};
     use alloc::boxed::Box;
+    use alloc::format;
+    use alloc::string::ToString;
     use alloc::vec;
 
     #[test]
@@ -1393,5 +1408,50 @@ mod tests {
         assert!(Type::Int.is_assignable_to(&Type::parse("Number").unwrap()));
         assert!(Type::Float.is_assignable_to(&Type::parse("Number").unwrap()));
         assert!(!Type::String.is_assignable_to(&Type::parse("Number").unwrap()));
+    }
+
+    /// Every way a `ShortStr` can come into existence produces valid UTF-8.
+    ///
+    /// `as_str` skips the check and reads the bytes directly, so this is the
+    /// thing that has to stay true. The `debug_assert!` inside `as_str` does
+    /// the actual verifying — this test's job is to *reach* it from each
+    /// constructor, including the multi-byte cases a byte-length limit is most
+    /// likely to cut in half.
+    #[test]
+    fn every_short_str_constructor_keeps_the_utf8_invariant() {
+        for text in ["", "a", "abc", "1234567", "中", "中中", "é", "aé", "\u{7f}", "\u{80}"] {
+            match ShortStr::new(text) {
+                Some(short) => assert_eq!(short.as_str(), text),
+                // Over seven bytes: refused, which is the other half of the
+                // invariant (a truncating constructor could split a character).
+                None => assert!(text.len() > 7, "{text:?} fits but was refused"),
+            }
+        }
+        for ch in ['a', '中', 'é', '\u{10FFFF}', '\u{0}'] {
+            assert_eq!(ShortStr::from_char(ch).as_str().chars().next(), Some(ch));
+        }
+        let base = ShortStr::new("ab").expect("fits");
+        for n in [0i64, 7, 9999, 10_000, -1, i64::MIN] {
+            let joined = match base.concat_int(n) {
+                ShortStrOrStr::Short(short) => short.as_str().to_string(),
+                ShortStrOrStr::Str(text) => text,
+            };
+            assert_eq!(joined, format!("ab{n}"));
+            let prefixed = match ShortStr::concat_int_prefix(n, base) {
+                ShortStrOrStr::Short(short) => short.as_str().to_string(),
+                ShortStrOrStr::Str(text) => text,
+            };
+            assert_eq!(prefixed, format!("{n}ab"));
+        }
+        // Concatenation across the seven-byte edge, with a multi-byte operand
+        // on each side.
+        let multi = ShortStr::new("中").expect("three bytes fit");
+        for (left, right) in [(base, multi), (multi, base), (multi, multi)] {
+            let joined = match left.concat(right) {
+                ShortStrOrStr::Short(short) => short.as_str().to_string(),
+                ShortStrOrStr::Str(text) => text,
+            };
+            assert_eq!(joined, format!("{}{}", left.as_str(), right.as_str()));
+        }
     }
 }

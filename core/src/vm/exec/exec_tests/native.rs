@@ -898,6 +898,46 @@ fn execute_source_runs_public_source_entry_on_new_vm() {
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
 }
 
+/// A map's own methods win over a key of the same name — for every method,
+/// not just the one with its own opcode.
+///
+/// docs/semantics.md adjudicates "方法优先", and that was true of `len` alone:
+/// the compiler emits a dedicated opcode for it, so it never reached the
+/// dispatcher, where the key lookup ran *first*. `{"keys": 5, "z": 1}.keys()`
+/// answered `5` and `{"is_empty": 5}.is_empty()` answered `5` — which of the
+/// two you got depended on an implementation detail of the compiler.
+///
+/// The shadowed key keeps an unambiguous spelling (`m["len"]`), and a callable
+/// stored under a name no builtin uses is still called.
+#[test]
+fn a_map_method_is_not_shadowed_by_a_key_of_the_same_name() {
+    let result = execute_source(
+        r#"
+        let a = {"keys": 5, "z": 1};
+        let b = {"values": 5, "z": 1};
+        let c = {"len": 5, "z": 1};
+        let d = {"is_empty": 5};
+        let e = {"f": |x| { return x + 1; }, "n": 3};
+        return [a.keys().len(), b.values().len(), c.len(), d.is_empty(), c["len"], e.f(4), e.n];
+        "#,
+    )
+    .expect("execute source");
+
+    let [RuntimeVal::Obj(handle)] = result.returns.as_slice() else {
+        panic!("expected one list return");
+    };
+    let HeapValue::List(TypedList::Mixed(values)) = result.state.heap.get(*handle).expect("result list") else {
+        panic!("expected mixed list return");
+    };
+    assert_eq!(values[0], RuntimeVal::Int(2), "keys() is the method, not the key");
+    assert_eq!(values[1], RuntimeVal::Int(2), "values() is the method, not the key");
+    assert_eq!(values[2], RuntimeVal::Int(2), "len() already was");
+    assert_eq!(values[3], RuntimeVal::Bool(false), "is_empty() is the method");
+    assert_eq!(values[4], RuntimeVal::Int(5), "the shadowed key is still readable");
+    assert_eq!(values[5], RuntimeVal::Int(5), "a stored callable is still called");
+    assert_eq!(values[6], RuntimeVal::Int(3), "and a plain key still reads");
+}
+
 #[test]
 fn execute_source_uses_builtin_set_constructor_methods_and_iteration() {
     let result = execute_source(
