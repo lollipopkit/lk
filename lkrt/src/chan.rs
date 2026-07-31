@@ -272,6 +272,57 @@ pub extern "C" fn lkrt_chan_close(id: i64) {
     notify_selects();
 }
 
+/// `time.timeout(ms)` / `time.after(ms)` — a capacity-1 channel that receives
+/// one value once the duration is up.
+///
+/// The stdlib module builds this out of a tokio timer plus its async runtime's
+/// channel; here it is a thread that sleeps and then sends, because lkrt's
+/// channels are already thread-backed. What matters is the observable part, and
+/// it is the same on both: capacity 1, exactly one value, and the value itself
+/// — `timeout` sends nil, `after` sends the epoch milliseconds **read when the
+/// timer fires**, not when it was armed.
+///
+/// The send is a `try_send` whose result is dropped, matching the module: if
+/// nobody ever receives, the timer must not keep a thread parked forever, and a
+/// closed channel is not the timer's error to report.
+fn spawn_timer(duration_ms: i64, after: bool) -> i64 {
+    let id = lkrt_chan_new(1);
+    let delay = core::time::Duration::from_millis(duration_ms.max(0) as u64);
+    register_task(std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let value = if after {
+            crate::lkdyn::lkrt_dyn_from_i64(crate::host::lkrt_time_now_ms())
+        } else {
+            crate::lkdyn::lkrt_dyn_from_nil()
+        };
+        let inner = channel(id);
+        let mut state = inner.state.lock().expect("channel poisoned");
+        // Not `lkrt_chan_try_send`: that raises on a closed channel, and a
+        // raise `longjmp`s — out of a spawned thread, past this lock guard,
+        // with nobody to catch it. A closed channel means the receiver is gone,
+        // which is the timer's cue to do nothing.
+        if !state.closed && inner.cap.is_none_or(|cap| state.queue.len() < cap) {
+            state.queue.push_back(own(value));
+            inner.recv_cv.notify_all();
+        }
+        drop(state);
+        own(crate::lkdyn::lkrt_dyn_from_nil())
+    }));
+    id
+}
+
+/// `time.timeout(ms)` — fires with nil.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_time_timeout(duration_ms: i64) -> i64 {
+    spawn_timer(duration_ms, false)
+}
+
+/// `time.after(ms)` — fires with the epoch milliseconds at that moment.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_time_after(duration_ms: i64) -> i64 {
+    spawn_timer(duration_ms, true)
+}
+
 /// Non-blocking send: 1 delivered, 0 full; closed raises.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_try_send(id: i64, value: LkDyn) -> i64 {

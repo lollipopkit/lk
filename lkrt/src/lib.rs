@@ -93,6 +93,7 @@ pub use chan::{
     lkrt_chan_capacity, lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv,
     lkrt_chan_select, lkrt_chan_send, lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn_arg, lkrt_spawn_args_new,
     lkrt_spawn_args_push, lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
+    lkrt_time_after, lkrt_time_timeout,
 };
 pub use cpu::{
     lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_timestamp,

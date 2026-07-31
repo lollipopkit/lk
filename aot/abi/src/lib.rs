@@ -211,6 +211,8 @@ macro_rules! for_each_abi_fn {
             // Go close semantics (buffer drains, then raises), snapshot
             // argument blocks for spawn, join-once task await.
             ("chan", "new", lkrt_chan_new, WritesHost, [I64], I64);
+            ("time", "timeout", lkrt_time_timeout, WritesHost, [I64], I64);
+            ("time", "after", lkrt_time_after, WritesHost, [I64], I64);
             ("chan", "send", lkrt_chan_send, WritesHost, [I64, DynVal], Nil);
             ("chan", "recv", lkrt_chan_recv, WritesHost, [I64], DynVal);
             ("chan", "close", lkrt_chan_close, WritesHost, [I64], Nil);

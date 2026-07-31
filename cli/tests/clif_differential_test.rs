@@ -4710,3 +4710,26 @@ fn encoding_stringify_answers_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `time.timeout` / `time.after`: a capacity-1 channel that fires once.
+///
+/// Nothing about a timer is byte-comparable except its *shape*, so that is what
+/// this pins: `timeout` delivers nil, `after` delivers epoch milliseconds not
+/// earlier than the moment it was armed, and the wait really waited. The two
+/// implementations are different underneath — a tokio timer on the VM side, a
+/// sleeping thread on lkrt's, because lkrt's channels are thread-backed — which
+/// is exactly why the observable part needs saying out loud.
+#[test]
+fn time_timers_behave_the_same_on_both_ends() {
+    run_clif_differential(
+        "time_timers",
+        &[new(
+            "timeout_and_after",
+            "use time;\nuse chan;\nlet z = 0;\nlet t0 = time.now();\n\
+             let c = time.timeout(30 + z);\nprintln(chan.recv(c));\n\
+             println(time.since(t0, time.now()) >= 25);\n\
+             let a = time.after(20);\nlet fired = chan.recv(a);\nprintln(fired >= t0);\n\
+             return 0;\n",
+        )],
+    );
+}

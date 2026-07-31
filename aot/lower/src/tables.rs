@@ -641,6 +641,12 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // The module spelling of the global `chan(capacity)`. Same lkrt entry; the
     // optional type-string argument is a checker hint the VM drops too, so only
     // the one-argument form has a row (two args takes the generic path).
+    // `time.timeout` / `time.after` answer a capacity-1 `Channel`, which is an
+    // `I64` id in MIR — the same representation `chan.new` already uses. The
+    // `Float` millisecond spelling truncates (`ms as i64`), like the module's
+    // `numeric_millis`.
+    abi_row("time", "timeout", AbiRef::new("time", "timeout"), &[Ty::I64], Ty::I64),
+    abi_row("time", "after", AbiRef::new("time", "after"), &[Ty::I64], Ty::I64),
     abi_row("chan", "new", AbiRef::new("chan", "new"), &[Ty::I64], Ty::I64),
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
