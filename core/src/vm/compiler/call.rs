@@ -1031,8 +1031,13 @@ impl Compiler {
     }
 
     fn lower_call_window_exprs(&mut self, callee: u16, args: &[&Expr]) -> Result<u16> {
-        if args.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", args.len(), i8::MAX);
+        if args.len() > crate::vm::compiler::MAX_CALL_ARGUMENTS {
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                args.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let call_base = self.alloc_regs(args.len() + 1)?;
         self.emit_call_window_move(call_base, callee, "call callee")?;
@@ -1063,7 +1068,12 @@ impl Compiler {
 
     pub(super) fn lower_call_window_regs(&mut self, callee: u16, arg_regs: &[u16]) -> Result<u16> {
         if arg_regs.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", arg_regs.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                arg_regs.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let call_base = self.alloc_regs(arg_regs.len() + 1)?;
         self.emit_call_window_move(call_base, callee, "call callee")?;
@@ -1141,7 +1151,12 @@ impl Compiler {
             return Ok(inlined);
         }
         if args.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", args.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                args.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let function_index = *self
             .function_names
@@ -1183,7 +1198,12 @@ impl Compiler {
 
     fn lower_direct_function_call_regs(&mut self, function_name: &str, arg_regs: &[u16]) -> Result<u16> {
         if arg_regs.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", arg_regs.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                arg_regs.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let function_index = *self
             .function_names

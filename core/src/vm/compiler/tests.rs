@@ -1081,3 +1081,51 @@ fn an_open_ended_range_says_what_to_write() {
     assert!(expr_text.contains("a range needs an end"), "{expr_text}");
     assert!(!expr_text.contains("Compiler"), "{expr_text}");
 }
+
+/// The call-width limits say what the program hit, not which operand ran out.
+///
+/// `Compiler call has 300 args, max 127` named this compiler and a number with
+/// no explanation — the number is the `Call` opcode's 7-bit count, which is a
+/// fact about the encoding. It appeared as a bare `max 127` in three places and
+/// as `max 255` in a fourth, all for the same kind of limit; it is one named
+/// constant now, and each message says what to do instead.
+///
+/// The parameter side is said **at the declaration**: a function with more
+/// parameters than a call can pass is one nothing can call, and reporting that
+/// at some later call site pointed at the wrong line.
+#[test]
+fn the_call_width_limits_are_stated_in_the_programs_terms() {
+    let params: alloc::vec::Vec<alloc::string::String> = (0..300).map(|i| alloc::format!("a{i}")).collect();
+
+    let closure = compile_source(&alloc::format!("let f = |{}| a0;", params.join(", ")))
+        .expect_err("a closure that nothing can call");
+    let closure_text = alloc::format!("{closure:#}");
+    assert!(closure_text.contains("could never be called"), "{closure_text}");
+    assert!(!closure_text.contains("Compiler"), "{closure_text}");
+    assert!(
+        !closure_text.contains("registers"),
+        "the parameters are the problem: {closure_text}"
+    );
+
+    // Named parameters are *not* bounded by this: they ride a wider field, and
+    // a struct's generated constructor is one named parameter per field — the
+    // 200-field literal in `compile_cli_test` is exactly that, and counting
+    // named parameters here refused a struct literal that works.
+    let named: alloc::vec::Vec<alloc::string::String> = (0..200).map(|i| alloc::format!("f{i}: Int")).collect();
+    compile_source(&alloc::format!(
+        "fn wide({{{}}}) -> Int {{ return f0; }}",
+        named.join(", ")
+    ))
+    .expect("200 named parameters are within the named field's range");
+
+    let typed: alloc::vec::Vec<alloc::string::String> = (0..300).map(|i| alloc::format!("a{i}: Int")).collect();
+    let args = alloc::vec!["1"; 300].join(", ");
+    let call = compile_source(&alloc::format!(
+        "fn f({}) -> Int {{ return a0; }}\nlet x = f({args});",
+        typed.join(", ")
+    ))
+    .expect_err("a call wider than the instruction");
+    let call_text = alloc::format!("{call:#}");
+    assert!(call_text.contains("is the most"), "{call_text}");
+    assert!(!call_text.contains("Compiler"), "{call_text}");
+}

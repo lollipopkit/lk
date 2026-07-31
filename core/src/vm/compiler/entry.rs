@@ -284,6 +284,24 @@ impl Compiler {
         compiler.global_machine_widths = global_widths;
         compiler.capture_names = capture_names;
         compiler.dynamic_function_base = dynamic_function_base;
+        // Said at the declaration, like the closure form: a call passes at most
+        // `MAX_CALL_ARGUMENTS`, so more parameters than that means a function
+        // nothing can call. Reported before this as a register overflow at the
+        // *call*, which pointed at the wrong line and offered advice about a
+        // body that was not the problem.
+        // `params`, not `frame_params`: the limit is the *positional* count,
+        // which a call names in 7 bits. Named parameters ride a wider field and
+        // are bounded by the register file instead (`MAX_STRUCT_FIELDS`) — a
+        // 200-field struct's generated constructor is 200 named parameters, and
+        // counting those here refused a struct literal that works.
+        if params.len() > crate::vm::compiler::MAX_CALL_ARGUMENTS {
+            bail!(
+                "this function declares {} positional parameters, and {} is the most a call can pass, so it \
+                 could never be called. Take a list or a map instead",
+                params.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
+        }
         compiler.function.param_count = frame_params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
         compiler.function.param_names = Vec::with_capacity(frame_params.len());

@@ -185,6 +185,16 @@ pub struct Compiler {
     emitted_return: bool,
 }
 
+/// The most arguments one call can pass, and therefore the most parameters a
+/// callable can usefully declare.
+///
+/// It is the `Call` opcode's positional-count operand — 7 bits — and that is a
+/// fact about the encoding, not about the program. Which is exactly why it
+/// belongs in *one* named place with the reason written down: it leaked into
+/// two different messages as a bare `max 127`, and a third one said `max 255`
+/// about the same kind of limit somewhere else.
+pub(crate) const MAX_CALL_ARGUMENTS: usize = i8::MAX as usize;
+
 impl Compiler {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<u16> {
         match expr {
@@ -813,8 +823,17 @@ impl Compiler {
         capture_widths: HashMap<String, crate::val::IntKind>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {
-        if params.len() > u16::MAX as usize {
-            bail!("Compiler closure has too many params: {}", params.len());
+        // Said at the declaration, because that is where the mistake is: a call
+        // can pass at most `MAX_CALL_ARGUMENTS`, so a closure with more
+        // parameters than that could never be called at all. Reported as a
+        // register overflow before this — advice ("split the body") that cannot
+        // be followed, about a body that is not the problem.
+        if params.len() > MAX_CALL_ARGUMENTS {
+            bail!(
+                "this closure declares {} parameters, and {MAX_CALL_ARGUMENTS} is the most a call can pass, \
+                 so it could never be called. Take a list or a map instead",
+                params.len()
+            );
         }
         let mut compiler = Self::with_names(
             self.function_names.clone(),
@@ -902,7 +921,12 @@ impl Compiler {
             // are already in registers — so unlike `lower_list` there is no
             // build-empty-and-push route available here, because 256 live
             // argument registers have already overflowed the same operand.
-            bail!("Compiler call has {} arguments, max {}", len, u8::MAX);
+            bail!(
+                "this method call packs {} arguments, and {} is the most it can: the helper receives them in \
+                 one register window, and a window is addressed in 8 bits. Pass a list instead",
+                len,
+                u8::MAX
+            );
         }
 
         let base = self.alloc_regs(len)?;
