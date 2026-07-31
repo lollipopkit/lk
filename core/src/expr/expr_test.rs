@@ -54,12 +54,16 @@ mod test {
 
         // Short-circuit evaluation (RHS not evaluated).
         //
-        // Probed with a division that raises rather than with an undefined
-        // name: an undefined name is caught before execution, and these two
-        // lines used to pass only because parse-time folding deleted the RHS
-        // outright — which tested the folder, not the executor.
-        expect_source("let z = 0;\nreturn false && (1 / z == 1);", "false");
-        expect_source("let z = 0;\nreturn true || (1 / z == 1);", "true");
+        // Probed with `% 0`, which raises, rather than with an undefined name:
+        // an undefined name is caught before execution, and these two lines
+        // used to pass only because parse-time folding deleted the RHS outright
+        // — which tested the folder, not the executor.
+        //
+        // Not `/ 0`: `/` is float division and `1 / 0` is `inf` (see
+        // docs/semantics.md), so it never raises and the probe would pass
+        // whether the RHS ran or not.
+        expect_source("let z = 0;\nreturn false && (1 % z == 1);", "false");
+        expect_source("let z = 0;\nreturn true || (1 % z == 1);", "true");
     }
 
     #[test]
@@ -72,8 +76,8 @@ mod test {
         expect_env("pub ? user.name : 'guest'", "lk");
 
         // Short-circuit: only the selected branch evaluates. Same reason as in
-        // `logical_operators` for probing with a raise instead of a name.
-        expect_source("let z = 0;\nreturn false ? (1 / z) : 42;", "42");
+        // `logical_operators` for probing with `% 0` rather than a name or `/`.
+        expect_source("let z = 0;\nreturn false ? (1 % z) : 42;", "42");
 
         // Precedence with arithmetic on else branch
         expect("true ? 1 : 2 + 3", "1");
