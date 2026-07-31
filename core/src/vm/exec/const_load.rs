@@ -58,21 +58,34 @@ impl Executor {
                     self.write(instr.a(), value)?;
                 }
             }
-            Opcode::LoadHeapConst => {
-                let value = function
-                    .consts
-                    .heap_value(instr.bx())
-                    .ok_or_else(|| anyhow!("LoadHeapConst const index {} out of bounds", instr.bx()))?;
-                let value = self.materialize_heap_const(value.clone())?;
-                if !dead_write {
-                    let handle = self.alloc_heap_value(value);
-                    self.write(instr.a(), RuntimeVal::Obj(handle))?;
-                }
-            }
+            Opcode::LoadHeapConst => self.load_heap_const(function, instr, dead_write)?,
             _ => unreachable!("load_const_instr called for non-const opcode"),
         }
 
         self.pc += 1;
+        Ok(())
+    }
+
+    /// `LoadHeapConst`: rebuild a list/map/long-string constant on the heap.
+    ///
+    /// Split out, and `#[cold]`, because of the *stack frame*. Materializing a
+    /// constant map needs a `FastHashMap` and a recursive walk, and its
+    /// temporaries sized the frame of the function that also handles
+    /// `LoadNil`/`LoadInt`/`LoadString` — 184 bytes of `sub rsp` paid by every
+    /// constant load in the program, and constants are loaded constantly (this
+    /// function was 6.7% of a rule-scoring workload, with the prologue its
+    /// single largest line).
+    #[cold]
+    fn load_heap_const(&mut self, function: &Function, instr: Instr, dead_write: bool) -> Result<()> {
+        let value = function
+            .consts
+            .heap_value(instr.bx())
+            .ok_or_else(|| anyhow!("LoadHeapConst const index {} out of bounds", instr.bx()))?;
+        let value = self.materialize_heap_const(value.clone())?;
+        if !dead_write {
+            let handle = self.alloc_heap_value(value);
+            self.write(instr.a(), RuntimeVal::Obj(handle))?;
+        }
         Ok(())
     }
 
