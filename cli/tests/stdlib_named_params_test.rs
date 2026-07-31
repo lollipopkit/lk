@@ -21,7 +21,7 @@ fn lowering_named_parameter_lists_match_the_stdlib_declaration() {
     lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registers");
 
     let mut checked = 0;
-    for (module, member, named) in lk_aot_lower::named_parameter_rows() {
+    for (module, member, leading, named) in lk_aot_lower::named_parameter_rows() {
         let path = format!("{module}.{member}");
         let signature =
             lk_core::typ::stdlib_signature(&path).unwrap_or_else(|| panic!("{path} has no declared signature"));
@@ -34,6 +34,15 @@ fn lowering_named_parameter_lists_match_the_stdlib_declaration() {
         assert_eq!(
             declared, named,
             "{path}: the lowering's named(...) copy disagrees with the stdlib declaration"
+        );
+        // And where the named block *starts*, which is what turns a name into a
+        // frame slot. Off by one and `string.slice(s, 1, end: 3)` writes `end`
+        // past the end of the frame — the mixed spelling, which the VM accepts,
+        // stops lowering.
+        let declared_leading = signature.params.iter().take_while(|param| !param.named).count();
+        assert_eq!(
+            declared_leading, leading,
+            "{path}: the lowering thinks the named block starts at {leading}, the declaration says {declared_leading}"
         );
         checked += 1;
     }

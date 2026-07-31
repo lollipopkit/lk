@@ -590,16 +590,25 @@ pub(crate) fn lower_named_module_call(
             .and_then(|(v, _)| ssa.const_strs.get(&v).cloned())
             .or_else(|| ssa.reg_const_str(name_reg, block))
             .ok_or_else(reject)?;
+        // `row.leading`, not the call's positional count: a named-eligible
+        // parameter may be written either way, so a call that passes some of
+        // them positionally still needs the *declaration's* frame order. Adding
+        // the call's count instead pushed `string.slice(s, 1, end: 3)` past the
+        // end of a 3-argument frame — the mixed spelling fell back while both
+        // pure spellings lowered.
         let slot = row
             .named
             .iter()
             .position(|param| *param == arg_name.as_str())
             .ok_or_else(reject)?
-            + positional_count;
+            + row.leading;
         // A member may declare more names than this row's arity covers
         // (`string.replace` declares `all` too, and the row is the arity that
         // leaves it defaulted), so a name can land past the end. That is a call
-        // this row cannot serve, not an index to trust.
+        // this row cannot serve, not an index to trust. The same check catches
+        // a name written for a slot an earlier *positional* argument already
+        // filled — `string.slice(s, 1, start: 2)` is that call, and the VM
+        // refuses it too.
         if slot >= argc || arg_regs[slot].is_some() {
             return Err(reject());
         }

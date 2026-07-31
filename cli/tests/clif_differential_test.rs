@@ -4718,6 +4718,22 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
                  println(math.clamp(5, min: 1, max: 3));\n\
                  println(math.clamp(0, min: 1, max: 3));\nreturn 0;\n",
             ),
+            // The *mixed* spelling: some named-eligible parameters written
+            // positionally and the rest by name. The VM has always taken all
+            // three spellings (`named_and_positional_spellings_mix_freely`),
+            // and this one alone used to fall back — the row's names were
+            // indexed from the call's positional count instead of from where
+            // the declaration's named block starts, so `end` landed past the
+            // end of a three-argument frame.
+            new(
+                "mixed_positional_and_named",
+                "use regex;\nuse string;\nuse bytes;\nuse math;\nlet z = \"\";\n\
+                 println(string.slice(\"hello\" + z, 1, end: 3));\n\
+                 println(string.replace(\"banana\", \"a\", with: \"X\"));\n\
+                 println(bytes.slice(bytes.from_string(\"hello\"), 1, end: 3));\n\
+                 println(math.clamp(5, 1, max: 3));\n\
+                 println(regex.replace(\"a\", \"banana\", replacement: \"X\"));\nreturn 0;\n",
+            ),
         ],
     );
 }

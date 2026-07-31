@@ -218,6 +218,16 @@ pub(crate) struct ModuleAbiRow {
     pub(crate) abi: AbiRef,
     pub(crate) args: &'static [Ty],
     pub(crate) ret: Ty,
+    /// How many leading parameters can only be passed positionally — the
+    /// declaration's parameter count minus its `named(...)` count.
+    ///
+    /// This is where the named block *starts* in frame order, and it is not the
+    /// same as how many arguments a given call happens to pass positionally: a
+    /// named-eligible parameter may be written either way. Reading the call's
+    /// count instead, `string.slice(s, 1, end: 3)` placed `end` at slot 3 of a
+    /// 3-argument frame and fell back — the mixed spelling, which the VM has
+    /// always accepted, was the one that could not lower.
+    pub(crate) leading: usize,
     /// The names of the trailing parameters a caller may pass by name, in
     /// frame order — the stdlib export's `named(...)` list.
     ///
@@ -245,6 +255,8 @@ pub(crate) const fn abi_row(
         abi,
         args,
         ret,
+        // Positional-only, so every parameter is a leading one.
+        leading: args.len(),
         named: &[],
     }
 }
@@ -256,6 +268,7 @@ pub(crate) const fn abi_row_named(
     abi: AbiRef,
     args: &'static [Ty],
     ret: Ty,
+    leading: usize,
     named: &'static [&'static str],
 ) -> ModuleAbiRow {
     ModuleAbiRow {
@@ -264,6 +277,7 @@ pub(crate) const fn abi_row_named(
         abi,
         args,
         ret,
+        leading,
         named,
     }
 }
@@ -478,6 +492,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         AbiRef::new("math", "clamp_i64"),
         &[Ty::I64, Ty::I64, Ty::I64],
         Ty::I64,
+        // One leading positional-only parameter: the subject.
+        1,
         &["min", "max"],
     ),
     abi_row("math", "exp", AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64),
@@ -561,6 +577,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         // `all` at its default. A call that does pass `all` has four arguments,
         // finds no row, and falls back — which is why the *names* list stays
         // whole while the `args` list does not.
+        // One leading positional-only parameter: the subject.
+        1,
         &["pattern", "with", "all"],
     ),
     abi_row_named(
@@ -569,6 +587,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         AbiRef::new("str", "slice_chars"),
         &[Ty::Str, Ty::I64, Ty::I64],
         Ty::Str,
+        // One leading positional-only parameter: the subject.
+        1,
         &["start", "end"],
     ),
     // Text → number. `to_int` is not here: its base is optional, so it is
@@ -842,6 +862,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         AbiRef::new("regex", "replace"),
         &[Ty::Str, Ty::Str, Ty::Str],
         Ty::Str,
+        // One leading positional-only parameter: the subject.
+        1,
         &["text", "replacement"],
     ),
     // `uuid`. `v4` has no arguments and a different answer every call — see the
@@ -934,6 +956,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         AbiRef::new("bytes_h", "slice"),
         &[Ty::Bytes, Ty::I64, Ty::I64],
         Ty::Bytes,
+        // One leading positional-only parameter: the subject.
+        1,
         &["start", "end"],
     ),
     abi_row(
@@ -974,11 +998,11 @@ pub(crate) fn module_call_abi_rows<'a>(
 /// which is populated at run time by whoever links the standard library, and a
 /// lowering that silently degrades when that has not happened yet is worse than
 /// a copy with a test on it.
-pub fn named_parameter_rows() -> impl Iterator<Item = (&'static str, &'static str, &'static [&'static str])> {
+pub fn named_parameter_rows() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static [&'static str])> {
     MODULE_ABI
         .iter()
         .filter(|row| !row.named.is_empty())
-        .map(|row| (row.module, row.member, row.named))
+        .map(|row| (row.module, row.member, row.leading, row.named))
 }
 
 /// Whether a row's declared parameter type accepts an argument the lowering
