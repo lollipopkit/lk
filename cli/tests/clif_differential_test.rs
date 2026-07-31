@@ -4638,3 +4638,38 @@ fn random_members_behave_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `process`: the child-process members, and `exit`.
+///
+/// `id()` is deliberately only compared as `> 0` — the two runs are two
+/// processes. What is comparable is everything else: the exit code of a child,
+/// its captured stdout, the four-key `output` map (whose key order is the
+/// stdlib's insertion order), and the refusals.
+///
+/// The `exit` case is the one that needed care: `std::process::exit` runs no
+/// destructors, so an unterminated `print` behind a line-buffered stdout is
+/// lost unless it is flushed first — and the harness compares stdout *and* the
+/// exit status, so both halves of that show up here.
+#[test]
+fn process_members_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "process_members",
+        &[
+            new(
+                "children",
+                "use process;\nlet z = \"\";\nprintln(process.id() > 0);\n\
+                 println(process.status(\"true\" + z));\nprintln(process.status(\"false\"));\n\
+                 println(process.output_string(\"echo\", [\"hi\"]));\n\
+                 println(process.output(\"echo\", [\"hi\"]));\n\
+                 println(process.output(\"true\"));\n\
+                 let e = try { process.status(\"lk_no_such_cmd_xyz\") } catch err { err };\nprintln(e);\n\
+                 let e2 = try { process.set_cwd(\"/lk_no_such_dir_xyz\") } catch err { err };\nprintln(e2);\n\
+                 return 0;\n",
+            ),
+            new(
+                "exit_flushes",
+                "use process;\nlet z = 0;\nprint(\"partial\");\nprocess.exit(3 + z);\n",
+            ),
+        ],
+    );
+}

@@ -61,6 +61,8 @@ mod lkdyn;
 mod lklist;
 mod lkmap;
 #[cfg(feature = "std")]
+mod lkprocess;
+#[cfg(feature = "std")]
 mod lkrandom;
 #[cfg(feature = "std")]
 mod lkregex;
@@ -112,6 +114,11 @@ pub use lkbytes::{
     lkrt_lkbytes_get, lkrt_lkbytes_index_of, lkrt_lkbytes_is_empty, lkrt_lkbytes_len, lkrt_lkbytes_skip,
     lkrt_lkbytes_slice, lkrt_lkbytes_take, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8,
     lkrt_lkbytes_utf8_lossy,
+};
+#[cfg(feature = "std")]
+pub use lkprocess::{
+    lkrt_process_exit, lkrt_process_id, lkrt_process_output, lkrt_process_output_noargs, lkrt_process_output_string,
+    lkrt_process_output_string_noargs, lkrt_process_set_cwd, lkrt_process_status, lkrt_process_status_noargs,
 };
 #[cfg(feature = "std")]
 pub use lkrandom::{

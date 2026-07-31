@@ -669,6 +669,60 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // crates the stdlib module uses (`sha2`/`sha1`/`crc32fast`); `fnv64` is the
     // one loop that exists twice, and `lkrt`'s `vm_mirror` conformance test is
     // what keeps the two spellings equal.
+    // `process`. The child-process members take an optional argument list, and
+    // the no-list arity is its own lkrt entry point rather than a null handle
+    // invented at the call site.
+    abi_row("process", "id", AbiRef::new("process", "id"), &[], Ty::I64),
+    abi_row(
+        "process",
+        "set_cwd",
+        AbiRef::new("process", "set_cwd"),
+        &[Ty::Str],
+        Ty::Bool,
+    ),
+    abi_row("process", "exit", AbiRef::new("process", "exit"), &[Ty::I64], Ty::Nil),
+    abi_row(
+        "process",
+        "status",
+        AbiRef::new("process", "status_noargs"),
+        &[Ty::Str],
+        Ty::I64,
+    ),
+    abi_row(
+        "process",
+        "status",
+        AbiRef::new("process", "status"),
+        &[Ty::Str, Ty::ListStr],
+        Ty::I64,
+    ),
+    abi_row(
+        "process",
+        "output_string",
+        AbiRef::new("process", "output_string_noargs"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
+    abi_row(
+        "process",
+        "output_string",
+        AbiRef::new("process", "output_string"),
+        &[Ty::Str, Ty::ListStr],
+        Ty::Str,
+    ),
+    abi_row(
+        "process",
+        "output",
+        AbiRef::new("process", "output_noargs"),
+        &[Ty::Str],
+        Ty::MapStrDyn,
+    ),
+    abi_row(
+        "process",
+        "output",
+        AbiRef::new("process", "output"),
+        &[Ty::Str, Ty::ListStr],
+        Ty::MapStrDyn,
+    ),
     // `random`. `bool` is two arities (the probability defaults to 0.5), and
     // `choice`/`shuffle` are one row per list carrier — `choice` answers the
     // element, so it boxes; `shuffle` answers a list of the same carrier.

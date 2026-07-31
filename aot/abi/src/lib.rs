@@ -268,6 +268,15 @@ macro_rules! for_each_abi_fn {
             ("regex", "replace", lkrt_regex_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             // `random`: nondeterministic to a value, so never `Pure` (CSE would
             // merge two rolls into one).
+            ("process", "id", lkrt_process_id, ReadsHost, [], I64);
+            ("process", "set_cwd", lkrt_process_set_cwd, WritesHost, [StrPtr], I64);
+            ("process", "exit", lkrt_process_exit, WritesHost, [I64], Nil);
+            ("process", "status", lkrt_process_status, WritesHost, [StrPtr, Ptr], I64);
+            ("process", "output_string", lkrt_process_output_string, WritesHost, [StrPtr, Ptr], StrPtr);
+            ("process", "output", lkrt_process_output, WritesHost, [StrPtr, Ptr], Ptr);
+            ("process", "status_noargs", lkrt_process_status_noargs, WritesHost, [StrPtr], I64);
+            ("process", "output_string_noargs", lkrt_process_output_string_noargs, WritesHost, [StrPtr], StrPtr);
+            ("process", "output_noargs", lkrt_process_output_noargs, WritesHost, [StrPtr], Ptr);
             ("random", "int", lkrt_random_int, WritesHost, [I64, I64], I64);
             ("random", "float", lkrt_random_float, WritesHost, [], F64);
             ("random", "bool", lkrt_random_bool, WritesHost, [], I64);
