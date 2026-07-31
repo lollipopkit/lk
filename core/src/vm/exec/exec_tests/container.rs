@@ -864,3 +864,58 @@ fn a_template_interpolation_balances_its_braces() {
     let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
     assert_eq!(display, r#"["R{v:3}","{\"a\":1}","{\"k\":2}","3"]"#);
 }
+
+/// `min`, `max` and `sum` — on a list, a window over one, and a `Bytes`.
+///
+/// The three most ordinary questions about a sequence of numbers had no answer:
+/// `map`, `filter`, `reduce`, `unique`, `zip` and `chunk` were all there, and
+/// these were not, so each had to be written as a fold — with a comparison
+/// lambda that then had to agree with `sort`'s order, and nothing checked that
+/// it did.
+///
+/// So `min`/`max` use `sort`'s own comparison. The assertions below pin that
+/// with the case that would catch a second ordering: a mixed list, where
+/// numbers sort before strings.
+#[test]
+fn a_sequence_answers_min_max_and_sum() {
+    let result = execute_source(
+        r#"
+        let xs = [3, 1, 2];
+        let mixed = [2, "a", 1];
+        let floats = [1.5, 2.5];
+        let promoted = [1, 2.5];
+        let window = [5, 1, 9, 2].slice(1, 3);
+        let empty = [];
+        return [
+            [xs.min(), xs.max(), xs.sum()],
+            [mixed.min(), mixed.sort().first()],
+            [floats.sum(), promoted.sum()],
+            [window.min(), window.max(), window.sum()],
+            [empty.min(), empty.max(), empty.sum()],
+            [["b", "a"].min(), ["b", "a"].max()],
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display, "[[1,3,6],[1,1],[4,3.5],[1,9,10],[nil,nil,0],[\"a\",\"b\"]]",
+        "min/max follow sort's order, sum promotes to float, empty answers nil and 0"
+    );
+}
+
+/// Summing something that is not a number says what it found.
+#[test]
+fn summing_a_non_number_names_it() {
+    for (source, expected) in [
+        ("[\"a\"].sum()", "list of String"),
+        ("[true].sum()", "list of Bool"),
+        ("[1, nil].sum()", "holds a Nil"),
+    ] {
+        let program = alloc::format!("let e = try {{ {source} }} catch x {{ x }};\nreturn e;");
+        let result = execute_source(&program).expect("execute source");
+        let message = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+        assert!(message.contains(expected), "{source} → {message}");
+    }
+}

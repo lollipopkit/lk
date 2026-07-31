@@ -1049,6 +1049,85 @@ pub(super) fn typed_lists_concatenated(left: &TypedList, right: &TypedList) -> O
 /// the materialized path built a `RuntimeVal` per element first and then
 /// compared through `compare_runtime_values`. The order is the same one:
 /// `compare_runtime_values` on two `Int`s *is* `i64`'s.
+/// The sum of a list of numbers.
+///
+/// Integers wrap, floats add as floats, and a mix promotes to float — the same
+/// three rules `+` follows, because `xs.sum()` is `+` applied down the list and
+/// a second set of rules for it would be a second answer.
+///
+/// An empty list is `0`, the identity `reduce(0, …)` would have started from.
+/// Anything that is not a number is a refusal naming what was found: summing
+/// strings has no meaning here (`+` concatenates them, but a list of strings
+/// asked for its *sum* is a mistake, not a join).
+pub(super) fn typed_list_sum(list: &TypedList, heap: &HeapStore) -> Result<RuntimeVal> {
+    match list {
+        TypedList::Int(values) => Ok(RuntimeVal::Int(
+            values.iter().fold(0i64, |total, value| total.wrapping_add(*value)),
+        )),
+        TypedList::Float(values) => Ok(RuntimeVal::Float(values.iter().sum())),
+        TypedList::Bool(_) => bail!("list.sum() adds numbers, and this is a list of Bool"),
+        TypedList::String(_) => bail!("list.sum() adds numbers, and this is a list of String"),
+        TypedList::Mixed(values) => {
+            let mut total_int: i64 = 0;
+            let mut total_float = 0.0f64;
+            let mut saw_float = false;
+            for value in values {
+                match value {
+                    RuntimeVal::Int(value) => {
+                        total_int = total_int.wrapping_add(*value);
+                        total_float += *value as f64;
+                    }
+                    RuntimeVal::Float(value) => {
+                        saw_float = true;
+                        total_float += *value;
+                    }
+                    other => bail!(
+                        "list.sum() adds numbers, and this list holds a {}",
+                        other.type_name_in(heap)
+                    ),
+                }
+            }
+            Ok(if saw_float {
+                RuntimeVal::Float(total_float)
+            } else {
+                RuntimeVal::Int(total_int)
+            })
+        }
+    }
+}
+
+/// Where the smallest (or largest) element is, by the order
+/// [`typed_list_sorted`] sorts with — the same comparison, not a second one
+/// that happens to agree today.
+///
+/// An *index*, so the caller materializes the element through
+/// [`typed_list_element`] like every other single-element read does: a string
+/// element has to be allocated into the heap, and that is the one place that
+/// knows how.
+///
+/// `None` for an empty list, which the callers turn into nil — what
+/// `first`/`last` answer there, and "the largest of nothing" is the same
+/// question.
+pub(super) fn typed_list_extreme_index(list: &TypedList, heap: &HeapStore, want_max: bool) -> Option<usize> {
+    let better = |left: usize, right: usize| -> bool {
+        let ordering = match list {
+            TypedList::Int(values) => values[left].cmp(&values[right]),
+            TypedList::Float(values) => crate::val::compare_floats(values[left], values[right]),
+            TypedList::Bool(values) => values[left].cmp(&values[right]),
+            TypedList::String(values) => values[left].as_ref().cmp(values[right].as_ref()),
+            TypedList::Mixed(values) => compare_runtime_values(&values[left], &values[right], heap),
+        };
+        // Ties keep the earlier element: `min`/`max` name a *value*, and the
+        // first one that has it is the one a reader would point at.
+        match ordering {
+            core::cmp::Ordering::Less => !want_max,
+            core::cmp::Ordering::Equal => true,
+            core::cmp::Ordering::Greater => want_max,
+        }
+    };
+    (0..list.len()).reduce(|best, index| if better(best, index) { best } else { index })
+}
+
 pub(super) fn typed_list_sorted(list: &TypedList, heap: &HeapStore) -> TypedList {
     match list {
         TypedList::Int(values) => {

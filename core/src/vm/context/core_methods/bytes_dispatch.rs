@@ -51,6 +51,35 @@ pub(super) fn dispatch_bytes_builtin_method(
             };
             Ok(Some(byte_at(&bytes, *index)))
         }
+        // A `Bytes` is a sequence of numbers, so the three reductions mean the
+        // same here as on a list — and a receiver kind that answers `first`,
+        // `len` and `contains` but not `sum` would be the half-surface this
+        // dispatch was unified to remove.
+        "sum" => {
+            if !positional.is_empty() {
+                bail!("bytes.sum() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(RuntimeVal::Int(
+                bytes
+                    .iter()
+                    .fold(0i64, |total, byte| total.wrapping_add(i64::from(*byte))),
+            )))
+        }
+        "min" | "max" => {
+            if !positional.is_empty() {
+                bail!("bytes.{method}() expects no arguments, got {}", positional.len());
+            }
+            let extreme = if method == "max" {
+                bytes.iter().max()
+            } else {
+                bytes.iter().min()
+            };
+            // Empty answers nil, as `first` does here and as `min` does on a list.
+            Ok(Some(match extreme {
+                Some(byte) => RuntimeVal::Int(i64::from(*byte)),
+                None => RuntimeVal::Nil,
+            }))
+        }
         "contains" => {
             if positional.len() != 1 {
                 bail!("bytes.contains() expects 1 argument (value), got {}", positional.len());

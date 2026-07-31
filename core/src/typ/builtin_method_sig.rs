@@ -213,6 +213,30 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Writes `index` in place; answers the list so calls chain",
     ),
     m(List, "sort", &[], "Self", "A sorted copy (the receiver is untouched)"),
+    // The three reductions. `min`/`max` answer `Elem?` for the same reason
+    // `first` does — an empty list has none — and they use `sort`'s order, so
+    // `xs.sort().first()` and `xs.min()` cannot disagree.
+    m(
+        List,
+        "min",
+        &[],
+        "Elem?",
+        "The smallest element by `sort`'s order, or nil when empty",
+    ),
+    m(
+        List,
+        "max",
+        &[],
+        "Elem?",
+        "The largest element by `sort`'s order, or nil when empty",
+    ),
+    m(
+        List,
+        "sum",
+        &[],
+        "Any",
+        "The numbers added up (0 when empty); a non-number raises",
+    ),
     m(List, "reverse", &[], "Self", "A reversed copy"),
     m(
         List,
@@ -334,6 +358,21 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     ),
     m(
         Slice,
+        "min",
+        &[],
+        "Elem?",
+        "The smallest element in the window, or nil when empty",
+    ),
+    m(
+        Slice,
+        "max",
+        &[],
+        "Elem?",
+        "The largest element in the window, or nil when empty",
+    ),
+    m(Slice, "sum", &[], "Any", "The window's numbers added up (0 when empty)"),
+    m(
+        Slice,
         "contains",
         &[p("value", "Elem")],
         "Bool",
@@ -394,6 +433,9 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(Bytes, "is_empty", &[], "Bool", "Whether there are no bytes"),
     m(Bytes, "first", &[], "Int?", "First byte, or nil when empty"),
     m(Bytes, "last", &[], "Int?", "Last byte, or nil when empty"),
+    m(Bytes, "min", &[], "Int?", "Smallest byte, or nil when empty"),
+    m(Bytes, "max", &[], "Int?", "Largest byte, or nil when empty"),
+    m(Bytes, "sum", &[], "Int", "The bytes added up (0 when empty)"),
     m(
         Bytes,
         "get",

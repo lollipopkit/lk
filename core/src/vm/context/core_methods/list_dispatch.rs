@@ -96,6 +96,36 @@ pub(super) fn dispatch_list_builtin_method(
             let taken = list.take_prefix(*n as usize);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(taken)))))
         }
+        // `min`/`max`/`sum`: the reductions a list API is expected to have.
+        //
+        // `map`, `filter`, `reduce`, `unique`, `zip` and `chunk` were all here
+        // and these were not, so the three most ordinary questions about a list
+        // of numbers had to be written as folds — with a comparison lambda that
+        // then had to agree with `sort`'s order, which nothing checked.
+        "min" | "max" => {
+            if !positional.is_empty() {
+                bail!("list.{method}() expects no arguments, got {}", positional.len());
+            }
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            // The order is `sort`'s, from the same comparison: `xs.sort().first()`
+            // and `xs.min()` cannot disagree, because there is only one rule.
+            let index = typed_list_extreme_index(list, heap, method == "max");
+            Ok(Some(match index {
+                Some(index) => typed_list_element(handle, index, heap),
+                None => RuntimeVal::Nil,
+            }))
+        }
+        "sum" => {
+            if !positional.is_empty() {
+                bail!("list.sum() expects no arguments, got {}", positional.len());
+            }
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            Ok(Some(typed_list_sum(list, heap)?))
+        }
         "unique" => {
             if !positional.is_empty() {
                 bail!("list.unique() expects no arguments, got {}", positional.len());

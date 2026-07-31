@@ -48,6 +48,24 @@ impl IterModule {
         forward("filter", args, runtime)
     }
 
+    // The three reductions, forwarded like the rest: the module spelling is the
+    // method with the receiver written first, and a method that had no module
+    // spelling would be the kind of half-surface this module exists to avoid.
+    #[stdlib_export(params(values: List | Slice | Bytes), returns = Any, kind = "full_state")]
+    fn min(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("min", args, runtime)
+    }
+
+    #[stdlib_export(params(values: List | Slice | Bytes), returns = Any, kind = "full_state")]
+    fn max(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("max", args, runtime)
+    }
+
+    #[stdlib_export(params(values: List | Slice | Bytes), returns = Any, kind = "full_state")]
+    fn sum(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("sum", args, runtime)
+    }
+
     #[stdlib_export(params(values: List | Slice | Bytes, initial: Any, f: Fn), returns = Any, kind = "full_state")]
     fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("reduce", args, runtime)

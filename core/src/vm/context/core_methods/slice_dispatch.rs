@@ -120,6 +120,32 @@ pub(super) fn dispatch_slice_builtin_method(
             }
             Ok(Some(slice_item(&slice, len - 1, heap)))
         }
+        // A window over a list is a sequence too, and it answers the same three
+        // reductions — through the list's own helpers, so a slice and the list
+        // it borrows cannot give different answers for the same elements.
+        "min" | "max" | "sum" => {
+            if !positional.is_empty() {
+                bail!("slice.{method}() expects no arguments, got {}", positional.len());
+            }
+            // The window's own elements, as a list: the source may have shrunk
+            // since the window was taken, so `live_len` decides how far it goes
+            // — the same rule every other method here follows.
+            let RuntimeVal::Obj(source) = slice.source else {
+                return Ok(Some(RuntimeVal::Nil));
+            };
+            let Some(HeapValue::List(list)) = heap.get(source) else {
+                return Ok(Some(RuntimeVal::Nil));
+            };
+            let window = list.window(slice.start, len);
+            if method == "sum" {
+                return Ok(Some(typed_list_sum(&window, heap)?));
+            }
+            let index = typed_list_extreme_index(&window, heap, method == "max");
+            Ok(Some(match index {
+                Some(index) => slice_item(&slice, index, heap),
+                None => RuntimeVal::Nil,
+            }))
+        }
         "contains" | "index_of" => {
             if positional.len() != 1 {
                 bail!("slice.{method}() expects 1 argument (value), got {}", positional.len());
