@@ -1143,6 +1143,79 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
 #[cfg(all(not(test), not(feature = "vm-profile")))]
 pub fn vm_runtime_metrics_reset() {}
 
+/// What a function's reachable subtree does with its module's globals.
+///
+/// Three answers rather than a bool, because the two ways of failing are
+/// different things to tell a program: a body that *writes* a global is asking
+/// for something a cross-module call cannot give it, while a body that makes a
+/// call this walk cannot follow is merely unproven — the same refusal, but for
+/// a reason the author can act on differently.
+pub(crate) enum GlobalUse {
+    /// Reads these global slots (possibly none) and writes nothing.
+    Reads(alloc::vec::Vec<u16>),
+    /// Contains a `SetGlobal`.
+    Writes,
+    /// Makes a call whose target this walk cannot name, so nothing about
+    /// globals is proven past it.
+    OpaqueCall,
+}
+
+impl GlobalUse {
+    /// The `(writes, reads)` shape the cross-module dispatch check wants: an
+    /// unfollowable call counts as a write, because the reads it hides would
+    /// otherwise be missing from a list that is supposed to be complete.
+    pub(crate) fn writes_and_reads(self) -> (bool, alloc::vec::Vec<u16>) {
+        match self {
+            GlobalUse::Reads(reads) => (false, reads),
+            GlobalUse::Writes | GlobalUse::OpaqueCall => (true, alloc::vec::Vec::new()),
+        }
+    }
+}
+
+/// How a function's reachable subtree uses its module's globals.
+///
+/// Reachability follows `CallDirect` and `MakeClosure`, the two opcodes that
+/// name a function index statically — the same edges the AOT hybrid prescan
+/// walks. An indirect call (a closure through a register, a builtin loaded into
+/// one, a method dispatch) cannot be followed, so it is [`GlobalUse::OpaqueCall`]:
+/// that keeps the read list complete for every function that answers
+/// [`GlobalUse::Reads`], which is what both callers rely on.
+///
+/// Two callers, one walk. The compiler records this per impl method so a
+/// cross-module trait dispatch can seed exactly the globals the body reads; the
+/// runtime asks the same question of an ordinary function when it is passed out
+/// of its module as a value. Two walks that disagreed would let a function that
+/// writes a global cross a boundary where the write would be lost.
+pub(crate) fn function_global_use(module: &crate::vm::Module, root: u32) -> GlobalUse {
+    use crate::vm::ir::Opcode;
+
+    /// A call this walk cannot follow to a named function index.
+    fn is_opaque_call(op: Opcode) -> bool {
+        matches!(op, Opcode::Call | Opcode::CallNamed | Opcode::CallMethodK)
+    }
+
+    let mut reads: alloc::vec::Vec<u16> = alloc::vec::Vec::new();
+    let mut seen = alloc::vec![false; module.functions.len()];
+    let mut stack = alloc::vec![root as usize];
+    while let Some(index) = stack.pop() {
+        if index >= module.functions.len() || core::mem::replace(&mut seen[index], true) {
+            continue;
+        }
+        for instr in &module.functions[index].code {
+            match instr.opcode() {
+                Opcode::SetGlobal => return GlobalUse::Writes,
+                op if is_opaque_call(op) => return GlobalUse::OpaqueCall,
+                Opcode::GetGlobal => reads.push(instr.bx()),
+                Opcode::CallDirect | Opcode::MakeClosure => stack.push(instr.b() as usize),
+                _ => {}
+            }
+        }
+    }
+    reads.sort_unstable();
+    reads.dedup();
+    GlobalUse::Reads(reads)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

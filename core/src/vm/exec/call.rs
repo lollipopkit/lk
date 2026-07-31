@@ -219,10 +219,17 @@ impl Executor {
             }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
-                let result = runtime_callable::call_runtime_callable_runtime(
+                // The executor is the one place that knows which module these
+                // arguments come from, and a *function* among them needs that:
+                // it is an index into this module's table, and crossing into
+                // another module is what promotes it to a callable carrying
+                // this one (`ClosureCopy::Promote`).
+                let caller_module = self.shared_module.clone();
+                let result = runtime_callable::call_runtime_callable_runtime_from(
                     function.as_ref(),
                     &self.state.stack[args],
                     &mut self.state.heap,
+                    caller_module.as_ref(),
                     ctx.as_deref_mut(),
                 );
                 result

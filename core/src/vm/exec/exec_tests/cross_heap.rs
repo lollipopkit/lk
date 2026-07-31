@@ -43,22 +43,16 @@ fn a_long_string_map_key_survives_both_crossings_as_itself() {
     }
 }
 
-/// A function leaving its module says what the program did, not what the copy
-/// function lacked.
+/// A copy with no module recorded still refuses a function, and says so in the
+/// program's terms.
 ///
-/// The text was "cannot copy closure without module context" — a sentence about
-/// a parameter of `copy_runtime_value`. What a user wrote was
-/// `apply(double, 5)`, where `apply` came from another file; the same call works
-/// when both sit in one. A bare closure is an index into *its own* module's
-/// function table, so it cannot be read anywhere else — that is the fact worth
-/// stating, together with the two ways around it.
-///
-/// The limitation stays a run-time one on purpose: the export direction already
-/// promotes a crossing closure to a module-carrying callable, and the argument
-/// direction is meant to follow. Turning it into a check-time rule would codify
-/// something we intend to lift.
+/// This is the channel-payload case: `copy_runtime_value` is handed a value and
+/// two heaps, and nothing says which module the closure's `function_index`
+/// indexes. Passing a function *as an argument* is a different path — the
+/// executor knows the caller's module there, and promotes instead of refusing
+/// (see `promote_crossing_closure`).
 #[test]
-fn a_function_leaving_its_module_is_refused_in_the_programs_terms() {
+fn a_function_copied_with_no_module_recorded_is_refused_in_the_programs_terms() {
     let mut source_heap = HeapStore::new();
     let closure = source_heap.alloc(HeapValue::Callable(CallableValue::Closure {
         function_index: 0,
@@ -67,15 +61,11 @@ fn a_function_leaving_its_module_is_refused_in_the_programs_terms() {
 
     let mut dest_heap = HeapStore::new();
     let error = copy_runtime_value(&RuntimeVal::Obj(closure), &source_heap, &mut dest_heap)
-        .expect_err("a closure has no meaning in another module");
+        .expect_err("a closure with no module recorded has no meaning in another module");
 
     let message = format!("{error:#}");
     assert!(
-        message.contains("cannot be passed out of the module that defined it"),
-        "{message}"
-    );
-    assert!(
-        message.contains("Move the function into the module that calls it"),
-        "{message}"
+        message.contains("cannot be passed out of the module that defined it here"),
+        "the refusal should name what the program did: {message}"
     );
 }

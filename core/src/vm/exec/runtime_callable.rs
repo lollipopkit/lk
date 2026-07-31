@@ -131,7 +131,30 @@ pub fn call_runtime_callable_runtime(
     caller_heap: &mut HeapStore,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
-    call_runtime_callable_runtime_positional(function, RuntimePositionalArgs::Slice(args), caller_heap, ctx)
+    call_runtime_callable_runtime_positional(function, RuntimePositionalArgs::Slice(args), caller_heap, None, ctx)
+}
+
+/// [`call_runtime_callable_runtime`] told which module the arguments come from.
+///
+/// Only the executor knows that, and only it can say it: a *function* among
+/// those arguments is a bare index into the caller's table, so without the
+/// caller's module there is nothing to promote it against. Every other caller
+/// (a stdlib HOF re-entering the VM, a test) passes `None` and keeps the old
+/// refusal.
+pub fn call_runtime_callable_runtime_from(
+    function: &RuntimeCallable,
+    args: &[RuntimeVal],
+    caller_heap: &mut HeapStore,
+    caller_module: Option<&Arc<Module>>,
+    ctx: Option<&mut crate::vm::VmContext>,
+) -> Result<RuntimeVal> {
+    call_runtime_callable_runtime_positional(
+        function,
+        RuntimePositionalArgs::Slice(args),
+        caller_heap,
+        caller_module,
+        ctx,
+    )
 }
 
 pub fn call_runtime_value_runtime(
@@ -279,7 +302,7 @@ pub fn call_trait_method(
             if runtime_callable_module_is_executing(callable.as_ref()) {
                 return call_foreign_module_method(&callable.module, callable.function_index, name, pos, state, ctx);
             }
-            call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, ctx)
+            call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, None, ctx)
         }
     }
 }
@@ -449,7 +472,7 @@ fn call_runtime_value_with_map_args(
                 call_runtime_native_positional(&native, pos, state, module, ctx, callee_root)
             }
             CallableTarget::Runtime(function) => {
-                call_runtime_callable_runtime_positional(function.as_ref(), pos, &mut state.heap, ctx)
+                call_runtime_callable_runtime_positional(function.as_ref(), pos, &mut state.heap, None, ctx)
             }
         };
     };
@@ -704,8 +727,10 @@ fn call_runtime_callable_runtime_positional(
     function: &RuntimeCallable,
     pos: RuntimePositionalArgs<'_>,
     caller_heap: &mut HeapStore,
+    caller_module: Option<&Arc<Module>>,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
+    let mode = crossing_mode(caller_module);
     let state = take_runtime_callable_state(function)
         .map_err(|reason| reason.into_error(&function.module, function.function_index))?;
     let function_meta = function
@@ -732,7 +757,7 @@ fn call_runtime_callable_runtime_positional(
         |executor| {
             let heap = &mut executor.state.heap;
             let frame = &mut executor.state.stack[..function_meta.register_count as usize];
-            copy_runtime_positional_args_to_frame(function_meta, pos, caller_heap, heap, frame)?;
+            copy_runtime_positional_args_to_frame(function_meta, pos, caller_heap, heap, frame, &mode)?;
             Ok(function_meta.param_count)
         },
     ) {
@@ -789,7 +814,15 @@ fn call_runtime_callable_runtime_named_map_positional(
             };
             let heap = &mut executor.state.heap;
             let frame = &mut executor.state.stack[..function_meta.register_count as usize];
-            copy_runtime_positional_args_with_named_map_to_frame(function_meta, pos, named, caller_heap, heap, frame)?;
+            copy_runtime_positional_args_with_named_map_to_frame(
+                function_meta,
+                pos,
+                named,
+                caller_heap,
+                heap,
+                frame,
+                &ClosureCopy::Reject,
+            )?;
             Ok(function_meta.param_count)
         },
     ) {
@@ -866,12 +899,22 @@ fn checked_arg_count(len: usize) -> Result<u16> {
     u16::try_from(len).map_err(|_| anyhow!("function arg count {} exceeds u16", len))
 }
 
+/// How a function value among the arguments is treated on the way across.
+///
+/// With the caller's module known it is promoted to a callable that carries
+/// that module; without it the copy has nothing to attach and refuses, which is
+/// the old behaviour for every path that cannot say where the value came from.
+fn crossing_mode(caller_module: Option<&Arc<Module>>) -> ClosureCopy {
+    caller_module.map_or(ClosureCopy::Reject, |module| ClosureCopy::Promote(Arc::clone(module)))
+}
+
 fn copy_runtime_positional_args_to_frame(
     function: &crate::vm::Function,
     pos: RuntimePositionalArgs<'_>,
     caller_heap: &HeapStore,
     callee_heap: &mut HeapStore,
     frame: &mut [RuntimeVal],
+    mode: &ClosureCopy,
 ) -> Result<()> {
     if frame.len() < function.param_count as usize {
         bail!(
@@ -885,7 +928,7 @@ fn copy_runtime_positional_args_to_frame(
     if actual != expected {
         bail!("Function expects {} positional arguments, got {}", expected, actual);
     }
-    copy_runtime_positional_args_into_slots(pos, caller_heap, callee_heap, &mut frame[..expected])
+    copy_runtime_positional_args_into_slots(pos, caller_heap, callee_heap, &mut frame[..expected], mode)
 }
 
 fn copy_runtime_positional_args_with_named_map_to_frame(
@@ -895,6 +938,7 @@ fn copy_runtime_positional_args_with_named_map_to_frame(
     caller_heap: &HeapStore,
     callee_heap: &mut HeapStore,
     frame: &mut [RuntimeVal],
+    mode: &ClosureCopy,
 ) -> Result<()> {
     if frame.len() < function.param_count as usize {
         bail!(
@@ -915,7 +959,7 @@ fn copy_runtime_positional_args_with_named_map_to_frame(
             actual
         );
     }
-    copy_runtime_positional_args_into_slots(pos, caller_heap, callee_heap, &mut frame[..positional_count])?;
+    copy_runtime_positional_args_into_slots(pos, caller_heap, callee_heap, &mut frame[..positional_count], mode)?;
     copy_typed_map_named_args_to_frame(function, named, caller_heap, callee_heap, frame)
 }
 
@@ -924,24 +968,25 @@ fn copy_runtime_positional_args_into_slots(
     caller_heap: &HeapStore,
     callee_heap: &mut HeapStore,
     slots: &mut [RuntimeVal],
+    mode: &ClosureCopy,
 ) -> Result<()> {
     match pos {
         RuntimePositionalArgs::Slice(values) => {
             for (slot, value) in slots.iter_mut().zip(values) {
-                *slot = copy_runtime_value(value, caller_heap, callee_heap)?;
+                *slot = copy_runtime_value_with(value, caller_heap, callee_heap, mode)?;
             }
             Ok(())
         }
         RuntimePositionalArgs::ListHandle(handle) => {
-            copy_typed_list_arg_handle_to_slots(handle, caller_heap, callee_heap, slots)
+            copy_typed_list_arg_handle_to_slots(handle, caller_heap, callee_heap, slots, mode)
         }
         RuntimePositionalArgs::Prefixed { first, rest } => {
             let Some((first_slot, rest_slots)) = slots.split_first_mut() else {
                 bail!("runtime positional argument frame is empty");
             };
-            *first_slot = copy_runtime_value(first, caller_heap, callee_heap)?;
+            *first_slot = copy_runtime_value_with(first, caller_heap, callee_heap, mode)?;
             for (slot, value) in rest_slots.iter_mut().zip(rest) {
-                *slot = copy_runtime_value(value, caller_heap, callee_heap)?;
+                *slot = copy_runtime_value_with(value, caller_heap, callee_heap, mode)?;
             }
             Ok(())
         }
@@ -949,8 +994,8 @@ fn copy_runtime_positional_args_into_slots(
             let Some((first_slot, rest_slots)) = slots.split_first_mut() else {
                 bail!("runtime positional argument frame is empty");
             };
-            *first_slot = copy_runtime_value(first, caller_heap, callee_heap)?;
-            copy_typed_list_arg_handle_to_slots(rest, caller_heap, callee_heap, rest_slots)
+            *first_slot = copy_runtime_value_with(first, caller_heap, callee_heap, mode)?;
+            copy_typed_list_arg_handle_to_slots(rest, caller_heap, callee_heap, rest_slots, mode)
         }
     }
 }
@@ -960,6 +1005,7 @@ fn copy_typed_list_arg_handle_to_slots(
     caller_heap: &HeapStore,
     callee_heap: &mut HeapStore,
     slots: &mut [RuntimeVal],
+    mode: &ClosureCopy,
 ) -> Result<()> {
     match caller_heap
         .get(handle)
@@ -967,7 +1013,7 @@ fn copy_typed_list_arg_handle_to_slots(
     {
         HeapValue::List(TypedList::Mixed(values)) => {
             for (slot, value) in slots.iter_mut().zip(values) {
-                *slot = copy_runtime_value(value, caller_heap, callee_heap)?;
+                *slot = copy_runtime_value_with(value, caller_heap, callee_heap, mode)?;
             }
         }
         HeapValue::List(TypedList::Int(values)) => {
@@ -1226,18 +1272,126 @@ pub fn runtime_value_to_callable_shared(
     None
 }
 
+/// A function value crossing into another module, as a callable that carries
+/// its own module.
+///
+/// The problem this solves: a bare `Closure` is a `function_index` into *its
+/// own* module's function table, so the moment it lands in another module it
+/// indexes a different table — which is why the copy used to refuse it and
+/// `apply(double, 5)` across two files did not work at all.
+///
+/// The promoted callable holds the defining module, so the index means what it
+/// meant. What it does *not* hold is that module's live state: the caller's
+/// state belongs to a frame further down the Rust stack and cannot be taken
+/// while it is running. So the callable gets a **private, empty** state — a
+/// fresh heap that its arguments are copied into and its result copied out of,
+/// which is exactly what every `RuntimeCallable` call already does.
+///
+/// That is sound only if the function needs nothing else from its module, and
+/// the one thing left is the globals. Hence the refusal below, with the same
+/// analysis a cross-module trait dispatch uses
+/// ([`crate::vm::analysis::function_global_use`]) — a function that reads a
+/// module global would read `nil` here, and one that writes would write into a
+/// table nobody will ever look at again. Both are wrong answers rather than
+/// slow ones, so they are refused, by name.
+fn promote_crossing_closure(
+    module: &Arc<Module>,
+    function_index: u32,
+    captures: &[RuntimeVal],
+    source_heap: &HeapStore,
+) -> Result<HeapValue> {
+    let global_use = crate::vm::analysis::function_global_use(module, function_index);
+    // A lambda has no name, and "`#3` cannot be passed out" would be useless —
+    // so an anonymous one is described by what it is instead.
+    let name = module
+        .functions
+        .get(function_index as usize)
+        .and_then(|function| function.debug_name.clone())
+        .map_or_else(
+            || alloc::string::String::from("this lambda"),
+            |name| alloc::format!("`{name}`"),
+        );
+    match global_use {
+        crate::vm::analysis::GlobalUse::Writes => bail!(
+            "{name} cannot be passed out of the module that defined it: it writes a module global. A function \
+             that crosses a module boundary runs against a fresh state, so the write would land in a table \
+             nobody reads again. Return the new value instead of storing it"
+        ),
+        // Not the same refusal as a write, and worth its own sentence: nothing
+        // is known to be wrong here, only unproven. `println` lands in this
+        // case — a builtin arrives through a register, and a call this walk
+        // cannot follow could reach anything, including a global.
+        crate::vm::analysis::GlobalUse::OpaqueCall => bail!(
+            "{name} cannot be passed out of the module that defined it: it makes a call this check cannot follow \
+             (a builtin such as `println`, a function held in a variable, or a method), so it cannot be shown to \
+             leave its module's globals alone — and a function that crosses a module boundary runs against a \
+             fresh state where they are all nil. Do that work on this side of the boundary, or return the value \
+             and let the caller print it"
+        ),
+        crate::vm::analysis::GlobalUse::Reads(reads) => {
+            if let Some(slot) = reads.first() {
+                let global = module
+                    .globals
+                    .get(*slot as usize)
+                    .map(|slot| slot.name.to_string())
+                    .unwrap_or_else(|| alloc::format!("#{slot}"));
+                bail!(
+                    "{name} cannot be passed out of the module that defined it: it reads the module global \
+                     `{global}`, and a function that crosses a module boundary runs against a fresh state where \
+                     that global is nil. Pass the value in as an argument instead"
+                );
+            }
+        }
+    }
+    // The globals table is the module's shape, filled with nil: the executor
+    // checks the width on entry, and the analysis above has already proven that
+    // no slot is read.
+    let mut state = RuntimeModuleState {
+        globals: alloc::vec![RuntimeVal::Nil; module.globals.len()],
+        ..RuntimeModuleState::default()
+    };
+    let mut copied = Vec::with_capacity(captures.len());
+    for value in captures {
+        // The captures come along, into the callable's own heap: a promoted
+        // `|x| x + n` has to keep its `n`, and a capture that is itself a
+        // function of this module promotes the same way.
+        copied.push(copy_runtime_value_with(
+            value,
+            source_heap,
+            &mut state.heap,
+            &ClosureCopy::Promote(Arc::clone(module)),
+        )?);
+    }
+    Ok(HeapValue::Callable(CallableValue::Runtime(Arc::new(
+        RuntimeCallable::with_shared_captures(
+            Arc::clone(module),
+            function_index,
+            Arc::new(copied),
+            Arc::new(Mutex::new(state)),
+        ),
+    ))))
+}
+
 /// How a deep copy treats plain `Closure` values (`function_index` +
 /// captures, no module attached).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum ClosureCopy {
     /// Reject: the destination may run a *different* module, where the bare
-    /// `function_index` would be meaningless (channel payloads, cross-VM
-    /// imports use the promote-to-`RuntimeCallable` path instead).
+    /// `function_index` would be meaningless, and the copy does not know which
+    /// module the value came from. A channel payload is the case left here.
     Reject,
     /// Copy structurally (`function_index` kept, captures deep-copied): only
     /// sound when the destination provably executes the *same* `Module` —
     /// the `spawn`/`go` snapshot is the use case.
     SameModule,
+    /// Promote to a [`RuntimeCallable`] carrying this module: the value is
+    /// crossing into another module, and a function that knows its own module
+    /// is callable from anywhere.
+    ///
+    /// This is what makes `apply(double, 5)` work across files. The promotion
+    /// is refused for a function whose reachable subtree touches its module's
+    /// globals — see [`promote_crossing_closure`] for why that is the line.
+    Promote(Arc<Module>),
 }
 
 pub fn copy_runtime_value(
@@ -1245,7 +1399,7 @@ pub fn copy_runtime_value(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
 ) -> Result<RuntimeVal> {
-    copy_runtime_value_with(value, source_heap, dest_heap, ClosureCopy::Reject)
+    copy_runtime_value_with(value, source_heap, dest_heap, &ClosureCopy::Reject)
 }
 
 /// Same-module deep copy: closures are copied structurally. See
@@ -1255,14 +1409,14 @@ pub fn copy_runtime_value_same_module(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
 ) -> Result<RuntimeVal> {
-    copy_runtime_value_with(value, source_heap, dest_heap, ClosureCopy::SameModule)
+    copy_runtime_value_with(value, source_heap, dest_heap, &ClosureCopy::SameModule)
 }
 
 fn copy_runtime_value_with(
     value: &RuntimeVal,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
+    mode: &ClosureCopy,
 ) -> Result<RuntimeVal> {
     match value {
         RuntimeVal::Nil => Ok(RuntimeVal::Nil),
@@ -1283,7 +1437,7 @@ fn copy_heap_value(
     value: &HeapValue,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
+    mode: &ClosureCopy,
 ) -> Result<HeapValue> {
     Ok(match value {
         HeapValue::String(value) => HeapValue::String(Arc::clone(value)),
@@ -1330,11 +1484,14 @@ fn copy_heap_value(
             // module has none — see the task tracking the module-bound callable
             // that would close it.
             ClosureCopy::Reject => bail!(
-                "a function value cannot be passed out of the module that defined it (here: as an argument to an \
-                 imported function, or as a channel payload). A function carries an index into its own module's \
-                 table, and nothing outside that module can read it. Move the function into the module that calls \
-                 it, or send the data and let that module call a function of its own"
+                "a function value cannot be passed out of the module that defined it here (a channel payload). A \
+                 function carries an index into its own module's table, and this crossing does not record which \
+                 module that is. Passing a function *as an argument* to an imported function does work — send the \
+                 data through the channel and call the function on the other side"
             ),
+            ClosureCopy::Promote(module) => {
+                return promote_crossing_closure(module, *function_index, captures, source_heap);
+            }
             ClosureCopy::SameModule => {
                 let mut copied = Vec::with_capacity(captures.len());
                 for value in captures.iter() {
@@ -1376,7 +1533,7 @@ fn copy_typed_list(
     values: &TypedList,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
+    mode: &ClosureCopy,
 ) -> Result<TypedList> {
     Ok(match values {
         TypedList::Mixed(values) => {
@@ -1397,7 +1554,7 @@ fn copy_typed_map(
     values: &TypedMap,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
+    mode: &ClosureCopy,
 ) -> Result<TypedMap> {
     Ok(match values {
         TypedMap::Mixed(values) => TypedMap::Mixed(copy_runtime_entries(values, source_heap, dest_heap, mode)?),
@@ -1435,7 +1592,7 @@ fn copy_runtime_entries(
     values: &FastHashMap<RuntimeMapKey, RuntimeVal>,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
-    mode: ClosureCopy,
+    mode: &ClosureCopy,
 ) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
     let mut out = fast_hash_map_new();
     for (key, value) in values {

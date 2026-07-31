@@ -182,52 +182,31 @@ impl Compiler {
         Ok(module)
     }
 
-    /// Records, per impl method, how its reachable subtree uses module globals
-    /// (see [`crate::vm::ImplMethod::writes_globals`] and
-    /// [`reads_globals`](crate::vm::ImplMethod::reads_globals)).
+    /// Records, per impl method, how its reachable subtree uses module globals.
     ///
-    /// Reachability follows `CallDirect` and `MakeClosure`, the two opcodes that
-    /// name a function index statically — the same edges the AOT hybrid prescan
-    /// walks. An indirect call (a closure through a register, a builtin loaded
-    /// into one, a method dispatch) is *not* followed, so it counts as
-    /// `writes_globals`: that keeps the read list complete for every method the
-    /// flag clears, which is what a cross-module dispatch relies on.
+    /// The walk itself is [`crate::vm::analysis::function_global_use`] — one
+    /// implementation, because the same question is asked at run time when a
+    /// function value crosses a module boundary, and two walks that disagreed
+    /// would let a function that writes a global cross anyway.
     fn record_impl_method_global_use(module: &mut Module) {
-        use super::super::ir::Opcode;
-
-        /// A call this walk cannot follow to a named function index.
-        fn is_opaque_call(op: Opcode) -> bool {
-            matches!(op, Opcode::Call | Opcode::CallNamed | Opcode::CallMethodK)
-        }
-
-        let walk = |root: u32| -> (bool, Vec<u16>) {
-            let mut reads: Vec<u16> = Vec::new();
-            let mut seen = vec![false; module.functions.len()];
-            let mut stack = vec![root as usize];
-            while let Some(index) = stack.pop() {
-                if index >= module.functions.len() || core::mem::replace(&mut seen[index], true) {
-                    continue;
-                }
-                for instr in &module.functions[index].code {
-                    match instr.opcode() {
-                        Opcode::SetGlobal => return (true, Vec::new()),
-                        op if is_opaque_call(op) => return (true, Vec::new()),
-                        Opcode::GetGlobal => reads.push(instr.bx()),
-                        Opcode::CallDirect | Opcode::MakeClosure => stack.push(instr.b() as usize),
-                        _ => {}
-                    }
-                }
-            }
-            reads.sort_unstable();
-            reads.dedup();
-            (false, reads)
-        };
-
+        let facts: Vec<(u32, bool, Vec<u16>)> = module
+            .type_info
+            .impls
+            .iter()
+            .flat_map(|decl| decl.methods.iter())
+            .map(|method| {
+                let (writes, reads) =
+                    crate::vm::analysis::function_global_use(module, method.function).writes_and_reads();
+                (method.function, writes, reads)
+            })
+            .collect();
+        let mut facts = facts.into_iter();
         for decl in &mut module.type_info.impls {
             for method in &mut decl.methods {
-                let (writes_globals, reads_globals) = walk(method.function);
-                method.writes_globals = writes_globals;
-                method.reads_globals = reads_globals;
+                let (function, writes, reads) = facts.next().expect("one fact per method, in the same order");
+                debug_assert_eq!(function, method.function);
+                method.writes_globals = writes;
+                method.reads_globals = reads;
             }
         }
     }
