@@ -285,18 +285,54 @@ fn origin_for_span<'a>(origins: &'a [MacroTokenOrigin], span: &crate::token::Spa
     })
 }
 
+/// Render a token stream back to source, one statement per line.
+///
+/// The line breaks are the point. `lk macro expand` exists to be *read* — it is
+/// the debugging tool `docs/macros.md` points at — and it used to answer with
+/// the whole program on a single line: a 78-line example came back as one
+/// 832-character line. Nothing downstream could help either, because `lk fmt`
+/// is a line re-indenter and there was one line.
+///
+/// Two breaks, both exact rather than guessed:
+///
+/// - after `;`, which ends a statement in this language and nothing else;
+/// - after a `}` whose *next* token starts a declaration. A `}` alone is not a
+///   break — `let m = {"a": 1};` would gain one before its own semicolon — so
+///   the following token decides.
 pub fn render_tokens(tokens: &[Token]) -> String {
     let mut output = String::new();
     let mut prev: Option<&Token> = None;
-    for token in tokens {
+    for (index, token) in tokens.iter().enumerate() {
         let lexeme = token_lexeme(token);
-        if should_insert_space(prev, token) {
+        if output.ends_with('\n') {
+            // A fresh line owns its indentation; `lk fmt` supplies the rest.
+        } else if breaks_line_after(prev, token, tokens.get(index + 1)) {
+            output.push('\n');
+        } else if should_insert_space(prev, token) {
             output.push(' ');
         }
         output.push_str(&lexeme);
         prev = Some(token);
     }
     output
+}
+
+/// Does a line end *before* `token`?
+fn breaks_line_after(prev: Option<&Token>, token: &Token, _next: Option<&Token>) -> bool {
+    match prev {
+        Some(Token::Semicolon) => true,
+        Some(Token::RBrace) => starts_declaration(token),
+        _ => false,
+    }
+}
+
+/// Tokens that can only begin a new top-level item, so a `}` before one is the
+/// end of the previous item rather than part of an expression.
+fn starts_declaration(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Fn | Token::Let | Token::Struct | Token::Impl | Token::Trait | Token::Use | Token::Hash
+    )
 }
 
 pub fn render_program(program: &Program) -> String {
@@ -341,4 +377,46 @@ fn should_insert_space(prev: Option<&Token>, current: &Token) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod render_test {
+    use super::{ParseOptions, render_tokens, tokenize_and_expand};
+
+    /// The expansion comes back one statement per line.
+    ///
+    /// `lk macro expand` is the tool `docs/macros.md` points at for reading
+    /// what a macro produced, and it used to answer with the whole program on
+    /// one line — a 78-line example came back as a single 832-character line.
+    /// Nothing downstream could help either: `lk fmt` is a line re-indenter,
+    /// and there was one line.
+    #[test]
+    fn rendered_tokens_are_one_statement_per_line() {
+        let source = "fn a() -> Int { return 1; }\nfn b() -> Int { return a() + 1; }\nlet c = b();\n";
+        let (tokens, _) = tokenize_and_expand(source, ParseOptions::default()).expect("expand");
+        assert_eq!(
+            render_tokens(&tokens).lines().collect::<Vec<_>>(),
+            vec![
+                "fn a () -> Int {return 1;",
+                "}",
+                "fn b () -> Int {return a () + 1;",
+                "}",
+                "let c = b ();"
+            ]
+        );
+    }
+
+    /// A `}` that closes a map literal is not the end of a statement.
+    ///
+    /// Breaking on every `}` would put the `;` of `let m = {"a": 1};` on a line
+    /// of its own, which is why the *next* token decides.
+    #[test]
+    fn a_map_literals_brace_does_not_end_a_line() {
+        let source = "let m = {\"a\": 1};\nlet n = 2;\n";
+        let (tokens, _) = tokenize_and_expand(source, ParseOptions::default()).expect("expand");
+        assert_eq!(
+            render_tokens(&tokens).lines().collect::<Vec<_>>(),
+            vec!["let m = {\"a\" : 1};", "let n = 2;"]
+        );
+    }
 }

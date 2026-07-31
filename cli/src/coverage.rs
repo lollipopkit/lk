@@ -72,9 +72,19 @@ fn print_static_coverage(path: &Path, module: &lk_core::vm::Module) {
         }
     }
 
+    // No `natives:` line. It printed `module.natives.len()`, and the only path
+    // that builds a module here — `compile_program_module_with_ctx`, which the
+    // executor uses too — passes `Vec::new()` for that table. The number was 0
+    // for every program ever compiled, including ones whose whole body is a
+    // `println` call: a stdlib native arrives as a context global and is called
+    // through `GetGlobal` + `Call`, both of which the opcode table below counts
+    // honestly. A statistic that cannot be anything but zero reads as "this
+    // program makes no native calls", which is the opposite of true.
+    //
+    // The table it reported on is reachable from no binary at all; see the task
+    // tracking whether `LoadNative` should exist.
     println!("Instr coverage: {}", path.display());
     println!("  functions: {}", module.functions.len());
-    println!("  natives: {}", module.natives.len());
     println!("  globals: {}", module.globals.len());
     println!("  instructions: {instructions}");
     println!("  registers: {registers}");
