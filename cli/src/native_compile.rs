@@ -58,9 +58,12 @@ pub(super) fn c_escape(s: &str) -> String {
     out
 }
 
-pub(super) fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
+pub(super) fn compile_instr_module(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let output = path.with_extension("lkm");
+    // A package build's output belongs at the package root, not in `src/` —
+    // see `split_compile_args_with_cwd`. `.lkm` is as much a build artifact as
+    // the executable is.
+    let output = output.map_or_else(|| path.with_extension("lkm"), |dir| dir.with_extension("lkm"));
     std::fs::write(&output, artifact.to_json_string()?)
         .with_context(|| format!("write Instr module {}", output.display()))?;
     println!("{}", output.display());

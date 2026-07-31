@@ -126,7 +126,7 @@ mod tests {
         let args =
             CliArgs::try_parse_from(["lk", "compile", "bytecode", "foo.lk"]).expect("should parse positional target");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let (target, file) = split_compile_args(&positional).expect("should split compile args");
+            let (target, file, _out) = split_compile_args(&positional).expect("should split compile args");
             assert_eq!(target, CompileMode::Bytecode);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
@@ -171,7 +171,7 @@ mod tests {
     fn test_cli_args_compile_default_target_is_exe() {
         let args = CliArgs::try_parse_from(["lk", "compile", "foo.lk"]).expect("should parse default compile");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let (target, file) = split_compile_args(&positional).expect("should split compile args");
+            let (target, file, _out) = split_compile_args(&positional).expect("should split compile args");
             assert_eq!(target, CompileMode::Exe);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
@@ -195,7 +195,10 @@ mod tests {
         let main = temp.path().join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write main.lk");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
+        let (target, file, output) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
+        // A loose `./main.lk` keeps the old rule: `main.lk` -> `main` beside it
+        // is what naming the file would have done anyway.
+        assert_eq!(output, None);
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
@@ -214,10 +217,20 @@ mod tests {
         let main = src.join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write src/main.lk");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
+        let (target, file, output) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
+        // A build output does not belong in `src/`. The entry is
+        // `<pkg>/src/main.lk` and the output used to be that path without its
+        // extension — a 20 MB executable dropped next to the source it was
+        // built from, where the next `git add .` picks it up. It goes to the
+        // package root, named after the package directory.
+        let package_root = main.parent().and_then(std::path::Path::parent).expect("package root");
+        assert_eq!(
+            output.expect("a package build has an implicit output"),
+            package_root.join(package_root.file_name().expect("package directory name"))
+        );
     }
 
     #[test]
@@ -227,7 +240,7 @@ mod tests {
         std::fs::write(&main, "return 1;\n").expect("write main.lk");
 
         let args = vec!["bytecode".to_string()];
-        let (target, file) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
+        let (target, file, _out) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
 
         assert_eq!(target, CompileMode::Bytecode);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
@@ -277,7 +290,8 @@ mod tests {
         let main = src.join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write app main");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
+        let (target, file, _out) =
+            split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));

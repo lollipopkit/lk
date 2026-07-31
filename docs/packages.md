@@ -2,6 +2,25 @@
 
 LK packages use `Lk.toml` and `Lk.lock`, modelled after Cargo manifests.
 
+
+## 构建产物放在包根,不放进 `src/`
+
+```sh
+cd my-pkg
+lk compile            # -> my-pkg/my-pkg
+lk compile bytecode   # -> my-pkg/my-pkg.lkm
+```
+
+`lk compile` 不带 FILE 时会把入口解析成 `<包>/src/main.lk`,而输出路径此前是"入
+口去掉扩展名" —— 于是一个几十 MB 的可执行文件(以及 `.lkm`)被丢进**源码目录**,
+就躺在它编译自的那个文件旁边,下一次 `git add .` 顺手就提交了。
+
+现在:**由清单解析出入口的构建**(即包构建),产物放在包根,名字取包目录名 ——
+和 `go build` 把二进制放进模块目录而不是 `src` 下面是同一个规矩。**用户点名了文
+件**的构建保持原样(`lk compile foo.lk` → `foo`),点名一个文件本来就意味着"就放
+它旁边";`./main.lk` 这种散文件同理。`--output` 永远优先。
+
+
 ## Package Manifest
 
 ```toml

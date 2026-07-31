@@ -445,8 +445,10 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "aot")]
                     output: output_arg,
             } => {
-                let (pos_target, safe) = split_compile_args(&positional)?;
+                let (pos_target, safe, implicit_output) = split_compile_args(&positional)?;
 
+                #[cfg(feature = "aot")]
+                let output_arg_given = output_arg.is_some();
                 #[cfg(feature = "aot")]
                 let output = output_arg
                     .map(|p| {
@@ -454,18 +456,27 @@ fn main() -> anyhow::Result<()> {
                             diagnostic::error(e);
                         })
                     })
-                    .transpose()?;
+                    .transpose()?
+                    // A package build the user did not name a file for: the
+                    // output belongs at the package root, not inside `src/`.
+                    .or(implicit_output.clone());
 
                 let compile_mode = pos_target;
 
+                // The guard is about the *flag*, not about the implicit default
+                // a package build derives — `--output` still means nothing for
+                // `bytecode`, and the default still has to reach it.
                 #[cfg(feature = "aot")]
-                if matches!(compile_mode, CompileMode::Bytecode) && output.is_some() {
+                if matches!(compile_mode, CompileMode::Bytecode) && output_arg_given {
                     anyhow::bail!("--output is only supported for `lk compile <FILE>` and `object:<triple>`");
                 }
 
                 match compile_mode {
                     CompileMode::Bytecode => {
-                        compile_instr_module(&safe)?;
+                        #[cfg(feature = "aot")]
+                        compile_instr_module(&safe, output.as_deref())?;
+                        #[cfg(not(feature = "aot"))]
+                        compile_instr_module(&safe, implicit_output.as_deref())?;
                         return Ok(());
                     }
                     CompileMode::Object { triple } => {
