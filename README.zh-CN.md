@@ -144,6 +144,9 @@ assert_eq!(result.display_first_return(), "true");
 - 原地格式化源码：`lk fmt [PATH...]`（不给路径则格式化整个项目；`--check` 只报告不改写，供 CI 使用）
 - 编译为 native 可执行文件：`lk compile [FILE]`（Cranelift 后端；省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；超出原生切片的形状回退到 Tier 0 VM bundle）
 - 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` → `FILE.lkm`
+- 打包成自带 VM 的独立可执行文件：`lk bundle FILE`（AOT Tier 0 —— 任何程序都能打包,速度是 VM 的）
+- 报告一个文件用到哪些指令：`lk coverage FILE`（`--disassemble` 打印字节码）
+- 查看宏展开：`lk macro expand FILE`（`--trace`、`--deps`、`--origins`,详见 [docs/macros.md](docs/macros.md)）
 - 创建包并管理去中心化 git + lockfile 依赖（无中心 registry）：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg update`、`lk pkg check`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
@@ -154,6 +157,8 @@ assert_eq!(result.display_first_return(), "true");
 
 - VS Code 支持已合并为 `ecosystem/vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make install` 安装 CLI、`lk-lsp` 以及扩展（会装进本机探测到的所有 VS Code 系编辑器：VS Code / Insiders / VSCodium / Cursor / Windsurf，含 remote 窗口），`make debug-lsp-ext` 启动本地 Extension Development Host，或 `make vsix` 只构建 VSIX。
 - Zed 支持位于 `ecosystem/zed-ext`，使用 `ecosystem/tree-sitter-lk` 提供 Tree-sitter 高亮，并启动 `lk-lsp` 提供 diagnostics、completion、hover、goto definition、document symbols、semantic tokens 和 inlay hints。使用 `make zed-ext-check` 验证扩展 crate。
+
+参与 LK 本身的开发:[docs/testing.md](docs/testing.md) 列了全部门禁,以及每一条**只有它**抓得住什么 —— 有几条不在 `cargo test --workspace` 里。
 
 ## 许可证
 
