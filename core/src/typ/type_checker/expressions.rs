@@ -643,6 +643,33 @@ impl TypeChecker {
                 // — "Missing required named argument: y" described the shape the
                 // parser produced, not the one the reader wrote.
                 let constructed_struct = constructed_struct_name(callee);
+                // A builtin global takes no named arguments — none of them
+                // declares any, and each refuses at run time in these words.
+                // Saying it here is the same rule, one call earlier, with a
+                // span.
+                //
+                // It used to be *accidentally* early: the compiler bailed on any
+                // named call it had no signature for, which caught this and also
+                // caught `use { f } from "m"; f(a: 1)`, a perfectly good call.
+                // Removing that bail left this one to the run time until here.
+                //
+                // Only when nothing shadows the name: a local or a user function
+                // called `assert` is that program's own, and its rules are its
+                // own too.
+                if let Expr::Var(name) = callee.as_ref()
+                    && !named_args.is_empty()
+                    && crate::typ::stdlib_global_is_declared(name)
+                    && !self.has_local_binding(name)
+                    && self.registry.get_struct(name).is_none()
+                    && !self.has_user_function(name)
+                {
+                    return Err(Self::type_err(
+                        &format!("{name}() does not accept named arguments"),
+                        None,
+                        None,
+                        Some(callee.as_ref().clone()),
+                    ));
+                }
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
                     && let Some(sd) = self.registry.get_struct(name)

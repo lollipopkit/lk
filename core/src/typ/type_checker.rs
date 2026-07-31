@@ -310,6 +310,14 @@ impl TypeChecker {
         self.imported_members.contains_key(name)
     }
 
+    /// Whether the program declares a function of this name.
+    ///
+    /// A program may shadow a builtin — `fn assert(...)` is its own function,
+    /// with its own rules about named arguments.
+    pub(crate) fn has_user_function(&self, name: &str) -> bool {
+        self.function_sigs.contains_key(name)
+    }
+
     /// Whether a *local* shadows this name.
     ///
     /// Deliberately not [`Self::lookup_binding`], which counts a namespace as a

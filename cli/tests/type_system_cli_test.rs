@@ -171,3 +171,49 @@ fn the_member_check_leaves_everything_else_alone() -> Result<(), Box<dyn Error>>
     cmd.assert().success();
     Ok(())
 }
+
+/// `lk check` refuses named arguments to a builtin global, and lets a program's
+/// own function of the same name keep its own rules.
+///
+/// The rule holds for every builtin — none declares a named parameter — so the
+/// checker only needs to know which names the standard library registers, not
+/// their signatures. Saying it here rather than at run time is the difference
+/// between `lk check` passing a program that cannot run and catching it with a
+/// span.
+#[test]
+fn named_arguments_to_a_builtin_are_a_check_time_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let refused = dir.path().join("refused.lk");
+    std::fs::write(&refused, "assert(cond: true);\n").expect("write");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg("check")
+        .arg(&refused)
+        .output()
+        .expect("run lk check");
+    assert!(!output.status.success(), "the call cannot run, so it must not check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assert() does not accept named arguments"),
+        "the checker should use the same sentence the native does: {stderr}"
+    );
+
+    // A program that declares its own `assert` owns the name, and its named
+    // parameters are its own business.
+    let shadowed = dir.path().join("shadowed.lk");
+    std::fs::write(
+        &shadowed,
+        "fn assert({cond: Bool}) -> Nil { return nil; }\nassert(cond: true);\n",
+    )
+    .expect("write");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg("check")
+        .arg(&shadowed)
+        .output()
+        .expect("run lk check");
+    assert!(
+        output.status.success(),
+        "a user function of the same name keeps its own rules: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

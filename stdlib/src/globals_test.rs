@@ -169,20 +169,21 @@ mod tests {
                 "assert_eq() expects 2 or 3 arguments",
             ),
             ("assert_ne(1);", "assert_ne() expects 2 or 3 arguments"),
-            // A builtin declares no named parameters, and now says so itself.
+            // A builtin declares no named parameters — and this is now a
+            // *check-time* error, in the same words the native uses.
             //
-            // This used to be caught earlier, but by accident and in the wrong
-            // words: the compiler bailed with `Compiler missing named-call
-            // signature for `assert`` — a sentence about its own bookkeeping —
-            // because signatures are collected from the program's own
-            // declarations and a builtin has none there. The same gap made
-            // `use { f } from "m"; f(a: 1)` fail to compile for a perfectly
-            // good call, which is why the bail is gone.
+            // It had been caught early by accident and said the wrong thing:
+            // the compiler bailed on any named call it had no signature for
+            // (`Compiler missing named-call signature for `assert``, a sentence
+            // about its own bookkeeping), which also rejected
+            // `use { f } from "m"; f(a: 1)` — a perfectly good call. With that
+            // bail gone the rule is stated where it belongs: the checker knows
+            // which names the standard library registers as globals, and none
+            // of them takes named arguments.
             //
-            // Wrong *arity* on a builtin was always a run-time error too (see
-            // the rows above), so the two now agree; catching either at check
-            // time wants the globals' parameter metadata, which does not carry
-            // named-parameter information yet.
+            // Wrong *arity* is still only a run-time error (see the rows
+            // above): that needs each global's parameter list, which the
+            // globals' metadata does not carry yet.
             ("assert(cond: true);", "assert() does not accept named arguments"),
         ] {
             let err = execute_with_stdlib_globals(source).expect_err("expected assertion argument error");

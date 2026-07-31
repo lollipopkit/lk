@@ -32,7 +32,8 @@ pub use builtin_method_sig::{
 pub use imports::seed_imported_signatures;
 pub use stdlib_sig::{
     ResolvedStdlibParam, ResolvedStdlibSig, StdlibCallableSig, StdlibParamSig, has_stdlib_signatures,
-    register_stdlib_signatures, stdlib_module_is_declared, stdlib_path_is_declared, stdlib_signature, type_from_text,
+    register_stdlib_global_name, register_stdlib_signatures, stdlib_global_is_declared, stdlib_module_is_declared,
+    stdlib_path_is_declared, stdlib_signature, type_from_text,
 };
 pub use type_checker::*;
 pub use type_system::*;

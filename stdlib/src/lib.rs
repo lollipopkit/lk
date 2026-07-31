@@ -418,6 +418,7 @@ fn register_runtime_builtin(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_name(name);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::Plain(function), arity);
 }
@@ -429,8 +430,18 @@ fn register_runtime_builtin_full_state(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_name(name);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
+}
+
+/// Tells the type checker this name is a builtin global.
+///
+/// Separate from the metadata above, and unconditional: a global with no
+/// metadata is still a global, and the one rule the checker enforces about them
+/// — no named arguments — holds for all of them.
+fn register_global_name(name: &'static str) {
+    lk_core::typ::register_stdlib_global_name(name);
 }
 
 fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMetadata>) {

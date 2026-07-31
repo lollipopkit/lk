@@ -18,7 +18,7 @@ use crate::{
     compat::{once::OnceLock, sync::Mutex},
     val::{FunctionNamedParamType, Type},
 };
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 /// One parameter of a stdlib callable, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +128,32 @@ pub fn stdlib_signature(path: &str) -> Option<ResolvedStdlibSig> {
         return None;
     }
     Some(resolve(&declared))
+}
+
+/// The names the standard library registers as *global* callables — `println`,
+/// `assert`, `spawn`, … — as told by whoever registered them.
+///
+/// Kept apart from the signature registry above because it answers a different
+/// question: those are dotted module members with declared parameters, while a
+/// global is a bare name whose parameters are checked inside its own body. What
+/// the checker can still say about one is the rule that holds for *all* of
+/// them, and there is exactly one: a builtin global takes no named arguments.
+fn global_names() -> &'static Mutex<HashSet<&'static str>> {
+    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    NAMES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Records a builtin global's name. Called once per global at registration.
+pub fn register_stdlib_global_name(name: &'static str) {
+    // Written as a combinator for the reason `register_stdlib_signatures` gives:
+    // the lock is fallible on std (a poisoned mutex) and infallible on the
+    // no_std shim, so a `let Ok(..) else` reads as an irrefutable pattern there.
+    let _ = global_names().lock().map(|mut names| names.insert(name));
+}
+
+/// Whether the standard library registers a global callable of this name.
+pub fn stdlib_global_is_declared(name: &str) -> bool {
+    global_names().lock().map(|names| names.contains(name)).unwrap_or(false)
 }
 
 /// Whether some stdlib module declares this exact dotted path.
