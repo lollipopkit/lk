@@ -90,3 +90,17 @@ cannot produce two different list carriers both flowing into functions that
 mutate them — which is the shape of the open typed-list boxing divergence
 recorded in `docs/semantics.md`. Adding a second carrier is worth doing *after*
 that is fixed; until then it would only make the gate red.
+
+**The carrier is what keeps being wrong.** The generator learned to build a
+shared top-level container after a `List<Int>` global miscompiled — and then
+reproduced *that* carrier only. A `Bytes` global went on miscompiling
+(`b[n]` inside a function printed `98` interpreted and `runtime type error`
+compiled, for any index) until 2026-08-01, because the vocabulary knew `List`
+and `Map` and nothing else. Shared `Bytes` and `Set` globals are generated now,
+read from inside the helpers with a *runtime* index — the constant-index case
+lowered correctly even while that one did not.
+
+Widening the vocabulary is only worth anything if the new shapes can fail:
+re-introducing the bug turned three seeds red, and restoring the fix turned them
+green again. A vocabulary addition that has never failed is in the same position
+as the timing budgets above — do the same negative verification.

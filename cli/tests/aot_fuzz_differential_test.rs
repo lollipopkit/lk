@@ -743,6 +743,35 @@ impl Generator {
         } else {
             None
         };
+        // The same shape on a *different carrier*, because the carrier is what
+        // was wrong last time.
+        //
+        // `container_ty` in the lowering decides both which globals keep their
+        // own type and which are refused when a slot joins to `Dyn`, and it
+        // listed the `List` and `Map` carriers only. A `Bytes` global therefore
+        // got neither: `let b = "abc".bytes(); fn f(n: Int) -> Int { return
+        // b[n] ?? -1; }` printed 98 interpreted and died with `runtime type
+        // error` compiled, for *any* index. This generator already knew to
+        // build a shared global container — it just only knew two of them, so
+        // it reproduced the previous bug's carrier and not the next one's.
+        //
+        // `Bytes` and `Set` are immutable here (no `push` equivalent that both
+        // backends lower), so the helpers *read* them; reading is what
+        // miscompiled.
+        let shared_bytes = if self.rng.chance(40) {
+            let name = self.fresh("shared_b");
+            let _ = writeln!(out, "let {name} = \"abcdef\".bytes();");
+            Some(name)
+        } else {
+            None
+        };
+        let shared_set = if self.rng.chance(30) {
+            let name = self.fresh("shared_s");
+            let _ = writeln!(out, "let {name} = Set([1, 2, 3]);");
+            Some(name)
+        } else {
+            None
+        };
 
         for _ in 0..self.rng.below(3) {
             let name = self.fresh("fn_helper");
@@ -775,6 +804,20 @@ impl Generator {
                     format!("{map}[\"k${{p0}}\"] = p0; ")
                 }
                 _ => String::new(),
+            };
+            // A read of a container global, folded into the returned value so a
+            // wrong answer shows up in stdout rather than only in a crash. The
+            // index is bounded by the helper's own parameter, which is how a
+            // *runtime* index (not a constant) reaches the carrier — the
+            // constant case lowered correctly even while this one did not.
+            let body = match (&shared_bytes, &shared_set) {
+                (Some(bytes), _) if self.rng.chance(50) => {
+                    format!("({body}) + ({bytes}[p0 % 6] ?? 0)")
+                }
+                (_, Some(set)) if self.rng.chance(50) => {
+                    format!("({body}) + (if {set}.contains(p0 % 4) {{ 1 }} else {{ 0 }})")
+                }
+                _ => body,
             };
             self.vars = saved;
             self.lists = saved_lists;
@@ -904,6 +947,20 @@ impl Generator {
         }
         if let Some(map) = &shared_map {
             let _ = writeln!(out, "println({map}.len());");
+        }
+        if let Some(bytes) = &shared_bytes {
+            let _ = writeln!(out, "println({bytes}.len());");
+            let _ = writeln!(out, "println({bytes}[0] ?? -1);");
+            // Both ends of the range: out of range is `nil` at either one, and
+            // the negative end is where the interpreter used to raise while the
+            // native build answered nil.
+            let _ = writeln!(out, "println({bytes}[-1] ?? -1);");
+            let _ = writeln!(out, "println({bytes}[99] ?? -1);");
+            let _ = writeln!(out, "println({bytes}[-99] ?? -1);");
+        }
+        if let Some(set) = &shared_set {
+            let _ = writeln!(out, "println({set}.len());");
+            let _ = writeln!(out, "println({set}.contains(2));");
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);
