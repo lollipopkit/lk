@@ -3,6 +3,40 @@
 LK packages use `Lk.toml` and `Lk.lock`, modelled after Cargo manifests.
 
 
+## `lk pkg add` 按形状认来源,认不出就当场拒绝
+
+```sh
+lk pkg add dep owner/repo                  # GitHub
+lk pkg add dep https://gitlab.com/a/b.git  # 任意 git 主机
+lk pkg add dep ../dep                      # 本地包
+```
+
+`<SOURCE>` 此前被原样写成 GitHub 仓库名,于是 `lk pkg add dep ../dep` 写出
+`dep = "../dep"`,失败在很久以后才由 git 报出来:
+`repository 'https://github.com/../dep.git/' not found`。清单从一开始就有 `path`
+和 `git` 两种写法,只是 `add` 拼不出来。
+
+判据:含 `://` 或 `git@` 开头 → git URL;`./`、`../`、`/`、`~` 开头 → 本地路径;
+恰好一个 `/` 且两边非空且无空白 → GitHub `owner/repo`;其余**当场拒绝**并列出这
+三种写法。`--branch/--tag/--rev` 用在本地路径上也拒绝 —— 本地包没有 revision 可
+钉,清单里留着它只会让人以为钉住了。
+
+## 未解析的依赖要说清是哪一种
+
+`lk pkg check` / `lk pkg tree` 此前对所有未解析依赖都印
+"`<missing; run lk pkg fetch>`"。对 `path` 依赖那是**做不到的建议** —— 目录就在
+那儿。现在分三种:
+
+- `not fetched; run lk pkg fetch` —— git/GitHub 依赖还没取下来。
+- `the path points at a directory that does not exist` —— `path` 指向的目录不存在,
+  fetch 造不出来。
+- `found, but the package has no library entry; add src/mod.lk (or src/<name>.lk)`
+  —— 目录在,缺的是**库入口**。注意 `lk pkg init` 生成的是 `src/main.lk`,那是
+  *应用*入口;一个要被别人依赖的包需要 `src/mod.lk` 或 `src/<name>.lk`。
+
+`lk pkg add` 写出的清单也不再带 `workspace = false` —— `Lk.toml` 是给人读和改的
+文件,每条依赖上挂一个什么都没说的字段是噪声。
+
 ## 构建产物放在包根,不放进 `src/`
 
 ```sh

@@ -187,7 +187,7 @@ enum PkgCommand {
         /// Package name. Defaults to the current directory name.
         name: Option<String>,
     },
-    /// Add a GitHub dependency to Lk.toml.
+    /// Add a dependency to Lk.toml: `owner/repo` (GitHub), a git URL, or a local path.
     Add {
         name: String,
         source: String,

@@ -236,7 +236,7 @@ impl WorkspaceCache {
                     .into_iter()
                     .map(|module| (module.name, module.root))
                     .collect();
-                let missing = graph.missing.into_iter().collect();
+                let missing = graph.missing.into_iter().map(|missing| missing.name).collect();
                 if let Ok(mut ctx) = self.package_context.lock() {
                     ctx.modules = modules;
                     ctx.missing = missing;

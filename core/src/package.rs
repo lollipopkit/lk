@@ -103,7 +103,10 @@ pub struct DetailedDependency {
     pub branch: Option<String>,
     pub tag: Option<String>,
     pub rev: Option<String>,
-    #[serde(default)]
+    // Written only when true: `Lk.toml` is a file people read and edit, and
+    // `workspace = false` on every dependency `lk pkg add` writes is noise that
+    // says nothing.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub workspace: bool,
 }
 
@@ -130,13 +133,53 @@ pub struct PackageModule {
     pub root: PathBuf,
 }
 
+/// A dependency the graph could not turn into a module, and **why**.
+///
+/// The reason is the whole point. Both cases used to print
+/// "`<missing; run lk pkg fetch>`", and for a `path` dependency that advice is
+/// unactionable: the directory is right there, already on disk. What is absent
+/// is the package's *library entry* — `lk pkg init` scaffolds `src/main.lk`,
+/// which is an application entry, and a package used as a dependency needs
+/// `src/mod.lk` or `src/<name>.lk`. Telling someone to fetch a directory they
+/// can see is how a five-second fix becomes an afternoon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDependency {
+    pub name: String,
+    pub reason: MissingReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingReason {
+    /// No local checkout: a git/GitHub dependency that has not been fetched.
+    NotFetched,
+    /// A `path` dependency pointing at a directory that is not there. Fetching
+    /// cannot create it, so saying "run `lk pkg fetch`" is a wrong instruction
+    /// rather than an unhelpful one.
+    PathNotFound,
+    /// The directory exists; it has no `src/mod.lk` or `src/<name>.lk`.
+    NoLibraryEntry,
+}
+
+impl MissingDependency {
+    /// The one-line explanation a CLI prints after the dependency's name.
+    pub fn advice(&self) -> &'static str {
+        match self.reason {
+            MissingReason::NotFetched => "not fetched; run `lk pkg fetch`",
+            MissingReason::PathNotFound => "the `path` points at a directory that does not exist",
+            MissingReason::NoLibraryEntry => {
+                "found, but the package has no library entry; add `src/mod.lk` (or `src/<name>.lk`)"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PackageGraph {
     pub root: PathBuf,
     pub manifest_path: PathBuf,
     pub manifest: Manifest,
     pub modules: Vec<PackageModule>,
-    pub missing: Vec<String>,
+    pub missing: Vec<MissingDependency>,
 }
 
 impl Manifest {
@@ -395,22 +438,35 @@ impl PackageGraph {
             if self.modules.iter().any(|module| module.name == name) {
                 continue;
             }
+            let mut from_path = false;
             let dep_dir = if spec.is_workspace() {
                 continue;
             } else if let Some(path) = spec.path() {
+                from_path = true;
                 self.root.join(path)
             } else if let Some(locked) = locked.get(&name) {
                 cache_dir_for_source(&locked.source)
             } else if let Some(url) = spec.git_url() {
                 cache_dir_for_source(&url)
             } else {
-                self.missing.push(name);
+                self.missing.push(MissingDependency {
+                    name,
+                    reason: MissingReason::NotFetched,
+                });
                 continue;
             };
             if let Some(root) = package_entry(&dep_dir, &name) {
                 self.modules.push(package_module(&dep_dir, &name, root));
             } else {
-                self.missing.push(name);
+                // The directory is on disk (a `path` dependency, or a fetched
+                // checkout) and has no library entry — a different problem from
+                // not having fetched it, and `lk pkg fetch` cannot fix it.
+                let reason = match (dep_dir.exists(), from_path) {
+                    (true, _) => MissingReason::NoLibraryEntry,
+                    (false, true) => MissingReason::PathNotFound,
+                    (false, false) => MissingReason::NotFetched,
+                };
+                self.missing.push(MissingDependency { name, reason });
             }
         }
         Ok(())

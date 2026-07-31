@@ -379,7 +379,7 @@ impl LkAnalyzer {
                 .into_iter()
                 .map(|module| (module.name, module.root))
                 .collect();
-            self.missing_packages = graph.missing.into_iter().collect();
+            self.missing_packages = graph.missing.into_iter().map(|missing| missing.name).collect();
         } else {
             self.package_modules.clear();
             self.missing_packages.clear();
