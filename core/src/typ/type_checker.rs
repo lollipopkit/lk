@@ -172,6 +172,15 @@ pub struct TypeChecker {
     /// is `m.f`, not `f`: two namespaces may each export an `f`, and neither of
     /// them is a free function.
     imported_members: HashMap<String, HashMap<String, Type>>,
+    /// Names bound to a **standard library module** by `use m;` / `use m as a;`.
+    ///
+    /// The binding shadows whatever the name meant before, and one of those
+    /// names is also a callable global: after `use chan;`, `chan(1)` is a call
+    /// of the module *object*. The VM says so at run time ("this value is not a
+    /// function: it is a Map"), the native backend ignored the import and
+    /// called the builtin anyway, and `lk check` said nothing — one program,
+    /// three answers. The check belongs here, before either engine runs.
+    imported_stdlib_modules: HashSet<String>,
     /// Bindings recorded as they are bound, when a caller asked to be told.
     ///
     /// `None` for the compiler's own runs: a check exists to produce an error or
@@ -281,6 +290,7 @@ impl TypeChecker {
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
             imported_members: HashMap::new(),
+            imported_stdlib_modules: HashSet::new(),
             observations: None,
             return_frames: Vec::new(),
             declared_returns: Vec::new(),
@@ -298,6 +308,16 @@ impl TypeChecker {
     /// The type of `namespace.member`, if the namespace was imported.
     pub fn imported_member_type(&self, namespace: &str, member: &str) -> Option<Type> {
         self.imported_members.get(namespace)?.get(member).cloned()
+    }
+
+    /// Records that `name` is bound to a standard library module.
+    pub fn add_imported_stdlib_module(&mut self, name: String) {
+        self.imported_stdlib_modules.insert(name);
+    }
+
+    /// Whether this name is bound to a standard library module here.
+    pub(crate) fn is_imported_stdlib_module(&self, name: &str) -> bool {
+        self.imported_stdlib_modules.contains(name)
     }
 
     /// Whether this name is a namespace bound by `use * as name from "…"`.

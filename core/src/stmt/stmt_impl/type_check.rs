@@ -888,8 +888,23 @@ impl Stmt {
 
                 Ok(())
             }
-            Stmt::Import(_) => {
-                // Use 语句暂时不需要类型检查
+            Stmt::Import(import) => {
+                // The one thing an import contributes to type checking: the
+                // *name* it binds. A standard library module bound to a name
+                // shadows whatever that name meant, and `chan` is also a
+                // callable global — see `is_imported_stdlib_module`.
+                match import {
+                    crate::stmt::ImportStmt::Module { module } => {
+                        type_checker.add_imported_stdlib_module(module.clone());
+                    }
+                    crate::stmt::ImportStmt::ModuleAlias { alias, .. } => {
+                        type_checker.add_imported_stdlib_module(alias.clone());
+                    }
+                    // `use { a, b } from m;` binds the *members*, not the
+                    // module, and a file import binds a namespace that
+                    // `imported_members` already covers.
+                    _ => {}
+                }
                 Ok(())
             }
             Stmt::Return { value } => {

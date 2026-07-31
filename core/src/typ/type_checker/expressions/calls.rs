@@ -10,6 +10,26 @@ use hashbrown::HashMap;
 impl TypeChecker {
     /// Check function call type
     pub(super) fn check_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Type> {
+        // `chan(1)` after `use chan;` — the import bound that name to the
+        // module, so this calls a *map*. Reported here because the two engines
+        // disagreed about it: the VM raised "this value is not a function: it
+        // is a Map" and the native backend called the builtin constructor
+        // anyway, answering a channel. A local of the same name is an ordinary
+        // value and not this mistake.
+        if let Expr::Var(name) = func
+            && self.is_imported_stdlib_module(name)
+            && !self.has_local_binding(name)
+        {
+            return Err(Self::type_err(
+                &format!(
+                    "`{name}` names the imported module here, and a module is not a function — call one of its \
+                     members (`{name}.new(…)`), or import it under another name (`use {name} as m;`)"
+                ),
+                None,
+                None,
+                Some(func.clone()),
+            ));
+        }
         if let Some(return_type) = self.check_stdlib_function_call(func, args)? {
             return Ok(return_type);
         }

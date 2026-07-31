@@ -187,21 +187,30 @@ mod tests {
         );
     }
 
-    /// Calling an imported module says **what it is** and what to do.
+    /// Calling an imported module is a **check-time** error that says what to
+    /// do about it.
     ///
     /// `use chan;` binds the module over the `chan()` global — a documented
     /// sharp edge — and a module is a map of its members, so `chan(1)` calls a
-    /// Map. The error used to be "Call callee is not callable": an opcode
-    /// operand, with nothing in it to act on. The type checker catches a plain
-    /// map (`{"a": 1}(1)` is "Cannot call non-function type"); it does not
-    /// model an import's value, so this path is the one a program reaches.
+    /// Map. Three answers for one program until now: the VM raised at run time
+    /// ("this value is not a function: it is a Map"), the native backend
+    /// ignored the import and called the builtin constructor, and `lk check`
+    /// said nothing at all. The checker knows what the import bound, so it is
+    /// the one that answers — before either engine runs.
     #[test]
     fn calling_an_imported_module_says_what_it_is() {
         let error = run("use chan;\nlet c = chan(1);\n").expect_err("a module is not callable");
         let text = format!("{error:#}");
         assert!(text.contains("not a function"), "unexpected error: {text}");
-        assert!(text.contains("Map"), "the error should name the value's type: {text}");
         assert!(text.contains("module"), "and point at how a program gets here: {text}");
+        assert!(
+            text.contains("chan.new(") && text.contains("use chan as"),
+            "and name both ways out: {text}"
+        );
+
+        // The alias form binds the alias, not the module's own name — so the
+        // global stays reachable, which is exactly what the message suggests.
+        run("use chan as ch;\nlet c = chan(1);\nch.close(c);\n").expect("the alias leaves `chan` alone");
     }
 
     /// Awaiting twice says so, instead of describing the task table.
