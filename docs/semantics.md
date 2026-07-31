@@ -1452,10 +1452,29 @@ outer[0].len()      // 解释执行 2,编译执行 1
 和下面那条不同的是观测面:那条是**回落**(慢但对),这条**编译成功且静默答错**。
 61 程序扫描和 fuzz 都没这个形状,所以一直没人看见。
 
-一刀切的临时修法验过并撤销了:在 `NewList` 的元素装箱处拒绝类型化 list,AOT 覆盖
-从 60 掉到 58 —— `examples/stdlib/{iter_pipeline,list_iter_sugar}.lk` 造的是
-`[[0,"a"],[1,"b"]]` 这种**字面量嵌套**,元素是新建的、没有第二个引用,重建不可观
-测,拒绝它们纯亏。要的判据是"这个值在别处还可达吗",不是"它是不是类型化列表"。
+**三条临时判据都验过了,都不成立**(记下来,免得下次再走一遍):
+
+1. **一刀切:元素是类型化 list 就拒绝装箱。** AOT 覆盖从 60 掉到 58 ——
+   `examples/stdlib/{iter_pipeline,list_iter_sugar}.lk` 造的是
+   `[[0,"a"],[1,"b"]]` 这种字面量嵌套(反汇编看到的是 `LoadHeapConst` 经 `Move`
+   链喂进 `NewList`),元素是新建的、没有第二个引用,重建不可观测,拒绝它们纯亏。
+2. **寄存器活跃性:装箱点之后这个寄存器还被读吗?** 不健全 —— 一个也能从全局到达
+   的值,它的寄存器是死的:`let g = [1]; fn f() { let outer = [g]; g.push(2); }`
+   里 `g.push` 会重新 `GetGlobal` 到另一个寄存器。
+3. **具名槽边界:`reg < 具名局部数` 才算可命名。** 没有这条边界 ——
+   `Ssa::slot_count` 就是 `reg_count + cell_capacity + capture_count`,全部寄存器
+   一视同仁。
+
+剩下的健全判据是**新鲜性**:这个值是本函数里由 `NewList`/`NewMap`/`LoadHeapConst`
+造出来的,**并且**之后没有再被读。两半都要 —— 前一半排掉全局(2 的漏洞),后一半
+排掉 `let inner = [1]; let outer = [inner]; inner.push(2);`(inner 是新鲜的,但还被
+读)。
+
+**而根治比"五条被推翻的缓解"听起来的要有谱:类型化 map 已经这么修过。**
+`lkrt/src/lkdyn.rs` 有一段 `DYN_TMAP_BASE..DYN_TMAP_END` 的标签区间,
+`lkrt_dyn_from_typed_map(handle, kind)` 把类型化 map **按标签**装箱,五个
+`lkmap::KIND_*` 各占一格 —— 装的是句柄,不重建。类型化 list 要的是同一个形状的
+`DYN_TLIST_*`(i64/f64/str 三格),而不是一条没人走过的新路。
 
 **未修的触发路径**:同一个模块里有**两种列表载体**各自流进会改写它的函数时,形参
 格 join 成 `Dyn`,装箱又回到重建那条路。最小复现:
