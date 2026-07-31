@@ -208,6 +208,19 @@ impl TypeChecker {
     /// One branch `nil` and the other not makes the value *optional*, not a
     /// contradiction: an `if` with no `else` synthesises a nil branch, and a
     /// `catch` that only logs has no value either.
+    ///
+    /// Two branches of *different* types make a **union**, which is the rule a
+    /// function with two `return`s has always followed — `fn f() { if c {
+    /// return 1; } return "x"; }` is `Int | String`. Written as a constraint
+    /// instead, the two shapes disagreed with each other and with themselves:
+    /// `if c { xs } else { "x" }` type-checked (the constraint was recorded and
+    /// nobody solved it on that path) while `try { xs } catch e { "${e}" }` —
+    /// the most ordinary way to write a `catch`, since the caught value renders
+    /// as text — was rejected outright.
+    ///
+    /// A branch whose type is still a *variable* keeps the constraint: that is
+    /// inference in progress, not a value with two types, and unifying it is
+    /// how a lambda parameter learns what it holds.
     pub(crate) fn unify_branch_values(&mut self, first: Type, second: Type) -> Result<Type> {
         let nullable = |value: &Type| Type::Optional(Box::new(value.clone()));
         let resolved_first = self.resolve_aliases(&first);
@@ -217,6 +230,12 @@ impl TypeChecker {
         }
         if resolved_second == Type::Nil && resolved_first != Type::Nil {
             return Ok(nullable(&first));
+        }
+        if resolved_first != resolved_second
+            && !has_type_variable(&resolved_first)
+            && !has_type_variable(&resolved_second)
+        {
+            return Ok(union_of(resolved_first, resolved_second));
         }
         self.inference_engine.add_constraint(first.clone(), second);
         Ok(first)
@@ -2790,5 +2809,61 @@ fn unknown_named_message(constructed: Option<&str>, name: &str) -> String {
     match constructed {
         Some(ty) => format!("Unknown field '{name}' for struct '{ty}'"),
         None => format!("Unknown named argument: {name}"),
+    }
+}
+
+/// Whether inference is still running inside this type.
+///
+/// A branch whose type is a variable has not been decided yet; a union of "the
+/// answer" and "we do not know" would freeze the unknown half in place.
+fn has_type_variable(ty: &Type) -> bool {
+    match ty {
+        Type::Variable(_) => true,
+        Type::Optional(inner) | Type::List(inner) | Type::Set(inner) | Type::Task(inner) | Type::Channel(inner) => {
+            has_type_variable(inner)
+        }
+        Type::Ptr { pointee, .. } => has_type_variable(pointee),
+        Type::Map(key, value) => has_type_variable(key) || has_type_variable(value),
+        Type::Tuple(items) | Type::Union(items) => items.iter().any(has_type_variable),
+        Type::Function {
+            params,
+            named_params,
+            return_type,
+        } => {
+            params.iter().any(has_type_variable)
+                || named_params.iter().any(|param| has_type_variable(&param.ty))
+                || has_type_variable(return_type)
+        }
+        _ => false,
+    }
+}
+
+/// The two branch types as one, flattened and deduplicated.
+///
+/// `Optional(T)` stays `Optional` rather than becoming `T | Nil`: they are the
+/// same type, and `T?` is the spelling every diagnostic and every annotation
+/// uses.
+fn union_of(first: Type, second: Type) -> Type {
+    // `Any` absorbs: a branch the checker knows nothing about says nothing
+    // about the value, and `Any | String` would be a *narrower* claim than the
+    // truth. This is the case that matters in practice — `xs[i]!` desugars to a
+    // nil check whose raising half is `Any`, so without this every unwrap in a
+    // mixed list became `Any | Elem` and then failed arithmetic.
+    if first == Type::Any || second == Type::Any {
+        return Type::Any;
+    }
+    let mut items: Vec<Type> = Vec::new();
+    for ty in [first, second] {
+        match ty {
+            Type::Union(inner) => items.extend(inner),
+            other => items.push(other),
+        }
+    }
+    let mut seen = alloc::collections::BTreeSet::new();
+    items.retain(|ty| seen.insert(ty.display()));
+    if items.len() == 1 {
+        items.remove(0)
+    } else {
+        Type::Union(items)
     }
 }

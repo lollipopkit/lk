@@ -18,6 +18,35 @@ mod tests {
         tc.infer_resolved_type(&expr).expect("infer")
     }
 
+    /// A `catch` that renders the error is the ordinary shape, and it was the
+    /// one shape `try` rejected.
+    ///
+    /// The two branches of a value were unified — the same type or an error —
+    /// while a function with two `return`s of different types has always been a
+    /// *union*. So `try { xs.take(1) } catch e { "${e}" }` was "Cannot unify
+    /// List<Int> with String", and the caught value renders as text, so that is
+    /// what a `catch` most often evaluates to.
+    ///
+    /// The union is the answer, not a shrug: an annotation still refuses it,
+    /// naming both halves.
+    #[test]
+    fn a_try_whose_branches_differ_is_a_union() {
+        check_program("let xs = [1, 2, 3];\nprintln(try { xs.take(1) } catch e { \"${e}\" });\n")
+            .expect("a rendered catch is the ordinary shape");
+
+        let error = check_program("let xs = [1, 2, 3];\nlet a: Int = try { xs } catch e { \"${e}\" };\n")
+            .expect_err("the union does not fit an Int");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("List<Int> | String"),
+            "the annotation should be told both halves: {message}"
+        );
+
+        // Same type on both sides stays that type, and a branch that answers
+        // nothing still makes the value optional.
+        assert_eq!(infer("try { 1 } catch e { 2 }"), Type::Int);
+    }
+
     #[test]
     fn test_string_add_concatenation_rules() {
         // String + String => String
