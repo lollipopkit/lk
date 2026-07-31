@@ -62,6 +62,12 @@ impl<'a> StmtParser<'a> {
             // Two different reports, told apart by whether anything
             // type-shaped was there at all — an empty position is a missing
             // annotation, a non-empty one is a bad type.
+            // One rule, said the same way from every type position: a
+            // Rust-shaped `fn(Int) -> Int` is the mis-spelling worth naming,
+            // and which collector ran decides nothing about the message.
+            if let Some(hint) = crate::type_syntax::function_type_hint(self.tokens, self.pos) {
+                return Err(anyhow!(self.err(hint)));
+            }
             let spelled = crate::type_syntax::spelling_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union);
             return Err(anyhow!(if spelled.is_empty() {
                 self.err("Expected type annotation")
@@ -143,7 +149,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_type_until_semicolon(&mut self) -> Result<Type> {
@@ -219,7 +235,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_type_until_block_start(&mut self) -> Result<Type> {
@@ -284,7 +310,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_expr_until_named_delim(&mut self) -> Result<Expr> {

@@ -73,6 +73,25 @@ pub(crate) fn spelling_at(tokens: &[Token], from: usize, stop: StopAt) -> String
     spelling(&collected)
 }
 
+/// The one mis-spelling worth naming: a Rust-shaped function type.
+///
+/// `fn(Int) -> Int` is what somebody coming from Rust writes, and it is not a
+/// type here — `fn` introduces a *declaration*, and the type is `(Int) -> Int`.
+/// Without this the two type positions answered differently and neither said
+/// the rule: a parameter reported `Invalid type: Fn ( Int) -> Int` (a spelling
+/// the program does not contain, from a collector that took the `fn` and then
+/// could not parse it) and a `let` reported `Expected type annotation (found
+/// Fn)` (from the collector that stops at `fn`, leaving nothing to name).
+///
+/// Deliberately *not* accepting `fn(…)` as a second spelling: one type, one
+/// way to write it. Two spellings is the shape this codebase keeps removing.
+pub(crate) fn function_type_hint(tokens: &[Token], from: usize) -> Option<&'static str> {
+    matches!(tokens.get(from), Some(Token::Fn)).then_some(
+        "a function type is written without `fn` — `(Int) -> Int`, not `fn(Int) -> Int`. \
+         In this language `fn` introduces a declaration, never a type",
+    )
+}
+
 /// The tokens making up a type annotation, and where it ends.
 ///
 /// Nesting is tracked so a delimiter *inside* the type does not end it:

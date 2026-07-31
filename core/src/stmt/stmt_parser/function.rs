@@ -285,6 +285,16 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 }
