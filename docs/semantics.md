@@ -1409,6 +1409,43 @@ println("${xs} ${ss}");               // VM: [1,2] ["a"]   native: [1,2] []
 `TypedList` 在插入不合型元素时会拓宽成 `Mixed`,而原生的 `Vec<i64>` 不能就地变身
 —— 这条语义必须逐字镜像,不能近似。
 
+## 常量折叠只是**捷径**,不是第二门语言(2026-07-31 裁决)
+
+折叠跑在类型检查器**之前**。所以折叠器答得跟执行器不一样的每一条,都是任何诊断
+都够不到的一条 —— 检查器根本没见过那棵子树。两种走偏方式,都修了:
+
+**一、它实现了语言里没有的运算。** 类型检查器专门删掉了字符串重复,报错还点名了
+真正存在的写法:
+
+```
+Type Error: `*` does not repeat a string — write `text.repeat(count)`
+```
+
+而折叠器仍然实现着它。于是一个程序碰到哪条规则,取决于计数是不是字面量:
+
+```lk
+let a = "ha" * 3;      // 折出 "hahaha"
+let n = 3;
+let b = "ha" * n;      // Type Error: `*` does not repeat a string
+```
+
+三份文档(`examples/syntax/unsupported.lk`、中英两份 LEARN)因此一直宣称这个特性
+可用 —— 它们能通过,靠的正是这条本该不存在的折叠。**检查器的规则就是语言的规则**,
+折叠里的那条是被删特性的残留。
+
+**二、它的整数运算用裸算符。** 两个执行器的 Int 运算都是回绕(`i64::MAX + 1` 给
+`i64::MIN`,`i64::MIN % -1` 给 `0`),而 Rust 的 `a + b` 在 debug 构建里 **panic**、
+在 release 里回绕。于是源码里写一个 `9223372036854775807 + 1`,解析器要么崩:
+
+```
+thread 'main' panicked at core/src/expr/expr_impl.rs:775: attempt to add with overflow
+```
+
+要么碰巧折对 —— 取决于 `lk` 自己是用哪个 profile 编的。现在一律 `wrapping_*`,把
+规则写出来。
+
+`constant_folding_answers_what_the_executors_answer` 钉住两条。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

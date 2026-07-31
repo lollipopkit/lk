@@ -90,8 +90,11 @@ let spread_a = [1, 2];
 let spread_b = [0, ..spread_a, 3];
 println("12. [0, ..[1,2], 3] = {} (expected: [0, 1, 2, 3])", spread_b);
 
-// ── 13. String * count ──
-println("13. \"ha\" * 3 = {} (expected: hahaha)", "ha" * 3);
+// ── 13. String repetition ──
+// `*` does **not** repeat a string — the checker rejects it and names the
+// operation that exists. It read `"ha" * 3` here until the parse-time constant
+// folder (the only thing that still implemented `*`) was fixed to agree.
+println("13. \"ha\".repeat(3) = {} (expected: hahaha)", "ha".repeat(3));
 
 // ── 14. Map literal bare keys are string keys ──
 let bare_user = {name: "Alice", age: 30};

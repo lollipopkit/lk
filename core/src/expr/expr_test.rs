@@ -286,6 +286,31 @@ mod test {
         panic("1.0 % 0.0");
     }
 
+    /// Folding is a shortcut, not a second language. It runs before the type
+    /// checker, so anything it answers differently is unreachable by any
+    /// diagnostic.
+    #[test]
+    fn constant_folding_answers_what_the_executors_answer() {
+        // Int arithmetic wraps in both executors. The folder used the bare
+        // operators, which panic in a debug build — so this crashed the parser
+        // with `attempt to add with overflow`.
+        expect("9223372036854775807 + 1", "-9223372036854775808");
+        expect("-9223372036854775807 - 2", "9223372036854775807");
+        expect("9223372036854775807 * 2", "-2");
+        // `i64::MIN % -1` is 0, not a panic — the executors were fixed for this
+        // and the folder was not.
+        expect("(-9223372036854775807 - 1) % -1", "0");
+
+        // `*` does not repeat a string: the checker rejects it and names
+        // `text.repeat(count)`. The folder implemented it anyway, so the rule a
+        // program met depended on whether the count was a literal.
+        let folded = Expr::try_from(r#""ha" * 3"#).expect("parses");
+        assert!(
+            !matches!(&folded, Expr::Literal(_)),
+            "`\"ha\" * 3` must reach the type checker, not fold to a string: {folded:?}"
+        );
+    }
+
     #[test]
     fn test_nil_handling() {
         expect("nil == nil", "true");

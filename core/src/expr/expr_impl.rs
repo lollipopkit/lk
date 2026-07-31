@@ -769,10 +769,23 @@ impl Display for Expr {
     }
 }
 
+/// Folding is a *shortcut*, so every one of these must answer exactly what the
+/// executors answer — the fold happens before the type checker even runs, so a
+/// rule that only exists here is a rule no diagnostic can reach.
+///
+/// Two ways that went wrong, both fixed below:
+///
+/// - **Overflow.** These used the bare operators. Int arithmetic wraps in both
+///   executors (`i64::MAX + 1` is `i64::MIN`, `i64::MIN % -1` is `0`), but
+///   `a + b` in Rust *panics* in a debug build and wraps in a release one — so
+///   `9223372036854775807 + 1` in a source file crashed the parser with
+///   `attempt to add with overflow`, or folded correctly, depending on which
+///   profile `lk` itself was built with. `wrapping_*` states the rule.
+/// - **Operations the language does not have.** See `fold_literal_mul`.
 fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<LiteralVal> {
     match op {
         BinOp::Add => fold_literal_add(lhs, rhs),
-        BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
+        BinOp::Sub => fold_literal_numeric(lhs, rhs, i64::wrapping_sub, |a, b| a - b),
         BinOp::Mul => fold_literal_mul(lhs, rhs),
         BinOp::Div => fold_literal_div(lhs, rhs),
         BinOp::Mod => fold_literal_mod(lhs, rhs),
@@ -782,7 +795,7 @@ fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<
 
 fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a + b)),
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a.wrapping_add(*b))),
         (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(a + b)),
         (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(a + *b as f64)),
         (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(*a as f64 + b)),
@@ -822,24 +835,24 @@ fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     }
 }
 
+/// Numeric only — `*` **does not repeat strings** in this language.
+///
+/// This used to fold `"ha" * 3` to `"hahaha"`, while the type checker rejects
+/// `*` on a string with a message naming the operation that does exist
+/// (`text.repeat(count)`). Folding runs before the checker, so which of the two
+/// rules a program met depended on whether the count was a literal:
+///
+/// ```lk
+/// let a = "ha" * 3;      // folded → "hahaha"
+/// let n = 3;
+/// let b = "ha" * n;      // Type Error: `*` does not repeat a string
+/// ```
+///
+/// The checker's rule is the language's rule; this one was a leftover of the
+/// feature the checker removed, and it is what kept three documents claiming
+/// the feature still worked.
 fn fold_literal_mul(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
-    match (lhs, rhs) {
-        (left, LiteralVal::Int(count)) if left.as_str().is_some() => {
-            Some(repeat_literal_string(left.as_str()?, *count))
-        }
-        (LiteralVal::Int(count), right) if right.as_str().is_some() => {
-            Some(repeat_literal_string(right.as_str()?, *count))
-        }
-        _ => fold_literal_numeric(lhs, rhs, |a, b| a * b, |a, b| a * b),
-    }
-}
-
-fn repeat_literal_string(value: &str, count: i64) -> LiteralVal {
-    if count <= 0 {
-        LiteralVal::from_str("")
-    } else {
-        LiteralVal::from_str(&value.repeat(count as usize))
-    }
+    fold_literal_numeric(lhs, rhs, i64::wrapping_mul, |a, b| a * b)
 }
 
 fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
@@ -860,7 +873,8 @@ fn fold_literal_mod(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     if literal_is_zero(rhs) {
         return None;
     }
-    fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b)
+    // `i64::MIN % -1` is 0 in both executors; `%` on those operands panics.
+    fold_literal_numeric(lhs, rhs, i64::wrapping_rem, |a, b| a % b)
 }
 
 fn literal_is_zero(value: &LiteralVal) -> bool {
