@@ -1028,18 +1028,34 @@ pub struct PendingStrictParam {
     pub annotated: bool,
 }
 
-/// Levenshtein distance, for the "did you mean" hint on an unknown type name.
-fn edit_distance(left: &str, right: &str) -> usize {
+/// Levenshtein distance, for the "did you mean" hints.
+///
+/// `pub(crate)` because the compiler asks the same question about *value*
+/// names: a typo in `nope` and a typo in `Strng` deserve the same answer, and
+/// two distance functions would be two answers waiting to differ.
+pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
+    // Damerau: two adjacent characters swapped is **one** edit, not two.
+    //
+    // That is the commonest typo there is, and under plain Levenshtein it cost
+    // the same as two unrelated mistakes — so `nmae` never found `name` (budget
+    // 1 for a short name) while `nmme` did. One row of history is all the
+    // transposition case needs.
+    let mut before_previous: Vec<usize> = vec![0; right.len() + 1];
     let mut previous: Vec<usize> = (0..=right.len()).collect();
     let mut current = vec![0usize; right.len() + 1];
     for (i, l) in left.iter().enumerate() {
         current[0] = i + 1;
         for (j, r) in right.iter().enumerate() {
             let substitute = previous[j] + usize::from(l != r);
-            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+            let mut best = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+            if i > 0 && j > 0 && *l == right[j - 1] && left[i - 1] == *r {
+                best = best.min(before_previous[j - 1] + 1);
+            }
+            current[j + 1] = best;
         }
+        core::mem::swap(&mut before_previous, &mut previous);
         core::mem::swap(&mut previous, &mut current);
     }
     previous[right.len()]

@@ -154,7 +154,7 @@ impl Compiler {
                  write a recursive function as a top-level `fn {name}(…)`"
             );
         }
-        bail!("Compiler undefined callable `{name}`")
+        bail!("undefined function `{name}`{}", self.suggest_known_name(name))
     }
 
     pub(super) fn try_load_callable_by_name(&mut self, name: &str) -> Result<Option<u16>> {

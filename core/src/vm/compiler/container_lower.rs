@@ -235,7 +235,15 @@ impl Compiler {
         inclusive: bool,
         step: Option<&Expr>,
     ) -> Result<u16> {
-        let end = end.ok_or_else(|| anyhow!("Compiler open-ended range expression is not supported"))?;
+        // `let r = 0..;` — a range materializes eagerly here (it *is* a list),
+        // so an endless one has no value to build. Same rule, said the same way
+        // as the `for` form.
+        let end = end.ok_or_else(|| {
+            anyhow!(
+                "a range needs an end — `0..n` — because a range is built as a list of its elements, and \
+                 `0..` has no last element"
+            )
+        })?;
         let base = self.alloc_regs(3)?;
         match start {
             Some(start) => self.lower_expr_to_register(base, start, "range start")?,

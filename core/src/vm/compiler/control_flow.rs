@@ -464,7 +464,16 @@ impl Compiler {
             Some(start) => self.lower_expr_to_register(index, start, "for range initial index")?,
             None => self.emit_literal_to_register(index, &LiteralVal::Int(0))?,
         }
-        let end = end.ok_or_else(|| anyhow!("Compiler open-ended range for loop is not supported"))?;
+        // `for i in 0.. { … }` — a range with no end. The old report named this
+        // compiler and called it "not supported", which reads like something
+        // that might arrive later; a loop over an endless range is a loop that
+        // never finishes, so the answer is what to write instead.
+        let end = end.ok_or_else(|| {
+            anyhow!(
+                "a `for` needs a range with an end — `for i in 0..n` — and `0..` has none, so this loop \
+                 would never finish. Use a `while` if that is what you meant"
+            )
+        })?;
         let body_mutations = mutated_names_in_stmt(body);
         let end = self.lower_loop_snapshot_operand(end, &body_mutations)?;
 

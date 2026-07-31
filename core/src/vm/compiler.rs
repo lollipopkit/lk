@@ -954,7 +954,42 @@ impl Compiler {
         if let Some(slot) = self.global_names.get(name).copied() {
             return self.emit_get_global_named(slot, Some(name));
         }
-        Err(anyhow!("Compiler undefined local/global `{name}`"))
+        Err(anyhow!("undefined name `{name}`{}", self.suggest_known_name(name)))
+    }
+
+    /// What the writer probably meant, as a trailing ` — did you mean …` or the
+    /// empty string.
+    ///
+    /// The most common mistake in any language used to report `Compiler
+    /// undefined local/global `nope`` — a sentence naming this compiler and two
+    /// of its storage classes, for a typo. The reader's question is "what *is*
+    /// spelled here", and the names in scope are right here to answer it.
+    ///
+    /// The measurement is [`crate::typ::edit_distance`], the same one the
+    /// unknown-*type* hint uses, with the same budget: one edit for a short
+    /// name, two for a longer one, so `nmae` finds `name` and `x` finds
+    /// nothing.
+    pub(super) fn suggest_known_name(&self, name: &str) -> String {
+        let mut candidates: Vec<&str> = self.locals.keys().map(String::as_str).collect();
+        candidates.extend(self.global_names.keys().map(String::as_str));
+        candidates.extend(self.function_names.keys().map(String::as_str));
+
+        // A case difference first: likeliest mistake, surest answer.
+        if let Some(exact) = candidates.iter().find(|candidate| candidate.eq_ignore_ascii_case(name)) {
+            return alloc::format!(" — did you mean `{exact}`?");
+        }
+        let budget = if name.len() <= 4 { 1 } else { 2 };
+        let mut best: Option<(usize, &str)> = None;
+        for candidate in candidates {
+            let distance = crate::typ::edit_distance(name, candidate);
+            if distance <= budget && best.is_none_or(|(previous, _)| distance < previous) {
+                best = Some((distance, candidate));
+            }
+        }
+        match best {
+            Some((_, candidate)) => alloc::format!(" — did you mean `{candidate}`?"),
+            None => String::new(),
+        }
     }
 
     pub(super) fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
