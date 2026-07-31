@@ -4673,3 +4673,40 @@ fn process_members_answer_the_same_on_both_ends() {
         ],
     );
 }
+
+/// `encoding.*.stringify`: the write direction of the three formats.
+///
+/// Object keys come out sorted on both sides because both build a
+/// `serde_json::Map`, which is a `BTreeMap` — so this is the one encoding
+/// member a map's iteration order does not reach, and the case says so by
+/// writing the map with its keys out of order.
+///
+/// The refusals are the load-bearing part: TOML has no top-level scalar, a
+/// non-string object key would silently collapse `1` and `"1"` onto one entry,
+/// and NaN has no JSON form. Each is the stdlib's sentence, prefixed with the
+/// member's name the way its `write_format` wrapper does it.
+#[test]
+fn encoding_stringify_answers_the_same_on_both_ends() {
+    run_clif_differential(
+        "encoding_stringify",
+        &[
+            new(
+                "values",
+                "use encoding;\nlet z = 1;\nlet m = {\"z\": z, \"a\": [1, 2], \"m\": {\"k\": true}};\n\
+                 println(encoding.json.stringify(m));\n\
+                 println(encoding.json.stringify([1, \"two\", 3.5, nil, true]));\n\
+                 println(encoding.json.stringify(\"plain\"));\n\
+                 println(encoding.json.stringify(42));\nprintln(encoding.json.stringify(nil));\n\
+                 println(encoding.yaml.stringify(m));\n\
+                 println(encoding.toml.stringify({\"a\": 1, \"b\": \"x\"}));\nreturn 0;\n",
+            ),
+            new(
+                "refusals",
+                "use encoding;\nlet z = 1;\n\
+                 let a = try { encoding.toml.stringify([z]) } catch e { e };\nprintln(a);\n\
+                 let b = try { encoding.json.stringify({1: 2}) } catch e { e };\nprintln(b);\n\
+                 let c = try { encoding.json.stringify(0.0 / 0.0) } catch e { e };\nprintln(c);\nreturn 0;\n",
+            ),
+        ],
+    );
+}

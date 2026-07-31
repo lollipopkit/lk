@@ -645,6 +645,31 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
     abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),
+    // The write direction. The argument is `Dyn`, so any carrier boxes into it,
+    // and the answer's object keys are sorted on both sides (a `serde_json::Map`
+    // is a `BTreeMap`) — this is the one encoding member a map's iteration order
+    // does not reach.
+    abi_row(
+        "json",
+        "stringify",
+        AbiRef::new("json", "stringify"),
+        &[Ty::Dyn],
+        Ty::Str,
+    ),
+    abi_row(
+        "yaml",
+        "stringify",
+        AbiRef::new("yaml", "stringify"),
+        &[Ty::Dyn],
+        Ty::Str,
+    ),
+    abi_row(
+        "toml",
+        "stringify",
+        AbiRef::new("toml", "stringify"),
+        &[Ty::Dyn],
+        Ty::Str,
+    ),
     // `base64`/`hex`/`url`. `encode` takes `Bytes | String` in the language, so
     // it is two rows — the second used to be missing, and
     // `base64.encode(bytes.from_string("hi"))` therefore ran on the bridge while

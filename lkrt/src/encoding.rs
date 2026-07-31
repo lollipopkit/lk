@@ -181,3 +181,119 @@ pub unsafe extern "C" fn lkrt_toml_parse(text: *const c_char) -> LkDyn {
         Err(_) => crate::panic::raise_str("Invalid TOML"),
     }
 }
+
+/// The write direction: an LK value as `serde_json::Value`, by exactly the
+/// rules of the VM's `core/src/val/ser.rs`.
+///
+/// Object keys come out **sorted**, and that is not a choice made here: both
+/// sides build a `serde_json::Map`, which is a `BTreeMap`. So `stringify` is
+/// the one place where a map's iteration order does *not* show — the ordering
+/// argument that governs `parse` does not apply in reverse.
+mod write {
+    use super::*;
+    use crate::lkdyn::{DYN_BYTES, DYN_NIL, DYN_RAW, DYN_SET, DYN_STR, dyn_list, is_map_tag, map_entries};
+    use crate::vm_mirror::{RtKey, key_str};
+
+    /// The VM's `MAX_VALUE_DEPTH`, and its refusal names the number.
+    const MAX_VALUE_DEPTH: u32 = 512;
+
+    pub(super) fn to_serde(value: LkDyn, depth: u32) -> Result<serde_json::Value, String> {
+        if depth >= MAX_VALUE_DEPTH {
+            return Err(format!(
+                "value nested deeper than {MAX_VALUE_DEPTH} levels; it is cyclic or too deeply nested to write"
+            ));
+        }
+        Ok(match value.tag {
+            DYN_NIL => serde_json::Value::Null,
+            DYN_BOOL => serde_json::Value::Bool(value.payload != 0),
+            DYN_I64 => serde_json::Value::from(value.payload),
+            DYN_F64 => {
+                let number = f64::from_bits(value.payload as u64);
+                match serde_json::Number::from_f64(number) {
+                    Some(number) => serde_json::Value::Number(number),
+                    None => return Err(format!("{number} has no JSON form (NaN and the infinities do not)")),
+                }
+            }
+            DYN_STR => serde_json::Value::String(input(value.payload as *const c_char).to_string()),
+            DYN_LIST => {
+                let mut out = Vec::new();
+                for element in dyn_list(value) {
+                    out.push(to_serde(*element, depth + 1)?);
+                }
+                serde_json::Value::Array(out)
+            }
+            // A `Bytes` and a `Set` are the VM's refusals, by their type names.
+            DYN_BYTES => return Err("Bytes has no JSON form".to_string()),
+            DYN_SET => return Err("Set has no JSON form".to_string()),
+            DYN_RAW => return Err("Object has no JSON form".to_string()),
+            tag if is_map_tag(tag) => {
+                let mut out = serde_json::Map::new();
+                for (key, element) in map_entries(value) {
+                    out.insert(object_key(&key)?, to_serde(element, depth + 1)?);
+                }
+                serde_json::Value::Object(out)
+            }
+            _ => return Err("value has no JSON form".to_string()),
+        })
+    }
+
+    /// A JSON object key, or the VM's refusal — verbatim, because a caught
+    /// error's message is program output and this one *tells the program what
+    /// to write instead*.
+    fn object_key(key: &RtKey) -> Result<String, String> {
+        match key {
+            RtKey::ShortStr(_) | RtKey::String(_) => Ok(key_str(key).to_string()),
+            RtKey::Int(value) => Err(format!(
+                "a JSON object key is a String, and `{value}` is an Int — write it as \"{value}\" if that is what you mean"
+            )),
+            RtKey::Bool(value) => Err(format!("a JSON object key is a String, and `{value}` is a Bool")),
+            RtKey::Nil => Err("a JSON object key is a String, and `nil` is not one".to_string()),
+            RtKey::Obj(_) => Err("a JSON object key is a String".to_string()),
+        }
+    }
+}
+
+/// `encoding.json.stringify(value)` — compact, the `serde_json::Value`
+/// `Display`.
+///
+/// The raise carries the member's name in front of the reason, which is the
+/// stdlib's `write_format` wrapper doing it there.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_json_stringify(value: LkDyn) -> *mut c_char {
+    match write::to_serde(value, 0).map(|value| value.to_string()) {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.json.stringify: {message}")),
+    }
+}
+
+/// `encoding.yaml.stringify(value)`.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_yaml_stringify(value: LkDyn) -> *mut c_char {
+    let text = write::to_serde(value, 0)
+        .and_then(|value| serde_yaml::to_string(&value).map_err(|error| format!("cannot write YAML: {error}")));
+    match text {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.yaml.stringify: {message}")),
+    }
+}
+
+/// `encoding.toml.stringify(value)`.
+///
+/// A TOML document *is* a table, so a top-level scalar or array is refused
+/// rather than written out as something no TOML parser reads back — the VM's
+/// rule, in the VM's words.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_toml_stringify(value: LkDyn) -> *mut c_char {
+    let text = write::to_serde(value, 0).and_then(|value| {
+        if !value.is_object() {
+            return Err("a TOML document is a table, so the top level must be a map".to_string());
+        }
+        toml::to_string(&value).map_err(|error| format!("cannot write TOML: {error}"))
+    });
+    match text {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.toml.stringify: {message}")),
+    }
+}

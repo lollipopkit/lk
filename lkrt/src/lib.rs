@@ -101,9 +101,9 @@ pub use cpu::{
 // A `cpu_*` intrinsic that lives with the interrupt stubs rather than with the
 // rest of them, because it *is* one of them: `isr.rs` holds both directions of
 // the same obstacle — a vector that cannot be an operand, answered by a table.
-pub use encoding::lkrt_json_parse;
+pub use encoding::{lkrt_json_parse, lkrt_json_stringify};
 #[cfg(feature = "std")]
-pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
+pub use encoding::{lkrt_toml_parse, lkrt_toml_stringify, lkrt_yaml_parse, lkrt_yaml_stringify};
 pub use hash::{
     lkrt_hash_crc32_bytes, lkrt_hash_crc32_str, lkrt_hash_fnv64_bytes, lkrt_hash_fnv64_str, lkrt_hash_sha1_bytes,
     lkrt_hash_sha1_str, lkrt_hash_sha256_bytes, lkrt_hash_sha256_str,

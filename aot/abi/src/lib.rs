@@ -223,8 +223,11 @@ macro_rules! for_each_abi_fn {
             // `encoding` submodules: the VM's exact crates + conversion rules
             // (`core/src/val/de.rs`); object key order mirrors two-stage.
             ("json", "parse", lkrt_json_parse, WritesHost, [StrPtr], DynVal);
+            ("json", "stringify", lkrt_json_stringify, WritesHost, [DynVal], StrPtr);
             ("yaml", "parse", lkrt_yaml_parse, WritesHost, [StrPtr], DynVal);
+            ("yaml", "stringify", lkrt_yaml_stringify, WritesHost, [DynVal], StrPtr);
             ("toml", "parse", lkrt_toml_parse, WritesHost, [StrPtr], DynVal);
+            ("toml", "stringify", lkrt_toml_stringify, WritesHost, [DynVal], StrPtr);
             // `base64`/`hex`/`url`: the same crates the stdlib module uses, so
             // the text is byte-identical. `WritesHost` like every other
             // arena-allocating string producer. `url.decode_component` raises on

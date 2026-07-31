@@ -178,7 +178,7 @@ unsafe fn dyn_str<'a>(v: LkDyn) -> &'a str {
     unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
 }
 
-fn dyn_list<'a>(v: LkDyn) -> &'a [LkDyn] {
+pub(crate) fn dyn_list<'a>(v: LkDyn) -> &'a [LkDyn] {
     let handle = v.payload as *mut c_void;
     if handle.is_null() {
         return &[];
@@ -641,7 +641,7 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
 /// A map of any representation as `(key, value)` pairs under the general key,
 /// for the merge above. A copy, and sound for the same reason
 /// `lkmap::typed_map_keyed` is: the result is a *new* map either way.
-fn map_entries(v: LkDyn) -> crate::lkmap::FxMap<crate::lkmap::MapKey, LkDyn> {
+pub(crate) fn map_entries(v: LkDyn) -> crate::lkmap::FxMap<crate::lkmap::MapKey, LkDyn> {
     if v.tag == DYN_MAP {
         crate::lkmap::boxed_map_keyed(v.payload as *mut c_void)
     } else {
