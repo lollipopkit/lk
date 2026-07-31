@@ -209,3 +209,40 @@ fn line_endings_come_from_the_lines_not_the_content() {
     let lf_with_crlf_inside_a_string = "let s = \"a\\r\\nb\";\nlet y = 2;\n";
     assert_eq!(fmt(lf_with_crlf_inside_a_string), "let s = \"a\\r\\nb\";\nlet y = 2;\n");
 }
+
+/// Two lines at the same bracket depth land in the same column.
+///
+/// The indent used to be `depth.min(prev_level + 1)` — a clamp meant to stop a
+/// multi-bracket open from jumping two levels, which also made the column
+/// depend on how many lines had already been emitted. A wrapped argument list
+/// after a two-bracket open therefore climbed a staircase, one level per line,
+/// which is the one thing a re-indenter cannot get wrong and still be one.
+#[test]
+fn lines_at_the_same_depth_get_the_same_column() {
+    let src = "fn f() {\nwrite([110, 97,\n32, 116,\n102, 105]);\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn f() {\n    write([110, 97,\n        32, 116,\n        102, 105]);\n}\n"
+    );
+}
+
+/// A line led by an infix operator continues the previous one.
+///
+/// The rule is "a token that can never *start* an expression". Of the infix
+/// operators only `-` can (`-x` is negation), so `+`, `*`, `/`, `%` and `&`
+/// were being dedented to statement level for no reason. `|` is decided by
+/// looking further: `|x|` is a lambda's parameter list, `| expr` is a bitwise
+/// or.
+#[test]
+fn an_infix_lead_is_a_continuation_but_a_lambda_is_not() {
+    let src = "fn f() {\nlet d = (a & 1)\n| (b << 16)\n| c;\nlet e = a\n+ b\n% 3;\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn f() {\n    let d = (a & 1)\n        | (b << 16)\n        | c;\n    let e = a\n        + b\n        % 3;\n}\n"
+    );
+
+    // The `|y|` here opens a lambda, so the line is a list element at the
+    // bracket's own level — not one column further in.
+    let src = "fn f() {\nlet fs = [|x| x + 1,\n|y| y * 2];\n}\n";
+    assert_eq!(fmt(src), "fn f() {\n    let fs = [|x| x + 1,\n        |y| y * 2];\n}\n");
+}
