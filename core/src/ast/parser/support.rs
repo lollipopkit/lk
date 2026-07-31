@@ -516,6 +516,13 @@ impl<'a> Parser<'a> {
                 | Token::Fn
                 | Token::Match
                 | Token::If
+                // `try` is an expression like the two above it — that is what
+                // the 2026-07 decision made it — and this list is what decides
+                // whether one may start a *container element*. Missing here, it
+                // was an expression everywhere else and a syntax error inside
+                // `[…]` and `{k: …}`, which is precisely where a fallible value
+                // gets collected.
+                | Token::Try
                 | Token::Unsafe
         )
     }

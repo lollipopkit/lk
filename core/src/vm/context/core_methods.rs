@@ -887,7 +887,15 @@ fn dispatch_string_builtin_method(
             let RuntimeVal::Int(count) = &positional[0] else {
                 bail!("string.take() count must be Int");
             };
-            let text = crate::util::text::substring(s, 0, (*count).max(0) as usize);
+            // Refused, not clamped — the same rule `list.take()` follows. A
+            // count is not a position: a negative *position* means "from the
+            // end" here, and that decision is what made `.max(0)` look
+            // reasonable, but `take(-1)` is a mistake in any reading and the
+            // List carrier has said so all along.
+            if *count < 0 {
+                bail!("string.take() count must be non-negative, got {count}");
+            }
+            let text = crate::util::text::substring(s, 0, *count as usize);
             Ok(Some(make_string_val(text, heap)))
         }
         "skip" => {
@@ -898,7 +906,10 @@ fn dispatch_string_builtin_method(
                 bail!("string.skip() count must be Int");
             };
             let total = crate::util::text::char_len(s);
-            let start = (*count).max(0) as usize;
+            if *count < 0 {
+                bail!("string.skip() count must be non-negative, got {count}");
+            }
+            let start = *count as usize;
             let text = crate::util::text::substring(s, start, total.saturating_sub(start));
             Ok(Some(make_string_val(text, heap)))
         }
@@ -916,7 +927,12 @@ fn dispatch_string_builtin_method(
             let RuntimeVal::Int(n) = &positional[0] else {
                 bail!("string.repeat() count must be Int");
             };
-            if *n <= 0 {
+            // Zero repeats is the empty string; a *negative* count is a
+            // mistake, and every other count-taking method says so.
+            if *n < 0 {
+                bail!("string.repeat() count must be non-negative, got {n}");
+            }
+            if *n == 0 {
                 return Ok(Some(make_string_val("", heap)));
             }
             let repeated: String = s.repeat(*n as usize);

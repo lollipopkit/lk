@@ -977,3 +977,43 @@ fn a_map_member_miss_and_a_lengthless_value_say_what_the_program_did() {
     assert!(display.contains("`len()` works on"), "{display}");
     assert!(!display.contains("Len target"), "{display}");
 }
+
+/// A negative *count* is refused on a String, as it already was on a List.
+///
+/// `[1, 2].take(-1)` raised and `"ab".take(-1)` answered `""`; `skip` had the
+/// same split, and `repeat(-1)` was `""` too. One rule, two carriers, two
+/// behaviours — the shape the negative-position decision was cleaned up into
+/// once already.
+///
+/// A negative *position* is a different thing and keeps its meaning: `slice`
+/// counts from the end.
+#[test]
+fn a_negative_count_is_refused_on_a_string_as_it_is_on_a_list() {
+    let result = execute_source(
+        r#"
+        let s = "ab";
+        return [
+            try { s.take(-1) } catch e { e },
+            try { s.skip(-1) } catch e { e },
+            try { s.repeat(-1) } catch e { e },
+            s.repeat(0),
+            s.take(1),
+            s.skip(1),
+            s.slice(-1, 2),
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    for expected in [
+        "string.take() count must be non-negative",
+        "string.skip() count must be non-negative",
+        "string.repeat() count must be non-negative",
+    ] {
+        assert!(display.contains(expected), "{display}");
+    }
+    // Zero repeats, the ordinary counts, and the negative *position* all keep
+    // their answers.
+    assert!(display.contains(r#""","a","b","b""#), "{display}");
+}

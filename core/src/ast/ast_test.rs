@@ -858,4 +858,26 @@ mod test {
         let text = format!("{error:#}");
         assert!(text.contains("Expecting ')'"), "{text}");
     }
+
+    /// `try` may start a container element, like the other block expressions.
+    ///
+    /// It became an expression in 2026-07, and `let x = try …`, `f(try …)` and
+    /// `return try …` all took it — but a list element and a map value are
+    /// decided by their own start-token list, and `Token::Try` was not on it.
+    /// So the one place a fallible value is most often *collected* was the one
+    /// place it could not be written.
+    #[test]
+    fn try_may_start_a_container_element() {
+        for source in [
+            "let xs = [try { 1 } catch e { 0 }];",
+            "let m = {\"k\": try { 1 } catch e { 0 }};",
+            "let s = Set([try { 1 } catch e { 0 }]);",
+            "let xs = [1, try { 2 } catch e { 0 }, 3];",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .unwrap_or_else(|error| panic!("{source} → {error:#}"));
+        }
+    }
 }
