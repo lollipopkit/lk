@@ -136,17 +136,30 @@ pub(crate) fn lower_method_call_k(
     // `Bytes` as `Bytes`, because filtering removes elements without changing
     // any. Without this the three closure methods were the last of the fourteen
     // still dropping their module to the VM.
-    let hof_receiver = if receiver_ty == Ty::Bytes && matches!(name.as_str(), "map" | "filter" | "reduce") {
-        let listed = ssa.new_val();
-        insts.push(Inst::Call {
-            dst: Some(listed),
-            callee: AbiRef::new("bytes_h", "to_i64_list"),
-            args: vec![receiver],
-        });
-        Some(listed)
-    } else {
-        None
-    };
+    //
+    // A `Slice` joins the same way and for the same reason, with one difference
+    // in the other direction: `w.filter(f)` answers a **List**, not a window
+    // (`builtin_method_sig` says so — a window is a range of its source, and a
+    // filtered window is not one), so nothing has to come back.
+    let hof_receiver =
+        if matches!(receiver_ty, Ty::Bytes | Ty::SliceI64) && matches!(name.as_str(), "map" | "filter" | "reduce") {
+            let listed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(listed),
+                callee: AbiRef::new(
+                    if receiver_ty == Ty::Bytes { "bytes_h" } else { "slice_h" },
+                    if receiver_ty == Ty::Bytes {
+                        "to_i64_list"
+                    } else {
+                        "i64_to_list"
+                    },
+                ),
+                args: vec![receiver],
+            });
+            Some(listed)
+        } else {
+            None
+        };
     let hof_ty = if hof_receiver.is_some() {
         Ty::ListI64
     } else {
@@ -169,7 +182,7 @@ pub(crate) fn lower_method_call_k(
         )?
     {
         let result = match (hof_receiver, name.as_str()) {
-            (Some(_), "filter") => {
+            (Some(_), "filter") if receiver_ty == Ty::Bytes => {
                 let bytes = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(bytes),
@@ -1010,6 +1023,91 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::ListI64)
+        }
+        // The read half of the list surface, *through* the window: a window
+        // exists so that asking it for a sum does not build a list first, and
+        // these nine used to drop the whole module to the VM — the same
+        // "almost native receiver" shape `Bytes` had. `take`/`skip` are
+        // sub-windows for the same reason, and keep the count guard: a count is
+        // not a position, so a negative one is a refusal rather than a window
+        // measured from the end.
+        (Ty::SliceI64, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sum"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::SliceI64, "min" | "max", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", if name == "min" { "i64_min" } else { "i64_max" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::Dyn)
+        }
+        // The ABI's `I64` 0/1 becomes a `Bool` by comparing it, exactly as the
+        // `Bytes` arm does — a `Bool`-typed value that is really an i64 makes
+        // codegen emit `uextend` on something already 64 bits wide, and the
+        // Cranelift verifier rejects the function.
+        (Ty::SliceI64, "contains", [(value, Ty::I64)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("slice_h", "i64_contains"),
+                args: vec![receiver, *value],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (dst, Ty::Bool)
+        }
+        (Ty::SliceI64, "index_of", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_index_of"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::SliceI64, "take" | "skip", [(count, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", if name == "take" { "i64_take" } else { "i64_skip" }),
+                args: vec![receiver, *count],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // `first`/`last` are `[0]` and `[-1]`, which the window's own indexed
+        // read already is — including the nil an empty window answers.
+        (Ty::SliceI64, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::SliceGetMaybe {
+                dst,
+                handle: receiver,
+                index,
+            });
+            (dst, Ty::MaybeI64)
         }
         // `w.get(i)` — the same read as `w[i]`, answering nil instead of
         // failing, which is what `.get()` means on a list too.

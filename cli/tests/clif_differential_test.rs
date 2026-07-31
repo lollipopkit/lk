@@ -2743,6 +2743,59 @@ fn every_slice_spelling_lowers_natively() {
     );
 }
 
+/// A window answers the whole read surface *through* itself.
+///
+/// `xs.slice(a, b)` is a range of its source, not a copy — and nine of its
+/// seventeen methods dropped the module to the VM, so a program that took a
+/// window to avoid copying paid for the window and then ran interpreted. The
+/// same "almost native receiver" shape `Bytes` had before it, and the list
+/// carriers before that.
+///
+/// `sum`/`min`/`contains` read through the window rather than materializing it,
+/// which is the point of having one; `take`/`skip` are sub-windows, and keep
+/// the count guard (a count is not a position, so a negative one is a refusal);
+/// `map`/`filter`/`reduce` join the list channel by becoming a list first, and
+/// answer a **List** — a filtered window is not a range of anything.
+#[test]
+fn a_window_answers_its_whole_read_surface_natively() {
+    run_clif_differential(
+        "slice_surface",
+        &[
+            new(
+                "reads_through_the_window",
+                "let z = 0;\nlet xs = [3, 1, 2, 5, 4];\nlet w = xs.slice(1 + z, 4);\n\
+                 println(w.len());\nprintln(w.is_empty());\nprintln(w.first());\nprintln(w.last());\n\
+                 println(w.get(0));\nprintln(w.get(-1));\nprintln(w.get(9));\n\
+                 println(w.sum());\nprintln(w.min());\nprintln(w.max());\n\
+                 println(w.contains(2));\nprintln(w.contains(99));\n\
+                 println(w.index_of(2));\nprintln(w.index_of(99));\n\
+                 println(w.to_list());\nprintln(w.slice(1, 3).to_list());\nreturn 0;\n",
+            ),
+            new(
+                "sub_windows_and_the_count_guard",
+                "let z = 0;\nlet xs = [3, 1, 2, 5, 4];\nlet w = xs.slice(0 + z, 5);\n\
+                 println(w.take(2).to_list());\nprintln(w.skip(2).to_list());\n\
+                 println(w.take(99).to_list());\nprintln(w.skip(99).to_list());\n\
+                 println(w.take(0).to_list());\nreturn 0;\n",
+            ),
+            new(
+                "an_empty_window_reads_as_nil",
+                "let z = 0;\nlet w = [1, 2, 3].slice(1 + z, 1);\n\
+                 println(w.len());\nprintln(w.is_empty());\nprintln(w.first());\nprintln(w.last());\n\
+                 println(w.min());\nprintln(w.max());\nprintln(w.sum());\n\
+                 println(w.index_of(1));\nprintln(w.contains(1));\nprintln(w.to_list());\nreturn 0;\n",
+            ),
+            new(
+                "the_closure_methods_answer_lists",
+                "let z = 0;\nlet w = [3, 1, 2].slice(0 + z, 3);\n\
+                 println(w.map(|x: Int| -> Int { x * 2 }));\n\
+                 println(w.filter(|x: Int| -> Bool { x > 1 }));\n\
+                 println(w.reduce(0, |a: Int, b: Int| -> Int { a + b }));\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
 /// `Bytes` as a native value, pinned to pure Cranelift.
 ///
 /// It had no carrier at all, so `"hi".bytes()`, every `bytes` module member, and

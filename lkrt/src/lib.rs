@@ -232,8 +232,9 @@ pub use lkset::{
     lkrt_lkset_new,
 };
 pub use lkslice::{
-    lkrt_lkslice_i64_display, lkrt_lkslice_i64_get_pair, lkrt_lkslice_i64_is_empty, lkrt_lkslice_i64_len,
-    lkrt_lkslice_i64_new, lkrt_lkslice_i64_sub, lkrt_lkslice_i64_to_list,
+    lkrt_lkslice_i64_contains, lkrt_lkslice_i64_display, lkrt_lkslice_i64_get_pair, lkrt_lkslice_i64_index_of,
+    lkrt_lkslice_i64_is_empty, lkrt_lkslice_i64_len, lkrt_lkslice_i64_max, lkrt_lkslice_i64_min, lkrt_lkslice_i64_new,
+    lkrt_lkslice_i64_skip, lkrt_lkslice_i64_sub, lkrt_lkslice_i64_sum, lkrt_lkslice_i64_take, lkrt_lkslice_i64_to_list,
 };
 pub use lkstr::{
     lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_byte_at, lkrt_str_byte_len, lkrt_str_capitalize,

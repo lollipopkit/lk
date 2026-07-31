@@ -165,6 +165,133 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_sub(handle: *mut c_void, start: i64, e
     })
 }
 
+/// The window's elements, without copying them.
+///
+/// Every read below goes through here rather than through `to_list`: a window
+/// exists precisely so that asking it for a sum does not allocate a list first.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+unsafe fn window_values<'a>(handle: *mut c_void) -> &'a [i64] {
+    // SAFETY: the caller guarantees a live window handle or null.
+    let Some(w) = (unsafe { window(handle) }) else {
+        return &[];
+    };
+    // SAFETY: as in `lkrt_lkslice_i64_get_pair`.
+    let values = unsafe { source_values(w.source) };
+    let end = (w.start + w.len).min(values.len());
+    &values[w.start.min(end)..end]
+}
+
+/// `w.sum()` — wrapping, as the VM's list sum is.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_sum(handle: *mut c_void) -> i64 {
+    // SAFETY: the caller guarantees a live window handle or null.
+    unsafe { window_values(handle) }
+        .iter()
+        .fold(0i64, |total, value| total.wrapping_add(*value))
+}
+
+/// `w.min()` / `w.max()` — absent on an empty window, which is the nil the VM
+/// answers there.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_min(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    // SAFETY: the caller guarantees a live window handle or null.
+    maybe(unsafe { window_values(handle) }.iter().min().copied())
+}
+
+/// The `max` half of [`lkrt_lkslice_i64_min`].
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_max(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    // SAFETY: the caller guarantees a live window handle or null.
+    maybe(unsafe { window_values(handle) }.iter().max().copied())
+}
+
+/// `w.contains(v)`.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_contains(handle: *mut c_void, value: i64) -> i64 {
+    // SAFETY: the caller guarantees a live window handle or null.
+    i64::from(unsafe { window_values(handle) }.contains(&value))
+}
+
+/// `w.index_of(v)` — the position *within the window*, or absent.
+///
+/// Absent rather than `-1`: `-1` is a legal position (the last element), so
+/// `w[w.index_of(v)]` would quietly read the end instead of failing.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_index_of(handle: *mut c_void, value: i64) -> crate::lkdyn::LkDyn {
+    // SAFETY: the caller guarantees a live window handle or null.
+    maybe(
+        unsafe { window_values(handle) }
+            .iter()
+            .position(|candidate| *candidate == value)
+            .map(|index| index as i64),
+    )
+}
+
+/// `w.take(n)` / `w.skip(n)` — a sub-window, not a copy.
+///
+/// A separate entry from `sub` because a **count is not a position**: a
+/// negative one is the refusal the VM gives, where `sub` would measure from
+/// the end. Same split as `lklist`'s and `lkbytes`'s windows.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_take(handle: *mut c_void, count: i64) -> *mut c_void {
+    if count < 0 {
+        crate::panic::raise_str(&alloc::format!("slice.take() count must be non-negative, got {count}"));
+    }
+    // SAFETY: the caller guarantees a live window handle or null.
+    unsafe { lkrt_lkslice_i64_sub(handle, 0, count.min(window_len(handle))) }
+}
+
+/// The `skip` half of [`lkrt_lkslice_i64_take`].
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_skip(handle: *mut c_void, count: i64) -> *mut c_void {
+    if count < 0 {
+        crate::panic::raise_str(&alloc::format!("slice.skip() count must be non-negative, got {count}"));
+    }
+    // SAFETY: the caller guarantees a live window handle or null.
+    let len = window_len(handle);
+    unsafe { lkrt_lkslice_i64_sub(handle, count.min(len), len) }
+}
+
+/// The window's length as an `i64`, for the two count guards above.
+fn window_len(handle: *mut c_void) -> i64 {
+    // SAFETY: the callers guarantee a live window handle or null.
+    unsafe { window(handle) }.map_or(0, |w| w.len as i64)
+}
+
+/// An `Int?` answer as the boxed carrier every other optional-answering helper
+/// uses (`bytes_h.min`, `list_h.i64_index_of`): a `Maybe<i64>` return is
+/// declared in codegen rather than in the ABI table, and these are ordinary
+/// table rows.
+fn maybe(value: Option<i64>) -> crate::lkdyn::LkDyn {
+    match value {
+        Some(value) => crate::lkdyn::lkrt_dyn_from_i64(value),
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
 /// `w.to_list()` — the copy, asked for explicitly.
 ///
 /// # Safety

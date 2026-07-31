@@ -570,6 +570,16 @@ macro_rules! for_each_abi_fn {
             // The copy, asked for by name. Its result windows nothing, so it is
             // an ordinary `Constructs`.
             ("slice_h", "i64_to_list", lkrt_lkslice_i64_to_list, WritesHost, [Ptr], Ptr, Constructs);
+            // Reads *through* the window rather than materializing it: a
+            // window exists so that asking for a sum does not build a list.
+            ("slice_h", "i64_sum", lkrt_lkslice_i64_sum, ReadsHost, [Ptr], I64, Borrowed);
+            ("slice_h", "i64_min", lkrt_lkslice_i64_min, ReadsHost, [Ptr], DynVal, Borrowed);
+            ("slice_h", "i64_max", lkrt_lkslice_i64_max, ReadsHost, [Ptr], DynVal, Borrowed);
+            ("slice_h", "i64_contains", lkrt_lkslice_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
+            ("slice_h", "i64_index_of", lkrt_lkslice_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            // Sub-windows, and `WritesHost` because a negative count raises.
+            ("slice_h", "i64_take", lkrt_lkslice_i64_take, WritesHost, [Ptr, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_skip", lkrt_lkslice_i64_skip, WritesHost, [Ptr, I64], Ptr, ConstructsView);
             ("slice_h", "i64_display", lkrt_lkslice_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
