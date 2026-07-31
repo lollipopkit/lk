@@ -919,3 +919,61 @@ fn summing_a_non_number_names_it() {
         assert!(message.contains(expected), "{source} → {message}");
     }
 }
+
+/// A map's member access is a key read, its methods win a name collision, and a
+/// function-valued key is callable — all three, pinned.
+///
+/// The precedence existed only as the order two lookups happened to run in.
+/// Nothing said it, so `{"len": 5}.len()` answering the *entry count* was an
+/// implementation detail that any refactor could have flipped, silently, for
+/// every program with a key named after a builtin method.
+#[test]
+fn a_maps_methods_win_a_name_collision_with_its_keys() {
+    let result = execute_source(
+        r#"
+        let plain = {"a": 1};
+        let shadowing = {"len": 5, "b": 2};
+        let callable = {"f": |x| x + 1};
+        return [
+            plain.a,
+            shadowing.len(),
+            shadowing.len,
+            shadowing["len"],
+            callable.f(1),
+            callable["f"](1),
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display, "[1,2,5,5,2,2]",
+        "`.len()` is the method (2 entries), `.len` and `[\"len\"]` are the key (5), and a \
+         function-valued key is callable either way"
+    );
+}
+
+/// A missing map member names both routes, and `len()` on a value with no
+/// length names the operation rather than the opcode's operand.
+#[test]
+fn a_map_member_miss_and_a_lengthless_value_say_what_the_program_did() {
+    let result = execute_source(
+        r#"
+        let m = {"a": 1};
+        let missing = try { m.nope() } catch e { e };
+        let lengthless = try { nil.len() } catch e { e };
+        return [missing, lengthless];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    // Both halves for the map: a method *and* a key holding a function.
+    assert!(display.contains("no method `nope`"), "{display}");
+    assert!(display.contains("no key `nope`"), "{display}");
+    // "Len target expected string/list/map/set, got Nil" named this opcode's
+    // operand; the program wrote `len()`.
+    assert!(display.contains("`len()` works on"), "{display}");
+    assert!(!display.contains("Len target"), "{display}");
+}

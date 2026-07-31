@@ -1710,6 +1710,16 @@ fn call_trait_method_runtime(
         .trait_method(&receiver_scope, &declared_type, method.as_str())
         .cloned()
     else {
+        // A map is the one receiver where a miss has two possible causes, so it
+        // says both: `m.thing()` looks for a method *and* for a key holding a
+        // function, and "Map has no method `thing`" left the second half out —
+        // for the receiver whose members are usually keys.
+        if matches!(receiver_type_name.as_str(), "Map") {
+            bail!(
+                "a Map has no method `{method}`, and this map has no key `{method}` holding a function \
+                 either"
+            );
+        }
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
     crate::vm::call_trait_method(

@@ -308,11 +308,19 @@ impl Executor {
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),
-                other => bail!("Len target object is not sized: {:?}", HeapValue::type_name(other)),
+                // "Len target" is this opcode's operand, not anything the
+                // program wrote. What it wrote is `x.len()`, and what is wrong
+                // is the value.
+                other => bail!("`len()` has no answer for {}", HeapValue::type_name(other)),
             },
+            // No article: "a Int" is wrong and "an Int" needs a rule about
+            // vowels that has nothing to do with anything here.
             other => bail!(
-                "Len target expected string/list/map/set, got {}",
-                self.value_type_name(other)
+                "`len()` works on a String, List, Map or Set, got {}",
+                match self.value_type_name(other) {
+                    "Nil" => "nil",
+                    name => name,
+                }
             ),
         }
     }
