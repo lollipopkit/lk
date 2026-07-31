@@ -37,6 +37,26 @@ lk pkg add dep ../dep                      # 本地包
 `lk pkg add` 写出的清单也不再带 `workspace = false` —— `Lk.toml` 是给人读和改的
 文件,每条依赖上挂一个什么都没说的字段是噪声。
 
+## `lk compile` 在有依赖的包里会失败,而且是在编译期说清楚
+
+`lk compile` 先试原生降低;降不下来就回落到 **Tier 0 打包**(把程序源码和 VM 一
+起塞进一个可执行文件)。而 Tier 0 只塞**一个文件**:被 `use` 进来的模块源码从来
+没被打进去。于是一个有依赖的包"编译成功",跑起来是
+
+    lk: execution failed
+
+现在两件事都修了:
+
+- **打包前就拒绝**:程序里只要有 `use "路径"` 或非 stdlib 的 `use 名字`,
+  `lk compile` 当场报错,说明 Tier 0 只带一个文件、建议 `lk 文件` 直接跑或把程序
+  写成一个文件。stdlib 的 `use math;` 不受影响 —— 打进去的 VM 自带整个标准库。
+- **打包出来的二进制会说原因**:`lk_vm_eval` 出错时只返回 NULL,消息被丢掉,所以
+  wrapper 只能印 "execution failed"。C ABI 新增 `lk_vm_last_error(vm)`(借用 VM
+  里的字符串,不用 free),wrapper 改印真实原因,例如 `lk: Module 'dep' not found`。
+
+顺带一条语言事实:**LK 没有 `pub`**,模块里定义的东西默认全部导出。写
+`pub fn f()` 是语法错误。
+
 ## 构建产物放在包根,不放进 `src/`
 
 ```sh

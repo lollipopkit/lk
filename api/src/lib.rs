@@ -32,6 +32,17 @@ pub struct Vm {
     ctx: Option<VmContext>,
     fuel: Option<u64>,
     heap_limit: Option<usize>,
+    /// The last `eval` failure, kept so the C ABI can *say* what went wrong.
+    ///
+    /// `lk_vm_eval` answers NULL on error and used to drop the message on the
+    /// floor, so every embedder — including this project's own Tier 0 bundle —
+    /// could only print "execution failed". A missing import, a type error and
+    /// a divide by zero were the same sentence.
+    last_error: Option<String>,
+    /// NUL-terminated copy handed to C by `lk_vm_last_error`; owned here so the
+    /// caller needs no free.
+    #[cfg(feature = "ffi")]
+    last_error_c: Option<std::ffi::CString>,
 }
 
 impl Vm {
@@ -45,6 +56,9 @@ impl Vm {
             ctx: None,
             fuel: None,
             heap_limit: None,
+            last_error: None,
+            #[cfg(feature = "ffi")]
+            last_error_c: None,
         }
     }
 
@@ -65,6 +79,9 @@ impl Vm {
             ctx: None,
             fuel: None,
             heap_limit: None,
+            last_error: None,
+            #[cfg(feature = "ffi")]
+            last_error_c: None,
         }
     }
 
@@ -840,11 +857,46 @@ pub mod ffi {
             return core::ptr::null_mut();
         };
         match vm.eval(src) {
-            Ok(out) => CString::new(out)
-                .map(CString::into_raw)
-                .unwrap_or(core::ptr::null_mut()),
-            Err(_) => core::ptr::null_mut(),
+            Ok(out) => {
+                vm.last_error = None;
+                CString::new(out)
+                    .map(CString::into_raw)
+                    .unwrap_or(core::ptr::null_mut())
+            }
+            Err(error) => {
+                // Kept rather than dropped: NULL alone made "missing import",
+                // "type error" and "divide by zero" the same answer, and the
+                // one embedder this project ships (the Tier 0 bundle) could
+                // only print "lk: execution failed".
+                vm.last_error = Some(format!("{error:#}"));
+                core::ptr::null_mut()
+            }
         }
+    }
+
+    /// The message behind the last [`lk_vm_eval`] that answered NULL, or NULL if
+    /// the last call succeeded. Borrowed from the VM — valid until the next
+    /// `lk_vm_eval` or [`lk_vm_free`], and **not** to be passed to
+    /// [`lk_string_free`].
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be freed.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_last_error(vm: *mut Vm) -> *const c_char {
+        if vm.is_null() {
+            return core::ptr::null();
+        }
+        let vm = unsafe { &mut *vm };
+        let Some(message) = vm.last_error.as_deref() else {
+            return core::ptr::null();
+        };
+        // Re-encoded into a NUL-terminated buffer the VM owns, so the pointer
+        // stays valid for the caller without a free.
+        let Ok(encoded) = CString::new(message) else {
+            return core::ptr::null();
+        };
+        vm.last_error_c = Some(encoded);
+        vm.last_error_c.as_ref().map_or(core::ptr::null(), |s| s.as_ptr())
     }
 
     /// Free a VM created by [`lk_vm_new`].

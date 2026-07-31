@@ -927,6 +927,67 @@ fn heap_object_limit_from_env() -> Option<usize> {
         .filter(|&limit| limit > 0)
 }
 
+/// Tier 0 embeds **one file**, so a program that imports another one cannot
+/// work — and used to say so only at run time, as `lk: Module 'dep' not found`
+/// from a binary `lk compile` had just reported as built.
+///
+/// A stdlib import is fine: the VM linked into the bundle has the whole
+/// standard library. What cannot travel is a *file* import (`use "…"`) or a
+/// package dependency, because the bundle carries no filesystem context and the
+/// dependency's source was never embedded.
+#[cfg(feature = "aot")]
+fn refuse_bundle_with_source_imports(source_path: &Path, source: &str) -> anyhow::Result<()> {
+    use lk_core::stmt::{ImportSource, ImportStmt, Stmt};
+
+    let Ok(program) = lk_core::syntax::parse_program_source(source, Default::default()) else {
+        // Not parseable: the compile below will say so in the language's words.
+        return Ok(());
+    };
+    let stdlib_module = |name: &str| lk_stdlib::stdlib_catalog().modules.iter().any(|spec| spec.name == name);
+    let mut offenders: Vec<String> = Vec::new();
+    for statement in &program.statements {
+        let Stmt::Import(import) = statement.as_ref() else {
+            continue;
+        };
+        match import {
+            ImportStmt::File { path } => offenders.push(format!("`use \"{path}\"`")),
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } if !stdlib_module(module) => {
+                offenders.push(format!("`use {module}`"));
+            }
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => offenders.push(format!("`use … from \"{path}\"`")),
+            ImportStmt::Items {
+                source: ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::Module(module),
+                ..
+            } if !stdlib_module(module) => offenders.push(format!("`use … from {module}`")),
+            _ => {}
+        }
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    offenders.sort();
+    offenders.dedup();
+    anyhow::bail!(
+        "{} imports {} — the Tier 0 bundle embeds a single file plus the VM, so an imported \
+         module's source never travels with it and the binary would fail at launch with \
+         \"Module not found\". Run it with `lk {}`, or keep the program in one file",
+        source_path.display(),
+        offenders.join(", "),
+        source_path.display()
+    )
+}
+
 /// AOT Tier 0: bundle `source_path` into a self-contained native executable that
 /// embeds the program source and the VM (via lk-api's C-ABI staticlib). 100%
 /// coverage — the produced binary just runs the VM at launch, so any program that
@@ -935,6 +996,7 @@ fn heap_object_limit_from_env() -> Option<usize> {
 fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     let source =
         std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
+    refuse_bundle_with_source_imports(source_path, &source)?;
     let staticlib = ensure_lk_api_staticlib()?;
     // Dev workspace layout: the C-ABI header lives in the workspace.
     let header_dir = workspace_root()?.join("api/include");
@@ -943,7 +1005,9 @@ fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
         "#include <stdio.h>\n#include \"lk.h\"\nstatic const char *LK_SRC = \"{escaped}\";\n\
          int main(void) {{\n  LkVm *vm = lk_vm_new();\n  char *out = lk_vm_eval(vm, LK_SRC);\n\
          if (out) {{ if (out[0]) printf(\"%s\\n\", out); lk_string_free(out); lk_vm_free(vm); return 0; }}\n\
-         lk_vm_free(vm); fprintf(stderr, \"lk: execution failed\\n\"); return 1;\n}}\n"
+         const char *err = lk_vm_last_error(vm);\n\
+         fprintf(stderr, \"lk: %s\\n\", err ? err : \"execution failed\");\n\
+         lk_vm_free(vm); return 1;\n}}\n"
     );
     let scratch = std::env::temp_dir().join(format!("lk_bundle_{}", std::process::id()));
     std::fs::create_dir_all(&scratch)?;

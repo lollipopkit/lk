@@ -28,6 +28,11 @@ char *lk_vm_eval(LkVm *vm, const char *src);
 /* Free a VM created by lk_vm_new. */
 void lk_vm_free(LkVm *vm);
 
+/* The message behind the last lk_vm_eval that returned NULL, or NULL if the last
+ * call succeeded. Borrowed from the VM: valid until the next lk_vm_eval or
+ * lk_vm_free, and must NOT be passed to lk_string_free. */
+const char *lk_vm_last_error(LkVm *vm);
+
 /* Free a string returned by lk_vm_eval. */
 void lk_string_free(char *s);
 
