@@ -52,9 +52,14 @@ mod test {
         expect_env("pub && (user.age > 17 || user.name == 'john')", "true");
         expect_env("pub || (user.age < 17 && user.name == 'john')", "true");
 
-        // Short-circuit evaluation (RHS not evaluated)
-        expect("false && nonexistent.field", "false");
-        expect("true || nonexistent.field", "true");
+        // Short-circuit evaluation (RHS not evaluated).
+        //
+        // Probed with a division that raises rather than with an undefined
+        // name: an undefined name is caught before execution, and these two
+        // lines used to pass only because parse-time folding deleted the RHS
+        // outright — which tested the folder, not the executor.
+        expect_source("let z = 0;\nreturn false && (1 / z == 1);", "false");
+        expect_source("let z = 0;\nreturn true || (1 / z == 1);", "true");
     }
 
     #[test]
@@ -66,8 +71,9 @@ mod test {
         // With bound variables
         expect_env("pub ? user.name : 'guest'", "lk");
 
-        // Short-circuit: only selected branch should evaluate
-        expect("false ? (nonexistent.field) : 42", "42");
+        // Short-circuit: only the selected branch evaluates. Same reason as in
+        // `logical_operators` for probing with a raise instead of a name.
+        expect_source("let z = 0;\nreturn false ? (1 / z) : 42;", "42");
 
         // Precedence with arithmetic on else branch
         expect("true ? 1 : 2 + 3", "1");

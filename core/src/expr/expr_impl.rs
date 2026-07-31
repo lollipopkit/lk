@@ -329,7 +329,26 @@ impl Expr {
             Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
     }
-    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
+    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants.
+    ///
+    /// This runs in the **parser**, before name resolution and before the type
+    /// checker. So it may *compute*, but it may not *delete*: a fold that
+    /// selects one of two operands throws the other one away, and whatever was
+    /// in there is then never checked by anybody. `let x = if false {
+    /// undefined_fn() } else { 1 };` and `let x = false && undefined_fn();`
+    /// both passed `lk check` for exactly that reason — the call was gone
+    /// before the checker ran.
+    ///
+    /// The rule is therefore: **a selecting fold is allowed only when the
+    /// discarded side is already a literal**, since a literal has nothing left
+    /// to check. Eliminating a branch on a constant condition is an
+    /// optimization, and optimizations belong after the front end — the VM
+    /// compiler sees the same constant and the AOT backend folds it again.
+    ///
+    /// The other half of the same mistake is folding without looking at the
+    /// operator: `-true` used to fold to `false` and print it, while `-b` on a
+    /// `Bool` variable is rejected. That is a wrong answer, not a missing
+    /// diagnostic.
     pub(crate) fn fold_constants(self) -> Expr {
         match self {
             Expr::Literal(_) => self, // Constant value, return directly
@@ -358,15 +377,34 @@ impl Expr {
                 let t = (*t_box).fold_constants();
                 let e = (*e_box).fold_constants();
                 if let Expr::Literal(LiteralVal::Bool(b)) = c {
-                    return if b { t } else { e };
+                    // Only when the arm being dropped is itself a literal —
+                    // see the note on this method.
+                    let discarded = if b { &e } else { &t };
+                    if matches!(discarded, Expr::Literal(_)) {
+                        return if b { t } else { e };
+                    }
                 }
                 Expr::Conditional(Box::new(c), Box::new(t), Box::new(e))
             }
             Expr::Unary(op, expr_box) => {
                 let inner = (*expr_box).fold_constants();
-                // Constant folding: !expr, if expr is boolean constant then calculate result
-                if let Expr::Literal(LiteralVal::Bool(b)) = &inner {
-                    return Expr::Literal(LiteralVal::Bool(!*b));
+                // The operator decides what folds. `!` on a `Bool` and `-` on a
+                // number; every other pairing is a type error the checker owns.
+                match (&op, &inner) {
+                    (UnaryOp::Not, Expr::Literal(LiteralVal::Bool(b))) => {
+                        return Expr::Literal(LiteralVal::Bool(!*b));
+                    }
+                    // `checked_neg`, because `-i64::MIN` has no answer and the
+                    // executor raises there rather than wrapping.
+                    (UnaryOp::Neg, Expr::Literal(LiteralVal::Int(i))) => {
+                        if let Some(negated) = i.checked_neg() {
+                            return Expr::Literal(LiteralVal::Int(negated));
+                        }
+                    }
+                    (UnaryOp::Neg, Expr::Literal(LiteralVal::Float(f))) => {
+                        return Expr::Literal(LiteralVal::Float(-*f));
+                    }
+                    _ => {}
                 }
                 Expr::Unary(op, Box::new(inner))
             }
@@ -376,18 +414,13 @@ impl Expr {
             Expr::Cast(expr_box, ty) => Expr::Cast(Box::new((*expr_box).fold_constants()), ty),
             // The marker survives folding; it is what the checker reads.
             Expr::Unsafe(expr_box) => Expr::Unsafe(Box::new((*expr_box).fold_constants())),
+            // `&&` and `||` do not short-circuit *here*. Dropping the right
+            // operand because the left is a constant hides it from the type
+            // checker; the executor still short-circuits at run time, which is
+            // the only place short-circuiting is observable.
             Expr::And(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                // Short-circuit constant false: left side constant false, then entire AND is constant false
-                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
-                    return Expr::Literal(LiteralVal::Bool(false));
-                }
                 let e2 = (*e2_box).fold_constants();
-                // Short-circuit constant true: left side constant true, then return right side expression result
-                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
-                    return e2;
-                }
-                // Both folded, if both are boolean constants then can further fold
                 if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
                     return Expr::Literal(LiteralVal::Bool(*b1 && *b2));
                 }
@@ -395,15 +428,7 @@ impl Expr {
             }
             Expr::Or(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
-                    // Left side constant true, OR expression is constant true
-                    return Expr::Literal(LiteralVal::Bool(true));
-                }
                 let e2 = (*e2_box).fold_constants();
-                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
-                    // Left side constant false, OR result depends on right side
-                    return e2;
-                }
                 if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
                     return Expr::Literal(LiteralVal::Bool(*b1 || *b2));
                 }
@@ -411,16 +436,17 @@ impl Expr {
             }
             Expr::NullishCoalescing(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                // If left side is constant not nil, return it
-                if let Expr::Literal(v) = &e1
-                    && *v != LiteralVal::Nil
-                {
-                    return e1;
-                }
                 let e2 = (*e2_box).fold_constants();
-                // If left side is constant nil, return right side
-                if let Expr::Literal(LiteralVal::Nil) = e1 {
-                    return e2;
+                // `nil ?? e` discards only the literal `nil`, so it folds. The
+                // other direction discards `e`, so it needs `e` to be a literal
+                // as well.
+                if let Expr::Literal(value) = &e1 {
+                    if *value == LiteralVal::Nil {
+                        return e2;
+                    }
+                    if matches!(e2, Expr::Literal(_)) {
+                        return e1;
+                    }
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
             }

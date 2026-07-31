@@ -682,4 +682,49 @@ mod tests {
 
         check_program("let t: Tuple<Int, Int> = [\"a\", \"b\"];").expect_err("element types are still checked");
     }
+
+    /// A constant condition does not delete the branch the checker has not
+    /// seen.
+    ///
+    /// `fold_constants` runs in the parser, so anything it drops is dropped
+    /// before name resolution and type checking ever run. `if false {
+    /// undefined_fn() } else { 1 }`, `false && undefined_fn()` and `1 ??
+    /// undefined_fn()` all passed `lk check` because the call was gone by the
+    /// time anyone looked — the probe here uses a *type* error rather than an
+    /// undefined name so it lands in this file's checker rather than in
+    /// resolution. `-true` was worse than unchecked: it folded to `false` and
+    /// printed it, while `-b` on a `Bool` variable is rejected.
+    #[test]
+    fn a_constant_condition_does_not_hide_the_branch_it_does_not_take() {
+        check_program("let x = if false { -true } else { 1 };").expect_err("the untaken arm is still code");
+        check_program("let x = if true { 1 } else { -true };").expect_err("and so is the other one");
+        check_program("let x = false && -true;").expect_err("`&&` does not short-circuit the checker");
+        check_program("let x = true || -true;").expect_err("nor does `||`");
+        check_program("let x = 1 ?? -true;").expect_err("nor does `??`");
+        check_program("let x = -true;").expect_err("negating a Bool is a type error, constant or not");
+
+        // The folds that discard nothing but a literal still happen, and the
+        // ordinary shapes still check.
+        check_program("let x: Bool = false && true;").expect("both operands literal");
+        check_program("let x: String = nil ?? \"a\";").expect("`nil ?? e` discards only the nil");
+        check_program("let x: Int = -3;").expect("negating a literal");
+        check_program("let x = if false { 1 } else { 2 };").expect("both arms literal");
+    }
+
+    /// Both arms of a constant `if` type, so the diagnostic names the union —
+    /// the same thing a function body reports.
+    ///
+    /// It used to name whichever arm survived folding, which meant the
+    /// top-level `let` and the identical `let` inside a function disagreed
+    /// about what the expression's type even was.
+    #[test]
+    fn a_constant_conditional_reports_the_union_of_both_arms() {
+        let message = check_program("let x: Int = if false { 9.5 } else { \"x\" };")
+            .expect_err("Int accepts neither arm")
+            .to_string();
+        assert!(
+            message.contains("Float | String"),
+            "expected the union of both arms, got: {message}"
+        );
+    }
 }

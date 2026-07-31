@@ -152,10 +152,12 @@ impl<'a> StmtParser<'a> {
 
     /// Does the `if` at `keyword_pos` take a `{ … }` branch?
     ///
-    /// Decided by scanning rather than by inspecting the parsed expression,
-    /// because the parser folds constants on the way out: `if false { 1 }
-    /// else { 2 }` comes back as the surviving *block*, with no conditional
-    /// left to recognise.
+    /// Decided by scanning rather than by inspecting the parsed expression:
+    /// the answer is needed *before* the expression exists, to choose which
+    /// parser to run. (It also used to be that constant folding could delete
+    /// the conditional outright — `if false { 1 } else { 2 }` came back as the
+    /// surviving block. Folding no longer discards an unchecked branch, but
+    /// the scan is still what decides.)
     fn if_branch_is_braced(&self, keyword_pos: usize) -> bool {
         let mut depth = 0i32;
         let mut index = keyword_pos + 1;
