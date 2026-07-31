@@ -1252,6 +1252,56 @@ mod tests {
         }
     }
 
+    /// Every stdlib member wired natively in this round still has a row.
+    ///
+    /// One test for many modules because they share one failure mode, and it is
+    /// the one nothing else reports: drop any row here and the member runs on
+    /// the hybrid bridge, prints the identical answer, and costs ~3x. The
+    /// differential corpora cover the *answers* for all of these; only this
+    /// covers the lowering.
+    #[test]
+    fn the_natively_lowered_stdlib_surface_stays_lowered() {
+        for (module, member) in [
+            ("hash", "sha256"),
+            ("hash", "sha1"),
+            ("hash", "crc32"),
+            ("hash", "fnv64"),
+            ("uuid", "v4"),
+            ("uuid", "parse"),
+            ("uuid", "is_valid"),
+            ("regex", "is_match"),
+            ("regex", "split"),
+            ("regex", "replace"),
+            ("regex", "find"),
+            ("regex", "find_all"),
+            ("regex", "captures"),
+            ("random", "int"),
+            ("random", "float"),
+            ("random", "bool"),
+            ("random", "bytes"),
+            ("random", "choice"),
+            ("random", "shuffle"),
+            ("process", "id"),
+            ("process", "set_cwd"),
+            ("process", "exit"),
+            ("process", "status"),
+            ("process", "output"),
+            ("process", "output_string"),
+            ("env", "vars"),
+            ("json", "stringify"),
+            ("yaml", "stringify"),
+            ("toml", "stringify"),
+            ("time", "timeout"),
+            ("time", "after"),
+        ] {
+            assert!(
+                module_call_abi_rows(module, member).next().is_some(),
+                "{module}.{member} lost its native lowering — the bridge answers the same, so no \
+                 differential reports this"
+            );
+        }
+    }
+
     /// The `fs` surface lowers, and `metadata` is the one member that does not.
     ///
     /// Everything here is a call the bridge would answer identically, so the
