@@ -858,7 +858,11 @@ impl Executor {
         let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get(handle) else {
             return Ok(None);
         };
-        let index = usize::try_from(*index).map_err(|_| anyhow!("list index must be non-negative"))?;
+        // Not "must be non-negative": `xs[-1]` is the last element, so that
+        // sentence describes a rule this language does not have. What happened
+        // is that the index resolved below 0 — the same out-of-range answer the
+        // other end gives, and `index` here is the index *as written*.
+        let index = usize::try_from(*index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
         if index >= values.len() {
             bail!("list index {} out of bounds", index);
         }
@@ -894,7 +898,21 @@ impl Executor {
         key_reg: u8,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<RuntimeVal> {
-        let index = usize::try_from(self.read_int(key_reg)?).map_err(|_| anyhow!("list index must be non-negative"))?;
+        // A negative index has already been resolved against the length by the
+        // time it reaches this register, so one that is *still* negative is out
+        // of range at the low end — and a read out of range is `nil`, the same
+        // answer this gives past the high end and the same one `String`,
+        // `Bytes` and the native build already gave.
+        //
+        // It used to be `usize::try_from(…)` raising `list index must be
+        // non-negative`: a rule this language does not have (`xs[-1]` is the
+        // last element), and a VM/native divergence that wording hid —
+        // `xs[-10]` raised interpreted and answered `nil` compiled. See
+        // `val::position::element_position`, which states this rule and, until
+        // now, had no callers.
+        let Ok(index) = usize::try_from(self.read_int(key_reg)?) else {
+            return Ok(RuntimeVal::Nil);
+        };
         if let Some(value) = self.index_typed_list_handle(handle, index, known_value_kind)? {
             return Ok(value);
         }

@@ -921,15 +921,27 @@ fn store_index(index: i64, len: usize) -> Option<usize> {
 
 /// The same, raising in the VM's exact wording when it is out of range.
 ///
-/// Two messages, because the VM has two: still-negative after resolving is
-/// `list index must be non-negative`, past the end is `list index N out of
-/// bounds` — and `N` is the index *as written*, not the resolved one. A caught
-/// error is printed output, so the text is part of the answer.
+/// One message, because the VM has one: out of range at either end is
+/// `list index N out of bounds`. A caught error is printed output, so the text
+/// is part of the answer and has to match the VM's to the character.
+///
+/// It used to be two, the negative end saying `list index must be
+/// non-negative` — a rule the language does not have, `xs[-1]` being the last
+/// element. The two builds agreed only by being wrong the same way.
+///
+/// `N` is the index **after** resolving against the length, because that is
+/// what the VM has: a negative index is resolved when the key is built, several
+/// steps before the store, so the value it reports for `xs.set(-9, v)` on a
+/// three-element list is `-6`. Reporting what the program wrote would be the
+/// better message and is not available on that side; mirroring is what keeps a
+/// caught error's text the same answer in both builds.
 pub(crate) fn store_index_or_raise(index: i64, len: usize) -> usize {
     match store_index(index, len) {
         Some(resolved) => resolved,
-        None if (index < 0 && len as i64 + index < 0) => crate::panic::raise_str("list index must be non-negative"),
-        None => crate::panic::raise_str(&alloc::format!("list index {index} out of bounds")),
+        None => {
+            let reported = if index < 0 { len as i64 + index } else { index };
+            crate::panic::raise_str(&alloc::format!("list index {reported} out of bounds"))
+        }
     }
 }
 

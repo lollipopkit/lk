@@ -152,7 +152,7 @@ impl Executor {
                 let RuntimeMapKey::Int(index) = key else {
                     bail!("SetIndex list key must be Int");
                 };
-                let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
+                let index = usize::try_from(index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
                 set_list_value(list, index, value)
             }
             HeapValue::Map(map) => {
@@ -289,7 +289,7 @@ impl Executor {
             self.maybe_bump_shape(handle, has_static_fact);
             return Ok(done);
         }
-        let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
+        let index = usize::try_from(index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
         if self.try_set_typed_list_index(handle, index, &value, known_value_kind)? {
             return Ok(());
         }

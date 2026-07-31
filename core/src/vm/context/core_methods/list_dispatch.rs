@@ -393,7 +393,11 @@ pub(super) fn dispatch_list_builtin_method(
                 requested
             };
             if resolved < 0 {
-                bail!("list index must be non-negative");
+                // The same wording as the other end. `xs[-1]` is the last
+                // element, so "must be non-negative" states a rule the language
+                // does not have — and the assertion two lines below in this
+                // file's own test, that `set(-1, 7)` succeeds, is the proof.
+                bail!("list index {requested} out of bounds");
             }
             let index = resolved as usize;
             if index >= list.len() {
@@ -580,7 +584,7 @@ mod tests {
             .to_string()
         };
         assert_eq!(message(9), "list index 9 out of bounds");
-        assert_eq!(message(-9), "list index must be non-negative");
+        assert_eq!(message(-9), "list index -9 out of bounds");
 
         // And it still writes, in place, answering the receiver — the effect the
         // rewritten route has.
