@@ -1221,8 +1221,13 @@ impl Lower {
                     "lkrt_maybe_f64_unwrap",
                 );
             }
-            Inst::TraitDispatch { dst, self_arg, arms } => {
-                return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
+            Inst::TraitDispatch {
+                dst,
+                self_arg,
+                args,
+                arms,
+            } => {
+                return self.trait_dispatch(b, mctx, *dst, *self_arg, args, arms);
             }
             Inst::TryCall { dst, func, args } => {
                 return self.try_call(b, mctx, *dst, *func, args);
@@ -1427,10 +1432,19 @@ impl Lower {
         mctx: &mut ModuleCtx,
         dst: ValueId,
         self_arg: ValueId,
+        args: &[ValueId],
         arms: &[(i64, FuncId)],
     ) -> Result<(), ClifError> {
         let (s0, s1) = self.two(self_arg)?;
         let type_id = self.abi_call(b, mctx, "dyn", "obj_type_id", &[s0, s1])?;
+        // `self` then the method's own arguments, each a boxed `Dyn` pair — the
+        // one call shape every arm is rendered with.
+        let mut call_args = vec![s0, s1];
+        for arg in args {
+            let (a0, a1) = self.two(*arg)?;
+            call_args.push(a0);
+            call_args.push(a1);
+        }
         // The join block carries the dispatched `Dyn` result as two block params.
         let join = b.create_block();
         let j0 = b.append_block_param(join, types::I64);
@@ -1446,7 +1460,7 @@ impl Lower {
                 .get(func)
                 .ok_or(ClifError::Unsupported("trait arm to undeclared function"))?;
             let func_ref = mctx.module.declare_func_in_func(callee, b.func);
-            let call = b.ins().call(func_ref, &[s0, s1]);
+            let call = b.ins().call(func_ref, &call_args);
             let (r0, r1) = {
                 let r = b.inst_results(call);
                 (

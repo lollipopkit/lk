@@ -334,15 +334,18 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
-    /// `dst = trait.dispatch(self, arms)` — a runtime trait-method dispatch
-    /// over a boxed struct instance (plan J1): codegen reads the receiver's
-    /// arena type mark (`lkrt_dyn_obj_type_id`) and expands an `icmp` chain
-    /// calling the matching impl. Every arm takes the boxed `self` and
-    /// returns `Dyn` (the lowering forces `dyn_rets`), so one rendered
+    /// `dst = trait.dispatch(self, args, arms)` — a runtime trait-method
+    /// dispatch over a boxed struct instance (plan J1): codegen reads the
+    /// receiver's arena type mark (`lkrt_dyn_obj_type_id`) and expands an
+    /// `icmp` chain calling the matching impl. Every arm takes the boxed `self`
+    /// followed by the boxed arguments and returns `Dyn` (the lowering forces
+    /// `dyn_rets` and observes every parameter as `Dyn`), so one rendered
     /// signature serves all arms; no matching mark raises.
     TraitDispatch {
         dst: ValueId,
         self_arg: ValueId,
+        /// The method's own arguments, each already boxed to `Dyn`.
+        args: Vec<ValueId>,
         /// `(runtime type id, impl function)` in registration order.
         arms: Vec<(i64, FuncId)>,
     },
@@ -690,14 +693,14 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
-                if let Inst::TraitDispatch { arms, .. } = inst {
+                if let Inst::TraitDispatch { args, arms, .. } = inst {
                     for (_, callee) in arms {
                         let Some(target) = module.function(*callee) else {
                             return Err(MirError::MissingEntry);
                         };
-                        // One boxed `self` parameter — the rendered arm call
-                        // shape.
-                        if target.params.len() != 1 {
+                        // Boxed `self` plus the method's own boxed arguments —
+                        // the rendered arm call shape, the same for every arm.
+                        if target.params.len() != 1 + args.len() {
                             return Err(MirError::ArityMismatch { func: func.id });
                         }
                     }
@@ -952,13 +955,23 @@ fn render_inst(inst: &Inst) -> String {
             }
         }
         Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
-        Inst::TraitDispatch { dst, self_arg, arms } => {
+        Inst::TraitDispatch {
+            dst,
+            self_arg,
+            args: a,
+            arms,
+        } => {
             let arm_list = arms
                 .iter()
                 .map(|(tid, f)| format!("{tid} => f{}", f.0))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{} = trait.dispatch {}, [{arm_list}]", v(*dst), v(*self_arg))
+            format!(
+                "{} = trait.dispatch {}({}), [{arm_list}]",
+                v(*dst),
+                v(*self_arg),
+                args(a)
+            )
         }
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
@@ -1129,7 +1142,11 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::CallExtern { args, .. }
         | Inst::CallVm { args, .. }
         | Inst::TryCall { args, .. } => args.clone(),
-        Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],
+        Inst::TraitDispatch { self_arg, args, .. } => {
+            let mut operands = vec![*self_arg];
+            operands.extend(args.iter().copied());
+            operands
+        }
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..

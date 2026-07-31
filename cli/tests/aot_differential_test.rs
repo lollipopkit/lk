@@ -899,6 +899,27 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // The receiver whose type the lowering *cannot* name — two call
+            // sites passing different structs into one parameter, or a mixed
+            // list — dispatches at run time off the arena type mark instead of
+            // taking the module to the VM. It knows its type then; only the
+            // already-boxed `Dyn` shape used to reach that path, and only with
+            // zero arguments.
+            new(
+                "a_receiver_of_unknown_struct_type_dispatches_at_run_time",
+                "struct A { v: Int }\nstruct B { v: Int }\n\
+                 trait N { fn name(self) -> String; fn scaled(self, k: Int) -> Int;\n\
+                 fn label(self, p: String, q: String) -> String; }\n\
+                 impl N for A { fn name(self) -> String { return \"A\"; }\n\
+                 fn scaled(self, k: Int) -> Int { return self.v * k; }\n\
+                 fn label(self, p: String, q: String) -> String { return p + \"A\" + q; } }\n\
+                 impl N for B { fn name(self) -> String { return \"B\"; }\n\
+                 fn scaled(self, k: Int) -> Int { return self.v + k; }\n\
+                 fn label(self, p: String, q: String) -> String { return p + \"B\" + q; } }\n\
+                 fn describe(x: Any, k: Int) -> String { return x.name() + \":${x.scaled(k)}\" + x.label(\"<\", \">\"); }\n\
+                 println(describe(A { v: 3 }, 4));\nprintln(describe(B { v: 3 }, 4));\n\
+                 let xs = [A { v: 1 }, B { v: 2 }];\nfor x in xs { println(x.scaled(10)); }\nreturn 0;\n",
+            ),
             // A struct that arrives as an *argument* is that type too. The
             // provenance came only from a `NewObject` the lowering saw, so it
             // survived a `return` (`ret_structs`) but not a parameter:

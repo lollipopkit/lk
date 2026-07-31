@@ -1245,7 +1245,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                             reg_const.insert(instr.a(), value.clone());
                         }
                         None => anyhow::bail!(
-                            "bundled import '{import_path}' reads `{name}` at its top level, which is not                              a constant defined above it"
+                            "bundled import '{import_path}' reads `{name}` at its top level, which is not a constant defined above it"
                         ),
                     }
                 }
@@ -1256,7 +1256,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                         reg_fn.insert(instr.a(), fidx);
                     } else {
                         anyhow::bail!(
-                            "bundled import '{import_path}' moves a top-level register that holds                              neither a function nor a constant"
+                            "bundled import '{import_path}' moves a top-level register that holds neither a function nor a constant"
                         )
                     }
                 }
@@ -1956,10 +1956,10 @@ fn int_operand(
     match reg_const.get(&reg) {
         Some(BundledConst::Int(value)) => Ok(*value),
         Some(other) => anyhow::bail!(
-            "bundled import '{import_path}' does integer arithmetic at its top level on a              {other:?}, which is not a constant this can evaluate"
+            "bundled import '{import_path}' does integer arithmetic at its top level on a {other:?}, which is not a constant this can evaluate"
         ),
         None => anyhow::bail!(
-            "bundled import '{import_path}' does integer arithmetic at its top level on a value              that is not a constant"
+            "bundled import '{import_path}' does integer arithmetic at its top level on a value that is not a constant"
         ),
     }
 }

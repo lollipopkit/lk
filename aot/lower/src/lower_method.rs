@@ -256,8 +256,13 @@ pub(crate) fn lower_trait_method_k(
         )
         .map(Some);
     }
-    if receiver_ty == Ty::Dyn
-        && argc == 0
+    // Runtime dispatch. The receiver may be boxed already (`Dyn`) or a struct
+    // carrier whose type the lowering could not name — a `MapStrDyn` parameter
+    // two call sites pass different structs to, which `param_structs` poisons
+    // on purpose. Both know their type at *run time*, in the arena mark this
+    // instruction reads, so both dispatch; only the `Dyn` case used to, and the
+    // other one took the whole module to the VM instead.
+    if matches!(receiver_ty, Ty::Dyn | Ty::MapStrDyn)
         && let Some(arms) = sig.traits.methods.get(name).cloned()
         && !arms.is_empty()
     {
@@ -266,7 +271,10 @@ pub(crate) fn lower_trait_method_k(
             let f = fidx as usize;
             if f >= funcs.len()
                 || fidx == entry
-                || funcs[f].param_count != 1
+                // `self` plus the method's own arguments. Every arm is called
+                // through one rendered signature, so an arm of another arity is
+                // not a shape this can dispatch.
+                || funcs[f].param_count as usize != 1 + argc
                 || funcs[f].capture_count != 0
                 || sig.specialized.get(f).copied().unwrap_or(false)
             {
@@ -275,9 +283,11 @@ pub(crate) fn lower_trait_method_k(
             if let Some(flag) = sig.plain_called.get_mut(f) {
                 *flag = true;
             }
-            // A runtime-dispatched arm receives its `self` boxed, so the
-            // parameter is `Dyn` and carries no struct name.
-            sig.observe_param(f, 0, Ty::Dyn, None);
+            // A runtime-dispatched arm receives `self` and every argument
+            // boxed, so its parameters are `Dyn` and carry no struct name.
+            for slot in 0..=argc {
+                sig.observe_param(f, slot, Ty::Dyn, None);
+            }
             if !sig.dyn_rets.contains(&fidx) {
                 sig.dyn_rets.insert(fidx);
                 retry = true;
@@ -291,10 +301,22 @@ pub(crate) fn lower_trait_method_k(
         if retry {
             return Err(Unsupported::TypeMismatch { pc });
         }
+        // Read the arguments *before* boxing the receiver, so a failure leaves
+        // no half-emitted boxing in the stream.
+        let mut raw_args = Vec::with_capacity(argc);
+        for i in 0..argc {
+            raw_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        let self_arg = to_dyn_any(ssa, insts, receiver, receiver_ty, pc)?;
+        let mut args = Vec::with_capacity(argc);
+        for (v, ty) in raw_args {
+            args.push(to_dyn_any(ssa, insts, v, ty, pc)?);
+        }
         let dst = ssa.new_val();
         insts.push(Inst::TraitDispatch {
             dst,
-            self_arg: receiver,
+            self_arg,
+            args,
             arms: arms.iter().map(|&(tid, f)| (tid, FuncId(f))).collect(),
         });
         return Ok(Some((dst, Ty::Dyn)));

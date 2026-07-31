@@ -31,7 +31,7 @@ impl<'a> StmtParser<'a> {
             // Refused, but in the language's words: the reader needs to know it
             // is a keyword and where one *is* allowed.
             return Err(anyhow!(self.err(&alloc::format!(
-                "`{word}` is a keyword, so it cannot name a top-level function — a call to one is a bare                  name, where `{word}(…)` could not be told from the `{word}` statement. It *can* name a                  method or a field"
+                "`{word}` is a keyword, so it cannot name a top-level function — a call to one is a bare name, where `{word}(…)` could not be told from the `{word}` statement. It *can* name a method or a field"
             ))));
         } else {
             return Err(anyhow!(self.err("Expected function name")));
