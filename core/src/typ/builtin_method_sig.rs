@@ -659,9 +659,9 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Str,
         "replace",
-        &[p("from", "String"), p("to", "String")],
+        &[p("from", "String"), p("to", "String"), opt("all", "Bool")],
         "String",
-        "Every occurrence of `from` replaced",
+        "Occurrences of `from` replaced; `all: false` replaces only the first",
     ),
     m(
         Str,

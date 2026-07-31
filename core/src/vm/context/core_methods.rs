@@ -962,15 +962,29 @@ fn dispatch_string_builtin_method(
             )))
         }
         "replace" => {
-            if positional.len() != 2 {
+            // The optional third argument is what the module spelling has had
+            // all along: `all: false` replaces the first occurrence only. The
+            // method could not say it, so the two spellings were not the same
+            // operation — and the module could not simply forward here.
+            if !(2..=3).contains(&positional.len()) {
                 bail!(
-                    "string.replace() expects 2 arguments (from, to), got {}",
+                    "string.replace() expects 2 or 3 arguments (from, to[, all]), got {}",
                     positional.len()
                 );
             }
             let from = extract_string_detached(&positional[0], heap, "string.replace() from")?;
             let to = extract_string_detached(&positional[1], heap, "string.replace() to")?;
-            Ok(Some(make_string_val(&s.replace(from.as_str(), to.as_str()), heap)))
+            let all = match positional.get(2) {
+                None | Some(RuntimeVal::Nil) => true,
+                Some(RuntimeVal::Bool(all)) => *all,
+                Some(_) => bail!("string.replace() `all` must be Bool"),
+            };
+            let replaced = if all {
+                s.replace(from.as_str(), to.as_str())
+            } else {
+                s.replacen(from.as_str(), to.as_str(), 1)
+            };
+            Ok(Some(make_string_val(&replaced, heap)))
         }
         _ => Ok(None),
     }

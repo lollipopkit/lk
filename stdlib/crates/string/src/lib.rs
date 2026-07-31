@@ -39,46 +39,37 @@ pub struct StringModule;
 impl StringModule {
     #[stdlib_export(params(text: String), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "len()")?;
-        // Characters. This answered bytes while the method form `s.len()`
-        // answered characters, so `"héllo wörld"` was 13 here and 11 there.
-        Ok(RuntimeVal::Int(lk_core::util::text::char_len(&value) as i64))
+        forward("len", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = String)]
     fn lower(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "lower()")?;
-        Ok(runtime_string_value(&value.to_lowercase(), runtime.heap_mut()))
+        forward("lower", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = String)]
     fn upper(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "upper()")?;
-        Ok(runtime_string_value(&value.to_uppercase(), runtime.heap_mut()))
+        forward("upper", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = String)]
     fn trim(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "trim()")?;
-        Ok(runtime_string_value(value.trim(), runtime.heap_mut()))
+        forward("trim", args, runtime)
     }
 
     #[stdlib_export(params(text: String, prefix: String), returns = Bool)]
     fn starts_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, prefix) = two_strings(args, runtime, "starts_with()")?;
-        Ok(RuntimeVal::Bool(value.starts_with(prefix.as_ref())))
+        forward("starts_with", args, runtime)
     }
 
     #[stdlib_export(params(text: String, suffix: String), returns = Bool)]
     fn ends_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, suffix) = two_strings(args, runtime, "ends_with()")?;
-        Ok(RuntimeVal::Bool(value.ends_with(suffix.as_ref())))
+        forward("ends_with", args, runtime)
     }
 
     #[stdlib_export(params(text: String, needle: String), returns = Bool)]
     fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, needle) = two_strings(args, runtime, "contains()")?;
-        Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
+        forward("contains", args, runtime)
     }
 
     /// `replace(text, pattern, with, all = true)`.
@@ -95,29 +86,7 @@ impl StringModule {
         returns = String
     )]
     fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        // Named arguments have already been folded into their positional slots
-        // by the export wrapper, which is also what rejects a duplicate or an
-        // unknown name. This body reads one shape.
-        let pos = args.as_slice();
-        if pos.len() < 3 {
-            bail!("replace() requires a source string, a pattern and a replacement");
-        }
-        if pos.len() > 4 {
-            bail!("replace() received too many positional arguments (expected at most 4)");
-        }
-        let source = runtime_string_arg(&pos[0], runtime.heap(), "replace() first argument")?;
-        let pattern = runtime_string_arg(&pos[1], runtime.heap(), "replace() second argument (pattern)")?;
-        let with = runtime_string_arg(&pos[2], runtime.heap(), "replace() third argument (with)")?;
-        let all = match pos.get(3) {
-            Some(value) => bool_arg(value, "replace() fourth argument (all flag)")?,
-            None => true,
-        };
-        let result = if all {
-            source.replace(pattern.as_ref(), with.as_ref())
-        } else {
-            source.replacen(pattern.as_ref(), with.as_ref(), 1)
-        };
-        Ok(runtime_string_value(&result, runtime.heap_mut()))
+        forward("replace", args, runtime)
     }
 
     /// `s.slice(start[, end])`, spelled as a function.
@@ -133,38 +102,12 @@ impl StringModule {
     /// Out of range clamps.
     #[stdlib_export(params(text: String, start: Int, end?: Int), named(start, end), returns = String)]
     fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if args.len() != 2 && args.len() != 3 {
-            bail!("slice() takes 2 or 3 arguments: string, start[, end]");
-        }
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "slice() first argument")?;
-        let start = usize_arg(&values[1], "slice() second argument")?;
-        let total = lk_core::util::text::char_len(&value);
-        let end = match values.get(2) {
-            Some(RuntimeVal::Nil) | None => total,
-            Some(_) => usize_arg(&values[2], "slice() third argument")?,
-        };
-        let end = end.min(total);
-        let text = lk_core::util::text::substring(&value, start, end.saturating_sub(start));
-        Ok(runtime_string_value(text, runtime.heap_mut()))
+        forward("slice", args, runtime)
     }
 
     #[stdlib_export(params(text: String, separator: String), returns = List<String>)]
     fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, delimiter) = two_strings(args, runtime, "split()")?;
-        let mut parts = Vec::new();
-        if delimiter.is_empty() {
-            for value in value.chars() {
-                parts.push(Arc::<str>::from(value.to_string()));
-            }
-        } else {
-            for value in value.split(delimiter.as_ref()) {
-                parts.push(Arc::<str>::from(value));
-            }
-        }
-        Ok(RuntimeVal::Obj(
-            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(parts))),
-        ))
+        forward("split", args, runtime)
     }
 
     #[stdlib_export(params(values: List, separator: String), returns = String)]
@@ -180,23 +123,12 @@ impl StringModule {
 
     #[stdlib_export(params(text: String), returns = String)]
     fn reverse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "reverse()")?;
-        let mut reversed = String::new();
-        for value in value.chars().rev() {
-            reversed.push(value);
-        }
-        Ok(runtime_string_value(&reversed, runtime.heap_mut()))
+        forward("reverse", args, runtime)
     }
 
     #[stdlib_export(params(text: String, count: Int), returns = String)]
     fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
-        let count = int_arg(&values[1], "repeat() second argument")?;
-        if count < 0 {
-            bail!("repeat() count must be non-negative");
-        }
-        Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
+        forward("repeat", args, runtime)
     }
 
     // Exported under the name it is written with. It used to be `string.char`
@@ -214,25 +146,12 @@ impl StringModule {
 
     #[stdlib_export(params(text: String, index: Int), returns = Int?)]
     fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
-        let index = usize_arg(&values[1], "byte() second argument")?;
-        Ok(value
-            .as_bytes()
-            .get(index)
-            .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
+        forward("byte_at", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = List<String>)]
     fn chars(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "chars()")?;
-        let mut chars = Vec::new();
-        for value in value.chars() {
-            chars.push(Arc::<str>::from(value.to_string()));
-        }
-        Ok(RuntimeVal::Obj(
-            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(chars))),
-        ))
+        forward("chars", args, runtime)
     }
 
     /// `s.index_of(needle)`, spelled as a function, plus an optional position
@@ -243,29 +162,12 @@ impl StringModule {
     /// need a second name.
     #[stdlib_export(params(text: String, needle: String, start?: Int), returns = Int?)]
     fn index_of(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if args.len() != 2 && args.len() != 3 {
-            bail!("index_of() takes 2 or 3 arguments: string, needle[, start]");
-        }
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "index_of() first argument")?;
-        let pattern = runtime_string_arg(&values[1], runtime.heap(), "index_of() second argument")?;
-        let start = if values.len() == 3 {
-            usize_arg(&values[2], "index_of() third argument")?
-        } else {
-            0
-        };
-        // Character positions in and out, so the answer can be handed straight
-        // to `slice`. `start` past the end simply finds nothing.
-        Ok(
-            lk_core::util::text::find_char_index_from(&value, pattern.as_ref(), start)
-                .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64)),
-        )
+        forward("index_of", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = Bool)]
     fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "is_empty()")?;
-        Ok(RuntimeVal::Bool(value.is_empty()))
+        forward("is_empty", args, runtime)
     }
 
     #[stdlib_export(params(template: String, ...values: Any), returns = String)]
@@ -506,6 +408,26 @@ impl StringModule {
     }
 }
 
+/// The module spelling of a method: the receiver written first.
+///
+/// `string.upper(s)` **is** `s.upper()`, and this is what makes that true by
+/// construction rather than by two bodies agreeing. They did not agree: the
+/// module refused a negative `slice` start while the method counted from the
+/// end (the language's own rule), `split(s, "")` answered `["a","b","c"]` here
+/// and `["","a","b","c",""]` there, and `byte_at(s, -1)` raised here and
+/// answered nil there. Three different answers for three spellings of one
+/// question is what two implementations buy.
+///
+/// `iter` was built this way for exactly this reason — see the note on
+/// `core_call_method_windowed`.
+fn forward(method: &'static str, args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let Some((receiver, rest)) = values.split_first() else {
+        bail!("string.{method} expects a string as its first argument");
+    };
+    lk_core::vm::core_call_method_windowed(*receiver, method, rest, runtime)
+}
+
 fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
     runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
 }
@@ -558,13 +480,6 @@ fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
         bail!("{context} must be non-negative");
     }
     Ok(value as usize)
-}
-
-fn bool_arg(value: &RuntimeVal, context: &str) -> Result<bool> {
-    match value {
-        RuntimeVal::Bool(value) => Ok(*value),
-        _ => Err(anyhow!("{context} must be a boolean")),
-    }
 }
 
 fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {

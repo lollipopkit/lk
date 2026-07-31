@@ -497,4 +497,44 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Every `string` module member answers exactly what its method spelling
+    /// answers — by construction, because the module forwards.
+    ///
+    /// It did not, and the divergences were live: `split(s, "")` was
+    /// `["a","b","c"]` through the module and `["","a","b","c",""]` through the
+    /// method, `slice(s, -1, 3)` raised through the module while the method
+    /// counted from the end (the language's own rule for a negative position),
+    /// and `byte_at(s, -1)` raised on one side and answered nil on the other.
+    /// Fifteen operations had two bodies; three of them had already drifted.
+    ///
+    /// The comparison is the language's own `==`, on the inputs where the two
+    /// used to differ — reading the two answers back out of rendered text was a
+    /// second parser to get wrong, and I got it wrong first.
+    #[test]
+    fn every_module_spelling_answers_what_the_method_answers() -> Result<()> {
+        let source = r#"
+            use string;
+            let s = "abc";
+            return [
+                string.split(s, "") == s.split(""),
+                string.slice(s, -1, 3) == s.slice(-1, 3),
+                string.byte_at(s, -1) == s.byte_at(-1),
+                string.upper(s) == s.upper(),
+                string.len("héllo") == "héllo".len(),
+                string.replace("aa", "a", "b", false) == "aa".replace("a", "b", false),
+                string.index_of(s, "z") == s.index_of("z"),
+                string.repeat(s, 0) == s.repeat(0),
+                string.chars(s) == s.chars(),
+                string.trim("  a  ") == "  a  ".trim(),
+            ];
+        "#;
+        let result = execute_string(source)?;
+        let rendered = lk_core::vm::display_runtime_value(result.first_return(), result.state.heap());
+        assert!(
+            !rendered.contains("false"),
+            "a module spelling and its method disagree: {rendered}"
+        );
+        Ok(())
+    }
 }
