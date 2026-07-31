@@ -115,3 +115,35 @@ Two things this deliberately does not do:
   correctness. Narrowing it wants the call-site target facts the analysis
   already computes (`PerfCallTargetKind`): a call proven to reach a *native*
   cannot execute a `SetGlobal` at all.
+
+## A function value crossing a module boundary (2026-07-31)
+
+`apply(double, 5)`, where `apply` came from another file, is the same question
+asked about an ordinary function rather than an impl method — and it used to be
+refused outright, because a bare closure is a `function_index` into *its own*
+module's table.
+
+It is now promoted at the crossing: the value becomes a `RuntimeCallable`
+carrying its defining module, so the index still means what it meant. The
+executor is the only place that knows which module the arguments come from, so
+it is what supplies it (`ClosureCopy::Promote`); a crossing that cannot name a
+source module — a channel payload, a stdlib HOF re-entering the VM — still
+refuses, and says that is why.
+
+What the promoted callable does **not** get is that module's live state: the
+caller's state belongs to a frame further down the Rust stack and cannot be
+taken while it is running. It gets a fresh, empty one instead — arguments copied
+in, result copied out, which is what every `RuntimeCallable` call already does.
+
+That leaves the globals, and the same three answers as above, from the same
+walk (`analysis::function_global_use`, one implementation for both callers):
+
+- reads a global → refused, naming the global (a fresh state has nil there, and
+  nil is a wrong answer, not a slow one);
+- writes a global → refused (the write would land in a table nobody reads);
+- makes a call the walk cannot follow → refused **as its own case**, not as a
+  write. `println` is the everyday one. Nothing is known to be wrong there, only
+  unproven, and reporting a write would be a guess stated as a fact.
+
+The captures come along, copied into the callable's own heap, so a capturing
+`|x| x + n` crosses too.
