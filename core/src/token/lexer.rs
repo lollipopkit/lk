@@ -106,7 +106,8 @@ pub enum Token {
     Str(String),            // "abc"
     TemplateString(String), // Formatted string content with ${...}
     Int(i64),               // 1
-    /// A radix literal that needs all 64 bits: `0x8000_0000_0000_0000` upwards.
+    /// A literal that needs all 64 bits: `0x8000_0000_0000_0000` upwards, and
+    /// the decimal spelling of the same numbers.
     ///
     /// Separate from `Int` because the carrier cannot hold the distinction. The
     /// lexer reads `0x…` as a *bit pattern* (see `parse_radix_int`), so a value
@@ -114,10 +115,19 @@ pub enum Token {
     /// the `-1` a programmer wrote, and this language has no unary minus to tell
     /// them apart by shape. Keeping the `u64` here is what lets the parser turn
     /// the first into `… as u64` and leave the second refused.
-    UInt(u64), // 0xFFFF_FFFF_FFFF_FFFF
-    Float(f64),             // 1.1
-    Bool(bool),             // true, false
-    Id(String),             // identifier
+    ///
+    /// `radix` is how it was written, so re-rendering it (`lk macro expand`)
+    /// gives the text back rather than a re-spelling. Load-bearing now that
+    /// decimal reaches here too: `18446744073709551615` printed as
+    /// `0xFFFFFFFFFFFFFFFF` is not what anyone wrote either.
+    UInt {
+        value: u64,
+        /// 10, 16, 8 or 2.
+        radix: u32,
+    },
+    Float(f64), // 1.1
+    Bool(bool), // true, false
+    Id(String), // identifier
 }
 
 const ASCII_WHITESPACE: u8 = 1 << 0;
@@ -634,7 +644,28 @@ impl<'a> Tokenizer<'a> {
         } else {
             match num.parse() {
                 Ok(i) => Token::Int(i),
-                Err(_) => return Err(anyhow!("{}: {}", self.err("Invalid int"), num)),
+                // Above `i64::MAX`, in decimal. The radix path has read these as
+                // `UInt` since `u64` existed; decimal did not, so `u64::MAX` had
+                // a hexadecimal spelling and no decimal one — the same number,
+                // accepted one way and a syntax error the other.
+                //
+                // Only unsigned overflow reaches `UInt`: a leading `-` is part
+                // of `num` here, so `-18446744073709551615` still fails both
+                // parses and stays refused.
+                Err(_) => match num.parse::<u64>() {
+                    Ok(value) => Token::UInt { value, radix: 10 },
+                    // Digits that parse as neither: too big for 64 bits, or
+                    // negative and too big. "Invalid int" said the number was
+                    // malformed, which it is not — it is out of range, and the
+                    // range is the thing the reader needs.
+                    Err(_) => {
+                        return Err(anyhow!(
+                            "{}: {}",
+                            self.err("integer literal out of range (Int is i64, and u64 is the widest)"),
+                            num
+                        ));
+                    }
+                },
             }
         };
         let end_pos = self.current_position();
@@ -871,7 +902,7 @@ impl<'a> Tokenizer<'a> {
         // variant's own note.
         let token = match i64::try_from(value) {
             Ok(fits) => Token::Int(fits),
-            Err(_) => Token::UInt(value),
+            Err(_) => Token::UInt { value, radix },
         };
         self.push_with_span(token, start_pos, end_pos);
         Ok(())

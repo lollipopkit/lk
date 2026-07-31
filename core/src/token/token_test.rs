@@ -958,15 +958,61 @@ line2""#,
     /// apart by shape. The parser turns `UInt` into `… as u64`, which is why
     /// `let x: u64 = 0xFFFF_FFFF_FFFF_FFFF` is accepted and `let x: u8 = -1`
     /// stays refused.
+    /// The *decimal* spelling of the same numbers reaches `UInt` too.
+    ///
+    /// It did not: `0xFFFF_FFFF_FFFF_FFFF` was accepted and
+    /// `18446744073709551615` was `Invalid int` — one number, one spelling
+    /// taken and the other refused, in a language that has a `u64` type. The
+    /// radix travels with the token so re-rendering (`lk macro expand`) gives
+    /// the text back instead of re-spelling a mask in decimal or a decimal
+    /// number in hex.
+    #[test]
+    fn a_decimal_literal_above_i64_max_is_a_u64_too() {
+        assert_eq!(
+            Tokenizer::tokenize("18446744073709551615").unwrap(),
+            vec![Token::UInt {
+                value: u64::MAX,
+                radix: 10
+            }]
+        );
+        assert_eq!(
+            Tokenizer::tokenize("9223372036854775808").unwrap(),
+            vec![Token::UInt {
+                value: 1 << 63,
+                radix: 10
+            }]
+        );
+        // One below still fits the signed carrier, so nothing changes there.
+        assert_eq!(
+            Tokenizer::tokenize("9223372036854775807").unwrap(),
+            vec![Token::Int(i64::MAX)]
+        );
+        // Past `u64` is out of range, and says so — it used to say the literal
+        // was invalid, which it is not.
+        let message = Tokenizer::tokenize("99999999999999999999999999")
+            .expect_err("past u64")
+            .to_string();
+        assert!(message.contains("out of range"), "got: {message}");
+        // A negative one is refused by both parses, which is what keeps
+        // `let y: u8 = -1` refused.
+        assert!(Tokenizer::tokenize("-18446744073709551615").is_err());
+    }
+
     #[test]
     fn radix_literals_accept_the_full_bit_pattern() {
         assert_eq!(
             Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(),
-            vec![Token::UInt(u64::MAX)]
+            vec![Token::UInt {
+                value: u64::MAX,
+                radix: 16
+            }]
         );
         assert_eq!(
             Tokenizer::tokenize("0x8000000000000000").unwrap(),
-            vec![Token::UInt(1 << 63)]
+            vec![Token::UInt {
+                value: 1 << 63,
+                radix: 16
+            }]
         );
         // One below is still an `Int`: the carrier has room, so nothing is lost.
         assert_eq!(

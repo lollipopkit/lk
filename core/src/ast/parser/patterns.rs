@@ -76,10 +76,10 @@ impl<'a> Parser<'a> {
             // carrier of `0xFFFF_FFFF_FFFF_FFFF` is the one the scrutinee will
             // be holding. Leaving it out would turn a pattern that used to mean
             // *something* into a parse error.
-            Token::Int(_) | Token::UInt(_) => {
+            Token::Int(_) | Token::UInt { .. } => {
                 let start_val = match &self.tokens[self.pos] {
                     Token::Int(i) => *i,
-                    Token::UInt(i) => *i as i64,
+                    Token::UInt { value, .. } => *value as i64,
                     _ => unreachable!("matched just above"),
                 };
                 self.pos += 1;

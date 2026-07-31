@@ -235,10 +235,26 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::Int(value) => value.to_string(),
         // Printed back at the radix it was written at: the decimal spelling of
         // a 64-bit mask is not what anyone wrote, and this text is what
-        // `lk macro expand` shows.
-        Token::UInt(value) => alloc::format!("0x{value:X}"),
+        // `lk macro expand` shows. (`Token::Int` does *not* keep its radix, so
+        // a mask that fits in an `i64` still comes back in decimal — see the
+        // note on `Token::UInt`.)
+        Token::UInt { value, radix } => render_radix(*value, *radix),
         Token::Float(value) => value.to_string(),
         Token::Bool(value) => value.to_string(),
         Token::Id(value) => value.clone(),
+    }
+}
+
+/// A `u64` literal written back at the radix it was written at.
+///
+/// The separators a programmer used (`0x3F20_0000`) are not recoverable — the
+/// lexer drops them — so this is the digits without them, which is the closest
+/// this can get without keeping the lexeme itself.
+pub fn render_radix(value: u64, radix: u32) -> alloc::string::String {
+    match radix {
+        16 => alloc::format!("0x{value:X}"),
+        8 => alloc::format!("0o{value:o}"),
+        2 => alloc::format!("0b{value:b}"),
+        _ => alloc::format!("{value}"),
     }
 }

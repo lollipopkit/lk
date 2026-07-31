@@ -564,7 +564,7 @@ impl<'a> Parser<'a> {
             Token::Nil
                 | Token::Bool(_)
                 | Token::Int(_)
-                | Token::UInt(_)
+                | Token::UInt { .. }
                 | Token::Float(_)
                 | Token::Str(_)
                 // A template string is a string. Leaving it out made `|x|

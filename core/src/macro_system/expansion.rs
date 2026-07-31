@@ -207,7 +207,7 @@ fn capture_fragment(
                 Token::Str(_)
                     | Token::TemplateString(_)
                     | Token::Int(_)
-                    | Token::UInt(_)
+                    | Token::UInt { .. }
                     | Token::Float(_)
                     | Token::Bool(_)
                     | Token::Nil

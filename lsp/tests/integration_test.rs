@@ -341,7 +341,7 @@ impl TestLanguageServer {
             }
             T::Str(s) => format!("String literal: \"{}\"", s),
             T::Int(i) => format!("Integer: {}", i),
-            T::UInt(i) => format!("Integer: 0x{:X}", i),
+            T::UInt { value, radix } => format!("Integer: {}", lk_core::token::render_radix(*value, *radix)),
             T::Float(f) => format!("Float: {}", f),
             T::Bool(b) => format!("Boolean: {}", b),
             T::Nil => "Nil literal".to_string(),

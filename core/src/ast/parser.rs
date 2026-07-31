@@ -1196,7 +1196,7 @@ impl<'a> Parser<'a> {
             // Saying it here rather than relaxing the range check is what keeps
             // `let y: u8 = -1` refused: the carrier cannot tell those two apart,
             // and by this point the token still can.
-            Token::UInt(value) => {
+            Token::UInt { value, .. } => {
                 let value = *value;
                 self.pos += 1;
                 Ok(Expr::Cast(
