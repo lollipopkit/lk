@@ -57,6 +57,26 @@ lk pkg add dep ../dep                      # 本地包
 顺带一条语言事实:**LK 没有 `pub`**,模块里定义的东西默认全部导出。写
 `pub fn f()` 是语法错误。
 
+## 在成员目录里,`lk pkg check` 说的是**这个成员**的话
+
+```sh
+cd my-ws/crates/b && lk pkg check    # 说 b 的依赖齐不齐,不是工作区的
+```
+
+`PackageGraph::discover` 沿祖先找清单时**优先取带 `[workspace]` 的那个**,于是在
+成员目录里 `check` / `tree` 描述的是工作区,成员自己的 `[dependencies]` 一条都不
+读。一个依赖了工作区之外的包的成员,把那个包删掉之后仍然得到 "package check ok",
+而程序跑起来是 `Module 'outside' not found` —— check 存在的全部意义就是在跑之前
+回答这个问题。
+
+现在:图以**最近的清单**为主体,外层 workspace 作为**上下文**另外记着 —— 它仍然
+提供兄弟成员模块和 `workspace = true` 的继承表。在工作区根目录跑,行为和以前逐字
+一样。
+
+**`lk pkg check` 现在会失败(退出码非 0)** —— 有未解析依赖时。此前它印
+"package check ok (1 dependencies unresolved)" 还退出 0:一行里说了两件相反的
+事,而 CI 里的 `lk pkg check` 会在一个跑不起来的包上通过。
+
 ## 构建产物放在包根,不放进 `src/`
 
 ```sh

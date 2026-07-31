@@ -251,8 +251,13 @@ fn check_package() -> anyhow::Result<()> {
         // The per-dependency lines above already say what each one needs; a
         // summary that repeats one of the two answers for all of them is how a
         // path dependency got told to run `lk pkg fetch`.
-        println!(
-            "package check ok ({} dependencies unresolved — see above)",
+        //
+        // And it **fails**. "package check ok (1 dependencies unresolved)" said
+        // two opposite things in one line and exited 0, so a CI step running
+        // `lk pkg check` passed on a package that cannot run — which is the one
+        // question this command exists to answer.
+        anyhow::bail!(
+            "{} dependencies unresolved — the package cannot run until they are",
             graph.missing.len()
         );
     }

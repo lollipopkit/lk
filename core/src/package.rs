@@ -180,6 +180,27 @@ pub struct PackageGraph {
     pub manifest: Manifest,
     pub modules: Vec<PackageModule>,
     pub missing: Vec<MissingDependency>,
+    /// The enclosing workspace, when this graph's subject is a *member*.
+    ///
+    /// Kept beside `manifest` rather than replacing it. `discover` used to walk
+    /// the ancestors and adopt the workspace manifest as the graph's subject,
+    /// so inside a member `lk pkg check` described the *workspace* and never
+    /// read the member's own `[dependencies]` — a member depending on something
+    /// outside the workspace got "package check ok" while the program failed
+    /// with `Module 'outside' not found`, which is the one thing `check` exists
+    /// to prevent.
+    ///
+    /// The workspace is still needed: it supplies the sibling members as
+    /// modules, and the table `workspace = true` inherits from.
+    pub workspace: Option<WorkspaceContext>,
+}
+
+/// An enclosing `[workspace]` and the directory its member globs resolve
+/// against.
+#[derive(Debug, Clone)]
+pub struct WorkspaceContext {
+    pub root: PathBuf,
+    pub section: WorkspaceSection,
 }
 
 impl Manifest {
@@ -314,27 +335,48 @@ impl PackageGraph {
         if manifests.is_empty() {
             return Ok(None);
         };
-        let mut manifest_path = manifests[0].clone();
+        // The *nearest* manifest is the subject; an ancestor's `[workspace]` is
+        // context, not a replacement. See `PackageGraph::workspace`.
+        let manifest_path = manifests[0].clone();
+        let mut workspace = None;
         for candidate in &manifests {
-            if Manifest::read(candidate)?.workspace.is_some() {
-                manifest_path = candidate.clone();
+            let manifest = Manifest::read(candidate)?;
+            if let Some(section) = manifest.workspace {
+                let root = candidate
+                    .parent()
+                    .ok_or_else(|| anyhow!("manifest has no parent: {}", candidate.display()))?
+                    .to_path_buf();
+                workspace = Some(WorkspaceContext { root, section });
             }
         }
-        Self::from_manifest_path(&manifest_path).map(Some)
+        Self::from_manifest_path_in(&manifest_path, workspace).map(Some)
     }
 
     pub fn from_manifest_path(manifest_path: &Path) -> Result<Self> {
+        Self::from_manifest_path_in(manifest_path, None)
+    }
+
+    fn from_manifest_path_in(manifest_path: &Path, workspace: Option<WorkspaceContext>) -> Result<Self> {
         let manifest = Manifest::read(manifest_path)?;
         let root = manifest_path
             .parent()
             .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest_path.display()))?
             .to_path_buf();
+        let manifest_workspace = manifest.workspace.clone();
         let mut graph = Self {
             root: root.clone(),
             manifest_path: manifest_path.to_path_buf(),
             manifest,
             modules: Vec::new(),
             missing: Vec::new(),
+            // A manifest that *is* the workspace is its own context, so running
+            // at the root behaves exactly as before.
+            workspace: workspace.or_else(|| {
+                manifest_workspace.map(|section| WorkspaceContext {
+                    root: root.clone(),
+                    section,
+                })
+            }),
         };
         graph.collect_workspace_modules()?;
         graph.collect_dependency_modules()?;
@@ -409,10 +451,12 @@ impl PackageGraph {
             self.modules.push(package_module(&self.root, &package.name, root));
         }
 
-        let Some(workspace) = self.manifest.workspace.as_ref() else {
+        let Some(workspace) = self.workspace.clone() else {
             return Ok(());
         };
-        for member in expand_members(&self.root, &workspace.members)? {
+        // Members resolve against the *workspace* directory, which is not this
+        // graph's root when the subject is a member.
+        for member in expand_members(&workspace.root, &workspace.section.members)? {
             let manifest_path = member.join(MANIFEST_FILE);
             if !manifest_path.exists() {
                 continue;
@@ -476,10 +520,9 @@ impl PackageGraph {
         let mut deps = BTreeMap::new();
         for (name, spec) in &self.manifest.dependencies {
             let resolved = if spec.is_workspace() {
-                self.manifest
-                    .workspace
+                self.workspace
                     .as_ref()
-                    .and_then(|workspace| workspace.dependencies.get(name).cloned())
+                    .and_then(|workspace| workspace.section.dependencies.get(name).cloned())
             } else {
                 Some(spec.clone())
             };
@@ -916,5 +959,66 @@ mod tests {
         assert!(modules.contains_key("util"));
         assert!(modules.contains_key("helper"));
         Ok(())
+    }
+
+    /// A workspace member's own dependencies are part of its graph.
+    ///
+    /// `discover` walked the ancestors and adopted the *workspace* manifest as
+    /// the subject, so inside a member `lk pkg check` described the workspace
+    /// and never read the member's `[dependencies]`. A member depending on
+    /// something outside the workspace got "package check ok" while the program
+    /// failed with `Module 'outside' not found` — the one question `check`
+    /// exists to answer, answered wrong.
+    #[test]
+    fn a_workspace_member_graph_is_rooted_at_the_member() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        std::fs::write(root.join(MANIFEST_FILE), "[workspace]\nmembers = [\"crates/*\"]\n").expect("workspace");
+
+        let sibling = root.join("crates/sibling");
+        std::fs::create_dir_all(sibling.join("src")).expect("sibling dirs");
+        std::fs::write(
+            sibling.join(MANIFEST_FILE),
+            "[package]\nname = \"sibling\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("sibling manifest");
+        std::fs::write(sibling.join("src/mod.lk"), "fn s() -> Int { return 1; }\n").expect("sibling entry");
+
+        let outside = root.join("outside");
+        std::fs::create_dir_all(outside.join("src")).expect("outside dirs");
+        std::fs::write(
+            outside.join(MANIFEST_FILE),
+            "[package]\nname = \"outside\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("outside manifest");
+        std::fs::write(outside.join("src/mod.lk"), "fn o() -> Int { return 2; }\n").expect("outside entry");
+
+        let member = root.join("crates/member");
+        std::fs::create_dir_all(member.join("src")).expect("member dirs");
+        std::fs::write(
+            member.join(MANIFEST_FILE),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n\n[dependencies.outside]\npath = \"../../outside\"\n",
+        )
+        .expect("member manifest");
+        std::fs::write(member.join("src/mod.lk"), "fn m() -> Int { return 3; }\n").expect("member entry");
+
+        let graph = PackageGraph::discover(&member).expect("discover").expect("a graph");
+        assert_eq!(
+            graph.manifest.package.as_ref().map(|package| package.name.as_str()),
+            Some("member"),
+            "the member is the subject, not the workspace"
+        );
+        let names: Vec<&str> = graph.modules.iter().map(|module| module.name.as_str()).collect();
+        assert!(names.contains(&"outside"), "the member's own dependency: {names:?}");
+        assert!(names.contains(&"sibling"), "and its workspace siblings: {names:?}");
+
+        // Remove the dependency: the graph must now say so rather than report ok.
+        std::fs::remove_dir_all(&outside).expect("remove outside");
+        let graph = PackageGraph::discover(&member).expect("discover").expect("a graph");
+        assert_eq!(
+            graph.missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["outside"]
+        );
+        assert_eq!(graph.missing[0].reason, MissingReason::PathNotFound);
     }
 }
