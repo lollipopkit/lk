@@ -899,6 +899,31 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // The same identity guarantee for every other carrier and every
+            // other way a container reaches a mutator. None of these had
+            // coverage, which is how the typed-list copy above survived: a
+            // container's writes being the caller's writes is the single most
+            // load-bearing thing about a reference type, and only the list
+            // carrier was ever wrong.
+            new(
+                "every_container_carrier_keeps_its_identity",
+                "struct Box { xs: List<Int> }\n\
+                 trait Sink { fn take(self, n: Int) -> Int; }\n\
+                 struct S { xs: List<Int> }\n\
+                 impl Sink for S { fn take(self, n: Int) -> Int { self.xs.push(n); return self.xs.len(); } }\n\
+                 fn put(m: Map<String, Int>, k: String, v: Int) -> Int { m.set(k, v); return m.len(); }\n\
+                 fn addset(s: Set<Int>, n: Int) -> Int { s.add(n); return s.len(); }\n\
+                 fn bump(p: Box, n: Int) -> Int { p.xs.push(n); return p.xs.len(); }\n\
+                 fn relay(xs: List<Int>, n: Int) -> Int { return inner(xs, n); }\n\
+                 fn inner(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }\n\
+                 let m: Map<String, Int> = {};\nprintln(put(m, \"a\", 1));\nprintln(m.len());\n\
+                 let st = Set([1]);\nprintln(addset(st, 2));\nprintln(st.len());\n\
+                 let b = Box { xs: [1] };\nprintln(bump(b, 2));\nprintln(\"${b.xs}\");\n\
+                 let s = S { xs: [] };\nprintln(s.take(1));\nprintln(s.take(2));\nprintln(\"${s.xs}\");\n\
+                 let r: List<Int> = [];\nprintln(relay(r, 5));\nprintln(\"${r}\");\n\
+                 let c: List<Int> = [1];\nlet g = |n: Int| -> Int { c.push(n); return c.len(); };\n\
+                 println(g(2));\nprintln(\"${c}\");\nreturn 0;\n",
+            ),
             // A container passed to a function keeps its identity — the
             // callee's writes are the caller's.
             //
