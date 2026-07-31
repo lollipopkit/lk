@@ -53,35 +53,6 @@ pub extern "C" fn lkrt_env_has(key: *const c_char) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_env_set(key: *const c_char, value: *const c_char) -> i64 {
-    status(|| {
-        let key = c_str(key, "env.set key")?;
-        let value = c_str(value, "env.set value")?;
-        let _env = env_lock();
-        // SAFETY: Rust 2024 requires process environment reads and writes to
-        // be serialized. Every lkrt env accessor takes this process-wide mutex
-        // before touching std::env, including reads and mutations.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Ok(())
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_env_remove(key: *const c_char) -> i64 {
-    status(|| {
-        let key = c_str(key, "env.remove key")?;
-        let _env = env_lock();
-        // SAFETY: See lkrt_env_set; all lkrt std::env access is serialized.
-        unsafe {
-            std::env::remove_var(key);
-        }
-        Ok(())
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_exists(path: *const c_char) -> i64 {
     raising(|| {
         let path = c_str(path, "fs.exists path")?;

@@ -336,8 +336,6 @@ macro_rules! for_each_abi_fn {
             ("env", "get", lkrt_env_get, ReadsHost, [StrPtr, Ptr], I64);
             ("env", "get_or", lkrt_env_get_or, ReadsHost, [StrPtr, StrPtr], StrPtr);
             ("env", "has", lkrt_env_has, ReadsHost, [StrPtr], I64);
-            ("env", "set", lkrt_env_set, WritesHost, [StrPtr, StrPtr], I64);
-            ("env", "remove", lkrt_env_remove, WritesHost, [StrPtr], I64);
             ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], Ptr);
             ("fs", "read_to_string", lkrt_fs_read_to_string, ReadsHost, [StrPtr], StrPtr);
             ("fs", "write_str", lkrt_fs_write_str, WritesHost, [StrPtr, StrPtr], I64);
