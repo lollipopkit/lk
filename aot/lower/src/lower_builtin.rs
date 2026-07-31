@@ -738,12 +738,29 @@ pub(crate) fn lower_builtin_call(
                 });
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            // Every proven type, not just the scalars: `typeof` asks what the
+            // value *is*, and a container is as proven as an `Int` here. With
+            // only the five scalars, `typeof([1, 2])` — and every other
+            // container — dropped the whole program to the VM.
+            //
+            // The names are the VM's (`RuntimeVal::type_name_in`), which is
+            // what `every_proven_type_has_a_typeof_name` compares them against.
             let scalar_name = |ty: Ty| match ty {
                 Ty::I64 => Some("Int"),
                 Ty::F64 => Some("Float"),
                 Ty::Bool => Some("Bool"),
                 Ty::Str => Some("String"),
                 Ty::Nil => Some("Nil"),
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => Some("List"),
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
+                    Some("Map")
+                }
+                Ty::Set => Some("Set"),
+                Ty::Bytes => Some("Bytes"),
+                Ty::SliceI64 => Some("Slice"),
+                // A `Dyn` is whatever it is at run time, so its name is a
+                // runtime question — `dyn.type_name` answers it, and this
+                // static table cannot.
                 _ => None,
             };
             let result = match ty {

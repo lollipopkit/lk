@@ -82,6 +82,11 @@ pub(super) fn lower(
                             | Ty::MapI64F64
                             | Ty::Set
                             | Ty::Bytes
+                            // A window boxes in place too (`DYN_SLICE`), so
+                            // `[w]` holds something that still tracks the list
+                            // it windows — which is what the VM's
+                            // `HeapValue::Slice` does.
+                            | Ty::SliceI64
                     )
                 })
             {

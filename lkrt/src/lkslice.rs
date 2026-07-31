@@ -311,16 +311,41 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_to_list(handle: *mut c_void) -> *mut c
     crate::state::arena_handle(items)
 }
 
-/// `println(w)` / string interpolation — same rendering as the list it windows,
-/// because a window *is* a list as far as the language is concerned.
+/// The window's elements, for the boxed carrier's display and equality.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+pub(crate) unsafe fn window_elements<'a>(handle: *mut c_void) -> &'a [i64] {
+    // SAFETY: the caller guarantees a live window handle or null.
+    unsafe { window_values(handle) }
+}
+
+/// `println(w)` — the same rendering as the list it windows, because a window
+/// *is* a list as far as the language is concerned.
+pub(crate) fn slice_text(handle: *mut c_void) -> alloc::string::String {
+    // SAFETY: callers pass a live window handle or null.
+    let values = unsafe { window_values(handle) };
+    let mut text = alloc::string::String::with_capacity(values.len() * 4 + 2);
+    text.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str(&alloc::format!("{value}"));
+    }
+    text.push(']');
+    text
+}
+
+/// `println(w)` / string interpolation.
 ///
 /// # Safety
 /// `handle` must be a live window handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkslice_i64_display(handle: *mut c_void) -> *mut core::ffi::c_char {
-    // SAFETY: the caller guarantees a live window handle or null; the list this
-    // materializes is an ordinary arena handle.
-    unsafe { crate::lklist::lkrt_lklist_i64_display(lkrt_lkslice_i64_to_list(handle)) }
+    // The text is built from the window directly rather than from a
+    // materialized list: rendering is a read, and a read does not need a copy.
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(slice_text(handle)).unwrap_or_default())
 }
 
 #[cfg(test)]

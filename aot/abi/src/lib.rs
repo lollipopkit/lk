@@ -727,6 +727,11 @@ macro_rules! for_each_abi_fn {
             ("dyn", "from_typed_map", lkrt_dyn_from_typed_map, Pure, [Ptr, I64], DynVal);
             ("dyn", "from_set", lkrt_dyn_from_set, Pure, [Ptr], DynVal);
             ("dyn", "from_bytes", lkrt_dyn_from_bytes, Pure, [Ptr], DynVal);
+            // A window boxes in place, like `from_set`/`from_bytes`; `as_slice`
+            // is the read-back the `try` cell path needs, and both have call
+            // sites (a row without one is unverified, not available).
+            ("dyn", "from_slice", lkrt_dyn_from_slice, Pure, [Ptr], DynVal);
+            ("dyn", "as_slice", lkrt_dyn_as_slice, ReadsHost, [DynVal], Ptr);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);

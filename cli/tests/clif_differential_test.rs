@@ -2796,6 +2796,57 @@ fn a_window_answers_its_whole_read_surface_natively() {
     );
 }
 
+/// A window is a value: it boxes, so it can enter a list, a map or a `try`.
+///
+/// A carrier with no `Dyn` tag cannot be boxed at all, and boxing is how a
+/// value enters anything that holds a dynamic value — so `[w]`, `{"k": w}`,
+/// `typeof(w)` and `let out = try { … } catch e { … };` each dropped the whole
+/// program to the VM. `Set` and `Bytes` had the same hole once, for the same
+/// reason.
+///
+/// In place, not materialized: the box holds the window, so it still reads
+/// through to the list it windows. And it compares by *content* against a plain
+/// list, because `xs.slice(0, 2) == [3, 1]` is true in the VM — a window is a
+/// range of a list, not a distinct kind of value.
+#[test]
+fn a_window_is_a_boxable_value() {
+    run_clif_differential(
+        "slice_boxing",
+        &[
+            new(
+                "into_containers_and_comparisons",
+                "let z = 0;\nlet xs = [3, 1, 2];\nlet w = xs.slice(0 + z, 2);\n\
+                 println(w);\nprintln([w]);\nprintln([w, w]);\n\
+                 println(w == [3, 1]);\nprintln(w == [1, 3]);\nprintln(w == xs.slice(0, 2));\n\
+                 println({\"k\": w});\nprintln(typeof(w));\nreturn 0;\n",
+            ),
+            // `typeof` over every proven type, which is the same table: it knew
+            // only the five scalars, so `typeof([1, 2])` fell back too.
+            new(
+                "typeof_names_every_proven_type",
+                "use bytes;\nlet z = 0;\n\
+                 println(typeof([1 + z, 2]));\nprintln(typeof([1.5]));\nprintln(typeof([\"a\"]));\n\
+                 println(typeof({\"a\": 1}));\nprintln(typeof(Set([1])));\n\
+                 println(typeof(bytes.from_string(\"ab\")));\nprintln(typeof([1, 2].slice(0, 1)));\n\
+                 println(typeof(1));\nprintln(typeof(1.5));\nprintln(typeof(\"s\"));\n\
+                 println(typeof(true));\nprintln(typeof(nil));\nreturn 0;\n",
+            ),
+            // The cell a `try` region writes back through: its *kind* is one
+            // decision, and both sides used to make it. A register the caller
+            // saw as `nil` got a value cell; the body then stored a raw handle
+            // into it because the value it assigned was a container, and the
+            // read raised "runtime type error" where the VM printed the bytes.
+            new(
+                "a_nil_seeded_cell_survives_a_container_assignment",
+                "use bytes;\nlet z = 0;\nlet b = bytes.from_string(\"abc\");\n\
+                 let out = nil;\ntry { out = b.take(1 + z); } catch e { }\nprintln(out);\n\
+                 let ob = try { b.skip(1) } catch e { b };\nprintln(ob);\n\
+                 let os = try { Set([1, 2]) } catch e { Set([9]) };\nprintln(os.len());\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
 /// `Bytes` as a native value, pinned to pure Cranelift.
 ///
 /// It had no carrier at all, so `"hi".bytes()`, every `bytes` module member, and

@@ -1046,6 +1046,32 @@ pub(super) fn lower(
                     });
                     (false, eq, one)
                 }
+                // A window against a window or against a list: `xs.slice(0, 2)
+                // == [3, 1]` is true in the VM, because a window is a *range of
+                // a list* and not a distinct kind of value. Both sides box —
+                // `dyn.eq` knows the window tag and compares element-wise
+                // across it — rather than materializing the window, which would
+                // allocate a list to answer a question about one.
+                (Ty::SliceI64, Ty::SliceI64 | Ty::ListI64 | Ty::ListDyn)
+                | (Ty::ListI64 | Ty::ListDyn, Ty::SliceI64) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let a = to_dyn(ssa, insts, lv, lty, pc)?;
+                    let b = to_dyn(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("dyn", "eq"),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
                 // A dyn list against any list: both sides normalize to dyn
                 // lists and compare structurally (`dyn_eq` recurses with the
                 // VM's numeric coercion).

@@ -160,6 +160,7 @@ pub fn lower_bundled(
         try_body_param_tys: std::collections::HashMap::new(),
         try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
+        try_body_raw_cells: std::collections::HashSet::new(),
         try_body_extra_cells: std::collections::HashMap::new(),
         try_body_returns: std::collections::HashSet::new(),
         conflict: false,

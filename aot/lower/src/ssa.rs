@@ -654,6 +654,9 @@ impl Ssa {
                     | Ty::ListF64
                     | Ty::ListStr
                     | Ty::MapStrDyn
+                    | Ty::Set
+                    | Ty::Bytes
+                    | Ty::SliceI64
                     | Ty::MaybeI64
                     | Ty::MaybeF64
                     | Ty::MaybeStr
@@ -690,6 +693,12 @@ impl Ssa {
             Ty::Str => Some("from_str"),
             Ty::ListDyn => Some("from_list"),
             Ty::MapStrDyn => Some("from_map"),
+            // The three that box by tagging the handle in place. Missing here,
+            // a phi merging one of them with `nil` — `let out = try { … } catch
+            // e { … };` is exactly that shape — rejected the whole function.
+            Ty::Set => Some("from_set"),
+            Ty::Bytes => Some("from_bytes"),
+            Ty::SliceI64 => Some("from_slice"),
             _ => None,
         };
         if let Some(name) = simple {

@@ -70,6 +70,17 @@ pub(crate) struct SigInfer {
     /// writes through it as it goes, and the parent reads it back on both
     /// edges.
     pub(crate) try_body_cells: std::collections::HashMap<u32, Vec<u8>>,
+    /// Which of a body's cells the *caller* allocated as **raw** — parking a
+    /// typed container handle rather than a boxed value.
+    ///
+    /// The kind is one decision, and it belongs to whoever creates the cell.
+    /// Both sides used to decide it independently — the caller from the
+    /// register's type *entering* the region, the body from the type it
+    /// *stores* — and the two disagree exactly when a register that was `nil`
+    /// is assigned a container inside the body. `let out = nil; try { out =
+    /// b.take(1); } catch e { }` then wrote a raw handle into a value cell, and
+    /// the read raised "runtime type error" where the VM printed the bytes.
+    pub(crate) try_body_raw_cells: std::collections::HashSet<(u32, u8)>,
     /// Registers a *later* read proved the body had to write back.
     ///
     /// `try_body_cells` is what the region's own scan could see: registers the

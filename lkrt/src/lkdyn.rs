@@ -74,6 +74,15 @@ pub const DYN_TMAP_BASE: i64 = 10;
 /// One past the last typed-map tag.
 pub const DYN_TMAP_END: i64 = 15;
 
+/// A **window** handle (`xs.slice(a, b)`), boxed in place. See [`DYN_SET`] for
+/// why a carrier without a tag cannot be boxed at all, and therefore cannot
+/// enter a list, a map, a struct field, or a `try` region's value.
+///
+/// In place, not materialized: a window *is* a range of its source, and boxing
+/// it by copying would make `[w]` hold something that stops tracking the list
+/// it windows — which the VM's `HeapValue::Slice` does not do either.
+pub const DYN_SLICE: i64 = DYN_TMAP_END;
+
 /// Whether a tag denotes a map of any representation.
 pub(crate) fn is_map_tag(tag: i64) -> bool {
     tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
@@ -107,6 +116,24 @@ pub extern "C" fn lkrt_dyn_from_bytes(handle: *mut c_void) -> LkDyn {
         tag: DYN_BYTES,
         payload: handle as i64,
     }
+}
+
+/// Boxes a window handle. See [`DYN_SLICE`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_slice(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_SLICE,
+        payload: handle as i64,
+    }
+}
+
+/// The window back out of the box, or a loud failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_slice(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_SLICE {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
 }
 
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for
@@ -299,6 +326,7 @@ fn kind_name(v: LkDyn) -> &'static str {
         DYN_LIST => "List",
         DYN_SET => "Set",
         DYN_BYTES => "Bytes",
+        DYN_SLICE => "Slice",
         tag if is_map_tag(tag) => "Map",
         _ => "Object",
     }
@@ -356,6 +384,7 @@ pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
         DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
         DYN_SET => crate::panic::raise_str("cannot cast Set to an integer"),
         DYN_BYTES => crate::panic::raise_str("cannot cast Bytes to an integer"),
+        DYN_SLICE => crate::panic::raise_str("cannot cast Slice to an integer"),
         _ => crate::panic::raise_str("cannot cast Nil to an integer"),
     }
 }
@@ -730,6 +759,29 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
         let (xs, ys) = (keyed(a), keyed(b));
         return xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)));
     }
+    // A window compares by *content*, against another window or against a
+    // list: the VM says `xs.slice(0, 2) == [3, 1]`, because a window is a range
+    // of a list and not a distinct kind of value. Element-wise rather than
+    // handle-wise, and across the tag difference, for the same reason the two
+    // map representations compare across theirs.
+    if (a.tag == DYN_SLICE || b.tag == DYN_SLICE)
+        && matches!(b.tag, DYN_SLICE | DYN_LIST)
+        && matches!(a.tag, DYN_SLICE | DYN_LIST)
+    {
+        let boxed = |v: LkDyn| -> alloc::vec::Vec<LkDyn> {
+            if v.tag == DYN_SLICE {
+                // SAFETY: a `DYN_SLICE` payload is a live window handle.
+                unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) }
+                    .iter()
+                    .map(|value| lkrt_dyn_from_i64(*value))
+                    .collect()
+            } else {
+                dyn_list(v).to_vec()
+            }
+        };
+        let (xs, ys) = (boxed(a), boxed(b));
+        return xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, y)| dyn_eq_inner(x, y));
+    }
     if a.tag != b.tag {
         return false;
     }
@@ -886,6 +938,8 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
         }
         DYN_SET => out.push_str(&crate::lkset::set_text(v.payload as *mut c_void)),
         DYN_BYTES => out.push_str(&crate::lkbytes::bytes_text(v.payload as *mut c_void)),
+        // A window renders as the list it windows, which is what the VM shows.
+        DYN_SLICE => out.push_str(&crate::lkslice::slice_text(v.payload as *mut c_void)),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");
@@ -935,6 +989,9 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
         }
         DYN_SET => unsafe { crate::lkset::lkrt_lkset_len(v.payload as *mut c_void) },
         DYN_BYTES => unsafe { crate::lkbytes::lkrt_lkbytes_len(v.payload as *mut c_void) },
+        // SAFETY: a `DYN_SLICE` payload is a live window handle — the tag is
+        // only ever set by `from_slice`.
+        DYN_SLICE => unsafe { crate::lkslice::lkrt_lkslice_i64_len(v.payload as *mut c_void) },
         _ => crate::panic::raise_str("runtime type error"),
     }
 }

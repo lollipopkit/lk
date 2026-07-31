@@ -84,6 +84,10 @@ fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
         // bug. Giving them a round trip means an identity-preserving cell (a raw
         // handle slot, not a boxed one), not another entry in this table.
         Ty::ListDyn => CellReadBack::Unbox("dyn", "as_list"),
+        // A window is parked raw by `cell_is_raw` when the register already
+        // holds one; this is the other case — a register seeded `nil` that the
+        // body assigns a window to, which travels boxed like any other value.
+        Ty::SliceI64 => CellReadBack::Unbox("dyn", "as_slice"),
         Ty::MapStrDyn => CellReadBack::Unbox("dyn", "as_map"),
         _ => return None,
     })
@@ -135,6 +139,11 @@ fn crosses_as_word(ty: Ty) -> bool {
             | Ty::MapStrDyn
             | Ty::Set
             | Ty::Bytes
+            // A window is a handle like the rest — it was the one carrier
+            // missing from this list, so a `try` that so much as *mentioned* a
+            // `xs.slice(a, b)` dropped the whole program to the VM while the
+            // same body over the list itself lowered.
+            | Ty::SliceI64
     )
 }
 
@@ -610,13 +619,29 @@ pub(crate) fn lower_function(
                 // happen in the next call, and the VM shows whatever was
                 // assigned before it. Storing only on the way out would lose
                 // exactly the writes a handler is most likely to look at.
-                if cell_is_raw(ty) {
+                // The cell's kind is the caller's, not this store's type: a
+                // raw handle written into a value cell is a loud failure at the
+                // read (`cell_get_raw` checks the tag), and a register the
+                // caller saw as `nil` gets a *value* cell however containery
+                // the body's assignment turns out to be.
+                if cell_is_raw(ty) && sig.try_body_raw_cells.contains(&(func_index, *reg)) {
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("rt", "cell_set_raw"),
                         args: vec![*handle, value],
                     });
                     continue;
+                }
+                // Into a value cell: boxing a typed *list* rebuilds it, so a
+                // mutation made after this store would not travel — reject
+                // rather than answer with a stale copy. Every other container
+                // boxes in place (`DYN_SET`/`DYN_BYTES`/`DYN_SLICE`/the typed
+                // map tags), so it carries whatever the body does to it.
+                if matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) {
+                    return Err(Unsupported::TryRegion {
+                        pc,
+                        reason: "a nil-seeded register is assigned a typed list, which cannot be boxed in place",
+                    });
                 }
                 let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, value, ty, pc)?;
                 insts.push(Inst::Call {
@@ -788,6 +813,10 @@ pub(crate) fn lower_function(
                     // A typed container is parked as a raw handle: no boxing, so
                     // the same handle comes back and the body's writes stand.
                     if cell_is_raw(ty) {
+                        // The kind is decided *here*, and written down: the
+                        // body must not decide it a second time from the type
+                        // it happens to store (see `try_body_raw_cells`).
+                        sig.try_body_raw_cells.insert((body, reg));
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(handle),
@@ -798,6 +827,7 @@ pub(crate) fn lower_function(
                         cell_values.push((reg, handle, ty));
                         continue;
                     }
+                    sig.try_body_raw_cells.remove(&(body, reg));
                     // A value crosses back only if it can be taken out of a
                     // cell again. Boxing is universal; unboxing is per type,
                     // and a type with no unboxer is a rejection rather than a

@@ -245,6 +245,11 @@ pub(crate) fn to_dyn(
         // any mutation ride along.
         Ty::Set => "from_set",
         Ty::Bytes => "from_bytes",
+        // A window too — in place, so the box keeps tracking the list it
+        // windows. Without a box it could not enter a list, a map, a struct
+        // field or a `try` value at all, which is why every one of those
+        // dropped the whole program to the VM.
+        Ty::SliceI64 => "from_slice",
         // A typed map boxes **in place**, under a tag naming its carrier.
         //
         // It used to convert — `str_i64_to_dyn` rebuilds the map into a
