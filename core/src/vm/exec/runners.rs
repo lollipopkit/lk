@@ -152,7 +152,7 @@ impl Executor {
         }
         let saved_top = state.stack_top();
         self.state = state;
-        self.captures = captures;
+        self.captures = Some(captures);
         self.shared_module = shared_module;
         self.reset_entry_frame(function.register_count);
         let arg_count = match seed_args(&mut self) {

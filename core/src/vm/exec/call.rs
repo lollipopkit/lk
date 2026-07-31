@@ -173,7 +173,7 @@ impl Executor {
                 captures,
             } => {
                 let function = checked_positional_function(module, function_index, window.arg_count)?;
-                self.push_call_frame(function_index, function, captures, window)?;
+                self.push_call_frame(function_index, function, Some(captures), window)?;
                 Ok(CallOutcome::Pushed(function_index))
             }
             CallableTarget::RuntimeNative { arity, function } => {
@@ -247,9 +247,11 @@ impl Executor {
         window: CallWindow,
     ) -> Result<()> {
         let module = module.ok_or_else(|| anyhow!("CallDirect requires Module execution"))?;
-        let captures = Arc::clone(&self.empty_captures);
         let function = checked_positional_function(module, function_index, window.arg_count)?;
-        self.push_call_frame(function_index, function, captures, window)
+        // `None`, not a clone of a shared empty vector: a direct call is the
+        // most common thing a program does, and the refcount pair it used to
+        // pay for saying "no captures" showed up as a tenth of the run.
+        self.push_call_frame(function_index, function, None, window)
     }
 
     /// Push a suspended caller `CallFrame` and switch the executor's "current
@@ -261,7 +263,7 @@ impl Executor {
         &mut self,
         function_index: u32,
         function: &Function,
-        captures: Arc<Vec<RuntimeVal>>,
+        captures: Option<Arc<Vec<RuntimeVal>>>,
         window: CallWindow,
     ) -> Result<()> {
         let arg_range = self.call_args_stack_range(window)?;
@@ -308,7 +310,7 @@ impl Executor {
         &mut self,
         function_index: u32,
         function: &Function,
-        captures: Arc<Vec<RuntimeVal>>,
+        captures: Option<Arc<Vec<RuntimeVal>>>,
         window: CallWindow,
         named_count: u16,
     ) -> Result<()> {

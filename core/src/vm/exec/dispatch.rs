@@ -70,7 +70,8 @@ impl Executor {
     pub(super) fn dispatch_load_capture(&mut self, instr: Instr) -> Result<()> {
         let value = self
             .captures
-            .get(instr.bx() as usize)
+            .as_ref()
+            .and_then(|captures| captures.get(instr.bx() as usize))
             .cloned()
             .ok_or_else(|| anyhow!("LoadCapture index {} out of bounds", instr.bx()))?;
         self.write(instr.a(), value)?;

@@ -645,7 +645,7 @@ fn call_closure_value(
     let mut ctx = ctx;
     let mut callee = Executor::new(function.register_count);
     callee.state = core::mem::take(state);
-    callee.captures = captures;
+    callee.captures = Some(captures);
     let saved_top = callee.state.stack_top;
     let result = (|| {
         let new_base = saved_top;
@@ -694,7 +694,7 @@ fn call_closure_value_typed_map(
     let mut ctx = ctx;
     let mut callee = Executor::new(function.register_count);
     callee.state = core::mem::take(state);
-    callee.captures = captures;
+    callee.captures = Some(captures);
     let saved_top = callee.state.stack_top;
     let result = (|| {
         let new_base = saved_top;

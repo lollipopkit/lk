@@ -27,7 +27,7 @@ pub(super) struct CallFrame {
     pub(super) pc: usize,
     pub(super) frame_base: usize,
     pub(super) register_count: u16,
-    pub(super) captures: Arc<Vec<RuntimeVal>>,
+    pub(super) captures: Option<Arc<Vec<RuntimeVal>>>,
     /// `handler_stack.len()` at call time, truncated back to on pop (mirrors
     /// `call_closure_stack_args`'s `saved_handler_depth`).
     pub(super) handler_depth: usize,

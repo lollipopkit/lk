@@ -505,18 +505,22 @@ impl Executor {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
                     return Ok(value);
                 }
-                let key = match known_string_key {
-                    Some(key_str) => {
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
-                        runtime_map_key_from_str(key_str)
-                    }
-                    None => {
-                        record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
-                        self.map_key_from_register(key_reg)?
-                    }
+                let Some(key_str) = known_string_key else {
+                    // A key in a *register* is the ordinary way to look
+                    // something up (`counts.get(word)`), and it took the long
+                    // way round: build a `RuntimeMapKey` — an `Arc` clone for a
+                    // heap string — and then hand it to the generic lookup,
+                    // which for a typed map immediately asks it for the `&str`
+                    // it started from. `get_map_index_fast` is that same
+                    // question answered once, and it was reachable only when
+                    // the *target* had been proven a map at compile time. A
+                    // map behind a parameter has no such proof — which is
+                    // exactly where a lookup keyed by a variable lives.
+                    return self.get_map_index_fast(handle, key_reg, index_key_metrics);
                 };
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
+                let key = runtime_map_key_from_str(key_str);
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
                 Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
             }

@@ -206,7 +206,7 @@ impl Executor {
                     .functions
                     .get(function_index as usize)
                     .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-                self.push_call_frame_named(function_index, function, captures, window, named_count)?;
+                self.push_call_frame_named(function_index, function, Some(captures), window, named_count)?;
                 Ok(CallOutcome::Pushed(function_index))
             }
             CallableTarget::Runtime(function) => {

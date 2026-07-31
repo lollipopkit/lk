@@ -16,9 +16,18 @@ impl Executor {
         // Ancestor frames' captures (plan M2.5 sub-step ①: flattened LK→LK
         // calls no longer keep them alive implicitly on the Rust stack) must
         // be rooted explicitly here, same as the current frame's `captures`.
-        let frame_roots = self.frames.iter().flat_map(|frame| frame.captures.iter());
+        let frame_roots = self
+            .frames
+            .iter()
+            .flat_map(|frame| frame.captures.iter().flat_map(|captures| captures.iter()));
         self.state
-            .gc_roots(self.captures.iter().chain(frame_roots).chain(handler_roots))
+            .gc_roots(
+                self.captures
+                    .iter()
+                    .flat_map(|captures| captures.iter())
+                    .chain(frame_roots)
+                    .chain(handler_roots),
+            )
             .into_refs()
     }
 
@@ -110,7 +119,7 @@ mod tests {
             RuntimeVal::Obj(inactive_stack),
         ];
         executor.state.stack_top = 2;
-        executor.captures = Arc::new(vec![RuntimeVal::Obj(capture)]);
+        executor.captures = Some(Arc::new(vec![RuntimeVal::Obj(capture)]));
 
         assert_eq!(executor.root_refs(), vec![global, stack, capture]);
     }

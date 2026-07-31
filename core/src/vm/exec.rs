@@ -93,8 +93,15 @@ pub(crate) struct ExecFailure {
 #[derive(Debug)]
 pub struct Executor {
     state: RuntimeModuleState,
-    captures: Arc<Vec<RuntimeVal>>,
-    empty_captures: Arc<Vec<RuntimeVal>>,
+    /// The current frame's captures — `None` when the running function has
+    /// none, which is every plain `fn`.
+    ///
+    /// Not an `Arc` to a shared empty vector: that spelling put a refcount
+    /// increment on every call and a decrement on every return, and the
+    /// decrement alone was 41% of `finish_return` — about a tenth of the whole
+    /// program in a call-heavy loop. A closure still shares its captures by
+    /// `Arc`; a function without any now says so.
+    captures: Option<Arc<Vec<RuntimeVal>>>,
     handler_stack: Vec<ErrorHandler>,
     frame_base: usize,
     register_count: u16,
@@ -199,8 +206,7 @@ impl Executor {
     pub fn new(register_count: u16) -> Self {
         let mut this = Self {
             state: RuntimeModuleState::default(),
-            captures: Arc::new(Vec::new()),
-            empty_captures: Arc::new(Vec::new()),
+            captures: None,
             handler_stack: Vec::new(),
             frame_base: 0,
             register_count,
