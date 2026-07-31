@@ -55,6 +55,33 @@ second job a single-feature test does not exercise.
 A failure prints the seed and the full generated program, so reproduction is
 `LK_FUZZ_SEED=<seed> cargo test -p lk-cli --test aot_fuzz_differential_test`.
 
+## 计时断言:单样本是硬币,松预算是摆设
+
+两种坏法都在这个仓库里出现过,而且互为对方的"修法":
+
+- **单样本 + 紧预算 = flaky。** `compiling_many_functions_stays_linear` 断言
+  `large < small * 3`,在 `cargo test --workspace --all-features`(几十个测试线程
+  抢核)里失败过一次,单跑连过 5 次。一条会因为**别的原因**变红的门禁比没有门禁
+  更糟 —— 它教会所有人重跑,而重跑的习惯一旦养成,真回归也会被重跑掉。
+- **单样本 + 松预算 = 摆设。** `lsp/tests/perf_latency_test.rs` 的 6 条延迟断言,
+  余量是 67x 到 **2381x**(`semantic_tokens(example workspace main)` 实测 21µs,
+  预算 50ms)。比被测量高三个数量级的预算不可能失败,所以它什么也没说 —— LSP 慢
+  10 倍(交互工具"跟手"和"不跟手"的分界)六条全过。
+
+两种都源于同一个选择:**用一次墙钟采样做判据**。噪声让你不敢收紧预算,松预算又
+让断言失去意义。
+
+规矩:**取 N 次里的最小值,再把预算收到观测值的约 10 倍。** 最小值是这里正确的估
+计量 —— 调度噪声、缺页、降频只会让某次更慢,所以最小的样本最接近被测的工作量。噪
+声去掉之后,预算才敢收到"能抓住 10 倍回归、抓不到机器间差异"的位置。
+
+配套两条:
+
+- 把**观测值和日期**写在预算旁边(`// Observed 3.3ms (debug, 2026-08-01).`),
+  预算漂成摆设时看得见。
+- 新加或收紧一条计时断言之后**反向验一次**:把预算调到实测值以下,确认它真的会
+  红。一条从没红过的断言和一条不可能红的断言,从外面看是一样的。
+
 ## What the fuzzer still cannot reach
 
 Its vocabulary is fixed, so it finds regressions in shapes it already knows, not
