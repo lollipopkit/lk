@@ -1460,6 +1460,35 @@ let b = maybe_int() ?? "ab";    // Cannot unify Int with String
 
 `constant_folding_answers_what_the_executors_answer` 钉住三条。
 
+## `lk check` 答的必须是执行器答的那个问题(2026-08-01 裁决)
+
+已经有一条裁决说 `lk check` 不能**放过**跑不起来的程序(trait 必需方法那条)。反
+向同样成立,而这一边一直是错的:`lk check` 用 `TypeChecker::new_strict()`,两个执
+行器都用 `TypeChecker::new()`。于是
+
+```lk
+fn process_list(xs) {
+    return xs.filter(|x| x > 3).map(|x| x * x).reduce(0, |a, b| a + b);
+}
+```
+
+- `lk examples/syntax/closure.lk` —— 跑通
+- `lk compile examples/syntax/closure.lk` —— 编出原生可执行文件
+- `lk check examples/syntax/closure.lk` —— **Type Error: infers implicit Any**
+
+语言自带的 4 个 example 被"跑之前先检查"这条命令拒了,而它们是能跑的。未标注的
+形参**是**这门语言收下的写法,所以严格性是一条 rigor 政策,不是"这程序能不能跑"
+的答案 —— 政策不能当默认答案。
+
+现在:`lk check` 默认与执行器逐字相同;`lk check --strict` 保留那条 lint。
+
+顺带记一个探这条时的岔路:`VmContext::with_type_checker(Some(TypeChecker::new_strict()))`
+在 CLI、REPL、wasm 三处都写着,读起来像"运行也是严格的" —— **不是**。
+`Program::execute_with_ctx_from` 给程序的类型检查另建了一个 `TypeChecker::new()`,
+上下文里那个只用来登记模块的 trait/impl 表。这三处的 `new_strict()` 就严格性而言
+是句空话。(先别删:那个字段本身有人写、有人读,只是没人读它的严格位 ——
+`get_type_checker_mut` 至今零调用点,值得单独查。)
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

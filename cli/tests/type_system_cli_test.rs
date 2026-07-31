@@ -264,3 +264,48 @@ fn builtin_arity_is_a_check_time_error() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// `lk check` answers the same question the executors answer.
+///
+/// It used to run a *stricter* checker than either backend: an unannotated
+/// parameter or return type was `Function 'f' infers implicit Any …`, and the
+/// same file ran fine and compiled to a native executable. Four of the
+/// language's own examples were rejected by the command whose whole job is to
+/// be run before running.
+///
+/// The strict pass is still there behind `--strict`, where it is what it
+/// always was: a lint about under-specified signatures.
+#[test]
+fn check_accepts_what_the_executors_accept_and_strict_is_opt_in() -> Result<(), Box<dyn Error>> {
+    let dir = tempdir()?;
+    let script_path = dir.path().join("unannotated.lk");
+    fs::write(
+        &script_path,
+        r#"
+            fn process(xs) {
+                return xs.map(|x| x * x).reduce(0, |a, b| a + b);
+            }
+            assert(process([1, 2, 3]) == 14);
+        "#,
+    )?;
+
+    Command::cargo_bin("lk")?
+        .args(["check", script_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // …and it really does run, which is what makes the old answer wrong rather
+    // than merely strict.
+    Command::cargo_bin("lk")?
+        .arg(script_path.to_str().unwrap())
+        .assert()
+        .success();
+
+    Command::cargo_bin("lk")?
+        .args(["check", "--strict", script_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("infers implicit Any"));
+
+    Ok(())
+}

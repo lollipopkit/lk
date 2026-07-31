@@ -112,6 +112,16 @@ enum Commands {
         /// Source file to type-check
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
+        /// Also require every function's parameters and return type to resolve
+        /// to something other than `Any`.
+        ///
+        /// Off by default because `lk check` answers "will this run", and an
+        /// unannotated parameter runs: `fn process(xs) { … }` is a program both
+        /// backends accept. Demanding the annotation is a rigour policy, and a
+        /// policy that rejects working programs cannot be the default answer of
+        /// the command you run *before* running.
+        #[arg(long)]
+        strict: bool,
     },
     /// Format LK sources in place (4-space indent). Without a path, formats the
     /// whole project (nearest `Lk.toml` directory, else the current directory).
@@ -506,8 +516,8 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            Commands::Check { file } => {
-                run_type_check(&file)?;
+            Commands::Check { file, strict } => {
+                run_type_check(&file, strict)?;
                 return Ok(());
             }
             Commands::Fmt { paths, check } => {
@@ -864,7 +874,19 @@ fn json_span(span: &lk_core::token::Span) -> JsonSpan {
     }
 }
 
-fn run_type_check(path: &Path) -> anyhow::Result<()> {
+/// `lk check FILE` — the same type check the executors run, without running.
+///
+/// "The same" is the whole point, and it was not: this used
+/// `TypeChecker::new_strict()` while `Program::execute_with_ctx_from` builds a
+/// plain `TypeChecker::new()`, so four of the language's own examples were
+/// rejected here and ran fine — `fn process_list(xs) { … }` is
+/// `infers implicit Any for return type` to `check` and a working program to
+/// everything else. `lk compile` produced a native executable from the same
+/// file.
+///
+/// The strict pass is still reachable with `--strict`; it is a lint about
+/// under-specified signatures, not a statement about whether the program runs.
+fn run_type_check(path: &Path, strict: bool) -> anyhow::Result<()> {
     let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
     let options = parse_options_for_file(path)?;
     let expanded = expand_program_source(&input, options).map_err(|parse_err| {
@@ -872,7 +894,11 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         anyhow::anyhow!(parse_err.to_string())
     })?;
     ensure_stdlib_signatures();
-    let mut checker = TypeChecker::new_strict();
+    let mut checker = if strict {
+        TypeChecker::new_strict()
+    } else {
+        TypeChecker::new()
+    };
     seed_imports(&expanded.program, path, &mut checker);
     if let Err(err) = expanded.program.type_check(&mut checker) {
         let mut message = err.to_string();
@@ -1063,9 +1089,7 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     resolver.set_base_dir(base);
     configure_package_resolver(&mut resolver, path)?;
     let resolver = Arc::new(resolver);
-    Ok(VmContext::new()
-        .with_resolver(Arc::clone(&resolver))
-        .with_type_checker(Some(TypeChecker::new_strict())))
+    Ok(VmContext::new().with_resolver(Arc::clone(&resolver)))
 }
 
 /// Publish the standard library's declared signatures to the type checker.

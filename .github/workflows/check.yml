@@ -59,7 +59,10 @@ jobs:
         run: |
           cargo build -p lk-cli --no-default-features --features stdlib
           fail=0
-          for f in $(find bare-metal bare-metal-x86 -name '*.lk' -not -path '*/target/*'); do
+          # Matched by prefix, not by a hand-written list: `bare-metal-native`
+          # was added later and `find bare-metal bare-metal-x86` does not reach it,
+          # so the one program in it was outside the very gate this step is.
+          for f in $(find . -path './bare-metal*' -name '*.lk' -not -path '*/target/*'); do
             if ! ./target/debug/lk check "$f"; then
               echo "::error file=$f::does not type-check"
               fail=1
