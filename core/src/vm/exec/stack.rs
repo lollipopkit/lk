@@ -152,6 +152,17 @@ impl Executor {
         Ok(range_start..range_start + count)
     }
 
+    /// Deliver a returned value into the caller's result window.
+    ///
+    /// One pass, not two: a callee that returns fewer values than the window
+    /// asks for leaves the rest nil, which is what a separate `fill` used to
+    /// provide — at the price of writing every slot twice on the overwhelmingly
+    /// common `ret_count == 1` path, which is every ordinary call.
+    ///
+    /// Not `#[inline]`: measured, inlining these two into `finish_return` cost
+    /// the empty-call benchmark 29ms → 50-90ms. Same lesson as the `#[cold]` on
+    /// `call_direct_function` — growing the code the dispatch loop has to hold
+    /// beats any instruction saved.
     pub(super) fn write_returns(
         &mut self,
         window: CallWindow,
@@ -163,17 +174,25 @@ impl Executor {
             bail!("return range {}..{} out of bounds", start, start + count);
         }
         let range_start = self.frame_base + start;
-        let range_end = range_start + count;
-        self.state.stack[range_start..range_end].fill(RuntimeVal::Nil);
-        for (slot, value) in self.state.stack[range_start..range_end].iter_mut().zip(values) {
-            *slot = value;
+        let mut values = values.into_iter();
+        for slot in &mut self.state.stack[range_start..range_start + count] {
+            *slot = values.next().unwrap_or(RuntimeVal::Nil);
         }
         Ok(())
     }
 
+    /// Drop the argument registers of a completed call, so the values they held
+    /// stop being GC roots.
+    ///
+    /// A zero-argument call has nothing to clear, and that is the shape the
+    /// call benchmark is made of; the bounds check and the empty `fill` were
+    /// its whole cost.
     pub(super) fn clear_call_window_temps(&mut self, window: CallWindow, named_count: u16) -> Result<()> {
-        let start = window.arg_base().as_usize();
         let count = window.arg_count as usize + named_count as usize * 2;
+        if count == 0 {
+            return Ok(());
+        }
+        let start = window.arg_base().as_usize();
         if start + count > self.register_count as usize {
             bail!("call temp range {}..{} out of bounds", start, start + count);
         }

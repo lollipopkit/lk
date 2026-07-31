@@ -277,8 +277,10 @@ impl Executor {
             self.state.stack.resize(new_top, RuntimeVal::Nil);
         }
         let reg_count = function.register_count as usize;
-        self.state.stack[new_base..new_base + reg_count].fill(RuntimeVal::Nil);
-        let param_count = window.arg_count as usize;
+        // The parameter slots are about to be overwritten wholesale, so they do
+        // not need nilling first — only the locals above them do.
+        let param_count = (window.arg_count as usize).min(reg_count);
+        self.state.stack[new_base + param_count..new_base + reg_count].fill(RuntimeVal::Nil);
         for i in 0..param_count {
             let src = arg_range.start + i;
             let dst = new_base + i;
