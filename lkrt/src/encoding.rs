@@ -29,7 +29,7 @@ use alloc::{
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, LkDyn};
+use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_SLICE, LkDyn};
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
 use crate::vm_mirror::str_dyn_map_mirrored;
@@ -226,6 +226,25 @@ mod write {
             DYN_BYTES => return Err("Bytes has no JSON form".to_string()),
             DYN_SET => return Err("Set has no JSON form".to_string()),
             DYN_RAW => return Err("Object has no JSON form".to_string()),
+            // A window is a list, and the VM encodes it as one:
+            // `json.stringify([xs.slice(0, 2)])` is `[[1,2]]` there and was
+            // `value has no JSON form` here. `DYN_SLICE` was added to the tag
+            // space after this match was written and the catch-all swallowed
+            // it — the third arm in this runtime to lose a carrier that way
+            // (see `contains_eq`, and `container_ty` in the lowering).
+            DYN_SLICE => {
+                let mut out = Vec::new();
+                // SAFETY: a `DYN_SLICE` payload is a live window handle — the
+                // tag is only ever set by `lkrt_dyn_from_slice`.
+                let handle = value.payload as *mut core::ffi::c_void;
+                let len = unsafe { crate::lkslice::lkrt_lkslice_i64_len(handle) };
+                for index in 0..len {
+                    // SAFETY: as above, and `index` is inside `len`.
+                    let element = unsafe { crate::lkslice::lkrt_lkslice_i64_get_pair(handle, index) };
+                    out.push(serde_json::Value::Number(element.value.into()));
+                }
+                serde_json::Value::Array(out)
+            }
             tag if is_map_tag(tag) => {
                 let mut out = serde_json::Map::new();
                 for (key, element) in map_entries(value) {

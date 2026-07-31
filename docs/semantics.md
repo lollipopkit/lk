@@ -1644,6 +1644,16 @@ b in xs            // 解释执行 true,编译执行 false
 `every_heap_carrier_is_found_by_handle` 钉住四种载体各自找得到自己、且不同句柄仍然
 找不到。
 
+**同一形状在这个运行时里是第三次了**,所以按判据把所有对 tag 的 catch-all 扫了一
+遍。`raise` 结尾的那些是响亮失败(可接受);**返回值**的那几个里又有一处:
+`json.stringify` 的 `_ => Err("value has no JSON form")` 吞了 `DYN_SLICE`。窗口在
+VM 里就是个列表,`json.stringify([xs.slice(0,2)])` 那边给 `[[1,2]]`,这边报"没有
+JSON 形式"。`DYN_SLICE` 同样是后加进标签空间的。
+
+三次的名单,留给下一个往标签空间里加东西的人:降低侧的 `container_ty`、`in` 的
+`contains_eq`、JSON 的 `to_serde`。加一个 `DYN_*` 就要走一遍这三处 —— 它们都不是
+穷尽匹配,编译器不会提醒。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。
