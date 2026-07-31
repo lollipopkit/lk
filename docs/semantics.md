@@ -1386,9 +1386,28 @@ println("${xs}");        // [1,2] —— 两个执行器现在一致
 每个调用点都装箱 —— 由一个从来不成立的事实推出来的。`ret_known` 早就为 HOF 重路
 由记下了同一个坑,形参格没跟上。第一遍的观测现在整体不记(它的产物本来就丢弃)。
 
-**未修的触发路径**:`try` 体自己的形参传递仍会把某些载体拓宽成 `Dyn`,于是
-`List<String>` 只在 try 体里被调用的函数改写时,仍会丢掉写入。最终修法仍是给类型
-化列表各自的 tag、原地装箱(照 `DYN_TMAP_BASE`);那之前这条路径是已知分歧。
+**未修的触发路径**:同一个模块里有**两种列表载体**各自流进会改写它的函数时,形参
+格 join 成 `Dyn`,装箱又回到重建那条路。最小复现:
+
+```lk
+fn mk() -> List<Int> { return [1]; }
+fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }
+fn adds(xs: List<String>, s: String) -> Int { xs.push(s); return xs.len(); }
+let xs = mk();  add(xs, 2);           // 单独看:两端一致
+let ss: List<String> = [];
+println(try { "${adds(ss, "a")}" } catch e { "c" });
+println("${xs} ${ss}");               // VM: [1,2] ["a"]   native: [1,2] []
+```
+
+**这条已经证明不能在格上绕过。** 试过把"元素类型只是猜的空 `[]`"在进 try 区域时
+物化成 Dyn 列表:`ss` 修好了,`xs` 反而坏了 —— 新的 `ListDyn` 观测和原有的
+`ListI64` 在同一个被调方上 join 成 `Dyn`,于是**两个**调用点都开始装箱。换一个程
+序坏而已。
+
+所以唯一的修法是把重建去掉:给 ListI64/F64/Str 各一个 tag(接在 `DYN_SLICE = 15`
+之后),**原地打标签装箱**,照 `DYN_TMAP_BASE` 那次做。已知难点:VM 的
+`TypedList` 在插入不合型元素时会拓宽成 `Mixed`,而原生的 `Vec<i64>` 不能就地变身
+—— 这条语义必须逐字镜像,不能近似。
 
 ## 维护约定
 
