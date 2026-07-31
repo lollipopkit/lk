@@ -75,10 +75,28 @@ impl ReplSession {
             return self.execute_command(final_src);
         }
 
-        let Some(result) = (match parse_program_source(final_src, ParseOptions::default()) {
-            Ok(program) => Some(self.vm.execute_program(&program)),
-            Err(parse_err) => self.execute_as_expression(final_src, parse_err),
-        }) else {
+        // **Expression first.** A REPL's contract is "type a thing, see its
+        // value", and deciding that by whether the input also happens to be a
+        // valid *statement* gets it right only by accident.
+        //
+        // It used to try the program parse first and fall back to the
+        // expression wrapper only when that failed. Most inputs need a
+        // semicolon to be a statement, so most inputs fell through and echoed —
+        // but everything that is a statement on its own printed nothing at all:
+        //
+        //     > if true { 1 } else { 2 }        (nothing)
+        //     > S { x: 8 }                      (nothing)
+        //     > match n { 1 => "one", _ => "" } (nothing)
+        //
+        // while `[1, 2, 3]` and `x + 1` printed, because a bare list or a bare
+        // binary expression is not a statement. The value was computed and
+        // dropped every time.
+        //
+        // The wrapper is `return (…)`, so an input carrying a trailing `;`, a
+        // `let`, a declaration or several statements does not parse as one and
+        // runs as a program — which is also how `x + 1;` keeps suppressing its
+        // own echo.
+        let Some(result) = self.execute_input(final_src) else {
             return ReplStep::Continue;
         };
 
@@ -108,16 +126,18 @@ impl ReplSession {
         }
     }
 
-    fn execute_as_expression(
-        &mut self,
-        source: &str,
-        statement_error: lk_core::token::ParseError,
-    ) -> Option<anyhow::Result<ReplExecutionResult>> {
+    /// One expression, else a program; `None` once the parse error is reported.
+    fn execute_input(&mut self, source: &str) -> Option<anyhow::Result<ReplExecutionResult>> {
         let wrapped = expression_program_source(source);
-        match parse_program_source(&wrapped, ParseOptions::default()) {
+        if let Ok(program) = parse_program_source(&wrapped, ParseOptions::default()) {
+            return Some(self.vm.execute_program(&program));
+        }
+        match parse_program_source(source, ParseOptions::default()) {
             Ok(program) => Some(self.vm.execute_program(&program)),
-            Err(_expr_err) => {
-                diagnostic::parse_error(&statement_error, source);
+            // The program error, not the wrapper's: the wrapper's complains
+            // about a `return (…)` the reader never typed.
+            Err(program_err) => {
+                diagnostic::parse_error(&program_err, source);
                 None
             }
         }
