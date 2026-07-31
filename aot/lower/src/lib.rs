@@ -164,6 +164,7 @@ pub fn lower_bundled(
         try_body_extra_cells: std::collections::HashMap::new(),
         try_body_returns: std::collections::HashSet::new(),
         conflict: false,
+        observations_are_real: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
         cell_captures: std::collections::HashSet::new(),
@@ -282,6 +283,26 @@ pub fn lower_bundled(
             // the converged flags of the last fixpoint pass.
             sig.specialized.iter_mut().for_each(|flag| *flag = false);
             sig.plain_called.iter_mut().for_each(|flag| *flag = false);
+            // Parameter observations are call-site facts too, and the first
+            // pass's are made from *provisional* types: a callee's return type
+            // is still at its `I64` default until its body has been lowered
+            // once. Recording those poisons the join, which is monotonic:
+            //
+            //     fn mk() -> List<Int> { return [1]; }
+            //     fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }
+            //     add(mk(), 2)
+            //
+            // pass 1 saw `mk()` as `I64`, pass 2 saw the real `list<i64>`, the
+            // two joined to `Dyn`, and `add` took a boxed argument forever —
+            // from a fact that was never true of the program. A boxed typed
+            // list is a *copy* (`list_h.i64_to_dyn` rebuilds it), so the push
+            // was lost: a wrong answer, not a fallback.
+            //
+            // `ret_known` already exists for exactly this hazard on the HOF
+            // re-route path; the parameter lattice never got it. Skipping the
+            // whole first pass is the same rule applied here, and it costs
+            // nothing: pass 1's *output* is discarded either way.
+            sig.observations_are_real = passes > 0;
             sig.conflict = false;
             for fi in 0..funcs.len() {
                 if !reachable[fi] {

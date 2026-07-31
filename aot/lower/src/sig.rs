@@ -19,6 +19,11 @@ pub(crate) struct SigInfer {
     /// default as a real mismatch.
     pub(crate) ret_known: Vec<bool>,
     pub(crate) conflict: bool,
+    /// Whether this pass's parameter observations describe real types.
+    ///
+    /// False on the first fixpoint pass, where every callee's return type is
+    /// still its default — see the note at the reset in `lib.rs`.
+    pub(crate) observations_are_real: bool,
     /// `(function, TryBegin pc)` → the function that region's body became.
     ///
     /// Filled before any function is lowered, because a region's body has to
@@ -291,6 +296,12 @@ impl SigInfer {
             Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => Ty::Dyn,
             other => other,
         };
+        // A provisional pass answers with the argument's own type and records
+        // nothing: its emitted code is discarded, and its observations would
+        // outlive it.
+        if !self.observations_are_real {
+            return obs;
+        }
         match self.param_obs.get_mut(callee).and_then(|p| p.get_mut(slot_idx)) {
             Some(slot) => {
                 let joined = match *slot {

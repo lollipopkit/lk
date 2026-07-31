@@ -899,6 +899,27 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // A container passed to a function keeps its identity — the
+            // callee's writes are the caller's.
+            //
+            // It did not. The first fixpoint pass observes call arguments while
+            // every callee's return type is still its `I64` default, and the
+            // parameter lattice *joins* observations: pass 1's `I64` and pass
+            // 2's real `list<i64>` disagreed, so the parameter became `Dyn` and
+            // every call site boxed. A typed list boxes by **rebuilding**
+            // (`list_h.i64_to_dyn`), so the callee held a copy and its `push`
+            // was lost — a wrong answer that still printed a plausible length.
+            // `ret_known` already existed for this hazard on the HOF re-route
+            // path; the parameter lattice never got it.
+            new(
+                "a_container_argument_keeps_its_identity",
+                "fn mk() -> List<Int> { return [1]; }\n\
+                 fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }\n\
+                 let xs = mk();\nprintln(add(xs, 2));\nprintln(xs.len());\nprintln(\"${xs}\");\n\
+                 let ys: List<Int> = [];\n\
+                 println(try { \"${add(ys, 7)}\" } catch e { \"c\" });\nprintln(ys.len());\n\
+                 println(\"${ys}\");\nreturn 0;\n",
+            ),
             // `typeof` names the struct, and both engines agree about which
             // carriers it can decide statically. A struct instance and a plain
             // map share `MapStrDyn`, so the static table's `Map` was a wrong
