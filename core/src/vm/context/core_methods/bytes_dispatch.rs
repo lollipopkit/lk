@@ -158,6 +158,43 @@ pub(super) fn dispatch_bytes_builtin_method(
                 heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(kept))),
             )))
         }
+        // The three that used to exist only as `bytes.f(b, …)` module
+        // functions. Each is a receiver-first question about a `Bytes`, so it
+        // belongs here with the rest and the module forwards to it — the split
+        // is what let `bytes.slice(b, 3, 1)` raise while `b.slice(3, 1)`
+        // answered an empty window.
+        "to_string_utf8" => {
+            if !positional.is_empty() {
+                bail!("bytes.to_string_utf8() expects no arguments, got {}", positional.len());
+            }
+            // Raises on invalid UTF-8, unlike `to_string_lossy` next door: the
+            // two exist precisely so the caller says which one they mean.
+            let text = core::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
+            Ok(Some(make_string_val(text, heap)))
+        }
+        "to_string_lossy" => {
+            if !positional.is_empty() {
+                bail!("bytes.to_string_lossy() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(make_string_val(&String::from_utf8_lossy(&bytes), heap)))
+        }
+        "concat" => {
+            if positional.len() != 1 {
+                bail!("bytes.concat() expects 1 argument (other), got {}", positional.len());
+            }
+            let RuntimeVal::Obj(other) = &positional[0] else {
+                bail!("bytes.concat() argument must be Bytes");
+            };
+            let Some(HeapValue::Bytes(other)) = heap.get(*other) else {
+                bail!("bytes.concat() argument must be Bytes");
+            };
+            let mut out = Vec::with_capacity(bytes.len() + other.len());
+            out.extend_from_slice(&bytes);
+            out.extend_from_slice(other);
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
+            )))
+        }
         "to_list" => {
             if !positional.is_empty() {
                 bail!("bytes.to_list() expects no arguments, got {}", positional.len());

@@ -105,17 +105,25 @@ String 元方法，无需导入，直接通过 `value.method()` 调用。
 
 | 函数 | 说明 |
 |------|------|
-| `from_list(list)` | 从整数列表创建 |
-| `from_string(str)` | 从 UTF-8 字符串创建 |
+| `from_list(list)` | 从整数列表创建 —— 方法拼写是 `list.to_bytes()` |
+| `from_string(str)` | 从 UTF-8 字符串创建 —— 方法拼写是 `str.bytes()` |
 | `len(bytes)` | 字节长度 |
 | `is_empty(bytes)` | 是否为空 |
-| `get(bytes, index)` | 指定位置字节 |
-| `slice(bytes, start[, end])` | 截取子段 |
-| `to_list(bytes)` | 转整数列表 |
-| `to_string_utf8(bytes)` | 转 UTF-8 字符串 |
-| `to_string_lossy(bytes)` | 转 UTF-8（替换非法字节） |
+| `get(bytes, index)` | 指定位置字节，越界 nil；负数从末尾数 |
+| `first(bytes)` | 首字节，空则 nil |
+| `last(bytes)` | 末字节，空则 nil |
+| `contains(bytes, byte)` | 是否包含该字节 |
+| `index_of(bytes, byte)` | 首次出现的位置，未找到返回 nil |
+| `sum(bytes)` | 各字节之和 |
+| `min(bytes)` | 最小字节，空则 nil |
+| `max(bytes)` | 最大字节，空则 nil |
+| `take(bytes, count)` | 前 `count` 个字节 |
+| `skip(bytes, count)` | 跳过前 `count` 个字节 |
+| `slice(bytes, start, end)` | `[start, end)` 区间的字节，越界截断；`end` 可省略 |
+| `to_list(bytes)` | 转成整数列表 |
+| `to_string_utf8(bytes)` | 按 UTF-8 解码，非法则报错 |
+| `to_string_lossy(bytes)` | 按 UTF-8 解码，非法序列替换 |
 | `concat(a, b)` | 拼接 |
-| `eq(a, b)` | 比较相等 |
 
 ```lk
 use bytes;

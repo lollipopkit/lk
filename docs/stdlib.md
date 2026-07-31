@@ -88,6 +88,18 @@ exists — they are what a new container type should be checked against:
 `str.char_at` 符号都从末尾往回数。`byte_at` 保留原名,因为它答的是**字节**,
 不是元素。
 
+`bytes` 模块同样是纯转发(2026-07-31 补齐):`len`/`is_empty`/`get`/`slice`/
+`to_list` 曾经模块和方法各一份实现,而 `slice` 已经漂了 —— `bytes.slice(b, 2, 1)`
+报错,`b.slice(2, 1)` 答 `Bytes([])`。现在只有方法侧那一份,答案是截断的那个
+(和 `"abcde".slice(-1, -3)`、`xs.slice(-1, -3)` 一致)。`to_string_utf8`/
+`to_string_lossy`/`concat` 补上了方法拼写,`contains`/`index_of`/`first`/`last`/
+`sum`/`min`/`max`/`take`/`skip` 补上了模块拼写;带回调的 `map`/`filter`/`reduce`
+不进 `bytes` 模块,它们的模块拼写在 `iter` 里(`iter.map(b, f)` 本来就能用)。
+
+两个构造函数是"方法名和成员名不一样"的仅有情况,写下来免得被当成疏漏:
+`bytes.from_string(s)` **就是** `s.bytes()`,`bytes.from_list(xs)` 就是新加的
+`xs.to_bytes()` —— receiver 是 String / List,方法自然长在那边。
+
 `string.to_int` / `string.to_float` 是这条规则的例外,且是有意的:它们收
 `String | Number | Bool`,第一个参数不是 String,所以它们是**转换函数**而
 不是字符串方法,没有 receiver-first 的方法拼写。

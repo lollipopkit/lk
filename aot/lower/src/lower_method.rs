@@ -1922,6 +1922,35 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Bytes)
         }
+        // `xs.to_bytes()` — the inverse of `b.to_list()`, and the body behind
+        // the `bytes.from_list(xs)` spelling.
+        (Ty::ListI64, "to_bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_i64_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::Bytes, "to_string_utf8" | "to_string_lossy", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", if name == "to_string_utf8" { "utf8" } else { "utf8_lossy" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Bytes, "concat", [(other, Ty::Bytes)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "concat"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::Bytes)
+        }
         // The `bytes` module's members are also reachable as methods.
         (Ty::Bytes, "len", []) => {
             let dst = ssa.new_val();

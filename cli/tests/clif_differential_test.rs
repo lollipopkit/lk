@@ -4240,6 +4240,30 @@ fn bytes_answers_its_whole_method_surface_natively() {
                  println(b.index_of(-1));\nprintln(b.index_of(300));\n\
                  println(b.contains(300));\nreturn 0;\n",
             ),
+            // The module spelling of every one of them, plus the three that
+            // used to have no method at all. `bytes.slice(b, 2, 1)` is the one
+            // that had two answers: the module raised, the method clamped to an
+            // empty window, and the module forwards to the method now.
+            new(
+                "the_module_spelling_agrees",
+                "use bytes;\nlet z = \"\";\nlet b = bytes.from_string(\"abcde\" + z);\n\
+                 println(bytes.len(b) == b.len());\nprintln(bytes.is_empty(b) == b.is_empty());\n\
+                 println(bytes.get(b, -1) == b.get(-1));\nprintln(bytes.first(b) == b.first());\n\
+                 println(bytes.last(b) == b.last());\nprintln(bytes.contains(b, 98) == b.contains(98));\n\
+                 println(bytes.index_of(b, 98) == b.index_of(98));\nprintln(bytes.sum(b) == b.sum());\n\
+                 println(bytes.min(b) == b.min());\nprintln(bytes.max(b) == b.max());\n\
+                 println(bytes.take(b, 2) == b.take(2));\nprintln(bytes.skip(b, 2) == b.skip(2));\n\
+                 println(bytes.slice(b, 1, 3) == b.slice(1, 3));\n\
+                 println(bytes.to_list(b) == b.to_list());\n\
+                 println(bytes.to_string_utf8(b) == b.to_string_utf8());\n\
+                 println(bytes.to_string_lossy(b) == b.to_string_lossy());\n\
+                 println(bytes.concat(b, b) == b.concat(b));\n\
+                 println(bytes.from_string(\"xy\") == \"xy\".bytes());\n\
+                 println(bytes.from_list([1, 2]) == [1, 2].to_bytes());\n\
+                 println(bytes.slice(b, 2, 1));\nprintln(b.slice(2, 1));\n\
+                 println(b.to_string_utf8());\nprintln(b.concat(b));\n\
+                 println([65, 66].to_bytes());\nreturn 0;\n",
+            ),
             new(
                 "an_empty_bytes_reads_as_nil",
                 "let b = \"\".bytes();\nprintln(b.len());\nprintln(b.is_empty());\n\

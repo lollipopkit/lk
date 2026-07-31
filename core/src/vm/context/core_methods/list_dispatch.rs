@@ -164,6 +164,41 @@ pub(super) fn dispatch_list_builtin_method(
             }
             Ok(Some(RuntimeVal::Bool(clone_list(receiver, heap)?.is_empty())))
         }
+        // The inverse of `b.to_list()`, which existed on its own for as long as
+        // the way *back* was spelled `bytes.from_list(xs)` — a constructor in
+        // another module for what is a question about this list. The module
+        // spelling stays and forwards here.
+        "to_bytes" => {
+            if !positional.is_empty() {
+                bail!("list.to_bytes() expects no arguments, got {}", positional.len());
+            }
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let checked = |value: i64| {
+                u8::try_from(value)
+                    .map_err(|_| anyhow::anyhow!("list.to_bytes() expects byte values in 0..=255, got {value}"))
+            };
+            let bytes: Vec<u8> = match list {
+                TypedList::Int(values) => values
+                    .iter()
+                    .map(|value| checked(*value))
+                    .collect::<anyhow::Result<_>>()?,
+                TypedList::Mixed(values) => values
+                    .iter()
+                    .map(|value| match value {
+                        RuntimeVal::Int(value) => checked(*value),
+                        other => bail!("list.to_bytes() expects Int items, got {}", other.type_name_in(heap)),
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+                // An empty list has no element type to disagree with.
+                TypedList::Bool(values) if values.is_empty() => Vec::new(),
+                _ => bail!("list.to_bytes() expects Int items"),
+            };
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(bytes))),
+            )))
+        }
         "reverse" => {
             if !positional.is_empty() {
                 bail!("list.reverse() expects no arguments, got {}", positional.len());

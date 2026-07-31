@@ -219,12 +219,14 @@ pub(super) fn lower(
                     // routes both through the same core_methods) — forward
                     // to the same lowering with the receiver at `base+1`.
                     let argc = instr.c() as usize;
-                    if forwards_to_method(module.as_str(), &name) && argc >= 1 {
+                    if let Some(method) = forwards_to_method(module.as_str(), &name)
+                        && argc >= 1
+                    {
                         let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
                         // The HOF spellings reuse the lambda-aware method
                         // path (the lambda register offset matches with the
                         // window base shifted one slot right).
-                        if matches!(name.as_str(), "map" | "filter" | "reduce") {
+                        if matches!(method, "map" | "filter" | "reduce") {
                             if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
                                 && let Some(result) = lower_list_hof_k(
                                     ssa,
@@ -234,7 +236,7 @@ pub(super) fn lower(
                                     sig,
                                     receiver,
                                     receiver_ty,
-                                    &name,
+                                    method,
                                     base.wrapping_add(1),
                                     argc - 1,
                                     block,
@@ -250,8 +252,17 @@ pub(super) fn lower(
                         for i in 0..argc - 1 {
                             args.push(ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?);
                         }
-                        let result =
-                            lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+                        let result = lower_method_dispatch(
+                            ssa,
+                            insts,
+                            globals,
+                            receiver,
+                            receiver_ty,
+                            method,
+                            &args,
+                            block,
+                            pc,
+                        )?;
                         ssa.write(base, block, result);
                         return Ok(());
                     }

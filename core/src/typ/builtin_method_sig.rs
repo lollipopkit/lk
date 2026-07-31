@@ -264,6 +264,15 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "The numbers added up (0 when empty); a non-number raises",
     ),
     m(List, "reverse", &[], "Self", "A reversed copy"),
+    // The inverse of `Bytes::to_list`, whose only spelling was the constructor
+    // `bytes.from_list(xs)` in another module.
+    m(
+        List,
+        "to_bytes",
+        &[],
+        "Bytes",
+        "The list as bytes; every item must be an Int in 0..=255",
+    ),
     m(
         List,
         "unique",
@@ -491,6 +500,28 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "The bytes in `[start, end)` — a copy, since `Bytes` has no cheap sub-range",
     ),
     m(Bytes, "to_list", &[], "List<Int>", "The bytes as a list of numbers"),
+    // The three that used to be reachable only as `bytes.f(b, …)`.
+    m(
+        Bytes,
+        "to_string_utf8",
+        &[],
+        "String",
+        "The bytes decoded as UTF-8; raises when they are not",
+    ),
+    m(
+        Bytes,
+        "to_string_lossy",
+        &[],
+        "String",
+        "The bytes decoded as UTF-8, with every invalid sequence replaced",
+    ),
+    m(
+        Bytes,
+        "concat",
+        &[p("other", "Bytes")],
+        "Bytes",
+        "These bytes followed by `other`'s",
+    ),
     // Transforms. The rule is whether the result's elements can be something
     // the receiver could not hold: `filter` keeps a subset, so it is still
     // `Bytes`; `map` may answer anything, so it is a list.

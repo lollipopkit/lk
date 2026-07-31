@@ -923,45 +923,11 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Bytes,
     ),
     abi_row("tcp", "close", AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64),
-    // The `bytes` module over the `Bytes` handle. `from_list` / `to_list` /
-    // `slice` need list interop and stay out for now — a member with no row is
-    // an ordinary fallback.
-    abi_row(
-        "bytes",
-        "from_string",
-        AbiRef::new("bytes_h", "from_str"),
-        &[Ty::Str],
-        Ty::Bytes,
-    ),
-    abi_row("bytes", "len", AbiRef::new("bytes_h", "len"), &[Ty::Bytes], Ty::I64),
-    abi_row(
-        "bytes",
-        "from_list",
-        AbiRef::new("bytes_h", "from_i64_list"),
-        &[Ty::ListI64],
-        Ty::Bytes,
-    ),
-    abi_row(
-        "bytes",
-        "to_list",
-        AbiRef::new("bytes_h", "to_i64_list"),
-        &[Ty::Bytes],
-        Ty::ListI64,
-    ),
-    abi_row(
-        "bytes",
-        "is_empty",
-        AbiRef::new("bytes_h", "is_empty"),
-        &[Ty::Bytes],
-        Ty::Bool,
-    ),
-    abi_row(
-        "bytes",
-        "get",
-        AbiRef::new("bytes_h", "get"),
-        &[Ty::Bytes, Ty::I64],
-        Ty::Dyn,
-    ),
+    // The `bytes` module forwards to the method arms (see
+    // `forwards_to_method`), so only the member that can be *called by name*
+    // keeps a row: a named call is `CallNamed`, which never reaches the
+    // forwarder. The other ten rows were unreachable code pointing at the same
+    // `bytes_h` symbols their method arms already call.
     abi_row_named(
         "bytes",
         "slice",
@@ -971,20 +937,6 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &["start", "end"],
     ),
     abi_row(
-        "bytes",
-        "concat",
-        AbiRef::new("bytes_h", "concat"),
-        &[Ty::Bytes, Ty::Bytes],
-        Ty::Bytes,
-    ),
-    abi_row(
-        "bytes",
-        "to_string_lossy",
-        AbiRef::new("bytes_h", "utf8_lossy"),
-        &[Ty::Bytes],
-        Ty::Str,
-    ),
-    abi_row(
         "base64",
         "decode",
         AbiRef::new("base64", "decode"),
@@ -992,17 +944,6 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Bytes,
     ),
     abi_row("hex", "decode", AbiRef::new("hex", "decode"), &[Ty::Str], Ty::Bytes),
-    abi_row(
-        "bytes",
-        "to_string_utf8",
-        // Was `AbiRef::new("bytes", "to_string_utf8")` over an `i64` *host*
-        // handle — the one-shot kind the `tcp` path reads with `take_bytes`.
-        // A `Bytes` in the language is a value you may read twice, so it is an
-        // arena handle now and this row points at that.
-        AbiRef::new("bytes_h", "utf8"),
-        &[Ty::Bytes],
-        Ty::Str,
-    ),
 ];
 
 /// Every row for one member, in table order.
@@ -1109,7 +1050,7 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("remove",     false,     true,     false,  false),
 ];
 
-/// Whether `module.name(receiver, …)` is the method `receiver.name(…)`.
+/// The method `module.name(receiver, …)` is a spelling of, if it is one.
 ///
 /// The VM routes both spellings through the same `core_methods`, so the
 /// lowering has one job: put the receiver where the method arm expects it. This
@@ -1118,49 +1059,93 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
 /// while its method spelling lowered. `string.trim(s)` and `s.trim()` are the
 /// same call; which one a program wrote decided whether it stayed native.
 ///
-/// `string`'s names are listed rather than "anything the method table knows",
-/// because deciding by *trying* `lower_method_dispatch` would emit instructions
-/// before finding out — the mistake `lower_conditional` made and paid for.
-pub(crate) fn forwards_to_method(module: &str, name: &str) -> bool {
+/// The names are listed rather than "anything the method table knows", because
+/// deciding by *trying* `lower_method_dispatch` would emit instructions before
+/// finding out — the mistake `lower_conditional` made and paid for.
+///
+/// The answer is the *method's* name, not the member's, because two of them
+/// differ: `bytes.from_string(s)` is `s.bytes()` and `bytes.from_list(xs)` is
+/// `xs.to_bytes()`. Returning a bool assumed the two names were always equal,
+/// and forwarded `from_string` to a method nobody defines.
+pub(crate) fn forwards_to_method(module: &str, name: &str) -> Option<&'static str> {
     match module {
-        "iter" | "stream" => method_role(name).is_some_and(|role| role.forward),
+        "iter" | "stream" => method_role(name).filter(|role| role.forward).map(|role| role.name),
+        // Every `bytes` member: the module is a forwarder now, and each
+        // member's method arm calls the same `bytes_h` symbol its row used to.
+        "bytes" => match name {
+            // The two constructors, whose receiver is the List or the String
+            // and whose method therefore has another name.
+            "from_list" => Some("to_bytes"),
+            "from_string" => Some("bytes"),
+            "len" | "is_empty" | "get" | "first" | "last" | "contains" | "index_of" | "sum" | "min" | "max"
+            | "take" | "skip" | "slice" | "to_list" | "to_string_utf8" | "to_string_lossy" | "concat" => {
+                Some(name_of(name))
+            }
+            _ => None,
+        },
         // Every `string` member that is a `Str` method with the receiver first.
         // Checked against the VM: each `string.f(s, …) == s.f(…)`.
-        "string" => matches!(
-            name,
-            "len"
-                | "is_empty"
-                | "lower"
-                | "upper"
-                | "trim"
-                | "reverse"
-                | "repeat"
-                | "starts_with"
-                | "ends_with"
-                | "contains"
-                | "slice"
-                | "index_of"
-                | "get"
-                | "first"
-                | "last"
-                | "take"
-                | "skip"
-                | "replace"
-                | "split"
-                | "chars"
-                | "bytes"
-                | "byte_at"
-                | "capitalize"
-                | "title"
-                | "count"
-                | "strip"
-                | "strip_prefix"
-                | "strip_suffix"
-                | "pad_left"
-                | "pad_right"
-        ),
-        _ => false,
+        "string" => match name {
+            "len" | "is_empty" | "lower" | "upper" | "trim" | "reverse" | "repeat" | "starts_with" | "ends_with"
+            | "contains" | "slice" | "index_of" | "get" | "first" | "last" | "take" | "skip" | "replace" | "split"
+            | "chars" | "bytes" | "byte_at" | "capitalize" | "title" | "count" | "strip" | "strip_prefix"
+            | "strip_suffix" | "pad_left" | "pad_right" => Some(name_of(name)),
+            _ => None,
+        },
+        _ => None,
     }
+}
+
+/// The `&'static str` for a member name that spells its own method.
+///
+/// The table's names are literals, so this is a lookup that cannot fail — but
+/// `name` arrives borrowed from the caller's `String`, and the answer has to
+/// outlive it.
+fn name_of(name: &str) -> &'static str {
+    const NAMES: &[&str] = &[
+        "len",
+        "is_empty",
+        "get",
+        "first",
+        "last",
+        "contains",
+        "index_of",
+        "sum",
+        "min",
+        "max",
+        "take",
+        "skip",
+        "slice",
+        "to_list",
+        "to_string_utf8",
+        "to_string_lossy",
+        "concat",
+        "lower",
+        "upper",
+        "trim",
+        "reverse",
+        "repeat",
+        "starts_with",
+        "ends_with",
+        "replace",
+        "split",
+        "chars",
+        "bytes",
+        "byte_at",
+        "capitalize",
+        "title",
+        "count",
+        "strip",
+        "strip_prefix",
+        "strip_suffix",
+        "pad_left",
+        "pad_right",
+    ];
+    NAMES
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == name)
+        .expect("every forwarded member name is in this list")
 }
 
 pub(crate) fn method_role(name: &str) -> Option<&'static MethodRow> {
@@ -1232,7 +1217,7 @@ mod tests {
     #[test]
     fn a_forwarded_member_has_no_row_unless_it_can_be_called_by_name() {
         for row in MODULE_ABI {
-            if !forwards_to_method(row.module, row.member) {
+            if forwards_to_method(row.module, row.member).is_none() {
                 continue;
             }
             assert!(

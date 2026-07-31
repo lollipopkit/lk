@@ -506,3 +506,82 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reference_conformance {
+    /// Every function the published reference documents under a module heading
+    /// is a member of that module.
+    ///
+    /// A reference page is a claim about what exists, and this one had drifted:
+    /// it still listed `bytes.eq(a, b)`, deleted because it is `a == b` and an
+    /// operator does not need a module-function double. Nothing could disagree
+    /// with the page until now.
+    ///
+    /// One direction only. "Documented but absent" is always a bug; "present but
+    /// undocumented" is an editorial choice the reference makes on purpose —
+    /// `math` alone has sixty members and the page groups several per row.
+    #[test]
+    fn every_documented_module_function_exists() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../website/src/stdlib/STDLIB.md"))
+            .expect("the published stdlib reference");
+        let catalog = crate::stdlib_catalog();
+        let mut checked = 0usize;
+        // `## bytes` and `### io.std` alike: the heading is the path to the
+        // namespace whose members the table below it lists.
+        for section in doc
+            .split('\n')
+            .fold(Vec::new(), |mut sections: Vec<(String, Vec<&str>)>, line| {
+                match line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
+                    Some(heading) => sections.push((heading.trim().to_string(), Vec::new())),
+                    None => {
+                        if let Some(section) = sections.last_mut() {
+                            section.1.push(line);
+                        }
+                    }
+                }
+                sections
+            })
+        {
+            let (heading, body) = section;
+            let mut path: Vec<&str> = heading.split('.').collect();
+            let Some(module) = catalog.module(path.remove(0)) else {
+                // A heading that is not a module: `string` documents *methods*,
+                // which `lk-completion` checks against the method table.
+                continue;
+            };
+            for line in body {
+                let Some(row) = line.strip_prefix("| `") else { continue };
+                let Some(name) = row.split(['(', '`', ' ']).next() else {
+                    continue;
+                };
+                // `sin/cos/tan(x)` — the page groups members that differ only
+                // in name, and each half is a real member.
+                for name in name.split('/') {
+                    // The member's own path, under the heading's: `json.parse`
+                    // is written out under `## encoding`.
+                    let mut member: Vec<&str> = path.clone();
+                    member.extend(name.split('.'));
+                    let mut exports = &module.exports;
+                    let mut found = false;
+                    for (depth, step) in member.iter().enumerate() {
+                        let Some(export) = exports.iter().find(|export| export.name == *step) else {
+                            break;
+                        };
+                        if depth + 1 == member.len() {
+                            found = true;
+                            break;
+                        }
+                        exports = &export.children;
+                    }
+                    assert!(
+                        found,
+                        "the reference documents `{heading}.{name}`, which {} does not export",
+                        module.name
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "the reference did not parse: {checked} rows checked");
+    }
+}

@@ -105,17 +105,25 @@ Binary data operations.
 
 | Function | Description |
 |----------|-------------|
-| `from_list(list)` | Create from integer list |
-| `from_string(str)` | Create from UTF-8 string |
+| `from_list(list)` | Create from an integer list — the method spelling is `list.to_bytes()` |
+| `from_string(str)` | Create from a UTF-8 string — the method spelling is `str.bytes()` |
 | `len(bytes)` | Byte length |
 | `is_empty(bytes)` | Is empty |
-| `get(bytes, index)` | Byte at index |
-| `slice(bytes, start[, end])` | Slice |
-| `to_list(bytes)` | Convert to integer list |
-| `to_string_utf8(bytes)` | Convert to UTF-8 string |
-| `to_string_lossy(bytes)` | Convert to UTF-8 (replace invalid bytes) |
+| `get(bytes, index)` | Byte at index, or nil; negative counts from the end |
+| `first(bytes)` | First byte, or nil |
+| `last(bytes)` | Last byte, or nil |
+| `contains(bytes, byte)` | Whether the byte occurs |
+| `index_of(bytes, byte)` | Position of the first occurrence, or nil |
+| `sum(bytes)` | Sum of the bytes |
+| `min(bytes)` | Smallest byte, or nil |
+| `max(bytes)` | Largest byte, or nil |
+| `take(bytes, count)` | The first `count` bytes |
+| `skip(bytes, count)` | Everything after the first `count` bytes |
+| `slice(bytes, start, end)` | Bytes in `[start, end)`, clamped; `end` optional |
+| `to_list(bytes)` | Convert to an integer list |
+| `to_string_utf8(bytes)` | Decode as UTF-8; raises when invalid |
+| `to_string_lossy(bytes)` | Decode as UTF-8, replacing invalid sequences |
 | `concat(a, b)` | Concatenate |
-| `eq(a, b)` | Equality check |
 
 ```lk
 use bytes;

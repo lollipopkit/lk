@@ -21,7 +21,7 @@ use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    val::{HeapStore, HeapValue, RuntimeVal},
     vm::{NativeArgs, NativeRuntime},
 };
 
@@ -29,7 +29,7 @@ pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
 
-use crate::runtime_native::{runtime_string_arg, runtime_string_value};
+use crate::runtime_native::runtime_string_arg;
 
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "bytes", docs = "Byte buffer helpers")]
@@ -61,143 +61,123 @@ pub fn runtime_bytes_or_string_arg(value: &RuntimeVal, heap: &HeapStore, context
 
 #[lk_stdlib_common::stdlib_exports]
 impl BytesModule {
+    /// `xs.to_bytes()`, spelled as a constructor.
+    ///
+    /// The body is the method's, as everywhere else in this module: a module
+    /// function whose first parameter is the receiver **is** the method, and
+    /// two bodies for one operation is how `bytes.slice(b, 3, 1)` came to raise
+    /// while `b.slice(3, 1)` answered an empty window.
     #[stdlib_export(name = "from_list", params(values: List), returns = Bytes)]
     fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = byte_list_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.from_list()")?;
-        Ok(runtime_bytes_value(values, runtime.heap_mut()))
+        forward("to_bytes", args, runtime)
     }
 
+    /// `s.bytes()`, spelled as a constructor — one operation, and now one body,
+    /// even though the two spellings live in different modules.
     #[stdlib_export(name = "from_string", params(value: String), returns = Bytes)]
     fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = runtime_string_arg(
-            args.get(0).expect("checked arity"),
-            runtime.heap(),
-            "bytes.from_string()",
-        )?;
-        Ok(runtime_bytes_value(
-            Arc::<[u8]>::from(value.as_bytes()),
-            runtime.heap_mut(),
-        ))
+        forward("bytes", args, runtime)
     }
 
     #[stdlib_export(name = "len", params(value: Bytes), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.len()")?;
-        Ok(RuntimeVal::Int(value.len() as i64))
+        forward("len", args, runtime)
     }
 
     #[stdlib_export(name = "is_empty", params(value: Bytes), returns = Bool)]
     fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.is_empty()")?;
-        Ok(RuntimeVal::Bool(value.is_empty()))
+        forward("is_empty", args, runtime)
     }
 
     #[stdlib_export(name = "get", params(value: Bytes, index: Int), returns = Int?)]
     fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.get()")?;
-        // The same rule every other container reads by: negative counts from
-        // the end, out of range is nil. This module had its own `usize_arg`
-        // instead, so `bytes.get(b, -1)` raised while `b.get(-1)` — the method
-        // spelling, which goes through the VM's dispatch — answered the last
-        // byte. Same operation, two spellings, two answers.
-        let index = lk_core::val::position::element_position(&values[1], bytes.len(), "bytes.get() index")?;
-        Ok(index
-            .and_then(|index| bytes.get(index).copied())
-            .map(|value| RuntimeVal::Int(value as i64))
-            .unwrap_or(RuntimeVal::Nil))
+        forward("get", args, runtime)
     }
 
+    #[stdlib_export(name = "first", params(value: Bytes), returns = Int?)]
+    fn first(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("first", args, runtime)
+    }
+
+    #[stdlib_export(name = "last", params(value: Bytes), returns = Int?)]
+    fn last(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("last", args, runtime)
+    }
+
+    #[stdlib_export(name = "contains", params(value: Bytes, byte: Int), returns = Bool)]
+    fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("contains", args, runtime)
+    }
+
+    #[stdlib_export(name = "index_of", params(value: Bytes, byte: Int), returns = Int?)]
+    fn index_of(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("index_of", args, runtime)
+    }
+
+    #[stdlib_export(name = "sum", params(value: Bytes), returns = Int)]
+    fn sum(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("sum", args, runtime)
+    }
+
+    #[stdlib_export(name = "min", params(value: Bytes), returns = Int?)]
+    fn min(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("min", args, runtime)
+    }
+
+    #[stdlib_export(name = "max", params(value: Bytes), returns = Int?)]
+    fn max(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("max", args, runtime)
+    }
+
+    #[stdlib_export(name = "take", params(value: Bytes, count: Int), returns = Bytes)]
+    fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("take", args, runtime)
+    }
+
+    #[stdlib_export(name = "skip", params(value: Bytes, count: Int), returns = Bytes)]
+    fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("skip", args, runtime)
+    }
+
+    /// Window positions: negative counts from the end and out of range clamps,
+    /// including a reversed window, which is empty rather than a raise. The
+    /// module used to refuse `end < start` while the method answered `Bytes([])`
+    /// — the last surviving difference between the two spellings.
     #[stdlib_export(name = "slice", params(value: Bytes, start: Int, end?: Int), named(start, end), returns = Bytes)]
     fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if args.len() != 2 && args.len() != 3 {
-            bail!("bytes.slice() expects 2 or 3 arguments: bytes, start[, end]");
-        }
-        let values = args.as_slice();
-        let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.slice()")?;
-        // Window positions: negative counts from the end and out of range
-        // clamps — the same `read_position` the VM's own `bytes.slice` dispatch
-        // uses, which is why the two spellings now agree.
-        let start = lk_core::val::position::read_position(&values[1], bytes.len(), "bytes.slice() start")?;
-        let end = if let Some(value) = values.get(2) {
-            lk_core::val::position::read_position(value, bytes.len(), "bytes.slice() end")?
-        } else {
-            bytes.len()
-        };
-        if end < start {
-            bail!("bytes.slice() end must be greater than or equal to start");
-        }
-        let slice = bytes[start..end].to_vec();
-        Ok(runtime_bytes_value(slice, runtime.heap_mut()))
+        forward("slice", args, runtime)
     }
 
     #[stdlib_export(name = "to_list", params(value: Bytes), returns = List)]
     fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let bytes = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.to_list()")?;
-        let list = TypedList::Int(bytes.iter().copied().map(i64::from).collect());
-        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+        forward("to_list", args, runtime)
     }
 
     #[stdlib_export(name = "to_string_utf8", params(value: Bytes), returns = String, docs = "Decodes bytes as UTF-8 and raises an error for invalid input.")]
     fn to_string_utf8(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let bytes = runtime_bytes_arg(
-            args.get(0).expect("checked arity"),
-            runtime.heap(),
-            "bytes.to_string_utf8()",
-        )?;
-        let value = core::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
-        Ok(runtime_string_value(value, runtime.heap_mut()))
+        forward("to_string_utf8", args, runtime)
     }
 
     #[stdlib_export(name = "to_string_lossy", params(value: Bytes), returns = String)]
     fn to_string_lossy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let bytes = runtime_bytes_arg(
-            args.get(0).expect("checked arity"),
-            runtime.heap(),
-            "bytes.to_string_lossy()",
-        )?;
-        Ok(runtime_string_value(
-            &String::from_utf8_lossy(&bytes),
-            runtime.heap_mut(),
-        ))
+        forward("to_string_lossy", args, runtime)
     }
 
     #[stdlib_export(name = "concat", params(left: Bytes, right: Bytes), returns = Bytes)]
     fn concat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.concat() first argument")?;
-        let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.concat() second argument")?;
-        let mut out = Vec::with_capacity(left.len() + right.len());
-        out.extend_from_slice(&left);
-        out.extend_from_slice(&right);
-        Ok(runtime_bytes_value(out, runtime.heap_mut()))
+        forward("concat", args, runtime)
     }
 }
 
-fn byte_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<u8>> {
-    let RuntimeVal::Obj(handle) = value else {
-        bail!("{context} expects a list of bytes");
+/// The module spelling of a method: the receiver written first.
+///
+/// See `lk_stdlib_string::forward` for why this shape rather than a second
+/// body — this module is the one that proved the point twice, with `get` and
+/// then with `slice`.
+fn forward(method: &'static str, args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let Some((receiver, rest)) = values.split_first() else {
+        bail!("bytes.{method} expects its receiver as the first argument");
     };
-    let list = match heap
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-    {
-        HeapValue::List(list) => list,
-        other => bail!("{context} expects a list of bytes, got {}", other.type_name()),
-    };
-    match list {
-        TypedList::Int(values) => values.iter().map(|value| checked_byte(*value, context)).collect(),
-        TypedList::Mixed(values) => values
-            .iter()
-            .map(|value| match value {
-                RuntimeVal::Int(value) => checked_byte(*value, context),
-                other => bail!("{context} expects Int items, got {:?}", other.kind()),
-            })
-            .collect(),
-        _ => bail!("{context} expects Int items"),
-    }
-}
-
-fn checked_byte(value: i64, context: &str) -> Result<u8> {
-    u8::try_from(value).map_err(|_| anyhow!("{context} expects byte values in 0..=255, got {value}"))
+    lk_core::vm::core_call_method_windowed(*receiver, method, rest, runtime)
 }

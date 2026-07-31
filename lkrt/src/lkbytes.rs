@@ -206,7 +206,13 @@ pub(crate) fn bytes_text(handle: *mut c_void) -> String {
 /// `bytes.slice(b, start[, end])` — a window, copied out as its own `Bytes`.
 ///
 /// Positions follow the read rule: negative counts from the end, out of range
-/// clamps, and `end < start` is the loud error the VM gives.
+/// clamps, and a *reversed* window is empty.
+///
+/// It used to raise on `end < start`, which was the `bytes` module's rule —
+/// while the method it shares this symbol with answered `Bytes([])`. So
+/// `b.slice(2, 1)` raised compiled and answered an empty window interpreted,
+/// and no corpus program had ever written a reversed window down. Every other
+/// sequence clamps: `"abcde".slice(-1, -3)` and `xs.slice(-1, -3)` are empty.
 ///
 /// # Safety
 /// `handle` must be a live `Bytes` handle.
@@ -219,10 +225,7 @@ pub unsafe extern "C" fn lkrt_lkbytes_slice(handle: *mut c_void, start: i64, end
         resolved.clamp(0, len) as usize
     };
     let (from, to) = (resolve(start), resolve(end));
-    if to < from {
-        crate::panic::raise_str("bytes.slice() end must be greater than or equal to start");
-    }
-    crate::state::arena_handle(bytes[from..to].to_vec())
+    crate::state::arena_handle(bytes[from..to.max(from)].to_vec())
 }
 
 /// `bytes.take(n)` / `bytes.skip(n)` — a prefix and the rest of one.
