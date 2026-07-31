@@ -95,6 +95,20 @@ pub enum Unsupported {
         reg: usize,
         body: Option<u32>,
     },
+    /// A register the lowering tracks as a *compile-time reference* (a lambda,
+    /// a module object, an argument pack) was read where a runtime value is
+    /// required.
+    ///
+    /// This is not an undefined read, and reporting it as one — "register r1 is
+    /// read at pc 2 before any definition" — described the lowering's
+    /// bookkeeping instead of the program. `let fs = [|x| x + 1];` says nothing
+    /// about registers; what it does is put a closure in a container, which has
+    /// no native representation yet.
+    ReferenceAsValue {
+        pc: usize,
+        reg: usize,
+        what: &'static str,
+    },
     /// An empty `[]` literal's guessed element type was contradicted by a
     /// later consumer: retriable — the fixpoint re-lowers with the literal
     /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
@@ -182,6 +196,11 @@ impl Unsupported {
             Unsupported::UndefinedOperand { pc, reg, .. } => {
                 format!("register r{reg} is read at pc {pc} before any definition")
             }
+            Unsupported::ReferenceAsValue { pc, reg, what } => format!(
+                "the {what} in r{reg} at pc {pc} is a compile-time reference, not a runtime value \
+                 — storing one in a container, or otherwise using it where a value is required, \
+                 has no native form yet"
+            ),
             Unsupported::OperandType { pc, want, got } => {
                 format!("an operand at pc {pc} is a {got} where a {want} is required")
             }

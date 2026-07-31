@@ -351,6 +351,17 @@ impl Ssa {
         if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
         }
+        // A register the lowering tracks as a compile-time reference has no SSA
+        // value on purpose, so the generic "read before any definition" would be
+        // describing the bookkeeping rather than the program. Named here, once,
+        // rather than at each consumer: the consumers are every reader.
+        if let Some(reference) = self.builtin_regs.get(&(block, slot as u8)) {
+            return Err(Unsupported::ReferenceAsValue {
+                pc,
+                reg: slot,
+                what: reference.describe(),
+            });
+        }
         self.read_recursive(slot, block, pc)
     }
 

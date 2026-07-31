@@ -158,6 +158,25 @@ pub(crate) enum GlobalRef {
     ArgList(Vec<(ValueId, Ty)>),
 }
 
+impl GlobalRef {
+    /// What this reference is, in the program's words — for the diagnostic that
+    /// fires when one is read where a runtime value is required.
+    pub(crate) fn describe(&self) -> &'static str {
+        match self {
+            Self::Builtin(_) => "builtin",
+            Self::Module(_) => "stdlib module object",
+            Self::ModuleFn(_, _) => "stdlib module function",
+            Self::UserModule(_) => "bundled module object",
+            Self::UserFn(_) => "function reference",
+            Self::Lambda(_) => "closure",
+            Self::Closure(_, _) => "closure",
+            Self::Cell(_) => "captured variable cell",
+            Self::CellParam(_) => "captured variable",
+            Self::ArgList(_) => "argument pack",
+        }
+    }
+}
+
 /// The statically known identity of a lambda passed as an argument: the
 /// target function plus its capture count (a capturing closure's *environment
 /// values* are runtime data — hidden trailing arguments — and stay out of the

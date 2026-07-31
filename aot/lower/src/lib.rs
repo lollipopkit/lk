@@ -731,6 +731,7 @@ fn err_pc(err: &Unsupported) -> Option<usize> {
         | Unsupported::UnresolvedGlobal { pc, .. }
         | Unsupported::BadConst { pc }
         | Unsupported::UndefinedOperand { pc, .. }
+        | Unsupported::ReferenceAsValue { pc, .. }
         | Unsupported::TypeMismatch { pc }
         | Unsupported::OperandType { pc, .. }
         | Unsupported::NonBoolCondition { pc }
