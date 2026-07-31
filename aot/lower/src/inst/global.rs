@@ -372,19 +372,57 @@ pub(super) fn lower(
 /// be copied into a slot and read back with nothing lost, while a container is a
 /// *handle* and copying it into a differently-shaped slot makes a second
 /// container. See the note at the `SetGlobal` arm.
-fn container_ty(ty: Ty) -> bool {
-    matches!(
-        ty,
+///
+/// **Exhaustive on purpose.** This list decides two things at once — which
+/// globals keep their own type, and which are *refused* when a slot joins to
+/// `Dyn` — so a container missing from it is both boxed and not refused, which
+/// is the definition of miscompiled. `Ty::Bytes`, `Ty::Set`, `Ty::MapStrDyn`
+/// and `Ty::SliceI64` were missing, and the observable result was that
+///
+/// ```lk
+/// let b = "abc".bytes();
+/// fn f(n: Int) -> Int { return b[n] ?? -1; }
+/// ```
+///
+/// printed `98` interpreted and died with `runtime type error` compiled — for
+/// *any* index, including a constant one. The same program with `b` as a
+/// parameter or a local was fine, and so were `List` and `String` globals,
+/// which is why no example and no fuzz case ever showed it.
+///
+/// Written as a `match` with no `_` arm so that a new `Ty` has to be classified
+/// here rather than defaulting to "not a container".
+pub(crate) fn container_ty(ty: Ty) -> bool {
+    match ty {
         Ty::ListDyn
-            | Ty::ListI64
-            | Ty::ListF64
-            | Ty::ListStr
-            | Ty::MapStrI64
-            | Ty::MapI64I64
-            | Ty::MapStrF64
-            | Ty::MapI64F64
-            | Ty::MapStrBool
-    )
+        | Ty::ListI64
+        | Ty::ListF64
+        | Ty::ListStr
+        | Ty::SliceI64
+        | Ty::MapStrDyn
+        | Ty::MapStrI64
+        | Ty::MapI64I64
+        | Ty::MapStrF64
+        | Ty::MapI64F64
+        | Ty::MapStrBool
+        | Ty::Set
+        | Ty::Bytes => true,
+        // Scalars and the boxed carriers: copying one into a slot loses
+        // nothing, because there is no shared thing behind it.
+        Ty::I64
+        | Ty::F64
+        | Ty::Bool
+        | Ty::Str
+        | Ty::Nil
+        | Ty::MaybeI64
+        | Ty::MaybeF64
+        | Ty::MaybeStr
+        | Ty::MaybeBool
+        | Ty::Dyn
+        // A closure cell is a handle, but it never reaches a module global: a
+        // captured variable lives in the closure's environment, and `SetGlobal`
+        // of one is rejected before this by the `StoreCellVal` path.
+        | Ty::Cell => false,
+    }
 }
 
 /// The single table of global *names* this lowering gives a builtin meaning.

@@ -1286,3 +1286,57 @@ fn int_add_coerces_mixed_operands() {
     let mir = lower(&art).expect("lowers");
     assert_eq!(mir.functions[0].ret, Ty::F64);
 }
+
+/// A container-typed module global keeps its own type.
+///
+/// `container_ty` decides two things at once — which globals keep their type,
+/// and which are *refused* when a slot joins to `Dyn`. A container missing from
+/// it is therefore both boxed and not refused, which is the definition of
+/// miscompiled: `Ty::Bytes`, `Ty::Set`, `Ty::MapStrDyn` and `Ty::SliceI64` were
+/// missing, and
+///
+/// ```lk
+/// let b = "abc".bytes();
+/// fn f(n: Int) -> Int { return b[n] ?? -1; }
+/// ```
+///
+/// printed `98` interpreted and died with `runtime type error` compiled, for
+/// any index at all. The same value as a parameter or a local was fine, and so
+/// were `List` and `String` globals — which is why no example, no differential
+/// case and no fuzz seed had ever shown it.
+///
+/// Asserted on the classification rather than on a compiled program, because
+/// the property is "every handle type is listed" and a program can only ever
+/// show one of them at a time.
+#[test]
+fn every_handle_type_counts_as_a_container_global() {
+    use lk_aot_mir::Ty;
+
+    for ty in [
+        Ty::ListDyn,
+        Ty::ListI64,
+        Ty::ListF64,
+        Ty::ListStr,
+        Ty::SliceI64,
+        Ty::MapStrDyn,
+        Ty::MapStrI64,
+        Ty::MapI64I64,
+        Ty::MapStrF64,
+        Ty::MapI64F64,
+        Ty::MapStrBool,
+        Ty::Set,
+        Ty::Bytes,
+    ] {
+        assert!(
+            crate::inst::global::container_ty(ty),
+            "{ty:?} is a handle: boxing it into a `Dyn` global makes a second container"
+        );
+    }
+
+    for ty in [Ty::I64, Ty::F64, Ty::Bool, Ty::Str, Ty::Nil, Ty::Dyn] {
+        assert!(
+            !crate::inst::global::container_ty(ty),
+            "{ty:?} copies into a slot with nothing lost"
+        );
+    }
+}

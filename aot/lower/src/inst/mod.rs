@@ -15,7 +15,7 @@ use crate::*;
 mod call;
 mod container;
 mod control;
-mod global;
+pub(crate) mod global;
 mod scalar;
 mod string;
 
