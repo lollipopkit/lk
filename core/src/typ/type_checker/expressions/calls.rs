@@ -536,8 +536,12 @@ impl TypeChecker {
             }
             return Ok(None);
         };
-        if args.len() < sig.required || args.len() > sig.params.len() {
-            let expected = if sig.required == sig.params.len() {
+        // A variadic method has no upper bound: `"{} {}".format(a, b)` passes
+        // two arguments to one declared parameter, and that is the shape.
+        if args.len() < sig.required || (args.len() > sig.params.len() && !sig.variadic) {
+            let expected = if sig.variadic {
+                format!("at least {}", sig.required)
+            } else if sig.required == sig.params.len() {
                 format!("{}", sig.params.len())
             } else {
                 format!("{} to {}", sig.required, sig.params.len())

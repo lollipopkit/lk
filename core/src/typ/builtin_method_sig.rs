@@ -97,6 +97,11 @@ pub struct BuiltinMethodSig {
     /// with a fresh variable for its parameter, and nothing but the receiver
     /// can say what it holds.
     pub elementwise_callback: Option<usize>,
+    /// The last declared parameter may repeat, so a call may pass more
+    /// arguments than there are parameters. Only `format` needs it — a template
+    /// takes as many values as it has placeholders — and without it the checker
+    /// would reject `"{} {}".format(a, b)` for having "too many" arguments.
+    pub variadic: bool,
 }
 
 use BuiltinReceiverKind::{Bytes, List, Map, Set, Slice, Str};
@@ -115,6 +120,26 @@ const fn m(
         returns,
         docs,
         elementwise_callback: None,
+        variadic: false,
+    }
+}
+
+/// [`m`] for a method whose last parameter may repeat.
+const fn variadic_m(
+    receiver: BuiltinReceiverKind,
+    name: &'static str,
+    params: &'static [BuiltinParam],
+    returns: &'static str,
+    docs: &'static str,
+) -> BuiltinMethodSig {
+    BuiltinMethodSig {
+        receiver,
+        name,
+        params,
+        returns,
+        docs,
+        elementwise_callback: None,
+        variadic: true,
     }
 }
 
@@ -134,6 +159,7 @@ const fn hof(
         returns,
         docs,
         elementwise_callback: Some(callback),
+        variadic: false,
     }
 }
 
@@ -685,6 +711,73 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int?",
         "The byte at a *byte* offset, or nil when out of range",
     ),
+    // The nine that used to exist only as `string` module functions. A module
+    // function whose first parameter is the receiver *is* a method, and having
+    // it in only one of the two places meant `s.strip("-")` did not exist while
+    // `string.strip(s, "-")` did.
+    m(
+        Str,
+        "capitalize",
+        &[],
+        "String",
+        "First character upper, the rest lower",
+    ),
+    m(
+        Str,
+        "title",
+        &[],
+        "String",
+        "First character of each whitespace-separated word upper, the rest lower",
+    ),
+    m(
+        Str,
+        "count",
+        &[p("needle", "String")],
+        "Int",
+        "How many non-overlapping occurrences of `needle` there are",
+    ),
+    m(
+        Str,
+        "strip",
+        &[p("chars", "String")],
+        "String",
+        "Without leading or trailing characters that are in `chars`",
+    ),
+    m(
+        Str,
+        "strip_prefix",
+        &[p("prefix", "String")],
+        "String?",
+        "Without `prefix`, or nil when it does not start with it",
+    ),
+    m(
+        Str,
+        "strip_suffix",
+        &[p("suffix", "String")],
+        "String?",
+        "Without `suffix`, or nil when it does not end with it",
+    ),
+    m(
+        Str,
+        "pad_left",
+        &[p("width", "Int"), opt("fill", "String")],
+        "String",
+        "Widened to `width` characters by repeating `fill` (a space) on the left",
+    ),
+    m(
+        Str,
+        "pad_right",
+        &[p("width", "Int"), opt("fill", "String")],
+        "String",
+        "Widened to `width` characters by repeating `fill` (a space) on the right",
+    ),
+    variadic_m(
+        Str,
+        "format",
+        &[opt("values", "Any")],
+        "String",
+        "The receiver as a template: each `{}` takes the next value",
+    ),
 ];
 
 /// A built-in method's signature with the receiver's types substituted in.
@@ -701,6 +794,8 @@ pub struct ResolvedBuiltinMethod {
     /// The receiver's element type, for a caller that needs to constrain a
     /// callback's parameter against it.
     pub elem: Type,
+    /// See [`BuiltinMethodSig::variadic`].
+    pub variadic: bool,
 }
 
 /// What the placeholders stand for, given a concrete receiver.
@@ -751,6 +846,7 @@ pub fn builtin_method_signature_with(
         docs: declared.docs,
         elementwise_callback: declared.elementwise_callback,
         elem: bindings.elem.clone(),
+        variadic: declared.variadic,
     })
 }
 

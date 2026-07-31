@@ -541,32 +541,12 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     ),
     abi_row("path", "sep", AbiRef::new("path", "sep"), &[], Ty::Str),
     abi_row("path", "delimiter", AbiRef::new("path", "delimiter"), &[], Ty::Str),
-    // String-or-nil results arrive boxed (`String?` in the module schema).
-    abi_row(
-        "string",
-        "strip_prefix",
-        AbiRef::new("str", "strip_prefix"),
-        &[Ty::Str, Ty::Str],
-        Ty::Dyn,
-    ),
-    abi_row(
-        "string",
-        "strip_suffix",
-        AbiRef::new("str", "strip_suffix"),
-        &[Ty::Str, Ty::Str],
-        Ty::Dyn,
-    ),
-    abi_row(
-        "string",
-        "count",
-        AbiRef::new("str", "count"),
-        &[Ty::Str, Ty::Str],
-        Ty::I64,
-    ),
-    // The module spelling counts bytes (`str::len`), unlike `.len()`.
-    abi_row("string", "len", AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64),
-    // The module spelling of `s.slice(a, b)`, which the method path has always
-    // lowered. Two spellings of one operation, and only one of them was fast.
+    // The two `string` members that keep a row, because both declare
+    // `named(...)`: a named call is `CallNamed`, which never reaches the
+    // method forwarder, so without these `string.slice(s, start: 1)` falls
+    // back while `string.slice(s, 1)` lowers. Every other member of the module
+    // forwards — see `forwards_to_method` and the test next to it.
+    //
     // `string.replace(text, pattern, with)` — the three-argument form. The
     // fourth parameter `all` defaults to true, which is what `str::replace`
     // does, so a call that omits it lowers; a call that passes `all` has a
@@ -591,14 +571,6 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Str,
         &["start", "end"],
     ),
-    abi_row(
-        "string",
-        "capitalize",
-        AbiRef::new("str", "capitalize"),
-        &[Ty::Str],
-        Ty::Str,
-    ),
-    abi_row("string", "title", AbiRef::new("str", "title"), &[Ty::Str], Ty::Str),
     // Text → number. `to_int` is not here: its base is optional, so it is
     // materialized in `lower_module` instead of split across two rows.
     abi_row(
@@ -1178,6 +1150,14 @@ pub(crate) fn forwards_to_method(module: &str, name: &str) -> bool {
                 | "chars"
                 | "bytes"
                 | "byte_at"
+                | "capitalize"
+                | "title"
+                | "count"
+                | "strip"
+                | "strip_prefix"
+                | "strip_suffix"
+                | "pad_left"
+                | "pad_right"
         ),
         _ => false,
     }
@@ -1234,6 +1214,37 @@ mod tests {
     /// the crate underneath (`std::path`, as it already shares base64/hex/
     /// chrono), never to re-type LK-level logic. Both stay on the bridge until
     /// there is a shared implementation to point at.
+    /// A member that forwards to a method has no row of its own — unless it
+    /// can be called by name.
+    ///
+    /// Two carriers for one operation, and only one of them reachable:
+    /// `forwards_to_method` is consulted *first*, so a `string` row for a
+    /// forwarded member is code no call arrives at. Six of them sat here, and
+    /// one was worse than dead — `string.len` pointed at `str::byte_len` under
+    /// a comment claiming the module spelling counts bytes. It does not: the
+    /// module forwards to `s.len()`, which counts characters. Had the forward
+    /// list ever lost `len`, `string.len("中文abc")` would have started
+    /// answering 9 compiled and 5 interpreted.
+    ///
+    /// The exception is real: `slice` and `replace` declare `named(...)`, and a
+    /// named call is a different opcode that never reaches the forwarder, so
+    /// their rows are the only thing that lowers `string.slice(s, start: 1)`.
+    #[test]
+    fn a_forwarded_member_has_no_row_unless_it_can_be_called_by_name() {
+        for row in MODULE_ABI {
+            if !forwards_to_method(row.module, row.member) {
+                continue;
+            }
+            assert!(
+                !row.named.is_empty(),
+                "`{}.{}` forwards to the method arm, so this row is unreachable — delete it, \
+                 or give the member a `named(...)` list if a named call needs it",
+                row.module,
+                row.member
+            );
+        }
+    }
+
     /// Every carrier of a `Bytes | String` member has a row.
     ///
     /// One member, two argument types, and for a long time only the first one

@@ -62,24 +62,36 @@ String meta-methods — no import needed, call via `value.method()`.
 | Method | Description |
 |--------|-------------|
 | `len()` | Character count |
-| `lower()` | Lowercase |
-| `upper()` | Uppercase |
-| `trim()` | Trim whitespace |
+| `is_empty()` | Whether it has no characters |
+| `lower()` | Lowercased |
+| `upper()` | Uppercased |
+| `trim()` | Without leading or trailing whitespace |
+| `reverse()` | Characters in reverse order |
+| `repeat(count)` | Repeated `count` times |
 | `starts_with(prefix)` | Prefix check |
 | `ends_with(suffix)` | Suffix check |
-| `contains(sub)` | Contains substring |
-| `replace(old, new)` | Replace substring |
-| `substring(start[, end])` | Extract substring |
-| `split(sep)` | Split to list |
-| `join(list)` | Join list with this string |
-| `reverse()` | Reverse string |
-| `repeat(n)` | Repeat n times |
-| `chars()` | Split to character list |
-| `char_at(index)` | Character at index |
-| `byte_at(index)` | Byte at index |
-| `find(sub)` | Find substring position, nil if not found |
-| `is_empty()` | Is empty |
-| `format(args...)` | Format string |
+| `contains(needle)` | Substring check |
+| `count(needle)` | How many non-overlapping occurrences |
+| `index_of(needle)` | Character position of the first occurrence, or nil |
+| `slice(start, end)` | Characters in `[start, end)`, clamped; `end` optional |
+| `get(index)` | Character at `index`, or nil; negative counts from the end |
+| `first()` | First character, or nil |
+| `last()` | Last character, or nil |
+| `take(count)` | The first `count` characters |
+| `skip(count)` | Everything after the first `count` characters |
+| `replace(from, to, all)` | Occurrences replaced; `all: false` replaces only the first |
+| `split(delimiter)` | Split to a list |
+| `chars()` | One string per character |
+| `bytes()` | The UTF-8 bytes |
+| `byte_at(index)` | Byte at a *byte* offset, or nil |
+| `capitalize()` | First character upper, the rest lower |
+| `title()` | First character of each word upper, the rest lower |
+| `strip(chars)` | Without leading/trailing characters that are in `chars` |
+| `strip_prefix(prefix)` | Without `prefix`, or nil |
+| `strip_suffix(suffix)` | Without `suffix`, or nil |
+| `pad_left(width, fill)` | Widened to `width` characters on the left; `fill` optional |
+| `pad_right(width, fill)` | Widened to `width` characters on the right; `fill` optional |
+| `format(values...)` | The receiver as a template: each `{}` takes the next value |
 
 ```lk
 "Hello, {}!".format("LK")    // "Hello, LK!"

@@ -62,24 +62,36 @@ String 元方法，无需导入，直接通过 `value.method()` 调用。
 | 方法 | 说明 |
 |------|------|
 | `len()` | 字符数 |
+| `is_empty()` | 是否为空 |
 | `lower()` | 转小写 |
 | `upper()` | 转大写 |
 | `trim()` | 去除首尾空白 |
+| `reverse()` | 反转字符串 |
+| `repeat(count)` | 重复 `count` 次 |
 | `starts_with(prefix)` | 前缀匹配 |
 | `ends_with(suffix)` | 后缀匹配 |
-| `contains(sub)` | 包含子串 |
-| `replace(old, new)` | 替换子串 |
-| `substring(start[, end])` | 截取子串 |
-| `split(sep)` | 按分隔符拆分为列表 |
-| `join(list)` | 用此字符串连接列表元素 |
-| `reverse()` | 反转字符串 |
-| `repeat(n)` | 重复 n 次 |
+| `contains(needle)` | 包含子串 |
+| `count(needle)` | 不重叠出现次数 |
+| `index_of(needle)` | 首次出现的字符位置，未找到返回 nil |
+| `slice(start, end)` | `[start, end)` 区间的字符，越界截断；`end` 可省略 |
+| `get(index)` | `index` 处的字符，越界 nil；负数从末尾数 |
+| `first()` | 首字符，空串为 nil |
+| `last()` | 末字符，空串为 nil |
+| `take(count)` | 前 `count` 个字符 |
+| `skip(count)` | 跳过前 `count` 个字符 |
+| `replace(from, to, all)` | 替换出现处；`all: false` 只替换第一处 |
+| `split(delimiter)` | 按分隔符拆分为列表 |
 | `chars()` | 拆分为字符列表 |
-| `char_at(index)` | 指定位置字符 |
-| `byte_at(index)` | 指定位置字节 |
-| `find(sub)` | 查找子串位置，未找到返回 nil |
-| `is_empty()` | 是否为空 |
-| `format(args...)` | 格式化 |
+| `bytes()` | UTF-8 字节 |
+| `byte_at(index)` | 按*字节*偏移取字节，越界 nil |
+| `capitalize()` | 首字母大写，其余小写 |
+| `title()` | 每个单词首字母大写，其余小写 |
+| `strip(chars)` | 去掉首尾在 `chars` 里的字符 |
+| `strip_prefix(prefix)` | 去掉 `prefix`，没有则 nil |
+| `strip_suffix(suffix)` | 去掉 `suffix`，没有则 nil |
+| `pad_left(width, fill)` | 左侧补到 `width` 个字符；`fill` 可省略 |
+| `pad_right(width, fill)` | 右侧补到 `width` 个字符；`fill` 可省略 |
+| `format(values...)` | receiver 是模板：每个 `{}` 取下一个值 |
 
 ```lk
 "Hello, {}!".format("LK")    // "Hello, LK!"

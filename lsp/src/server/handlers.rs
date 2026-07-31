@@ -1120,11 +1120,17 @@ fn builtin_method_signatures(name: &str) -> Vec<SignatureInformation> {
         .filter(|declared| declared.name == name)
         .map(|declared| {
             let receiver = builtin_receiver_label(declared.receiver);
+            let last = declared.params.len().saturating_sub(1);
             let params: Vec<String> = declared
                 .params
                 .iter()
-                .map(|param| {
-                    if param.optional {
+                .enumerate()
+                .map(|(index, param)| {
+                    // `...` on the repeating tail, the spelling `#[stdlib_export]`
+                    // uses for the same thing (`...values: Any`).
+                    if declared.variadic && index == last {
+                        format!("...{}: {}", param.name, param.ty)
+                    } else if param.optional {
                         format!("{}?: {}", param.name, param.ty)
                     } else {
                         format!("{}: {}", param.name, param.ty)

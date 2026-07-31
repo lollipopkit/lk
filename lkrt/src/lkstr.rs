@@ -439,19 +439,81 @@ pub unsafe extern "C" fn lkrt_str_to_float(s: *const c_char) -> crate::lkdyn::Lk
     }
 }
 
-/// `string.count(s, needle)` — non-overlapping matches; an empty needle
-/// counts *byte* length + 1 (the stdlib module's exact rule).
+/// `string.count(s, needle)` — non-overlapping matches.
+///
+/// No special case for the empty needle: `str::matches("")` already answers one
+/// match between every pair of characters and at both ends, which is the same
+/// rule stated in *characters*. The special case here said *bytes* + 1, so
+/// `string.count("中中", "")` was 7 compiled and 3 interpreted.
 ///
 /// # Safety
 /// Both pointers must be valid C strings, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_count(s: *const c_char, needle: *const c_char) -> i64 {
-    let text = view(s);
-    let pat = view(needle);
-    if pat.is_empty() {
-        return text.len() as i64 + 1;
+    view(s).matches(view(needle)).count() as i64
+}
+
+/// `string.strip(s, chars)` — both ends, every character that is in `chars`.
+///
+/// A *set* of characters, not an affix: `strip_prefix`/`strip_suffix` next door
+/// are the once-each operations. Byte-identical to the VM's `str::trim_matches`.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip(s: *const c_char, chars: *const c_char) -> *mut c_char {
+    let set = view(chars);
+    let stripped = view(s).trim_matches(|ch| set.contains(ch));
+    arena_c_string(CString::new(stripped).unwrap_or_default())
+}
+
+/// `s.pad_left(width[, fill])` / `s.pad_right(…)` — widened to `width`
+/// **characters** by repeating `fill` from its start.
+///
+/// Characters, because that is the unit everything else in the language counts.
+/// And the fill repeats by `cycle().take(n)` rather than by slicing a repeated
+/// string, so there is no byte boundary to get wrong.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_pad_left(s: *const c_char, width: i64, fill: *const c_char) -> *mut c_char {
+    pad(s, width, fill, true, "pad_left")
+}
+
+/// The right-hand half of [`lkrt_str_pad_left`].
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_pad_right(s: *const c_char, width: i64, fill: *const c_char) -> *mut c_char {
+    pad(s, width, fill, false, "pad_right")
+}
+
+fn pad(s: *const c_char, width: i64, fill: *const c_char, left: bool, name: &str) -> *mut c_char {
+    // Raised before anything is allocated: a raise longjmps past Rust drops.
+    if width < 0 {
+        crate::panic::raise_str(&alloc::format!(
+            "string.{name}() width must be non-negative, got {width}"
+        ));
     }
-    text.matches(pat).count() as i64
+    let fill = view(fill);
+    if fill.is_empty() {
+        crate::panic::raise_str(&alloc::format!("string.{name}() fill must not be empty"));
+    }
+    let text = view(s);
+    let len = text.chars().count();
+    let width = width as usize;
+    if len >= width {
+        return arena_c_string(CString::new(text).unwrap_or_default());
+    }
+    let padding: String = fill.chars().cycle().take(width - len).collect();
+    let padded = if left {
+        alloc::format!("{padding}{text}")
+    } else {
+        alloc::format!("{text}{padding}")
+    };
+    arena_c_string(CString::new(padded).unwrap_or_default())
 }
 
 /// `string.capitalize(s)` — first char uppercased, the rest lowercased

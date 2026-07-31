@@ -129,12 +129,10 @@ mod tests {
             Some("encoding.json.parse(source: String) -> Value")
         );
 
-        let string_char = catalog
-            .export_path(&["string", "char_at"])
-            .expect("string.char_at export");
+        let string_char = catalog.export_path(&["string", "get"]).expect("string.get export");
         assert_eq!(
             string_char.signature.as_deref(),
-            Some("string.char_at(text: String, index: Int) -> String?")
+            Some("string.get(text: String, index: Int) -> String?")
         );
         let string_byte = catalog
             .export_path(&["string", "byte_at"])

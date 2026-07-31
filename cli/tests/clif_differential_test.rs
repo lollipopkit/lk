@@ -4398,6 +4398,47 @@ fn the_string_module_spelling_lowers_like_the_method() {
                  println(string.slice(s, 1, 3));\nprintln(string.index_of(s, \"a\"));\n\
                  println(string.reverse(s));\nreturn 0;\n",
             ),
+            // The members that used to exist only as module functions, now
+            // methods that the module forwards to. `count("")` is the one that
+            // had two answers: `str::matches("")` counts one match between every
+            // pair of *characters*, and the native helper counted bytes + 1, so
+            // `string.count("中中", "")` was 7 compiled and 3 interpreted.
+            new(
+                "the_members_that_used_to_be_module_only",
+                "use string;\nlet z = \"\";\nlet s = \"aB cD\" + z;\n\
+                 println(string.capitalize(s) == s.capitalize());\n\
+                 println(string.title(s) == s.title());\n\
+                 println(string.count(s, \"D\") == s.count(\"D\"));\n\
+                 println(string.strip_prefix(s, \"a\") == s.strip_prefix(\"a\"));\n\
+                 println(string.strip_suffix(s, \"z\") == s.strip_suffix(\"z\"));\n\
+                 println(s.capitalize());\nprintln(s.title());\n\
+                 println(s.count(\"\"));\nprintln(\"中中\".count(\"\"));\n\
+                 println(\"中中\".count(\"中\"));\n\
+                 println(s.strip_prefix(\"a\"));\nprintln(s.strip_prefix(\"z\"));\n\
+                 println(s.strip_suffix(\"D\"));\nprintln(s.strip_suffix(\"z\"));\nreturn 0;\n",
+            ),
+            // `strip` and the two pads: character-counted, and the fill repeats
+            // from its start on both sides. A byte-sliced fill used to cut
+            // inside a character and take the process down.
+            new(
+                "strip_and_pad",
+                "use string;\nlet z = \"\";\nlet s = \"--a--\" + z;\n\
+                 println(string.strip(s, \"-\") == s.strip(\"-\"));\n\
+                 println(string.pad_left(\"a\", 5) == \"a\".pad_left(5));\n\
+                 println(string.pad_right(\"a\", 5, \"中\") == \"a\".pad_right(5, \"中\"));\n\
+                 println(s.strip(\"-\"));\nprintln(\"xxaybyxx\".strip(\"xy\"));\n\
+                 println(\"abc\".strip(\"-\"));\nprintln(\"---\".strip(\"-\"));\n\
+                 println(\"a\".pad_left(5, \"中\"));\nprintln(\"a\".pad_right(5, \"中\"));\n\
+                 println(\"中文\".pad_left(4, \"-\"));\nprintln(\"a\".pad_left(5, \"xy\"));\n\
+                 println(\"abcdef\".pad_left(3, \"-\"));\nprintln(\"a\".pad_right(4));\nreturn 0;\n",
+            ),
+            // The refusals, whose text is stdout once it is caught.
+            new(
+                "pad_refusals_read_the_same",
+                "fn main() {\n let s = \"abc\";\n let w = 0 - 1;\n\
+                 println(\"${try { s.pad_left(w) } catch e { \"${e}\" }}\");\n\
+                 println(\"${try { s.pad_right(5, \"\") } catch e { \"${e}\" }}\");\n}\nmain();\nreturn 0;\n",
+            ),
         ],
     );
 }

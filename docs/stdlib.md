@@ -74,6 +74,24 @@ exists — they are what a new container type should be checked against:
 种拼写(方法与模块函数)都已删除,统一为 `slice` 与 `index_of`;模块的
 `string.index_of` 多一个可选的起始位置,那是方法形式没地方放的东西。
 
+`string` 模块的每个成员都是**方法的拼写**,而不是第二份实现:模块函数体
+就一句 `forward("name", …)`,把第一个实参当 receiver 交给
+`core_methods` 的同名臂。这条规则从 2026-07-31 起是完整的 —— 在那之前
+`capitalize`/`title`/`count`/`strip`/`strip_prefix`/`strip_suffix`/
+`pad_left`/`pad_right`/`format` 九个只有模块拼写,`get`/`first`/`last`/
+`take`/`skip`/`bytes` 六个只有方法拼写,两边各写各的地方就是漂移的来源
+(`count("")` 一边按字节数一边按字符数,差了两倍)。
+
+`string.char_at` 因此改叫 `string.get`:元素访问在每个序列载体上都拼作
+`get`(`xs.get(i)`、`bytes.get(b, i)`、`s.get(i)`),第三个名字也意味着
+第三套规矩 —— `char_at` 拒绝负数,而 `s[-1]`、`s.get(-1)` 和原生的
+`str.char_at` 符号都从末尾往回数。`byte_at` 保留原名,因为它答的是**字节**,
+不是元素。
+
+`string.to_int` / `string.to_float` 是这条规则的例外,且是有意的:它们收
+`String | Number | Bool`,第一个参数不是 String,所以它们是**转换函数**而
+不是字符串方法,没有 receiver-first 的方法拼写。
+
 `Set.has` 也已删:它是 `contains` 的纯别名。`Map.has` 留着 —— 见上面
 那条,它问的是键,不是同义词。`bytes.eq(a, b)` 同样已删:它逐字节就是
 `a == b`,而运算符不需要一个模块函数替身。

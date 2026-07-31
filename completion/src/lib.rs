@@ -1594,4 +1594,43 @@ mod tests {
             );
         }
     }
+
+    /// The published string-method table names exactly the methods that exist.
+    ///
+    /// It named three that do not: `substring` (it became `slice`, with an
+    /// *end* rather than a length), `find` (it became `index_of`) and
+    /// `char_at` (it became `get`) — and `join`, which is a module function
+    /// taking the list first, not a method on the separator. It also omitted
+    /// fifteen that do. A reference page is a claim about what exists, and
+    /// nothing until now could disagree with it.
+    #[test]
+    fn the_published_string_method_table_names_the_methods_that_exist() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../website/src/stdlib/STDLIB.md"))
+            .expect("the published stdlib reference");
+        let section = doc
+            .split("\n## ")
+            .find(|section| section.starts_with("string\n"))
+            .expect("a `string` section");
+        let documented: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|line| line.split(['(', '`']).next())
+            .collect();
+        assert!(documented.len() > 20, "the table did not parse: {documented:?}");
+        let declared: Vec<&str> = lk_core::typ::builtin_methods_for(lk_core::typ::BuiltinReceiverKind::Str)
+            .map(|sig| sig.name)
+            .collect();
+        for name in &documented {
+            assert!(
+                declared.contains(name),
+                "the reference documents `{name}` on a string, which is not a method"
+            );
+        }
+        for name in &declared {
+            assert!(
+                documented.contains(name),
+                "a string can `{name}`, and the reference does not say so"
+            );
+        }
+    }
 }

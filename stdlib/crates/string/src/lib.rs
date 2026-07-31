@@ -17,8 +17,6 @@ use alloc::{
     vec::Vec,
 };
 
-use alloc::sync::Arc;
-
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
@@ -29,7 +27,7 @@ pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
 
-use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
+use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "string", docs = "String manipulation functions")]
@@ -131,17 +129,43 @@ impl StringModule {
         forward("repeat", args, runtime)
     }
 
-    // Exported under the name it is written with. It used to be `string.char`
-    // while the method form is `s.byte_at(i)`'s sibling — one operation with
-    // two names, which no test could compare and no reader could pair up.
+    /// `s.get(i)` — the character at a position, `nil` out of range.
+    ///
+    /// This was `string.char_at`, and before that `string.char`, while the
+    /// element accessor every other sequence carrier spells is `get`
+    /// (`xs.get(i)`, `bytes.get(b, i)`, and `s.get(i)` here). A third name for
+    /// it also meant a third rule: `char_at` refused a negative index, where
+    /// `s[-1]`, `s.get(-1)` and the native `str.char_at` symbol all count back
+    /// from the end. `byte_at` keeps its name because it answers a different
+    /// thing — a byte, not an element.
     #[stdlib_export(params(text: String, index: Int), returns = String?)]
-    fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
-        let index = usize_arg(&values[1], "char() second argument")?;
-        Ok(value.chars().nth(index).map_or(RuntimeVal::Nil, |value| {
-            runtime_string_value(&value.to_string(), runtime.heap_mut())
-        }))
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("get", args, runtime)
+    }
+
+    #[stdlib_export(params(text: String), returns = String?)]
+    fn first(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("first", args, runtime)
+    }
+
+    #[stdlib_export(params(text: String), returns = String?)]
+    fn last(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("last", args, runtime)
+    }
+
+    #[stdlib_export(params(text: String, count: Int), returns = String)]
+    fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("take", args, runtime)
+    }
+
+    #[stdlib_export(params(text: String, count: Int), returns = String)]
+    fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("skip", args, runtime)
+    }
+
+    #[stdlib_export(params(text: String), returns = Bytes)]
+    fn bytes(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        forward("bytes", args, runtime)
     }
 
     #[stdlib_export(params(text: String, index: Int), returns = Int?)]
@@ -170,42 +194,13 @@ impl StringModule {
         forward("is_empty", args, runtime)
     }
 
+    /// `"{} and {}".format(a, b)` — the receiver is the template.
     #[stdlib_export(params(template: String, ...values: Any), returns = String)]
     fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.is_empty() {
             bail!("format() requires at least 1 argument (format string)");
         }
-        let values = args.as_slice();
-        let fmt = runtime_string_arg(&values[0], runtime.heap(), "format() first argument")?;
-        let rest = &values[1..];
-        let mut out = String::with_capacity(fmt.len());
-        let mut chars = fmt.chars().peekable();
-        let mut arg_index = 0usize;
-        while let Some(ch) = chars.next() {
-            if ch == '{' && chars.peek() == Some(&'}') {
-                chars.next();
-                if arg_index < rest.len() {
-                    out.push_str(&runtime_display_value(&rest[arg_index], runtime.heap())?);
-                    arg_index += 1;
-                } else {
-                    out.push_str("{}");
-                }
-            } else {
-                out.push(ch);
-            }
-        }
-        if arg_index < rest.len() {
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            for (index, value) in rest[arg_index..].iter().enumerate() {
-                if index > 0 {
-                    out.push(' ');
-                }
-                out.push_str(&runtime_display_value(value, runtime.heap())?);
-            }
-        }
-        Ok(runtime_string_value(&out, runtime.heap_mut()))
+        forward("format", args, runtime)
     }
 
     /// Removes every leading and trailing character that is in `chars`.
@@ -224,77 +219,32 @@ impl StringModule {
     /// answer.
     #[stdlib_export(params(text: String, chars: String), returns = String)]
     fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, chars) = two_strings(args, runtime, "strip()")?;
-        let stripped = value.trim_matches(|c| chars.contains(c));
-        Ok(runtime_string_value(stripped, runtime.heap_mut()))
+        forward("strip", args, runtime)
     }
 
     #[stdlib_export(params(text: String, prefix: String), returns = String?)]
     fn strip_prefix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
-        Ok(value
-            .strip_prefix(prefix.as_ref())
-            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+        forward("strip_prefix", args, runtime)
     }
 
     #[stdlib_export(params(text: String, suffix: String), returns = String?)]
     fn strip_suffix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
-        Ok(value
-            .strip_suffix(suffix.as_ref())
-            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+        forward("strip_suffix", args, runtime)
     }
 
     #[stdlib_export(params(text: String, needle: String), returns = Int)]
     fn count(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let (value, pattern) = two_strings(args, runtime, "count()")?;
-        if pattern.is_empty() {
-            // Count empty pattern matches between each char + at start and end
-            return Ok(RuntimeVal::Int(value.len() as i64 + 1));
-        }
-        Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
+        forward("count", args, runtime)
     }
 
     #[stdlib_export(params(text: String, width: Int, pad?: String), returns = String)]
     fn pad_left(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if args.len() < 2 || args.len() > 3 {
-            bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
-        }
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_left() string")?;
-        let width = usize_arg(&values[1], "pad_left() width")?;
-        let fill = if values.len() >= 3 {
-            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_left() fill")?;
-            if f.is_empty() {
-                bail!("pad_left() fill must not be empty");
-            }
-            f.to_string()
-        } else {
-            " ".to_string()
-        };
-        let padded = pad_to_width(value.as_ref(), width, &fill, PadSide::Left);
-        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+        forward("pad_left", args, runtime)
     }
 
     #[stdlib_export(params(text: String, width: Int, pad?: String), returns = String)]
     fn pad_right(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if args.len() < 2 || args.len() > 3 {
-            bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
-        }
-        let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_right() string")?;
-        let width = usize_arg(&values[1], "pad_right() width")?;
-        let fill = if values.len() >= 3 {
-            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_right() fill")?;
-            if f.is_empty() {
-                bail!("pad_right() fill must not be empty");
-            }
-            f.to_string()
-        } else {
-            " ".to_string()
-        };
-        let padded = pad_to_width(value.as_ref(), width, &fill, PadSide::Right);
-        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+        forward("pad_right", args, runtime)
     }
 
     /// A number out of a String — or out of another number.
@@ -368,43 +318,12 @@ impl StringModule {
 
     #[stdlib_export(params(text: String), returns = String)]
     fn title(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "title()")?;
-        let mut result = String::with_capacity(value.len());
-        let mut capitalize_next = true;
-        for ch in value.chars() {
-            if ch.is_whitespace() {
-                capitalize_next = true;
-                result.push(ch);
-            } else if capitalize_next {
-                for c in ch.to_uppercase() {
-                    result.push(c);
-                }
-                capitalize_next = false;
-            } else {
-                for c in ch.to_lowercase() {
-                    result.push(c);
-                }
-            }
-        }
-        Ok(runtime_string_value(&result, runtime.heap_mut()))
+        forward("title", args, runtime)
     }
 
     #[stdlib_export(params(text: String), returns = String)]
     fn capitalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let value = one_string(args, runtime, "capitalize()")?;
-        let mut chars = value.chars();
-        let mut result = String::with_capacity(value.len());
-        if let Some(first) = chars.next() {
-            for c in first.to_uppercase() {
-                result.push(c);
-            }
-        }
-        for ch in chars {
-            for c in ch.to_lowercase() {
-                result.push(c);
-            }
-        }
-        Ok(runtime_string_value(&result, runtime.heap_mut()))
+        forward("capitalize", args, runtime)
     }
 }
 
@@ -426,18 +345,6 @@ fn forward(method: &'static str, args: NativeArgs<'_>, runtime: &mut NativeRunti
         bail!("string.{method} expects a string as its first argument");
     };
     lk_core::vm::core_call_method_windowed(*receiver, method, rest, runtime)
-}
-
-fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
-    runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
-}
-
-fn two_strings(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
-    let values = args.as_slice();
-    Ok((
-        runtime_string_arg(&values[0], runtime.heap(), name)?,
-        runtime_string_arg(&values[1], runtime.heap(), name)?,
-    ))
 }
 
 /// A Float as an Int, or a raise.
@@ -474,14 +381,6 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
     }
 }
 
-fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
-    let value = int_arg(value, context)?;
-    if value < 0 {
-        bail!("{context} must be non-negative");
-    }
-    Ok(value as usize)
-}
-
 fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} must be a list");
@@ -509,42 +408,5 @@ fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Resul
             Ok(out)
         }
         _ => Err(anyhow!("join() list must contain only strings")),
-    }
-}
-
-enum PadSide {
-    Left,
-    Right,
-}
-
-/// `value` widened to `width` **characters** with `fill`, repeated from its
-/// start and cut to length.
-///
-/// Characters, because that is the unit everything else in the language counts
-/// — `s.len()`, `s[i]`, `s.slice(a, b)`. Both pad functions measured in *bytes*
-/// and then sliced the repeated fill by byte offset, so a multi-byte fill cut
-/// inside a character and **panicked the process**:
-///
-/// ```text
-/// pad_left("a", 5, "中")
-/// → panicked: byte index 2 is not a char boundary; it is inside '中'
-/// ```
-///
-/// A Rust panic is not something a script can catch, which puts this in the
-/// same family as any other way a program could take the process down.
-fn pad_to_width(value: &str, width: usize, fill: &str, side: PadSide) -> String {
-    let current = value.chars().count();
-    if width <= current {
-        return value.to_string();
-    }
-    let needed = width - current;
-    // `cycle().take(n)` needs no slicing, so there is no boundary to get wrong.
-    // A multi-character fill therefore reads from its start on both sides;
-    // `pad_left` used to align it to the right edge instead, which differed
-    // only when the fill did not divide the gap.
-    let pad: String = fill.chars().cycle().take(needed).collect();
-    match side {
-        PadSide::Left => format!("{pad}{value}"),
-        PadSide::Right => format!("{value}{pad}"),
     }
 }

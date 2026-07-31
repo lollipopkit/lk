@@ -1819,16 +1819,76 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
-        // `s.substring(start, length)` — byte-indexed in the VM (a
-        // non-boundary index aborts loudly, like the VM's panic).
-        (Ty::Str, "substring", [(start, Ty::I64), (length, Ty::I64)]) => {
+        // The transforms that used to have only a module spelling. Each calls
+        // the same `str` symbol the `string.…` row calls, so the two spellings
+        // are one implementation here as well as in the VM.
+        (Ty::Str, "capitalize" | "title", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("str", "substring"),
-                args: vec![receiver, *start, *length],
+                callee: AbiRef::new("str", if name == "capitalize" { "capitalize" } else { "title" }),
+                args: vec![receiver],
             });
             (dst, Ty::Str)
+        }
+        (Ty::Str, "strip", [(chars, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "strip"),
+                args: vec![receiver, *chars],
+            });
+            (dst, Ty::Str)
+        }
+        // The fill is optional, and its default is a space — materialized here
+        // rather than given a second ABI symbol, so both arities reach one
+        // helper. (A row per arity is how `string.replace` ended up lowering
+        // only when `all` was left out.)
+        (Ty::Str, "pad_left" | "pad_right", [(width, Ty::I64)] | [(width, Ty::I64), (_, Ty::Str)]) => {
+            let fill = match args {
+                [_, (fill, _)] => *fill,
+                _ => {
+                    let space = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: space,
+                        value: Const::Str(GlobalId(crate::prescan::intern_global(globals, " "))),
+                    });
+                    space
+                }
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", if name == "pad_left" { "pad_left" } else { "pad_right" }),
+                args: vec![receiver, *width, fill],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "count", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "count"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        // `String?`, so the carrier is Dyn — nil when the affix was not there.
+        (Ty::Str, "strip_prefix" | "strip_suffix", [(affix, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "str",
+                    if name == "strip_prefix" {
+                        "strip_prefix"
+                    } else {
+                        "strip_suffix"
+                    },
+                ),
+                args: vec![receiver, *affix],
+            });
+            (dst, Ty::Dyn)
         }
         (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -1839,8 +1899,10 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
-        // `s.chars()` — the VM returns a *Mixed* list (bare-text display),
-        // so the native carrier is a dyn list, not a typed string list.
+        // `s.chars()` — a dyn list, whose display quotes its strings exactly as
+        // the VM's `TypedList::String` does. (The VM built a *Mixed* list when
+        // this was written, which printed `[a,b]` against the module spelling's
+        // `["a","b"]`; both sides say `["a","b"]` now.)
         (Ty::Str, "chars", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

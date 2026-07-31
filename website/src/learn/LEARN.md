@@ -433,7 +433,7 @@ println("{}", p);  // Point { x: 1, y: 2 }
 
 ## Strings & Bytes
 
-String meta-methods (no import needed): `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`, `format`
+String meta-methods (no import needed): `len`, `is_empty`, `lower`, `upper`, `trim`, `reverse`, `repeat`, `starts_with`, `ends_with`, `contains`, `count`, `index_of`, `slice`, `get`, `first`, `last`, `take`, `skip`, `replace`, `split`, `chars`, `bytes`, `byte_at`, `capitalize`, `title`, `strip`, `strip_prefix`, `strip_suffix`, `pad_left`, `pad_right`, `format`
 
 ```lk
 "Hello".len()                    // 5

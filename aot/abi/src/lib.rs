@@ -628,11 +628,16 @@ macro_rules! for_each_abi_fn {
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr, Constructs);
             // `string.strip_prefix/suffix` return String-or-nil (boxed Dyn);
-            // `count` counts non-overlapping matches (empty needle → byte
-            // len + 1, the stdlib module's exact rule); `capitalize`/`title`
-            // are Unicode-aware, byte-identical to the stdlib module.
+            // `count` counts non-overlapping matches, the empty needle included
+            // (one between every pair of *characters*, which is what
+            // `str::matches` answers); `capitalize`/`title`/`strip`/`pad_*` are
+            // Unicode-aware and character-counted, byte-identical to the VM's
+            // `core_methods`.
             ("str", "strip_prefix", lkrt_str_strip_prefix, WritesHost, [StrPtr, StrPtr], DynVal);
             ("str", "strip_suffix", lkrt_str_strip_suffix, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("str", "strip", lkrt_str_strip, WritesHost, [StrPtr, StrPtr], StrPtr);
+            ("str", "pad_left", lkrt_str_pad_left, WritesHost, [StrPtr, I64, StrPtr], StrPtr);
+            ("str", "pad_right", lkrt_str_pad_right, WritesHost, [StrPtr, I64, StrPtr], StrPtr);
             // Text → number, the only path there is; the answer is boxed
             // because the module returns `Int?`/`Float?`.
             ("str", "to_int", lkrt_str_to_int, Pure, [StrPtr, I64], DynVal);

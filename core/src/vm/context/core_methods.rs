@@ -986,6 +986,159 @@ fn dispatch_string_builtin_method(
             };
             Ok(Some(make_string_val(&replaced, heap)))
         }
+        // The nine operations the `string` module used to own outright. They are
+        // receiver-first questions about a string, so they belong here with the
+        // rest — and moving them is what lets the module forward instead of
+        // holding a second body (see `forward` there).
+        "capitalize" => {
+            if !positional.is_empty() {
+                bail!("string.capitalize() expects no arguments, got {}", positional.len());
+            }
+            let mut chars = s.chars();
+            let mut out = String::with_capacity(s.len());
+            if let Some(first) = chars.next() {
+                out.extend(first.to_uppercase());
+            }
+            for ch in chars {
+                out.extend(ch.to_lowercase());
+            }
+            Ok(Some(make_string_val(&out, heap)))
+        }
+        "title" => {
+            if !positional.is_empty() {
+                bail!("string.title() expects no arguments, got {}", positional.len());
+            }
+            let mut out = String::with_capacity(s.len());
+            let mut start_of_word = true;
+            for ch in s.chars() {
+                if ch.is_whitespace() {
+                    start_of_word = true;
+                    out.push(ch);
+                } else if start_of_word {
+                    out.extend(ch.to_uppercase());
+                    start_of_word = false;
+                } else {
+                    out.extend(ch.to_lowercase());
+                }
+            }
+            Ok(Some(make_string_val(&out, heap)))
+        }
+        "count" => {
+            if positional.len() != 1 {
+                bail!("string.count() expects 1 argument (needle), got {}", positional.len());
+            }
+            let needle = extract_string_detached(&positional[0], heap, "string.count() needle")?;
+            // An empty needle matches between every pair of characters and at
+            // both ends — `str::matches` says so, and counting characters + 1
+            // said something else for any multi-byte string.
+            Ok(Some(RuntimeVal::Int(s.matches(needle.as_str()).count() as i64)))
+        }
+        "strip" => {
+            if positional.len() != 1 {
+                bail!("string.strip() expects 1 argument (chars), got {}", positional.len());
+            }
+            let chars = extract_string_detached(&positional[0], heap, "string.strip() chars")?;
+            let stripped = s.trim_matches(|ch| chars.as_str().contains(ch));
+            Ok(Some(make_string_val(stripped, heap)))
+        }
+        "strip_prefix" | "strip_suffix" => {
+            if positional.len() != 1 {
+                bail!("string.{method}() expects 1 argument, got {}", positional.len());
+            }
+            let affix = extract_string_detached(&positional[0], heap, "string.strip_prefix/suffix() affix")?;
+            let stripped = if method == "strip_prefix" {
+                s.strip_prefix(affix.as_str())
+            } else {
+                s.strip_suffix(affix.as_str())
+            };
+            // `String?`: nil when it was not there, which is what makes the
+            // answer distinguishable from "it was there and left nothing".
+            Ok(Some(match stripped {
+                Some(text) => make_string_val(text, heap),
+                None => RuntimeVal::Nil,
+            }))
+        }
+        "pad_left" | "pad_right" => {
+            if !(1..=2).contains(&positional.len()) {
+                bail!(
+                    "string.{method}() expects 1 or 2 arguments (width[, fill]), got {}",
+                    positional.len()
+                );
+            }
+            let RuntimeVal::Int(width) = &positional[0] else {
+                bail!("string.{method}() width must be Int");
+            };
+            if *width < 0 {
+                bail!("string.{method}() width must be non-negative, got {width}");
+            }
+            let fill = match positional.get(1) {
+                None | Some(RuntimeVal::Nil) => " ".to_string(),
+                Some(value) => {
+                    let fill = extract_string_detached(value, heap, "string.pad_left() fill")?;
+                    if fill.as_str().is_empty() {
+                        bail!("string.{method}() fill must not be empty");
+                    }
+                    fill.as_str().to_string()
+                }
+            };
+            // Width counts *characters*, because that is the unit everything
+            // else in the language counts — `s.len()`, `s[i]`, `s.slice(a, b)`.
+            // And the fill repeats by `cycle().take(n)` rather than by slicing a
+            // repeated string, so there is no byte boundary to get wrong: the
+            // byte-sliced version panicked the process on `pad_left("a", 5,
+            // "中")`, and a Rust panic is not something a script can catch.
+            let len = crate::util::text::char_len(s);
+            let width = *width as usize;
+            if len >= width {
+                return Ok(Some(make_string_val(s, heap)));
+            }
+            let padding: String = fill.chars().cycle().take(width - len).collect();
+            let padded = if method == "pad_left" {
+                alloc::format!("{padding}{s}")
+            } else {
+                alloc::format!("{s}{padding}")
+            };
+            Ok(Some(make_string_val(&padded, heap)))
+        }
+        "format" => {
+            // `"{} and {}".format(a, b)` — the receiver is the template, which
+            // is exactly the shape `string.format(template, …)` already had.
+            let mut out = String::with_capacity(s.len());
+            let mut chars = s.chars().peekable();
+            let mut next_arg = 0usize;
+            while let Some(ch) = chars.next() {
+                if ch == '{' && chars.peek() == Some(&'}') {
+                    chars.next();
+                    match positional.get(next_arg) {
+                        Some(value) => {
+                            out.push_str(&crate::vm::display_runtime_value(value, heap));
+                            next_arg += 1;
+                        }
+                        // A placeholder with no argument left stays literal,
+                        // which is what `println`'s format does with the same
+                        // shape.
+                        None => out.push_str("{}"),
+                    }
+                } else {
+                    out.push(ch);
+                }
+            }
+            // …and an argument with no placeholder left is appended, space
+            // separated — also `println`'s rule. Dropping it silently is the
+            // one answer that loses data.
+            if next_arg < positional.len() {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                for (index, value) in positional[next_arg..].iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    out.push_str(&crate::vm::display_runtime_value(value, heap));
+                }
+            }
+            Ok(Some(make_string_val(&out, heap)))
+        }
         _ => Ok(None),
     }
 }

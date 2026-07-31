@@ -94,7 +94,7 @@ mod tests {
             "join",
             "reverse",
             "repeat",
-            "char_at",
+            "get",
             "byte_at",
             "chars",
             "is_empty",
@@ -527,6 +527,39 @@ mod tests {
                 string.repeat(s, 0) == s.repeat(0),
                 string.chars(s) == s.chars(),
                 string.trim("  a  ") == "  a  ".trim(),
+            ];
+        "#;
+        let result = execute_string(source)?;
+        let rendered = lk_core::vm::display_runtime_value(result.first_return(), result.state.heap());
+        assert!(
+            !rendered.contains("false"),
+            "a module spelling and its method disagree: {rendered}"
+        );
+
+        // The members that used to have only one of the two spellings, in a
+        // second program: one list of thirty comparisons is a single expression,
+        // and a single expression has 256 registers to live in.
+        let source = r#"
+            use string;
+            let s = "abc";
+            return [
+                string.get(s, -1) == s.get(-1),
+                string.first(s) == s.first(),
+                string.last(s) == s.last(),
+                string.take(s, 2) == s.take(2),
+                string.skip(s, 2) == s.skip(2),
+                string.bytes(s) == s.bytes(),
+                string.capitalize("aBC") == "aBC".capitalize(),
+                string.title("aB cD") == "aB cD".title(),
+                string.count("中中", "中") == "中中".count("中"),
+                string.count("中中", "") == "中中".count(""),
+                string.strip("--a--", "-") == "--a--".strip("-"),
+                string.strip_prefix(s, "z") == s.strip_prefix("z"),
+                string.strip_suffix(s, "c") == s.strip_suffix("c"),
+                string.pad_left("a", 5, "中") == "a".pad_left(5, "中"),
+                string.pad_right("a", 5) == "a".pad_right(5),
+                string.format("{}-{}", 1, 2) == "{}-{}".format(1, 2),
+                string.format("{}", 1, 2) == "{}".format(1, 2),
             ];
         "#;
         let result = execute_string(source)?;

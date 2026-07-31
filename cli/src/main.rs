@@ -1674,14 +1674,20 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
 /// not treated as the builtin it resembles.
 #[cfg(feature = "aot")]
 fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> bool {
+    //
+    // Every name here has to be a method the language actually has, or the
+    // entry is a comment that looks like code: `char_at` and `find` sat in this
+    // list long after one became `get` (the accessor every sequence spells) and
+    // the other `index_of`, so neither had matched anything for as long as it
+    // had been written. `get` does *not* replace `char_at` here — on a list it
+    // answers an element, and an element can be a handle into the receiver,
+    // which is exactly the "keeps it" case this list excludes.
     const PURE_READS: &[&str] = &[
         "len",
         "byte_at",
-        "char_at",
         "starts_with",
         "ends_with",
         "contains",
-        "find",
         "index_of",
         "count",
         "is_empty",
