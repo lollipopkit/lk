@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use lk_core::token::{Token, Tokenizer};
 use lk_core::vm::ModuleResolver;
 use lk_core::{
     module::ModuleRegistry,
@@ -164,104 +165,44 @@ fn print_repl_help() {
 /// (`first_return_is_nil`) and renders it with the same `runtime_display_value`
 /// that `println` uses, so a real value looks exactly as it did before.
 fn expression_program_source(source: &str) -> String {
-    format!("return ({});", normalize_binary_signs(source))
+    format!("return ({source});")
 }
 
+/// Is this input still open — should the session read another line?
+///
+/// Decided on **tokens**, not characters. Counting raw `(`/`{`/`[` cannot tell
+/// a bracket from a bracket inside a string or a comment, so
+///
+/// ```text
+/// > let s = "(";
+/// > s
+/// Error: Syntax error: Unexpected tokens at end (found Let) at 2:1-2
+/// ```
+///
+/// — the session went on waiting for a `)` that was never missing, swallowed
+/// the next line into the same input, and blamed that line. `// (` at the end
+/// of a line did the same. The tokenizer is the thing that decides what a
+/// string and a comment are; asking it costs one pass over a line of input.
+///
+/// A tokenizer error means the line cannot be read as tokens at all — an
+/// unterminated string, say — and that is the parser's message to deliver, not
+/// a reason to keep waiting. (Waiting would hang the session on any typo.)
 pub(crate) fn should_continue_multiline(buf: &str) -> bool {
-    let mut paren = 0i32;
-    let mut brace = 0i32;
-    let mut bracket = 0i32;
-    for ch in buf.chars() {
-        match ch {
-            '(' => paren += 1,
-            ')' => paren -= 1,
-            '{' => brace += 1,
-            '}' => brace -= 1,
-            '[' => bracket += 1,
-            ']' => bracket -= 1,
+    if buf.trim_end().ends_with('\\') {
+        return true;
+    }
+    let Ok(tokens) = Tokenizer::tokenize(buf) else {
+        return false;
+    };
+    let mut depth = 0i32;
+    for token in &tokens {
+        match token {
+            Token::LParen | Token::LBrace | Token::LBracket => depth += 1,
+            Token::RParen | Token::RBrace | Token::RBracket => depth -= 1,
             _ => {}
         }
     }
-    let trailing_backslash = buf.trim_end().ends_with('\\');
-    paren > 0 || brace > 0 || bracket > 0 || trailing_backslash
-}
-
-fn normalize_binary_signs(src: &str) -> String {
-    let mut out = String::with_capacity(src.len() + 8);
-    let chars: Vec<char> = src.chars().collect();
-    let mut i = 0usize;
-    let len = chars.len();
-    let mut in_single = false;
-    let mut in_double = false;
-    while i < len {
-        let c = chars[i];
-        if !in_single && c == '"' && !is_escaped_quote(&chars, i) {
-            in_double = !in_double;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if !in_double && c == '\'' && !is_escaped_quote(&chars, i) {
-            in_single = !in_single;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if in_single || in_double {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-
-        if (c == '+' || c == '-') && i + 1 < len && chars[i + 1].is_ascii_digit() {
-            let mut j = i as isize - 1;
-            let mut prev: Option<char> = None;
-            while j >= 0 {
-                let pj = chars[j as usize];
-                if pj.is_whitespace() {
-                    j -= 1;
-                    continue;
-                }
-                prev = Some(pj);
-                break;
-            }
-            let prev_is_value_like = matches!(
-                prev,
-                Some(ch)
-                    if ch.is_ascii_alphanumeric()
-                        || ch == '_'
-                        || ch == ')'
-                        || ch == ']'
-                        || ch == '}'
-                        || ch == '"'
-                        || ch == '\''
-            );
-
-            if prev_is_value_like {
-                out.push(c);
-                out.push(' ');
-                i += 1;
-                continue;
-            }
-        }
-
-        out.push(c);
-        i += 1;
-    }
-    out
-}
-
-fn is_escaped_quote(chars: &[char], quote_index: usize) -> bool {
-    let mut backslashes = 0usize;
-    let mut index = quote_index;
-    while index > 0 {
-        index -= 1;
-        if chars[index] != '\\' {
-            break;
-        }
-        backslashes += 1;
-    }
-    backslashes % 2 == 1
+    depth > 0
 }
 
 pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
@@ -401,12 +342,42 @@ mod tests {
         assert!(!should_continue_multiline("println(1)\n"));
     }
 
+    /// A bracket inside a string or a comment is not an open bracket.
+    ///
+    /// Counting characters, `let s = "(";` looked unfinished: the session went
+    /// on reading, swallowed the next line into the same input, and reported
+    /// `Unexpected tokens at end (found Let)` against it.
+    #[test]
+    fn a_bracket_in_a_string_or_comment_does_not_hold_the_line_open() {
+        assert!(!should_continue_multiline("let s = \"(\";\n"));
+        assert!(!should_continue_multiline("let t = \"}\";\n"));
+        assert!(!should_continue_multiline("let u = 1; // (\n"));
+        assert!(!should_continue_multiline("// [\n"));
+        // A real open bracket next to a decoy one still holds.
+        assert!(should_continue_multiline("let xs = [\")\",\n"));
+    }
+
+    /// Input the tokenizer cannot read is the parser's error to report.
+    ///
+    /// Treating it as "keep waiting" would hang the session on a typo — there
+    /// is no line the reader can type that closes an unterminated string they
+    /// did not mean to open.
+    #[test]
+    fn unlexable_input_does_not_hold_the_line_open() {
+        assert!(!should_continue_multiline("let s = \"unterminated\n"));
+    }
+
     #[test]
     fn expression_fallback_returns_the_value_rather_than_printing_it() {
         // The nesting this asserts against — println((println(a))) — is what
         // printed a spurious `nil` after the real output.
         assert_eq!(expression_program_source("println(a)"), "return (println(a));");
-        assert_eq!(expression_program_source("1+1"), "return (1+ 1);");
+        // No textual rewriting of the input on the way in: the wrapper is the
+        // only thing added. `normalize_binary_signs` used to insert a space
+        // after a binary `+`/`-`, and a with/without differential over fifteen
+        // inputs (`a-1`, `a--1`, `-a`, `[1,2][0]-1`, `"a-1 ${a-1}"`, …) was
+        // identical — it was patching a lexer behaviour that is not there.
+        assert_eq!(expression_program_source("1+1"), "return (1+1);");
     }
 
     #[cfg(feature = "stdlib")]
@@ -431,19 +402,6 @@ mod tests {
         // Rendering is unchanged from the println wrapper: strings unquoted.
         let text = run(&mut session, "\"x\"");
         assert_eq!(text.display_first_return(), "x");
-    }
-
-    #[test]
-    fn normalize_binary_signs_preserves_unary_signs() {
-        assert_eq!(normalize_binary_signs("1+2"), "1+ 2");
-        assert_eq!(normalize_binary_signs("-2"), "-2");
-        assert_eq!(normalize_binary_signs("\"1+2\""), "\"1+2\"");
-    }
-
-    #[test]
-    fn normalize_binary_signs_ignores_escaped_quotes() {
-        assert_eq!(normalize_binary_signs(r#""a\"+1""#), r#""a\"+1""#);
-        assert_eq!(normalize_binary_signs(r#"'a\'+1'"#), r#"'a\'+1'"#);
     }
 
     #[test]
