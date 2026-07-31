@@ -1284,7 +1284,28 @@ pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
                 a.payload == b.payload
             }
         }
-        DYN_LIST | DYN_MAP => a.payload == b.payload,
+        // Every heap carrier compares by handle, not just the two that had a
+        // tag when this was written.
+        //
+        // `_ => false` meant a `Set`, a `Bytes`, a window or a typed map was
+        // **never** in any list, however the program got it there:
+        //
+        // ```lk
+        // let b = "ab".bytes();
+        // let xs = [b];
+        // b in xs            // true interpreted, false compiled
+        // ```
+        //
+        // Those four carriers box *in place* — the tag is the only thing that
+        // changed — so their payload is the same handle the VM compares, and
+        // the arm above was already the right answer for them. They were simply
+        // added to the tag space (see `DYN_SET`, `DYN_TMAP_BASE`, `DYN_SLICE`)
+        // without this match being revisited.
+        //
+        // `DYN_RAW` stays out: it parks a handle that is not a value, and
+        // reading one as a value is a loud failure by design.
+        DYN_LIST | DYN_MAP | DYN_SET | DYN_BYTES | DYN_SLICE => a.payload == b.payload,
+        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => a.payload == b.payload,
         _ => false,
     }
 }
@@ -1739,5 +1760,55 @@ mod tests {
             text(unsafe { lkrt_dyn_display(lkrt_dyn_from_map(plain)) }),
             r#"{"k":1}"#
         );
+    }
+
+    /// `in` compares a heap value by handle — every heap carrier, not two.
+    ///
+    /// `contains_eq`'s catch-all answered `false`, so a `Set`, a `Bytes`, a
+    /// window or a typed map was never in any list:
+    ///
+    /// ```lk
+    /// let b = "ab".bytes();
+    /// let xs = [b];
+    /// b in xs            // true interpreted, false compiled
+    /// ```
+    ///
+    /// These four box *in place*, so the payload is the same handle the VM
+    /// compares — the existing arm was already right for them. They were added
+    /// to the tag space and this match was not revisited, which is the failure
+    /// mode a catch-all arm has: a new tag joins the "not equal to anything"
+    /// bucket silently.
+    #[test]
+    fn every_heap_carrier_is_found_by_handle() {
+        // SAFETY: both pointers are live NUL-terminated literals.
+        let (bytes, other_bytes) = unsafe {
+            (
+                crate::lkbytes::lkrt_lkbytes_from_str(c"ab".as_ptr()),
+                crate::lkbytes::lkrt_lkbytes_from_str(c"cd".as_ptr()),
+            )
+        };
+        let set = crate::lkset::lkrt_lkset_new();
+        let slice_src = crate::lklist::lkrt_lklist_i64_new();
+        let window = unsafe { crate::lkslice::lkrt_lkslice_i64_new(slice_src, 0, 0) };
+        let tmap = crate::lkmap::lkrt_lkmap_str_i64_new();
+
+        for boxed in [
+            lkrt_dyn_from_bytes(bytes),
+            lkrt_dyn_from_set(set),
+            lkrt_dyn_from_slice(window),
+            lkrt_dyn_from_typed_map(tmap, crate::lkmap::KIND_STR_I64),
+        ] {
+            assert!(
+                contains_eq(boxed, boxed),
+                "tag {} must find itself by handle",
+                boxed.tag
+            );
+        }
+
+        // …and a *different* handle of the same carrier is still not it.
+        assert!(!contains_eq(
+            lkrt_dyn_from_bytes(bytes),
+            lkrt_dyn_from_bytes(other_bytes)
+        ));
     }
 }
