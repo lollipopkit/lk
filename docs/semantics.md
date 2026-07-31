@@ -1255,6 +1255,34 @@ let z = -true;                                    // 一样报:Bool 不能取负
 `let x: Int = if false { 9.5 } else { "x" };` 说 `String`,函数体里同一行说
 `Float | String`。现在两处都说并集。
 
+## 下游关掉管道 = 程序停下,不是 panic(2026-07-31 裁决)
+
+```sh
+lk gen.lk | head -1
+```
+
+解释器此前打的是:
+
+```
+thread 'main' panicked at library/std/src/io/stdio.rs:1166:9:
+failed printing to stdout: Broken pipe (os error 32)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+退出码 101。而**原生编译出来的二进制一直是对的** —— 它的 `main` 是 C `main`,
+Rust 的启动代码没跑过,于是它按 Unix 惯例被 SIGPIPE 杀掉(shell 报 141),一声
+不吭。两个后端不一致,且对的是 native 那边。
+
+原因:Rust 在 `main` 之前把 `SIGPIPE` 设成 `SIG_IGN`,写关闭的管道于是返回
+`EPIPE`,`println!` 再把它 unwrap 成 panic。这既违反"错误文本说语言的话,不说
+实现的话",管道又恰恰是 shell 对一个会打印的程序最日常的用法。
+
+**裁决:`lk` 在 `main` 开头把 `SIGPIPE` 恢复成 `SIG_DFL`**,和 `head`、`grep`
+以及原生二进制一样。行为:下游关掉读端后程序立即停止,不打印任何东西,退出状
+态是"被信号 13 终止"。非 Unix 平台不适用。
+
+`cli/tests/broken_pipe_test.rs` 钉住这条,并且正反两向验过。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

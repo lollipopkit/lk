@@ -40,6 +40,10 @@ nu-ansi-term = "0.50"
 tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 
+# `signal(SIGPIPE, SIG_DFL)` — see `restore_default_sigpipe` in `main.rs`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
 # feature in lk-core.

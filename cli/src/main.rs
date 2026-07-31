@@ -398,7 +398,32 @@ fn top_opcode_profile(metrics: &VmRuntimeMetrics) -> String {
         .join(",")
 }
 
+/// Die on `SIGPIPE` like every other Unix filter, instead of panicking.
+///
+/// Rust sets `SIGPIPE` to `SIG_IGN` before `main`, so a write to a closed pipe
+/// comes back as `EPIPE` and `println!` unwraps it into a panic: `lk gen.lk |
+/// head` printed `thread 'main' panicked at library/std/src/io/stdio.rs … note:
+/// run with RUST_BACKTRACE=1` and exited 101. That is the implementation
+/// talking, not the language, and piping into `head` is the most ordinary thing
+/// a shell does with a program that prints.
+///
+/// The AOT-compiled binary was already right — its `main` is a C `main`, so
+/// Rust's startup never ran and it died with signal 13 (exit 141), silently.
+/// So this is also the two backends disagreeing, with the native one correct.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: sets a signal disposition before anything has been printed and
+    // before any thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn main() -> anyhow::Result<()> {
+    restore_default_sigpipe();
     let mut startup = startup_trace::StartupTrace::new("main");
     mem::configure();
     maybe_init_perf_tracing();
