@@ -1317,6 +1317,76 @@ println(\"${{total}} ${{xs.len()}} ${{xs[39]}}\");
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "90300 40 40");
 }
 
+/// The same, for the two windows an expression can be lowered into: a call's
+/// arguments and a template string's parts.
+///
+/// Both pre-allocate a contiguous window and then lower into it, and both let
+/// every part's scratch pile up behind the window. Two programs, because the
+/// two halves fail differently and one program does not separate them:
+///
+/// - 60 interpolations of `${s.count(t) + i}` **refuse to compile** without the
+///   template half.
+/// - a 60-argument call nested inside a template still compiles without the
+///   call half — it just costs 191 registers where 132 are needed, which is why
+///   the count is asserted rather than the exit status.
+#[test]
+fn a_call_window_and_a_template_reuse_their_scratch_too() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let params = (0..60).map(|i| format!("a{i}: Int")).collect::<Vec<_>>().join(", ");
+    let args = (0..60)
+        .map(|i| format!("(\"aaa\".count(\"a\") + \"b\".len() + {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let template = (0..60)
+        .map(|i| format!("${{\"a\".count(\"a\") + {i}}}"))
+        .collect::<Vec<_>>()
+        .join("-");
+
+    // `a0` is 3 + 1 + 0 and `a59` is 3 + 1 + 59.
+    let call = dir.path().join("wide_call.lk");
+    std::fs::write(
+        &call,
+        format!("fn many({params}) -> Int {{ return a0 + a59; }}\nprintln(\"${{many({args})}}\");\n"),
+    )
+    .expect("write");
+    let rendered = dir.path().join("wide_template.lk");
+    std::fs::write(&rendered, format!("println(\"{template}\");\n")).expect("write");
+
+    let expected = ["67", &(1..=60).map(|i| i.to_string()).collect::<Vec<_>>().join("-")];
+    for (path, expected) in [(&call, expected[0]), (&rendered, expected[1])] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg(path)
+            .output()
+            .expect("run lk");
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+    }
+
+    // The count itself, not just "it compiled": a call window that stops
+    // recycling is still under the ceiling at this width, so success alone
+    // would not notice. Measured 132 with the reuse and 191 without.
+    let counted = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["coverage", "--disassemble"])
+        .arg(&call)
+        .output()
+        .expect("run lk coverage");
+    let listing = String::from_utf8_lossy(&counted.stdout);
+    let registers: usize = listing
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("registers: "))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no register count in the listing: {listing}"));
+    assert!(
+        registers < 160,
+        "the call window stopped reusing its scratch: {registers} registers"
+    );
+}
+
 /// A struct literal is not capped at a number nobody could reach.
 ///
 /// The guard said "max 127 fields", but `NewObject` reads its fields from a

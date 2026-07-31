@@ -778,13 +778,20 @@ impl Compiler {
         let callee = self.lower_readonly_operand(callee)?;
         let call_base = self.alloc_regs(1 + positional.len() + named.len() * 2)?;
         self.emit_call_window_move(call_base, callee, "named call callee")?;
+        // Each argument's scratch is handed back before the next one is
+        // lowered: the window stays, what an argument needed to reach it does
+        // not. Without this a wide call cost two registers per argument on top
+        // of the window — 60 arguments of `f(a) + g(b) + i` reached 191.
+        let watermark = self.next_reg;
         for (offset, arg) in positional.iter().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "named call positional arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
         let mut offset = 1 + positional.len() as u16;
         for (name, value) in named {
             self.emit_literal_to_register(call_base + offset, &LiteralVal::from_str(name))?;
             self.lower_expr_to_register(call_base + offset + 1, value, "named call arg value")?;
+            self.next_reg = self.live_register_floor().max(watermark);
             offset += 2;
         }
 
@@ -933,10 +940,15 @@ impl Compiler {
         let call_base = self.alloc_regs(total_count + 1)?;
         let mut previous = Vec::with_capacity(total_count);
 
+        // Per argument, as in `lower_named_arg_call_window`. A bound parameter
+        // name points *into* the window, which is below this mark, so binding
+        // and recycling do not compete.
+        let watermark = self.next_reg;
         let result = (|| {
             for (index, (param_name, arg)) in signature.positional_params.iter().zip(args.iter()).enumerate() {
                 let dst = call_base + 1 + index as u16;
                 self.lower_expr_to_register(dst, arg, "direct signature positional arg")?;
+                self.next_reg = self.live_register_floor().max(watermark);
                 self.bind_call_param(param_name, dst, &mut previous);
             }
 
@@ -979,10 +991,13 @@ impl Compiler {
         let call_base = self.alloc_regs(total_count + 1)?;
         let mut previous = Vec::with_capacity(total_count);
 
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         let result = (|| {
             for (index, (param_name, arg)) in signature.positional_params.iter().zip(positional.iter()).enumerate() {
                 let dst = call_base + 1 + index as u16;
                 self.lower_expr_to_register(dst, arg, "direct signature named positional arg")?;
+                self.next_reg = self.live_register_floor().max(watermark);
                 self.bind_call_param(param_name, dst, &mut previous);
             }
 
@@ -1041,8 +1056,11 @@ impl Compiler {
         }
         let call_base = self.alloc_regs(args.len() + 1)?;
         self.emit_call_window_move(call_base, callee, "call callee")?;
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         for (offset, arg) in args.iter().copied().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "call arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
 
         let pc = self.function.code.len();
@@ -1172,8 +1190,11 @@ impl Compiler {
         }
 
         let call_base = self.alloc_regs(args.len() + 1)?;
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         for (offset, arg) in args.iter().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "direct call arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
 
         let pc = self.function.code.len();

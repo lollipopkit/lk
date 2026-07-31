@@ -556,10 +556,16 @@ impl Compiler {
                 self.alloc_reg();
             }
 
-            // Lower each part into its register
+            // Lower each part into its register, handing back what it needed
+            // to get there — the window stays, the scratch behind it does not.
+            // Without this a template's parts each kept every temporary they
+            // used, so 60 interpolations of `${a.count(b) + i}` reached the
+            // 256-register ceiling and the program was refused.
+            let watermark = self.next_reg;
             for (i, part) in parts.iter().enumerate() {
                 let target_reg = start_reg + i as u16;
                 self.lower_template_string_part_to_register(target_reg, part, force_single_expr_string)?;
+                self.next_reg = self.live_register_floor().max(watermark);
             }
 
             let dst = self.alloc_reg();
@@ -616,8 +622,11 @@ impl Compiler {
             for _ in 1..parts.len() {
                 self.alloc_reg();
             }
+            // Per part, as in `lower_template_string`.
+            let watermark = self.next_reg;
             for (index, part) in parts.iter().enumerate() {
                 self.lower_template_string_part_to_register(start_reg + index as u16, part, force_single_expr_string)?;
+                self.next_reg = self.live_register_floor().max(watermark);
             }
             self.emit(Instr::abc(
                 Opcode::ConcatN,
