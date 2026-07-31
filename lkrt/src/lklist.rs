@@ -1348,6 +1348,134 @@ macro_rules! list_sort {
     };
 }
 
+/// `sum()` / `min()` / `max()` on a typed list.
+///
+/// The empty answers are the VM's: `sum` is `0` (the identity a fold would
+/// start from) and `min`/`max` are nil — so those two box their result, the way
+/// `first`/`last` already do.
+///
+/// The orders are the same ones `list_sort!` uses on each carrier, which is
+/// what keeps `xs.sort().first()` and `xs.min()` from disagreeing here as well.
+///
+/// # Safety
+/// `handle` must be a live list handle of the carrier named by the entry point.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_sum(handle: *mut c_void) -> i64 {
+    // SAFETY: a live `List<i64>` handle, as the ABI declares.
+    let values: &Vec<i64> = unsafe { &*(handle as *mut Vec<i64>) };
+    // Wrapping, because `+` wraps: one rule for adding integers.
+    values.iter().fold(0i64, |total, value| total.wrapping_add(*value))
+}
+
+/// # Safety
+/// `handle` must be a live `List<f64>` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_sum(handle: *mut c_void) -> f64 {
+    // SAFETY: as above.
+    let values: &Vec<f64> = unsafe { &*(handle as *mut Vec<f64>) };
+    values.iter().sum()
+}
+
+macro_rules! list_extreme {
+    ($name:ident, $elem:ty, $box_value:expr, $order:expr, $want_max:expr, $doc:literal) => {
+        #[doc = $doc]
+        ///
+        /// # Safety
+        /// `handle` must be a live list handle of this carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+            // SAFETY: a live list handle of this carrier, as the ABI declares.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let mut best: Option<&$elem> = None;
+            for value in values.iter() {
+                best = Some(match best {
+                    None => value,
+                    // Ties keep the earlier element, as the VM's does: `min`
+                    // names a *value*, and the first element that has it is the
+                    // one a reader would point at.
+                    Some(current) => {
+                        #[allow(clippy::redundant_closure_call)]
+                        let ordering = ($order)(current, value);
+                        let keep = match ordering {
+                            core::cmp::Ordering::Less => !$want_max,
+                            core::cmp::Ordering::Equal => true,
+                            core::cmp::Ordering::Greater => $want_max,
+                        };
+                        if keep { current } else { value }
+                    }
+                });
+            }
+            match best {
+                #[allow(clippy::redundant_closure_call)]
+                Some(value) => ($box_value)(value),
+                None => crate::lkdyn::lkrt_dyn_from_nil(),
+            }
+        }
+    };
+}
+
+list_extreme!(
+    lkrt_lklist_i64_min,
+    i64,
+    |value: &i64| crate::lkdyn::lkrt_dyn_from_i64(*value),
+    |a: &i64, b: &i64| a.cmp(b),
+    false,
+    "`min()` on a `List<i64>`."
+);
+list_extreme!(
+    lkrt_lklist_i64_max,
+    i64,
+    |value: &i64| crate::lkdyn::lkrt_dyn_from_i64(*value),
+    |a: &i64, b: &i64| a.cmp(b),
+    true,
+    "`max()` on a `List<i64>`."
+);
+list_extreme!(
+    lkrt_lklist_f64_min,
+    f64,
+    |value: &f64| crate::lkdyn::lkrt_dyn_from_f64(*value),
+    |a: &f64, b: &f64| compare_floats(*a, *b),
+    false,
+    "`min()` on a `List<f64>` — the same total order `f64_sort` uses."
+);
+list_extreme!(
+    lkrt_lklist_f64_max,
+    f64,
+    |value: &f64| crate::lkdyn::lkrt_dyn_from_f64(*value),
+    |a: &f64, b: &f64| compare_floats(*a, *b),
+    true,
+    "`max()` on a `List<f64>`."
+);
+list_extreme!(
+    lkrt_lklist_str_min,
+    *const c_char,
+    |value: &*const c_char| crate::lkdyn::lkrt_dyn_from_str(*value),
+    |a: &*const c_char, b: &*const c_char| str_order(*a, *b),
+    false,
+    "`min()` on a `List<str>`."
+);
+list_extreme!(
+    lkrt_lklist_str_max,
+    *const c_char,
+    |value: &*const c_char| crate::lkdyn::lkrt_dyn_from_str(*value),
+    |a: &*const c_char, b: &*const c_char| str_order(*a, *b),
+    true,
+    "`max()` on a `List<str>`."
+);
+
+/// The `str_sort` comparator, as a function so `min`/`max` order strings the
+/// same way rather than by a second copy of it.
+fn str_order(left: *const c_char, right: *const c_char) -> core::cmp::Ordering {
+    match (left.is_null(), right.is_null()) {
+        (true, true) => core::cmp::Ordering::Equal,
+        (true, false) => core::cmp::Ordering::Less,
+        (false, true) => core::cmp::Ordering::Greater,
+        // SAFETY: a non-null element of a live `str` list is a NUL-terminated
+        // arena string.
+        (false, false) => unsafe { CStr::from_ptr(left).to_bytes().cmp(CStr::from_ptr(right).to_bytes()) },
+    }
+}
+
 list_sort!(
     lkrt_lklist_i64_sort,
     i64,

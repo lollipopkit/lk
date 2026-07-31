@@ -11,7 +11,7 @@
 //! keeps the pair from drifting is `hash_members_answer_the_same_on_both_ends`
 //! in the CLI's `clif_differential_test`, which runs both spellings over the
 //! same inputs and compares stdout — a *wrong digest* is precisely the thing a
-//! differential can see (unlike a lost lowering, which it cannot).
+//! differential can see.
 //!
 //! Every member takes `Bytes | String` in the language, which is two native
 //! argument types and therefore two entry points each. The digest of a string

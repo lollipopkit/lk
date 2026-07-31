@@ -1211,12 +1211,20 @@ mod tests {
     /// The `path` members that lower natively, and the two that deliberately do
     /// not.
     ///
-    /// This is a table test rather than a differential for a reason worth
-    /// stating: **the differential cannot see this**. Delete a row below and
-    /// `path_members_answer_the_same_on_both_ends` still passes — the call falls
-    /// to the hybrid bridge, prints the same answer, and is merely ~3x slower.
-    /// Only a check of the table itself (or `scripts/aot_coverage.sh`, which
-    /// pins fallback off) notices.
+    /// A table test rather than a differential, and the reason needs stating
+    /// carefully — I got it wrong once and wrote the wrong reason down.
+    ///
+    /// The differential *does* catch a lost row for anything **in its corpus**:
+    /// its harness compiles with `LK_AOT_HYBRID=0` and `LK_AOT_NO_FALLBACK=1`,
+    /// so a member that stops lowering fails the compile rather than quietly
+    /// bridging. (The experiment that seemed to show otherwise had edited
+    /// nothing — the row was multi-line after `cargo fmt`, the patch silently
+    /// matched nothing, and an unchanged build passed.)
+    ///
+    /// What this test adds is the members *no program in the corpus mentions*,
+    /// and a failure that names the missing member instead of a `pc` in a
+    /// compile error. Its other half — the two that must **not** be here — is
+    /// something no differential can express at all.
     ///
     /// `join` and `normalize` are absent on purpose. `join` is variadic, which
     /// the fixed-arity ABI cannot express. `normalize` is lexical path
@@ -1254,11 +1262,12 @@ mod tests {
 
     /// Every stdlib member wired natively in this round still has a row.
     ///
-    /// One test for many modules because they share one failure mode, and it is
-    /// the one nothing else reports: drop any row here and the member runs on
-    /// the hybrid bridge, prints the identical answer, and costs ~3x. The
-    /// differential corpora cover the *answers* for all of these; only this
-    /// covers the lowering.
+    /// One test for many modules because they share one question: is the
+    /// member still lowered at all? The differential corpora answer it for the
+    /// calls they contain — they forbid fallback, so a lost row fails their
+    /// compile — but only for those calls, and only after building a native
+    /// binary. This answers it for the whole list, immediately, and names the
+    /// member that went missing.
     #[test]
     fn the_natively_lowered_stdlib_surface_stays_lowered() {
         for (module, member) in [
@@ -1296,17 +1305,18 @@ mod tests {
         ] {
             assert!(
                 module_call_abi_rows(module, member).next().is_some(),
-                "{module}.{member} lost its native lowering — the bridge answers the same, so no \
-                 differential reports this"
+                "{module}.{member} lost its native lowering"
             );
         }
     }
 
     /// The `fs` surface lowers, and `metadata` is the one member that does not.
     ///
-    /// Everything here is a call the bridge would answer identically, so the
-    /// differential is blind to losing any of it — and half of these rows were
-    /// missing for exactly that reason, with the lkrt side already written.
+    /// The differential covers the ones its corpus exercises (it forbids
+    /// fallback, so a lost row fails that compile). This covers the whole
+    /// declared surface at once, including members no differential program
+    /// mentions — which is how half of these came to be missing while the lkrt
+    /// side was already written.
     ///
     /// `fs.metadata` answers a four-key `Map`, which needed the map carrier
     /// (`Ty::MapStrDyn`) and the mirrored construction — a map's iteration
@@ -1335,8 +1345,7 @@ mod tests {
         ] {
             assert!(
                 module_call_abi_rows("fs", member).next().is_some(),
-                "fs.{member} lost its native lowering — the bridge answers the same, so nothing \
-                 else reports this"
+                "fs.{member} lost its native lowering"
             );
         }
     }
@@ -1356,8 +1365,7 @@ mod tests {
         ] {
             assert!(
                 module_call_abi_rows("path", member).next().is_some(),
-                "path.{member} lost its native lowering — it now runs on the hybrid bridge, \
-                 which no differential test can detect"
+                "path.{member} lost its native lowering"
             );
         }
         for member in ["join", "normalize"] {

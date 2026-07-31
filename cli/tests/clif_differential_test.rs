@@ -4733,3 +4733,38 @@ fn time_timers_behave_the_same_on_both_ends() {
         )],
     );
 }
+
+/// `min` / `max` / `sum` across the carriers that lower.
+///
+/// The values are easy; the edges are the point. An empty sequence answers
+/// **nil** for the two extremes and **0** for the sum, so the extremes come
+/// back boxed and the sum does not — a carrier that got that backwards would
+/// print `0` where the VM prints `nil`. Floats use `sort`'s total order, so a
+/// NaN is not an artifact of which comparison ran, and a `Bytes` answers the
+/// same three questions a list does.
+#[test]
+fn sequence_reductions_answer_the_same_on_both_ends() {
+    run_clif_differential(
+        "sequence_reductions",
+        &[
+            new(
+                "carriers",
+                "use bytes;\nlet z = 0;\nlet xs = [3, 1 + z, 2];\nlet fs = [1.5, 0.5, 2.5];\n\
+                 let ss = [\"b\", \"a\", \"c\"];\nlet b = bytes.from_list([3, 1, 2]);\n\
+                 println(xs.sum());\nprintln(xs.min());\nprintln(xs.max());\n\
+                 println(fs.sum());\nprintln(fs.min());\nprintln(fs.max());\n\
+                 println(ss.min());\nprintln(ss.max());\n\
+                 println(b.sum());\nprintln(b.min());\nprintln(b.max());\nreturn 0;\n",
+            ),
+            new(
+                "empty_and_ties",
+                "use bytes;\nlet z = 0;\nlet e: List<Int> = [];\nlet ef: List<Float> = [];\n\
+                 let es: List<String> = [];\nlet eb = bytes.from_list([]);\n\
+                 println(e.sum());\nprintln(e.min());\nprintln(e.max());\n\
+                 println(ef.sum());\nprintln(ef.min());\n\
+                 println(es.min());\nprintln(eb.sum());\nprintln(eb.min());\n\
+                 println([2 + z, 2].min());\nprintln([-0.0, 0.0].min());\nreturn 0;\n",
+            ),
+        ],
+    );
+}

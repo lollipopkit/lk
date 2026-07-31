@@ -679,6 +679,68 @@ pub(crate) fn lower_method_dispatch(
         // sort call is used. The boxed carrier is absent on purpose: its order is
         // `compare_runtime_values` across kinds, which is a mirror worth its own
         // conformance test rather than a copy.
+        // `sum` on the two numeric carriers, and `min`/`max` on the three
+        // ordered ones — the same orders `sort` uses just above, from the same
+        // comparators in lkrt.
+        //
+        // The boxed carrier is out for the reason `sort` states: its order is
+        // `compare_runtime_values` across kinds, a mirror that wants its own
+        // conformance test rather than a copy. A `List<str>` has no `sum` for
+        // the reason the VM gives — summing strings is a mistake, not a join —
+        // and with no row that call falls back and raises there.
+        (Ty::ListI64 | Ty::ListF64, "sum", []) => {
+            let (callee, ty) = match receiver_ty {
+                Ty::ListI64 => ("i64_sum", Ty::I64),
+                _ => ("f64_sum", Ty::F64),
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver],
+            });
+            (dst, ty)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "min" | "max", []) => {
+            // An `AbiRef` names a `&'static str`, so the carrier × direction
+            // pair is spelled out rather than assembled.
+            let callee = match (receiver_ty, name) {
+                (Ty::ListI64, "min") => "i64_min",
+                (Ty::ListI64, _) => "i64_max",
+                (Ty::ListF64, "min") => "f64_min",
+                (Ty::ListF64, _) => "f64_max",
+                (_, "min") => "str_min",
+                _ => "str_max",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver],
+            });
+            // Boxed: an empty sequence answers nil, which no unboxed carrier
+            // can hold.
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "sum"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Bytes, "min" | "max", []) => {
+            let callee = if name == "min" { "min" } else { "max" };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", callee),
+                args: vec![receiver],
+            });
+            (dst, Ty::Dyn)
+        }
         (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "sort", []) => {
             let callee = match receiver_ty {
                 Ty::ListI64 => "i64_sort",

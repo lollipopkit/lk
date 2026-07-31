@@ -253,6 +253,19 @@ macro_rules! for_each_abi_fn {
             ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
+            // The three reductions. `min`/`max` answer nil on an empty
+            // sequence, so they box; `sum` answers `0` and does not.
+            ("bytes_h", "sum", lkrt_lkbytes_sum, ReadsHost, [Ptr], I64);
+            ("bytes_h", "min", lkrt_lkbytes_min, ReadsHost, [Ptr], DynVal);
+            ("bytes_h", "max", lkrt_lkbytes_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "i64_sum", lkrt_lklist_i64_sum, ReadsHost, [Ptr], I64);
+            ("list_h", "f64_sum", lkrt_lklist_f64_sum, ReadsHost, [Ptr], F64);
+            ("list_h", "i64_min", lkrt_lklist_i64_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "i64_max", lkrt_lklist_i64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "f64_min", lkrt_lklist_f64_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "f64_max", lkrt_lklist_f64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "str_min", lkrt_lklist_str_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "str_max", lkrt_lklist_str_max, ReadsHost, [Ptr], DynVal);
             ("bytes_h", "utf8", lkrt_lkbytes_utf8, WritesHost, [Ptr], StrPtr);
             ("bytes_h", "utf8_lossy", lkrt_lkbytes_utf8_lossy, WritesHost, [Ptr], StrPtr);
             ("bytes_h", "to_str", lkrt_lkbytes_to_str, WritesHost, [Ptr], StrPtr);

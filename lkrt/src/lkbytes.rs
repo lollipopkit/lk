@@ -133,6 +133,41 @@ pub unsafe extern "C" fn lkrt_lkbytes_utf8(handle: *mut c_void) -> *mut c_char {
     }
 }
 
+/// `sum()` / `min()` / `max()` on a `Bytes`.
+///
+/// A `Bytes` is a sequence of numbers, so it answers the same three reductions
+/// a list does — and the empty answers match: `0` for the sum, nil for the two
+/// extremes.
+///
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_sum(handle: *mut c_void) -> i64 {
+    bytes_slice(handle)
+        .iter()
+        .fold(0i64, |total, byte| total.wrapping_add(i64::from(*byte)))
+}
+
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_min(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    match bytes_slice(handle).iter().min() {
+        Some(byte) => crate::lkdyn::lkrt_dyn_from_i64(i64::from(*byte)),
+        None => crate::lkdyn::lkrt_dyn_from_nil(),
+    }
+}
+
+/// # Safety
+/// `handle` must be a live `Bytes` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_max(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    match bytes_slice(handle).iter().max() {
+        Some(byte) => crate::lkdyn::lkrt_dyn_from_i64(i64::from(*byte)),
+        None => crate::lkdyn::lkrt_dyn_from_nil(),
+    }
+}
+
 /// `bytes.to_string_lossy(b)`.
 ///
 /// # Safety
