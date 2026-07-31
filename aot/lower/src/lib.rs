@@ -169,6 +169,7 @@ pub fn lower_bundled(
         cell_captures: std::collections::HashSet::new(),
         ref_captures: std::collections::HashMap::new(),
         ret_structs: std::collections::HashMap::new(),
+        param_structs: std::collections::HashMap::new(),
         imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
@@ -268,6 +269,11 @@ pub fn lower_bundled(
                     .sum::<usize>(),
                 sig.try_body_param_tys.clone(),
                 sig.try_body_rebound.clone(),
+                // Appended, not inserted: the snapshot is a positional tuple
+                // and the comparison below indexes it, so a new field in the
+                // middle renumbers every later one into comparing the wrong
+                // thing — silently, and a silent convergence is a miscompile.
+                sig.param_structs.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -386,7 +392,8 @@ pub fn lower_bundled(
                         .map(std::collections::HashSet::len)
                         .sum::<usize>()
                 && snapshot.12 == sig.try_body_param_tys
-                && snapshot.13 == sig.try_body_rebound;
+                && snapshot.13 == sig.try_body_rebound
+                && snapshot.14 == sig.param_structs;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.

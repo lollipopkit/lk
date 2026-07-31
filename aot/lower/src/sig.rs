@@ -156,6 +156,23 @@ pub(crate) struct SigInfer {
     /// `Some(None)` where the returns disagree or one of them is not a struct:
     /// an answer that is sometimes wrong would devirtualize to the wrong impl.
     pub(crate) ret_structs: std::collections::HashMap<u32, Option<String>>,
+    /// `(callee, parameter slot)` → the struct every call site passes there.
+    ///
+    /// The parameter-side twin of [`Self::ret_structs`], and the same missing
+    /// provenance one step earlier: a struct arriving as an *argument* had no
+    /// type name, so `fn area(q: P) { return q.w * q.h; }` read fields fine
+    /// (the carrier is `MapStrDyn` either way) while `fn area(q: P) { return
+    /// q.norm(); }` could not devirtualize and dropped the module to the VM.
+    /// Passing a value to a function is at least as common as returning one.
+    ///
+    /// `Some(None)` where the call sites disagree, or one of them passes
+    /// something that is not a struct: a name that is right only sometimes
+    /// would devirtualize to the wrong impl, which is worse than not lowering.
+    /// [`Self::observe_param`] takes the argument's name as a parameter — not
+    /// as a separate call the caller might forget — because a site that
+    /// silently records nothing inherits another site's answer, and that is
+    /// exactly the wrong-impl case.
+    pub(crate) param_structs: std::collections::HashMap<(usize, usize), Option<String>>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -259,7 +276,17 @@ impl SigInfer {
     /// observe as `Dyn` directly. The join is monotonic on a two-level
     /// lattice, so the fixpoint still terminates; function-vs-value
     /// polymorphism keeps its own reject (`lambda_params`).
-    pub(crate) fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty) -> Ty {
+    pub(crate) fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty, arg_struct: Option<&str>) -> Ty {
+        match self.param_structs.entry((callee, slot_idx)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(arg_struct.map(str::to_string));
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if slot.get().as_deref() != arg_struct {
+                    slot.insert(None);
+                }
+            }
+        }
         let obs = match arg_ty {
             Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => Ty::Dyn,
             other => other,

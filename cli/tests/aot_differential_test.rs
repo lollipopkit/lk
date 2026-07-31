@@ -899,6 +899,23 @@ fn differential_trait_dispatch_contract() {
                 "trait_method_calls_sibling",
                 "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
             ),
+            // A struct that arrives as an *argument* is that type too. The
+            // provenance came only from a `NewObject` the lowering saw, so it
+            // survived a `return` (`ret_structs`) but not a parameter:
+            // `fn area(q: P) { return q.w * q.h; }` lowered (fields need no
+            // name) while `fn area(q: P) { return q.norm(); }` could not
+            // devirtualize and took the whole module to the VM. Covered here
+            // for a plain function, a lambda, a second argument, and a callee
+            // that passes its own parameter on.
+            new(
+                "a_struct_argument_keeps_its_type",
+                "struct P { w: Int, h: Int }\ntrait Sz { fn area(self) -> Int; }\nimpl Sz for P { fn area(self) -> Int { return self.w * self.h; } }\n\
+                 fn area_of(q: P) -> Int { return q.area(); }\nfn relay(q: P) -> Int { return area_of(q); }\n\
+                 fn tagged(tag: String, q: P) -> String { return tag + \"=\" + \"${q.area()}\"; }\n\
+                 let f = |q: P| -> Int { return q.area() + 1; };\nlet p = P { w: 2, h: 3 };\n\
+                 println(area_of(p));\nprintln(relay(p));\nprintln(tagged(\"a\", p));\nprintln(f(p));\n\
+                 println(area_of(P { w: 4, h: 5 }));\nreturn 0;\n",
+            ),
             // An impl method nobody calls is no longer a lowering root — and
             // `show` is the one method reached *without* a call naming it
             // (a display site does). Dropping it from the roots leaves a

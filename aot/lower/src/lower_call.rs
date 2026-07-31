@@ -91,7 +91,9 @@ pub(crate) fn lower_spawn(
                 callee: AbiRef::new("rt", "spawn_args_push"),
                 args: vec![b, boxed],
             });
-            let want = sig.observe_param(fidx, k, Ty::Dyn);
+            // Boxed into `Dyn` on the way in, so the callee's parameter is
+            // never a typed struct: no provenance to carry.
+            let want = sig.observe_param(fidx, k, Ty::Dyn, None);
             if want != Ty::Dyn {
                 return Err(Unsupported::TypeMismatch { pc });
             }
@@ -329,7 +331,7 @@ pub(crate) fn lower_try_call(
             }
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
-        let want = sig.observe_param(fidx, k, ty);
+        let want = sig.observe_param(fidx, k, ty, ssa.struct_types.get(&v).map(String::as_str));
         args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
     }
     // The body's return crosses the boundary boxed (`dyn_rets`, the same
@@ -600,7 +602,7 @@ pub(crate) fn lower_user_call(
         // callee receives nil as nil (VM call semantics) instead of the
         // scalar-context unwrap abort.
         let (aval, aty) = ssa.read(arg_reg, block, pc)?;
-        let want = sig.observe_param(callee_idx, i, aty);
+        let want = sig.observe_param(callee_idx, i, aty, ssa.struct_types.get(&aval).map(String::as_str));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }
@@ -608,13 +610,18 @@ pub(crate) fn lower_user_call(
     // environment values first, then the callee's own captures. Their types
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
-        let want = sig.observe_param(callee_idx, argc + k, ety);
+        let want = sig.observe_param(callee_idx, argc + k, ety, ssa.struct_types.get(&ev).map(String::as_str));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
-        let want = sig.observe_param(callee_idx, argc + env_total + k, cty);
+        let want = sig.observe_param(
+            callee_idx,
+            argc + env_total + k,
+            cty,
+            ssa.struct_types.get(&cval).map(String::as_str),
+        );
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }

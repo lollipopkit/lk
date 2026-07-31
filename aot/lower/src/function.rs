@@ -407,11 +407,23 @@ pub(crate) fn lower_function(
         // "a method built on the type's other methods" shape, which is most of
         // what methods are for, and the reason a trait default body could not
         // be lowered at all.
-        if r == 0
-            && pty == Ty::MapStrDyn
-            && let Some(type_name) = sig.traits.impl_owner(func_index)
-        {
-            ssa.struct_types.insert(pv, type_name);
+        //
+        // An ordinary parameter gets it from the call sites instead
+        // (`sig.param_structs`), which is the same carry `ret_structs` does for
+        // a returned struct — passing one to a function is at least as common
+        // as returning one, and without this `fn area(q: P) { return q.norm(); }`
+        // dropped the module to the VM while `q.w * q.h` in the same position
+        // lowered fine.
+        if pty == Ty::MapStrDyn {
+            let provenance = if r == 0 {
+                sig.traits.impl_owner(func_index)
+            } else {
+                None
+            }
+            .or_else(|| sig.param_structs.get(&(func_index as usize, r)).cloned().flatten());
+            if let Some(type_name) = provenance {
+                ssa.struct_types.insert(pv, type_name);
+            }
         }
         fn_params.push((pv, pty));
     }

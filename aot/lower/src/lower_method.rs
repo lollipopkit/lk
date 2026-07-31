@@ -275,7 +275,9 @@ pub(crate) fn lower_trait_method_k(
             if let Some(flag) = sig.plain_called.get_mut(f) {
                 *flag = true;
             }
-            sig.observe_param(f, 0, Ty::Dyn);
+            // A runtime-dispatched arm receives its `self` boxed, so the
+            // parameter is `Dyn` and carries no struct name.
+            sig.observe_param(f, 0, Ty::Dyn, None);
             if !sig.dyn_rets.contains(&fidx) {
                 sig.dyn_rets.insert(fidx);
                 retry = true;
@@ -337,7 +339,7 @@ pub(crate) fn emit_call_with_args(
     }
     let mut args = Vec::with_capacity(call_args.len());
     for (i, (v, ty)) in call_args.into_iter().enumerate() {
-        let want = sig.observe_param(fidx, i, ty);
+        let want = sig.observe_param(fidx, i, ty, ssa.struct_types.get(&v).map(String::as_str));
         args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
     }
     let ret = sig.ret_types.get(fidx).copied().unwrap_or(Ty::I64);
@@ -455,7 +457,9 @@ pub(crate) fn lower_list_hof_k(
     };
     let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize, ty: Ty| {
         for i in 0..arity {
-            sig.observe_param(fidx, i, ty);
+            // Callback parameters seeded from the receiver's element type,
+            // which is never a struct carrier here.
+            sig.observe_param(fidx, i, ty, None);
         }
     };
     // The dyn family: convert the receiver, seed `Dyn` parameters; `map`/
