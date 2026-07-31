@@ -616,6 +616,28 @@ impl Stmt {
                     type_checker.add_constraint(declared_return.clone(), returned);
                 }
 
+                // A declared return type is a promise about *every* path. A
+                // body that can reach its closing brace answers `nil` on that
+                // path, and the failure surfaces at the caller: `g(false) + 1`
+                // reported "Add expected numbers or strings, got Nil and Int",
+                // naming the operator rather than the function that promised an
+                // `Int`.
+                //
+                // Only annotations that exclude nil are checked — `-> Nil`,
+                // `-> Any` and `-> Int?` all admit the fall-through value, and
+                // an unannotated function's return type is *inferred* from what
+                // it returns, so there is no promise to break.
+                if return_was_annotated {
+                    let declared = type_checker.resolve_aliases(&return_placeholder);
+                    if !declared_admits_nil(&declared) && !super::flow::always_diverges(body) {
+                        return Err(anyhow!(format!(
+                            "function '{name}' can reach its end without returning, but declares `-> {}`: the path that falls through answers nil. Add a `return`, or declare `-> {}?`",
+                            declared.display(),
+                            declared.display()
+                        )));
+                    }
+                }
+
                 type_checker.pop_scope();
                 type_checker.restore_pending_top_level(pending);
 
@@ -1458,5 +1480,20 @@ fn int_literal_value(expr: &crate::expr::Expr) -> Option<i128> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Does a declared return type accept the `nil` a fall-through path produces?
+///
+/// `Any` and a type variable do; so does anything optional, which is how a
+/// function says "may answer nothing". Everything else is a promise.
+fn declared_admits_nil(declared: &Type) -> bool {
+    match declared {
+        Type::Nil | Type::Any | Type::Optional(_) => true,
+        Type::Union(members) => members.iter().any(declared_admits_nil),
+        // An unresolved variable is inference still in progress, not a promise
+        // this can hold anyone to.
+        Type::Variable(_) => true,
+        _ => false,
     }
 }

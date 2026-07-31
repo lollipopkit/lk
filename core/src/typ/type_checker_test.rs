@@ -727,4 +727,39 @@ mod tests {
             "expected the union of both arms, got: {message}"
         );
     }
+
+    /// A declared return type is a promise about every path.
+    ///
+    /// `fn g(c: Bool) -> Int { if c { return 1; } }` answered `nil` when `c` was
+    /// false, and `lk check` said nothing: the failure surfaced at the caller as
+    /// "Add expected numbers or strings, got Nil and Int", naming the operator
+    /// rather than the function that promised an `Int`.
+    ///
+    /// Only annotations that exclude nil are held to it — `Nil`, `Any` and `T?`
+    /// all admit the fall-through value, and an unannotated function's return
+    /// type is inferred from what it returns, so there is no promise to break.
+    #[test]
+    fn a_declared_return_type_is_a_promise_about_every_path() {
+        check_program("fn f(c: Bool) -> Int { if c { return 1; } }").expect_err("the false path falls through");
+        check_program("fn f() -> Int { }").expect_err("so does an empty body");
+        check_program("fn f() -> String { let x = 1; }").expect_err("and one that only computes");
+        check_program("fn f(c: Bool) -> Int { if c { return 1; } else { let x = 2; } }")
+            .expect_err("an else that does not return is still a path");
+
+        // Every shape that does leave on every path.
+        check_program("fn f(c: Bool) -> Int { if c { return 1; } else { return 2; } }").expect("both arms return");
+        check_program("fn f(c: Bool) -> Int { if c { return 1; } return 2; }").expect("a trailing return");
+        check_program("fn f() -> Int { while true { return 1; } }").expect("a loop with no way out");
+        check_program("fn f(x: Int) -> Int { match x { 1 => { return 1; }, _ => { return 2; } } }")
+            .expect("a match with a catch-all, every arm returning");
+        check_program("fn f() -> Int { error(\"no\"); }").expect("a raise leaves too");
+        check_program("fn f() -> Int { panic(\"x\"); }").expect("and so does a panic");
+        check_program("fn f(c: Bool) -> Int { if c { return 1; } panic(\"x\"); }").expect("mixed");
+
+        // And the annotations that admit the fall-through value.
+        check_program("fn f() -> Nil { }").expect("Nil is what falling through answers");
+        check_program("fn f() -> Int? { }").expect("an optional says it may answer nothing");
+        check_program("fn f() -> Any { }").expect("Any admits it");
+        check_program("fn f(c: Bool) { if c { return 1; } }").expect("no annotation, no promise");
+    }
 }

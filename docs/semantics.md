@@ -1319,6 +1319,28 @@ lkrt 读运行时的 type 标记。
 顺带,所有拿 `HeapValue::type_name` 拼错误消息的地方(三十余处)也跟着说对了:
 `p.len()` 现在报 "`len()` has no answer for S",不再是 `Object`。
 
+## `-> T` 是对**每一条路径**的承诺(2026-07-31 裁决)
+
+```lk
+fn g(c: Bool) -> Int { if c { return 1; } }   // 现在:lk check 报错
+```
+
+此前这段过检查,`g(false)` 答 `nil`,失败在调用点才现形:
+`Add expected numbers or strings, got Nil and Int` —— 报的是运算符,离那个承诺
+了 `Int` 的函数三个栈帧。
+
+**裁决:声明了返回类型且该类型不接受 nil 的函数,必须每条路径都离开。** 判据只
+认**可证明的离开**:`return`、两臂都离开的 `if/else`、带 catch-all 且每臂都离开
+的 `match`、`error(...)` / `panic(...)`、没有 `break` 的 `while true`。不认识的
+构造一律算"可能落到末尾" —— 那只会要求多写一个 `return`,不会漏放。
+
+不受此约束的三类,因为它们本来就接受落空值:`-> Nil`、`-> Any`、`-> T?`。没写
+注解的函数返回类型是**推断**出来的,没有承诺可违反。
+
+实现在 `core/src/stmt/stmt_impl/flow.rs`,`a_declared_return_type_is_a_promise_about_every_path`
+钉住(含全部"确实每条路都离开"的写法)。整个 examples / bench / 两个裸机 corpus
+零误报。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。
