@@ -1,8 +1,13 @@
 // `defer` — a release that happens on every path, written once.
 //
-// The statement runs when the function leaves, whichever way it leaves, and the
-// deferred statements run in reverse: the second thing taken is the first thing
-// given back.
+// The statement runs when the function *returns* — by any `return`, or by
+// falling off the end — and the deferred statements run in reverse: the second
+// thing taken is the first thing given back.
+//
+// It does **not** run when a raise unwinds past it. `core/src/stmt/defer.rs`
+// records the two attempts at closing that gap and what each one cost. Until it
+// closes: a resource that must survive a raise needs `try`/`catch`, not
+// `defer`.
 //
 // It exists because a kernel is where release-on-every-path fails, and it fails
 // quietly. Writing this language's bare-metal demonstration produced, in one
