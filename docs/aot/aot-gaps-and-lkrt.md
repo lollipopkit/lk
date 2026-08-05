@@ -663,3 +663,32 @@ native 迭代 `1,2`。
 元素显示是这条的验收点:dyn 列表对字符串的引号必须和 VM 的类型化列表**逐字**一样
 (`["x","y z"]`),混合类型也一样(`[1,"s"]`)。差分语料里两种都在。
 
+
+## 19. 不可达块(2026-08-05)
+
+不可达的字节码块曾让**整个函数**拒绝降低。这类块没有前驱,`Ssa::read_recursive`
+的 `preds.is_empty()` 分支直接答 `UndefinedOperand`;而它同时是后继块的前驱,于是
+把定义从后继的交集里也抹掉 —— 报出来的寄存器往往是函数**自己的形参**:
+
+    fn h(n: Int) -> Int {
+        if n > 0 { return 1; } else { return 2; }
+        let z = n + 1;      // 不可达
+        return z;
+    }
+    → MIR lowering: register r4 is read at pc 12 before any definition
+
+字节码也可以来自 `.lkm` 文件,后端不能建立在"前端从不发不可达代码"这个前提上。
+`lower_function` 因此在算完边之后从块 0 做一次可达性:不可达块不贡献前驱边,不被
+降低,在 MIR 里留一个空块、终结子指向自己。
+
+同一处还有两个相邻的洞:
+
+- **隐式返回块的分配条件不全。** 它只在有显式跳转越过末尾时才分配,而函数末尾
+  可以本来就没有 Ret(全臂都 `return` 的 match 之后不再补隐式返回),于是
+  `block_of(code_len)` panic。现在末块没有 exit 时也分配。
+- **落到末尾与返回值冲突时报得不清楚。** 一条路径返回值、另一条落到末尾(答 nil),
+  过去会生成 `-> i64` 函数里的 `ret void`,由 Cranelift 验证器报错。这与两条
+  `return` 互相矛盾是同一件事,现在同样答 `ReturnTypeConflict`,干净回落。
+
+门禁在 `cli/tests/aot_differential_test.rs` 的 `differential_control_flow`:
+`match_arms_return`、`code_after_a_total_if`、`binding_arm_catches_nil`。
