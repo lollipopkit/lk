@@ -222,7 +222,7 @@ pub(super) fn dispatch_slice_builtin_method(
         // As in `bytes_dispatch`: the operations whose answer is a list of the
         // elements are the list's, reached by materializing the window once.
         // `join` too — a window's elements display the same as a list's.
-        "enumerate" | "zip" | "chain" | "chunk" => {
+        "enumerate" | "zip" | "chain" | "chunk" | "concat" => {
             let items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
             let items = TypedList::from_runtime_values(&items, heap);
             let list = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));

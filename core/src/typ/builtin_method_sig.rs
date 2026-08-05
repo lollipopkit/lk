@@ -470,6 +470,15 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "List<List<Elem>>",
         "Groups of `size` elements",
     ),
+    // `concat` is `chain` under its other name; the window answers a list for
+    // the same reason.
+    m(
+        Slice,
+        "concat",
+        &[p("other", "List")],
+        "List<Any>",
+        "The window's elements then `other`'s",
+    ),
     m(
         Slice,
         "join",

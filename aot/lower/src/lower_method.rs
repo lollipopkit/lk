@@ -85,12 +85,22 @@ pub(crate) fn lower_method_call_k(
     let role = method_role(&name);
     /// The methods whose answer is a list of the receiver's elements, whatever
     /// carrier held them. See the arm below.
-    fn answers_a_list_of_the_elements(name: &str) -> bool {
-        // `flatten` is not here: a `Bytes` and an `i64` window hold scalars,
-        // so flattening one is a no-op and the checker declines it. `join` is
-        // not here either — the bytecode compiler matches it by name into the
-        // fused `ListJoin`, so no method call by that name reaches this.
-        matches!(name, "enumerate" | "zip" | "chain" | "chunk")
+    ///
+    /// `flatten` is not here: a `Bytes` and an `i64` window hold scalars, so
+    /// flattening one is a no-op and the checker declines it. `join` is not
+    /// here either — the bytecode compiler matches it by name into the fused
+    /// `ListJoin`, so no method call by that name reaches this.
+    ///
+    /// `concat` is here for a window and **not** for a `Bytes`: two byte
+    /// strings joined are a byte string, so that one keeps its carrier and has
+    /// its own arm. Taking it away would answer a `List` for a shape the
+    /// language already spells as `Bytes`.
+    fn answers_a_list_of_the_elements(receiver_ty: Ty, name: &str) -> bool {
+        match receiver_ty {
+            Ty::Bytes => matches!(name, "enumerate" | "zip" | "chain" | "chunk"),
+            Ty::SliceI64 => matches!(name, "enumerate" | "zip" | "chain" | "chunk" | "concat"),
+            _ => false,
+        }
     }
     let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_list) {
         let unboxed = ssa.new_val();
@@ -100,7 +110,7 @@ pub(crate) fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
-    } else if matches!(receiver_ty, Ty::Bytes | Ty::SliceI64) && answers_a_list_of_the_elements(&name) {
+    } else if answers_a_list_of_the_elements(receiver_ty, &name) {
         // The operations whose answer is a *list of the elements*: they mean
         // the same on `Bytes` and on a window as on a `List`, and cannot keep
         // the carrier, so they are the list's — reached by materializing once
