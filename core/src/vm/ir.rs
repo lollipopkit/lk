@@ -40,7 +40,7 @@ impl ConstPool {
     }
 
     pub fn push_float(&mut self, value: f64) -> Result<u16> {
-        push_const(&mut self.floats, value, "float")
+        push_const_by(&mut self.floats, value, "float", |a, b| a.to_bits() == b.to_bits())
     }
 
     pub fn push_string(&mut self, value: impl Into<String>) -> Result<u16> {
@@ -48,7 +48,7 @@ impl ConstPool {
     }
 
     pub fn push_heap_value(&mut self, value: ConstHeapValue) -> Result<u16> {
-        push_const(&mut self.heap_values, value, "heap value")
+        push_const_by(&mut self.heap_values, value, "heap value", const_heap_value_is_same)
     }
 
     #[inline]
@@ -73,7 +73,21 @@ impl ConstPool {
 }
 
 fn push_const<T: PartialEq>(values: &mut Vec<T>, value: T, name: &str) -> Result<u16> {
-    if let Some(index) = values.iter().position(|existing| existing == &value) {
+    push_const_by(values, value, name, |existing, value| existing == value)
+}
+
+/// Deduplication is *identity*, and for a float that is its bits.
+///
+/// `PartialEq` is the wrong question here: `-0.0 == 0.0` is true and the two
+/// are different values, so whichever literal a file wrote first swallowed
+/// every later occurrence of the other. `println(-0.0); println(0.0);` printed
+/// `-0` twice, and — because the sign of zero reaches division —
+/// `println(1.0 / 0.0)` answered `-inf`. The answer depended on the spelling
+/// and position of an unrelated line in the same file.
+///
+/// Bit identity also merges two NaNs of the same payload, which `==` never did.
+fn push_const_by<T>(values: &mut Vec<T>, value: T, name: &str, eq: impl Fn(&T, &T) -> bool) -> Result<u16> {
+    if let Some(index) = values.iter().position(|existing| eq(existing, &value)) {
         return Ok(index as u16);
     }
     let index = values.len();
@@ -82,6 +96,34 @@ fn push_const<T: PartialEq>(values: &mut Vec<T>, value: T, name: &str) -> Result
     }
     values.push(value);
     Ok(index as u16)
+}
+
+/// [`ConstRuntimeValue`] equality for pooling: identical to the derived one
+/// except that floats compare by bits. See [`push_const_by`].
+fn const_value_is_same(left: &ConstRuntimeValue, right: &ConstRuntimeValue) -> bool {
+    match (left, right) {
+        (ConstRuntimeValue::Float(a), ConstRuntimeValue::Float(b)) => a.to_bits() == b.to_bits(),
+        (ConstRuntimeValue::Heap(a), ConstRuntimeValue::Heap(b)) => const_heap_value_is_same(a, b),
+        _ => left == right,
+    }
+}
+
+/// [`ConstHeapValue`] equality for pooling. A container constant holds
+/// [`ConstRuntimeValue`]s, so the float rule has to reach through it: `[0.0]`
+/// and `[-0.0]` were the same pool entry too.
+fn const_heap_value_is_same(left: &ConstHeapValue, right: &ConstHeapValue) -> bool {
+    match (left, right) {
+        (ConstHeapValue::List(a), ConstHeapValue::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| const_value_is_same(a, b))
+        }
+        (ConstHeapValue::Map(a), ConstHeapValue::Map(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, value)| b.get(key).is_some_and(|other| const_value_is_same(value, other)))
+        }
+        (ConstHeapValue::UpvalCell(a), ConstHeapValue::UpvalCell(b)) => const_value_is_same(a, b),
+        _ => left == right,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1119,5 +1161,41 @@ mod tests {
         assert!(text.contains("g0 answer"));
         assert!(text.contains("n0 native_add arity=2"));
         assert!(text.contains(".fn 0"));
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_pool_tests {
+    use super::*;
+
+    /// A constant pool entry's identity is its bits, not `==`.
+    ///
+    /// `-0.0 == 0.0` is true and the two are different values, so pooling by
+    /// equality made whichever literal a file wrote first swallow every later
+    /// occurrence of the other: `println(-0.0); println(0.0);` printed `-0`
+    /// twice, and the swallowed sign reached division —
+    /// `println(1.0 / 0.0)` answered `-inf`. The answer depended on the
+    /// spelling and position of an unrelated line in the same file.
+    #[test]
+    fn the_two_zeros_are_two_constants() {
+        let mut pool = ConstPool::default();
+        let negative = pool.push_float(-0.0).expect("pooled");
+        let positive = pool.push_float(0.0).expect("pooled");
+        assert_ne!(negative, positive, "-0.0 and 0.0 are different constants");
+        assert_eq!(pool.floats.len(), 2);
+        assert_eq!(pool.push_float(-0.0).expect("pooled"), negative, "and each still pools");
+        assert_eq!(pool.push_float(0.0).expect("pooled"), positive);
+
+        // The same rule one carrier deeper: a container constant holds these
+        // values, so `[0.0]` and `[-0.0]` were the same pool entry too.
+        let mut pool = ConstPool::default();
+        let negative = pool
+            .push_heap_value(ConstHeapValue::List(vec![ConstRuntimeValue::Float(-0.0)]))
+            .expect("pooled");
+        let positive = pool
+            .push_heap_value(ConstHeapValue::List(vec![ConstRuntimeValue::Float(0.0)]))
+            .expect("pooled");
+        assert_ne!(negative, positive);
+        assert_eq!(pool.heap_values.len(), 2);
     }
 }

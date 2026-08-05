@@ -84,6 +84,19 @@ A failure prints the seed and the full generated program, so reproduction is
 计量 —— 调度噪声、缺页、降频只会让某次更慢,所以最小的样本最接近被测的工作量。噪
 声去掉之后,预算才敢收到"能抓住 10 倍回归、抓不到机器间差异"的位置。
 
+**第三条(2026-08-05 补):取最小值治不了持续竞争,所以墙钟断言不能待在正确性套
+里。** "取五次最小值"消的是**单次**采样被打断;整套并行跑时五次一起慢,最小值同样
+被抬高。`test_analyze_complex_program_latency` 隔离下是 1.16ms(预算 10ms,余量
+8.6 倍),在一次 `cargo test --workspace` 里报了 11.99ms —— 慢约 10 倍,正好把 10 倍
+的预算吃穿。
+
+试过用"机器有多快"的标定循环去缩放预算,**否掉了**:标定循环自己在同一台机器同一次
+运行里的离散度就有 3.6 倍,10ms 的预算会被撑成 184ms,那就回到了"不可能失败"的摆设。
+
+现在:`lsp/tests/perf_latency_test.rs` 的六条全部 `#[ignore]`,由 `check.yml` 里
+`LSP latency budgets` 这一步单独、单线程跑。墙钟断言是性能门禁,这个仓库的性能门禁
+本来就单独跑(`bench/run_workload_bench.sh`)。
+
 配套两条:
 
 - 把**观测值和日期**写在预算旁边(`// Observed 3.3ms (debug, 2026-08-01).`),
