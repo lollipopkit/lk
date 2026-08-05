@@ -1848,6 +1848,39 @@ println(typeof(xs[2]));   // 改前 VM: Int,native: Float
 按静态类型直接读这块内存。未装箱路径在那里回落,装箱路径 raise;两者都不是错答案。
 未裁决,见任务表。
 
+## 每一种赋值都按目标声明的类型校验(2026-08-05 裁决)
+
+除了普通 `name = value`,**没有任何赋值目标被检查过**:
+
+```
+let l: List<Int> = [1];
+l[0] = "a";
+let n: Int = l[0];
+println(n + 1);          // 打印 a1
+```
+
+同一形状在四个目标上都成立,而方法拼写是拒的:`l.set(0, "a")` 报
+"Argument 2 has the wrong type (expected Int)"。`l.set(i, v)` 和 `l[i] = v` 是同一个
+操作的两种拼写,只有一种被检查;结构体字段那格最重 —— 字段是这门语言里声明得最多的
+东西,而 `s.x = "a"` 之后 `let n: Int = s.x` 照样过。
+
+根在解析期的降解:三种写法各自变成一个不同的隐藏调用,谁也没有校验值。
+
+| 写法 | 降解成 |
+| --- | --- |
+| `l[0] = v`(下标是整数字面量) | `list.set(l, 0, v)` —— 字节码编译器认的类型化列表快路 |
+| `l[i] = v` / `m[k] = v` | `__lk_set_index(c, k, v)` |
+| `s.f = v` / `m.f = v` | `__lk_set_field(c, "f", v)` |
+
+现在:三处都调同一个 `check_container_store` —— 三种降解,一条规则。它按容器类型取出
+声明的元素/值类型(结构体则取字段声明的类型)与被存的值比;map 还比键的声明类型
+(`Map<String,Int>` 上的 `m[7] = 2` 此前收下,map 里就出现了 Int 键)。
+
+两条边界照旧:元素类型还是类型变量时**教**它而不是拒它(`let l = []; l.push(1);
+l[0] = "a";` 仍然可以,与实参那条同规矩);`Any` 两侧都放行,那是这门语言的动态逃生口。
+
+门禁:`a_store_is_checked_against_what_the_container_declares`,七种拒 + 五种收。
+
 ## 可变容器不再是协变的(2026-08-05 记录、裁决、实现)
 
 `values/src/types.rs` 的 `is_assignable_to` 里写着 `// Generic containers with

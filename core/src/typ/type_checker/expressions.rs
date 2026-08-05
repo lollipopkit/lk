@@ -621,7 +621,7 @@ impl TypeChecker {
                     // `Int` position, and a receiver of unknown type is nobody's
                     // business to refuse here.
                     if name == "__lk_set_index"
-                        && let [container, key, _] = args.as_slice()
+                        && let [container, key, value] = args.as_slice()
                     {
                         let container_ty = self.check_expr(container)?;
                         if matches!(self.resolve_aliases(&container_ty), Type::Map(_, _)) {
@@ -639,7 +639,29 @@ impl TypeChecker {
                                 ));
                             }
                         }
+                        self.check_container_store(&container_ty, key, value)?;
                     }
+                    // `s.f = v` and `m.f = v` arrive as `__lk_set_field(s, "f", v)`.
+                    if name == "__lk_set_field"
+                        && let [container, key, value] = args.as_slice()
+                    {
+                        let container_ty = self.check_expr(container)?;
+                        self.check_container_store(&container_ty, key, value)?;
+                    }
+                }
+                // The third spelling of the same store: `l[0] = v` with a
+                // literal index desugars to `list.set(l, 0, v)` (the typed-list
+                // path the bytecode compiler recognizes), not to
+                // `__lk_set_index`. Three desugars, one rule.
+                if let Expr::Access(base, member) = func_expr.as_ref()
+                    && matches!(base.as_ref(), Expr::Var(v) if v == "list")
+                    && matches!(member.as_ref(), Expr::Literal(lit) if lit.as_str() == Some("set"))
+                    && let [container, key, value] = args.as_slice()
+                {
+                    let container_ty = self.check_expr(container)?;
+                    self.check_container_store(&container_ty, key, value)?;
+                }
+                if let Expr::Var(name) = func_expr.as_ref() {
                     if let Some(result) = self.check_volatile_builtin(name, args)? {
                         return Ok(result);
                     }
@@ -1958,6 +1980,71 @@ impl TypeChecker {
         };
 
         Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
+    }
+
+    /// One store into a container, checked against what the container's type
+    /// declares it holds.
+    ///
+    /// Every assignment that is not a plain `name = value` reaches this: the
+    /// parser desugars `l[i] = v`, `m[k] = v` and `s.f = v` into hidden calls
+    /// (`__lk_set_index`, `__lk_set_field`, `list.set`), and until now nothing
+    /// checked the *value* against the declaration. `l.set(0, "a")` on a
+    /// `List<Int>` was refused while `l[0] = "a"` — the same operation, the
+    /// other spelling — was accepted, and `let n: Int = l[0]` then type-checked
+    /// and held a String. A struct field was the same: `s.x = "a"` on
+    /// `struct S { x: Int }`.
+    ///
+    /// `Any` on either side is the language's dynamic escape hatch and passes,
+    /// as it does everywhere else.
+    fn check_container_store(&mut self, container_ty: &Type, key: &Expr, value: &Expr) -> Result<()> {
+        let container = self.resolve_aliases(container_ty);
+        let value_ty = self.check_expr(value)?;
+        let declared = match &container {
+            Type::List(elem) => (**elem).clone(),
+            Type::Map(key_ty, val) => {
+                // The key too: a `Map<String, Int>` accepted `m[7] = 2` and
+                // then held an Int key. The rule that a Float cannot be a key
+                // *at all* was already asked; this is the declared key type.
+                let actual_key = self.check_expr(key)?;
+                if !actual_key.contains_variables()
+                    && !key_ty.contains_variables()
+                    && !self.is_assignable(&actual_key, key_ty)
+                {
+                    return Err(Self::type_err(
+                        "map key has the wrong type",
+                        Some((**key_ty).clone()),
+                        Some(actual_key),
+                        Some(key.clone()),
+                    ));
+                }
+                (**val).clone()
+            }
+            // A struct's field names its own type; anything else about the
+            // field (unknown name, non-literal) is the field-access path's
+            // business, so a failure to resolve one is simply not checked here.
+            Type::Named(name) => match self.struct_field_type(name, key) {
+                Ok(ty) => ty,
+                Err(_) => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        // Nothing settled to check against: an unannotated container's element
+        // type is still a variable, so the store *teaches* it rather than being
+        // refused by it. Same rule `check_argument` applies to an argument, and
+        // what keeps `let l = []; l.push(1); l[0] = "a";` working.
+        if declared.contains_variables() || value_ty.contains_variables() {
+            self.inference_engine.add_constraint(declared, value_ty);
+            return Ok(());
+        }
+        if self.is_assignable(&value_ty, &declared) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            "stored value has the wrong type",
+            Some(declared),
+            Some(value_ty),
+            Some(value.clone()),
+        ))
     }
 
     fn struct_field_type(&self, struct_name: &str, field: &Expr) -> Result<Type> {

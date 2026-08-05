@@ -671,6 +671,60 @@ mod tests {
     ///
     /// The unifier had both directions in one arm all along, so this was also
     /// the two of them disagreeing.
+    /// A store into a container is checked against what the container's type
+    /// declares it holds — through every spelling of a store.
+    ///
+    /// The parser desugars each of them into a different hidden call
+    /// (`list.set` for a literal index, `__lk_set_index` otherwise,
+    /// `__lk_set_field` for a field), and none of the three checked the value.
+    /// `l.set(0, "a")` on a `List<Int>` was refused while `l[0] = "a"` — the
+    /// same operation, the other spelling — was accepted, and
+    /// `let n: Int = l[0]` then type-checked and held a String.
+    #[test]
+    fn a_store_is_checked_against_what_the_container_declares() {
+        let refused = [
+            ("list element, literal index", "let l: List<Int> = [1];\nl[0] = \"a\";"),
+            (
+                "list element, variable index",
+                "let l: List<Int> = [1];\nlet i = 0;\nl[i] = \"a\";",
+            ),
+            (
+                "nested list element",
+                "let l: List<List<Int>> = [[1]];\nl[0] = [\"a\"];",
+            ),
+            ("map value", "let m: Map<String, Int> = {\"k\": 1};\nm[\"k\"] = \"a\";"),
+            ("map key", "let m: Map<String, Int> = {\"k\": 1};\nm[7] = 2;"),
+            ("struct field", "struct S { x: Int }\nlet s = S { x: 1 };\ns.x = \"a\";"),
+            (
+                "the method spelling, which always was",
+                "let l: List<Int> = [1];\nl.set(0, \"a\");",
+            ),
+        ];
+        for (what, source) in refused {
+            check_program(source).expect_err(what);
+        }
+
+        let accepted = [
+            ("a store of the declared type", "let l: List<Int> = [1];\nl[0] = 2;"),
+            ("compound assignment", "let l: List<Int> = [1];\nl[0] += 1;"),
+            (
+                "a map store of the declared types",
+                "let m: Map<String, Int> = {\"k\": 1};\nm[\"j\"] = 2;",
+            ),
+            (
+                "a struct field of its declared type",
+                "struct S { x: Int }\nlet s = S { x: 1 };\ns.x = 2;",
+            ),
+            (
+                "an untyped container still takes anything",
+                "let l = [];\nl.push(1);\nl[0] = \"a\";",
+            ),
+        ];
+        for (what, source) in accepted {
+            check_program(source).expect(what);
+        }
+    }
+
     /// A container cannot be widened at its element type, in any of the five
     /// positions that could do it.
     ///
