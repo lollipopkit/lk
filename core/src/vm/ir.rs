@@ -892,16 +892,36 @@ mod tests {
     /// `MODULE_ARTIFACT_VERSION` bump.
     #[test]
     fn opcodes_are_contiguous() {
-        let decoded: Vec<u8> = (0u8..=255)
-            .filter(|&value| Opcode::from_bits(value).is_some())
+        assert_contiguous("Opcode", |value| Opcode::from_bits(value).map(|op| op as u8));
+        // Both of these are decoded from a byte on a dispatch path too, and the
+        // rule is not about `Opcode` — it is about what a `match` on a dense
+        // integer lowers to. Guarding only the one that was measured would be
+        // guarding the incident rather than the property.
+        assert_contiguous("InstrFormat", |value| InstrFormat::from_bits(value).map(|f| f as u8));
+        assert_contiguous("CastTarget", |value| CastTarget::from_u8(value).map(|c| c as u8));
+    }
+
+    /// Every byte the decoder accepts forms `0..=N`, **and** decodes to the
+    /// variant whose discriminant is that byte.
+    ///
+    /// The round trip is the load-bearing half. Each of these decoders is a
+    /// hand-written `match` on literals, so it mirrors the discriminants rather
+    /// than deriving from them — a first version of this test only checked
+    /// which bytes the decoder accepted, which is the mirror and not the thing.
+    /// It would have passed with `Sj = 40` and `4 => Some(Self::Sj)` side by
+    /// side: contiguous decode, sparse enum, and the jump table gone.
+    fn assert_contiguous(name: &str, decode: impl Fn(u8) -> Option<u8>) {
+        let decoded: Vec<(u8, u8)> = (0u8..=255)
+            .filter_map(|value| decode(value).map(|discriminant| (value, discriminant)))
             .collect();
-        assert!(!decoded.is_empty(), "no opcode decodes at all");
-        let expected: Vec<u8> = (0..decoded.len() as u8).collect();
+        assert!(!decoded.is_empty(), "{name}: nothing decodes at all");
+        let expected: Vec<(u8, u8)> = (0..decoded.len() as u8).map(|value| (value, value)).collect();
         assert_eq!(
             decoded,
             expected,
-            "opcode discriminants must be 0..={} with no gaps — a hole costs ~9% by \
-             breaking the dispatch jump table",
+            "{name} must decode 0..={} onto the variants whose discriminants are those bytes — a \
+             hole costs ~9% by breaking the dispatch jump table, and a decoder that disagrees with \
+             the discriminants hides one",
             decoded.len() - 1
         );
     }
