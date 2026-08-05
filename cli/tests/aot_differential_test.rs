@@ -342,6 +342,18 @@ fn differential_lists() {
     run_differential(
         "lists",
         &[
+            // A list literal whose element type a later push contradicts is
+            // built as a Dyn list from the start — the same fixpoint retry an
+            // empty `[]` already used. The VM widens the carrier in place;
+            // native cannot, so this used to fall back.
+            new(
+                "widened_after_a_typed_literal",
+                "let a: List<Any> = [1, 2];\na.push(\"x\");\nprintln(a);\nlet b: List<Any> = [1.5, 2.5];\nb.push(\"y\");\nprintln(b);\nlet c: List<Any> = [\"p\", \"q\"];\nc.push(7);\nprintln(c);\nreturn 0;\n",
+            ),
+            new(
+                "widened_from_a_register_window",
+                "let n = 3;\nlet d: List<Any> = [n, n + 1];\nd.push(\"z\");\nprintln(d);\nlet f: List<Any> = [1, 2];\nfor i in 0..2 { f.push(\"s\"); }\nprintln(f);\nreturn 0;\n",
+            ),
             new("len", "let xs = [1, 2, 3, 4];\nreturn xs.len();\n"),
             new("const_index", "let xs = [10, 20, 30, 40];\nreturn xs[0] + xs[2];\n"),
             new("oob_nil", "let xs = [10];\nreturn xs[9];\n"),

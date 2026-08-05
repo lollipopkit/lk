@@ -692,3 +692,32 @@ native 迭代 `1,2`。
 
 门禁在 `cli/tests/aot_differential_test.rs` 的 `differential_control_flow`:
 `match_arms_return`、`code_after_a_total_if`、`binding_arm_catches_nil`。
+
+## 20. 列表字面量的载体也可以被后续 push 推翻(2026-08-05)
+
+`let xs: List<Any> = [1, 2]; xs.push("a");` 此前在原生侧回落:
+
+    MIR lowering: an operand at pc 3 is a str where a i64 is required
+
+VM 的做法是把 `TypedList::Int` 就地拓宽成 `Mixed`;原生的 `Vec<i64>` 做不到这一步。
+原来记的判据是"别的别名按静态类型直接读这块内存",在容器改成不变(docs/semantics.md
+「可变容器不再是协变的」)之后不成立了 —— 不变意味着同一个值在每个名字上的元素类型
+相同。剩下的问题只是**载体在构造时就定了**。
+
+空 `[]` 早就有这条通路:降低时抛可重试的 `EmptyListGuessWrong`,定点记下字面量的 pc,
+下一轮把它建成 Dyn 列表。同质字面量与空字面量在这件事上没有区别 —— 两者的元素类型都
+是一个后续 push 可以推翻的判断 —— 所以现在共用同一条通路,名字也按这个含义改了:
+
+| 原名 | 现名 |
+| --- | --- |
+| `Unsupported::EmptyListGuessWrong` | `Unsupported::ListElemTypeContradicted` |
+| `Ssa::dyn_empty_pcs` | `Ssa::dyn_list_pcs` |
+| `Ssa::empty_guess` | `Ssa::literal_list_ty` |
+| `FnSigs::dyn_empty_lists` | `FnSigs::dyn_lists` |
+
+两处字面量都记录并都认这个标记:常量列表(`LoadHeapConst`)和寄存器窗口列表
+(`NewList`)。被推翻的那个从构造起就是 `list_h.dyn_new` + 逐元素 `to_dyn` + `dyn_push`。
+
+门禁在 `cli/tests/aot_differential_test.rs` 的 `differential_lists`:
+`widened_after_a_typed_literal`(Int/Float/Str 三种载体各推翻一次)、
+`widened_from_a_register_window`(变量元素、循环里 push)。

@@ -112,7 +112,7 @@ pub enum Unsupported {
     /// An empty `[]` literal's guessed element type was contradicted by a
     /// later consumer: retriable — the fixpoint re-lowers with the literal
     /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
-    EmptyListGuessWrong {
+    ListElemTypeContradicted {
         pcs: Vec<usize>,
     },
     /// A loop-header phi merged heterogeneous boxable types: retriable —
@@ -207,7 +207,7 @@ impl Unsupported {
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")
             }
-            Unsupported::EmptyListGuessWrong { pcs } => {
+            Unsupported::ListElemTypeContradicted { pcs } => {
                 format!("empty list literal(s) at pc {pcs:?} were mis-guessed (retried as Dyn)")
             }
             Unsupported::DynLoopPhi { block, slot } => {

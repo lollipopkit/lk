@@ -174,7 +174,7 @@ pub fn lower_bundled(
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
-        dyn_empty_lists: std::collections::HashSet::new(),
+        dyn_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
@@ -257,7 +257,7 @@ pub fn lower_bundled(
                 sig.specializations.len(),
                 sig.ret_closures.clone(),
                 sig.dyn_loop_phis.len(),
-                sig.dyn_empty_lists.len(),
+                sig.dyn_lists.len(),
                 sig.dyn_rets.len(),
                 sig.ret_structs.clone(),
                 sig.global_tys.clone(),
@@ -365,9 +365,9 @@ pub fn lower_bundled(
                     Err(Unsupported::DynLoopPhi { block, slot }) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
                     }
-                    Err(Unsupported::EmptyListGuessWrong { pcs }) => {
+                    Err(Unsupported::ListElemTypeContradicted { pcs }) => {
                         for pc in pcs {
-                            sig.dyn_empty_lists.insert((fi as u32, pc));
+                            sig.dyn_lists.insert((fi as u32, pc));
                         }
                     }
                     // A register read after a `try` region with no definition
@@ -417,7 +417,7 @@ pub fn lower_bundled(
                 && snapshot.2 == sig.specializations.len()
                 && snapshot.3 == sig.ret_closures
                 && snapshot.4 == sig.dyn_loop_phis.len()
-                && snapshot.5 == sig.dyn_empty_lists.len()
+                && snapshot.5 == sig.dyn_lists.len()
                 && snapshot.6 == sig.dyn_rets.len()
                 && snapshot.7 == sig.ret_structs
                 && snapshot.8 == sig.global_tys
@@ -446,7 +446,7 @@ pub fn lower_bundled(
             // found: a region carries nothing back until a read reports that it
             // must, and each report costs a pass.
             let discovery_budget = sig.dyn_loop_phis.len()
-                + sig.dyn_empty_lists.len()
+                + sig.dyn_lists.len()
                 + sig.dyn_rets.len()
                 + sig.force_dyn_globals.len()
                 + sig

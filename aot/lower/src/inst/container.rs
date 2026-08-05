@@ -27,7 +27,12 @@ pub(super) fn lower(
                 elems.push(ssa.read(reg, block, pc)?);
             }
             let all = |t: Ty| elems.iter().all(|&(_, ty)| ty == t);
-            let materialized = if !elems.is_empty() && all(Ty::I64) {
+            // Same retry channel as the constant-list path above: a push of a
+            // wider element contradicted this literal's element type.
+            let contradicted = ssa.dyn_list_pcs.contains(&pc);
+            let materialized = if contradicted {
+                None
+            } else if !elems.is_empty() && all(Ty::I64) {
                 Some(("i64_new", "i64_push", Ty::ListI64))
             } else if !elems.is_empty() && all(Ty::F64) {
                 Some(("f64_new", "f64_push", Ty::ListF64))
@@ -52,6 +57,7 @@ pub(super) fn lower(
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.literal_list_ty.insert(handle, (pc, list_ty));
                 ssa.write(instr.a(), block, (handle, list_ty));
             } else if !elems.is_empty()
                 && elems.iter().all(|&(_, ty)| {
@@ -309,7 +315,7 @@ pub(super) fn lower(
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
                     if elems.is_empty() {
-                        let (new_fn, list_ty) = if ssa.dyn_empty_pcs.contains(&pc) {
+                        let (new_fn, list_ty) = if ssa.dyn_list_pcs.contains(&pc) {
                             // A consumer contradicted an earlier guess — the
                             // fixpoint retry forces the Dyn materialization.
                             ("dyn_new", Ty::ListDyn)
@@ -327,7 +333,7 @@ pub(super) fn lower(
                             args: Vec::new(),
                         });
                         if list_ty != Ty::ListDyn {
-                            ssa.empty_guess.insert(handle, (pc, list_ty));
+                            ssa.literal_list_ty.insert(handle, (pc, list_ty));
                         }
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
@@ -337,6 +343,34 @@ pub(super) fn lower(
                     let all_int = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Int(_)));
                     let all_float = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Float(_)));
                     let all_str = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::ShortStr(_)));
+                    // A push of a wider element contradicted this literal's
+                    // element type, so the fixpoint asked for it as a Dyn list.
+                    // A homogeneous literal is as contradictable as an empty
+                    // one: `let xs: List<Any> = [1, 2]; xs.push("a");` is the
+                    // shape the VM answers by widening the carrier in place,
+                    // and the only reason it was refused here is that a
+                    // `Vec<i64>` cannot become a `Vec<LkDyn>` after the fact.
+                    // Building it Dyn from the start is the same answer.
+                    if ssa.dyn_list_pcs.contains(&pc) && elems.iter().all(const_is_dyn_boxable) {
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("list_h", "dyn_new"),
+                            args: Vec::new(),
+                        });
+                        for e in elems {
+                            let boxed = box_const_scalar(ssa, insts, globals, e);
+                            insts.push(Inst::Call {
+                                dst: None,
+                                callee: AbiRef::new("list_h", "dyn_push"),
+                                args: vec![handle, boxed],
+                            });
+                        }
+                        ssa.list_len.insert(handle, elems.len() as i64);
+                        ssa.list_base_len.insert(handle, elems.len() as i64);
+                        ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+                        return Ok(());
+                    }
                     let (new_fn, push_fn, list_ty) = if all_int {
                         ("i64_new", "i64_push", Ty::ListI64)
                     } else if all_float {
@@ -391,6 +425,10 @@ pub(super) fn lower(
                     }
                     ssa.list_len.insert(handle, elems.len() as i64);
                     ssa.list_base_len.insert(handle, elems.len() as i64);
+                    // Recorded like an empty literal's guess: a later push of a
+                    // wider element names this pc, and the fixpoint rebuilds it
+                    // above as a Dyn list.
+                    ssa.literal_list_ty.insert(handle, (pc, list_ty));
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
@@ -801,7 +839,7 @@ pub(super) fn lower(
             // A push whose value type contradicts a guessed empty-`[]`
             // element type retries the literal as a Dyn list (fixpoint).
             let guess_wrong = |ssa: &Ssa| {
-                if ssa.empty_guess.is_empty() {
+                if ssa.literal_list_ty.is_empty() {
                     None
                 } else {
                     // The handle itself when known; otherwise a handle read
@@ -812,23 +850,23 @@ pub(super) fn lower(
                     // must keep its typed lowering — `join` etc. have no Dyn
                     // arm). If shape-filtering leaves nothing, over-mark all
                     // (costs typed-ness, never correctness).
-                    let pcs = match ssa.empty_guess.get(&handle) {
+                    let pcs = match ssa.literal_list_ty.get(&handle) {
                         Some(&(pc0, _)) => vec![pc0],
                         None => {
                             let same_shape: Vec<usize> = ssa
-                                .empty_guess
+                                .literal_list_ty
                                 .values()
                                 .filter(|&&(_, gty)| gty == list_ty)
                                 .map(|&(p0, _)| p0)
                                 .collect();
                             if same_shape.is_empty() {
-                                ssa.empty_guess.values().map(|&(p0, _)| p0).collect()
+                                ssa.literal_list_ty.values().map(|&(p0, _)| p0).collect()
                             } else {
                                 same_shape
                             }
                         }
                     };
-                    Some(Unsupported::EmptyListGuessWrong { pcs })
+                    Some(Unsupported::ListElemTypeContradicted { pcs })
                 }
             };
             match list_ty {
