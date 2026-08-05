@@ -1049,16 +1049,23 @@ fn dyn_map<'a>(v: LkDyn) -> &'a crate::lkmap::StrDynMap {
     unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
 }
 
-/// Constant-string field read on a Dyn: a Map tag looks the key up (missing
-/// key → Nil, the VM's nil-on-missing); any non-map tag is the VM's loud
-/// failure on member access.
+/// Constant-string field read on a Dyn: a map tag of **either** representation
+/// looks the key up (missing key → Nil, the VM's nil-on-missing); any non-map
+/// tag is the VM's loud failure on member access.
+///
+/// The typed arm is why this dispatches rather than unboxing. A typed map boxed
+/// in place keeps its own carrier, so `dyn.as_map` — which hands back a
+/// `str_dyn` handle — cannot serve it, and a member read through that guard
+/// raised `runtime type error` on a program the VM answers. Every read of a
+/// boxed value has to know both representations; only `len`, display and
+/// equality did.
 ///
 /// # Safety
 /// `key` must be a NUL-terminated string; a Map payload must be a live
 /// `map_h str_dyn` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
-    if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
+    if !is_map_tag(v.tag) || (v.payload as *mut c_void).is_null() {
         crate::panic::raise_str("runtime type error");
     }
     let key = if key.is_null() {
@@ -1066,7 +1073,13 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
     } else {
         unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")
     };
-    dyn_map(v).get(key).copied().unwrap_or(LkDyn::NIL)
+    if v.tag == DYN_MAP {
+        return dyn_map(v).get(key).copied().unwrap_or(LkDyn::NIL);
+    }
+    map_entries(v)
+        .get(&crate::vm_mirror::str_key(key))
+        .copied()
+        .unwrap_or(LkDyn::NIL)
 }
 
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
@@ -1075,8 +1088,10 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
 /// `container[key]` where *both* are boxed.
 ///
 /// The static types say nothing about which access this is, so the tag decides
-/// — which is what the VM does. An integer key indexes, a string key reads a
-/// field, and anything else is the VM's error.
+/// — which is what the VM does. A string key reads a field; an integer key
+/// indexes a sequence but *looks up* in a map, because an integer-keyed map's
+/// keys are keys and not positions (`{3: "a"}[3]` is `"a"`, and there is no
+/// element 3).
 ///
 /// # Safety
 ///
@@ -1091,8 +1106,20 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     }
 }
 
+/// An integer key on a map is a *key*, not a position.
+///
+/// `{3: 4}[3]` is `4` and there is no element 3 — so a map tag of either
+/// representation looks up here rather than indexing. This is the same
+/// entry point a constant integer key lowers to directly, which is why the
+/// rule lives here and not only in [`lkrt_dyn_get`].
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
+    if is_map_tag(v.tag) {
+        return map_entries(v)
+            .get(&crate::vm_mirror::RtKey::Int(index))
+            .copied()
+            .unwrap_or(LkDyn::NIL);
+    }
     if v.tag != DYN_LIST {
         crate::panic::raise_str("runtime type error");
     }

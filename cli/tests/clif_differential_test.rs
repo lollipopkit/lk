@@ -2140,6 +2140,16 @@ fn a_boxed_typed_map_keeps_its_order() {
                 "int_keyed_maps_box_and_iterate",
                 "let m = {1: 10, 2: 20, 5: 50};\nprintln([m]);\nprintln({\"w\": m});\nprintln(m == {5: 50, 1: 10, 2: 20});\nlet n = 0;\nfor pair in m { n = n + 1; }\nprintln(n);\nfor pair in m { println(pair); }\nreturn 0;\n",
             ),
+            // Reading a *key* out of the box. Boxing in place means the value
+            // behind the tag is still a typed carrier, so a read that unboxes
+            // to a `str_dyn` handle first cannot serve it: `c[0]["a"]` compiled
+            // fully native and then raised `runtime type error` on a program
+            // the VM answers. Both key spellings, both representations, and a
+            // miss on each — a missing key is nil, not a failure.
+            new(
+                "reading_a_key_out_of_a_boxed_typed_map",
+                "let z = 0;\nlet m = {\"a\": 1 + z};\nlet c = [m];\nprintln(c[0][\"a\"]);\nprintln(c[0][\"zz\"]);\nlet n = {3: 4 + z};\nlet d = [n];\nprintln(d[0][3]);\nprintln(d[0][9]);\nreturn 0;\n",
+            ),
         ],
         NativePath::PureCranelift,
     );
