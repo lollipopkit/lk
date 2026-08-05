@@ -616,6 +616,68 @@ fn dispatch_set_builtin_method(
             }
             Ok(Some(*receiver))
         }
+        // The set operations. A `Set` that can only add, delete, test a member
+        // and hand back a list is a deduplicating bag; these are what make it a
+        // set, and none of them existed.
+        //
+        // **The insertion sequence is the contract.** A set's iteration order
+        // is its hash order (see `DYN_SET` and the mirror discipline), so two
+        // sets with the same members can still iterate differently if they were
+        // filled in different sequences. Each operation below therefore fills
+        // the answer in one stated order — the receiver's own order first, then
+        // the argument's — and the native mirror replays exactly that. Building
+        // the same answer "some other way" is how the two ends come to print a
+        // set differently.
+        "union" | "intersection" | "difference" | "symmetric_difference" => {
+            if positional.len() != 1 {
+                bail!("set.{method}() expects 1 argument (other), got {}", positional.len());
+            }
+            let mine = set_entries(handle, heap);
+            let theirs = set_entries_of_value(&positional[0], heap, method)?;
+            let other: crate::util::fast_map::FastHashSet<RuntimeMapKey> = theirs.iter().cloned().collect();
+            let mut out = crate::util::fast_map::fast_hash_set_new();
+            match method {
+                "union" => {
+                    out.extend(mine.iter().cloned());
+                    out.extend(theirs.iter().cloned());
+                }
+                "intersection" => out.extend(mine.iter().filter(|key| other.contains(*key)).cloned()),
+                "difference" => out.extend(mine.iter().filter(|key| !other.contains(*key)).cloned()),
+                _ => {
+                    let owned: crate::util::fast_map::FastHashSet<RuntimeMapKey> = mine.iter().cloned().collect();
+                    out.extend(mine.iter().filter(|key| !other.contains(*key)).cloned());
+                    out.extend(theirs.iter().filter(|key| !owned.contains(*key)).cloned());
+                }
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Set(RuntimeSet::from_entries(out))),
+            )))
+        }
+        // The three predicates. `is_disjoint` is not `!intersection().is_empty()`
+        // spelled out — it stops at the first shared member and allocates
+        // nothing.
+        "is_subset" | "is_superset" | "is_disjoint" => {
+            if positional.len() != 1 {
+                bail!("set.{method}() expects 1 argument (other), got {}", positional.len());
+            }
+            let mine = set_entries(handle, heap);
+            let theirs = set_entries_of_value(&positional[0], heap, method)?;
+            let answer = match method {
+                "is_subset" => {
+                    let other: crate::util::fast_map::FastHashSet<RuntimeMapKey> = theirs.iter().cloned().collect();
+                    mine.iter().all(|key| other.contains(key))
+                }
+                "is_superset" => {
+                    let owned: crate::util::fast_map::FastHashSet<RuntimeMapKey> = mine.iter().cloned().collect();
+                    theirs.iter().all(|key| owned.contains(key))
+                }
+                _ => {
+                    let other: crate::util::fast_map::FastHashSet<RuntimeMapKey> = theirs.iter().cloned().collect();
+                    !mine.iter().any(|key| other.contains(key))
+                }
+            };
+            Ok(Some(RuntimeVal::Bool(answer)))
+        }
         "values" => {
             if !positional.is_empty() {
                 bail!("set.values() expects no arguments, got {}", positional.len());
@@ -1401,6 +1463,29 @@ pub(super) fn typed_list_element(list_handle: HeapRef, index: usize, heap: &mut 
 ///
 /// The typed variants never touch the heap at all: an `Int` list compares
 /// integers, a `String` list compares text against text.
+/// A set's members in *its own* iteration order.
+///
+/// Detached from the heap because the answer is built into a fresh set while
+/// the source is still borrowed; the keys are cheap to clone and there are two
+/// of them to read.
+fn set_entries(handle: crate::val::HeapRef, heap: &HeapStore) -> Vec<RuntimeMapKey> {
+    match heap.get(handle) {
+        Some(HeapValue::Set(values)) => values.entries().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The same, for the argument of a set operation — which must be a `Set`.
+fn set_entries_of_value(value: &RuntimeVal, heap: &HeapStore, method: &str) -> Result<Vec<RuntimeMapKey>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("set.{method}() argument must be a Set");
+    };
+    match heap.get(*handle) {
+        Some(HeapValue::Set(values)) => Ok(values.entries().cloned().collect()),
+        _ => bail!("set.{method}() argument must be a Set"),
+    }
+}
+
 pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Result<Option<usize>> {
     let mut found = None;
     typed_list_scan(list, needle, heap, |index| {

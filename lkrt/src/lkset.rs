@@ -44,6 +44,69 @@ fn set_mut<'a>(handle: *mut c_void) -> &'a mut LkSet {
     unsafe { &mut *(handle as *mut LkSet) }
 }
 
+/// The set operations, with the **insertion sequence** the VM states: the
+/// receiver's members in its own order, then the argument's in its own order.
+///
+/// A set's iteration order is its hash order, so filling the answer in another
+/// sequence gives the same members in a different order — and a set printed one
+/// way here and another way there is a wrong answer under the mirror
+/// discipline, not a cosmetic difference. `kind` selects the operation;
+/// `SET_OP_*` names the numbering.
+///
+/// # Safety
+/// Both handles must be live `Set` handles from this module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkset_combine(a: *mut c_void, b: *mut c_void, kind: i64) -> *mut c_void {
+    let (mine, theirs) = (set_mut(a), set_mut(b));
+    let mut out = LkSet::default();
+    match kind {
+        SET_OP_UNION => {
+            out.extend(mine.iter().cloned());
+            out.extend(theirs.iter().cloned());
+        }
+        SET_OP_INTERSECTION => out.extend(mine.iter().filter(|key| theirs.contains(*key)).cloned()),
+        SET_OP_DIFFERENCE => out.extend(mine.iter().filter(|key| !theirs.contains(*key)).cloned()),
+        SET_OP_SYMMETRIC_DIFFERENCE => {
+            out.extend(mine.iter().filter(|key| !theirs.contains(*key)).cloned());
+            out.extend(theirs.iter().filter(|key| !mine.contains(*key)).cloned());
+        }
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+    crate::state::arena_handle(out)
+}
+
+/// The three predicates. `is_disjoint` stops at the first shared member and
+/// allocates nothing, which is why it is not `intersection().is_empty()`.
+///
+/// # Safety
+/// As [`lkrt_lkset_combine`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkset_relate(a: *mut c_void, b: *mut c_void, kind: i64) -> i64 {
+    let (mine, theirs) = (set_mut(a), set_mut(b));
+    let answer = match kind {
+        SET_REL_SUBSET => mine.iter().all(|key| theirs.contains(key)),
+        SET_REL_SUPERSET => theirs.iter().all(|key| mine.contains(key)),
+        SET_REL_DISJOINT => !mine.iter().any(|key| theirs.contains(key)),
+        _ => crate::panic::raise_str("runtime type error"),
+    };
+    i64::from(answer)
+}
+
+/// `union`. See [`lkrt_lkset_combine`].
+pub const SET_OP_UNION: i64 = 0;
+/// `intersection`.
+pub const SET_OP_INTERSECTION: i64 = 1;
+/// `difference`.
+pub const SET_OP_DIFFERENCE: i64 = 2;
+/// `symmetric_difference`.
+pub const SET_OP_SYMMETRIC_DIFFERENCE: i64 = 3;
+/// `is_subset`. See [`lkrt_lkset_relate`].
+pub const SET_REL_SUBSET: i64 = 0;
+/// `is_superset`.
+pub const SET_REL_SUPERSET: i64 = 1;
+/// `is_disjoint`.
+pub const SET_REL_DISJOINT: i64 = 2;
+
 /// Creates a fresh, empty `Set` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkset_new() -> *mut c_void {

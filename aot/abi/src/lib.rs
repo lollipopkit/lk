@@ -886,6 +886,12 @@ macro_rules! for_each_abi_fn {
             ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64, Borrowed);
             ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("set", "display", lkrt_lkset_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            // The set operations. `kind` selects which — one row per *shape*
+            // rather than seven rows, because the four combining operations
+            // differ only in which members they keep and all four must fill the
+            // answer in the same stated sequence.
+            ("set", "combine", lkrt_lkset_combine, WritesHost, [Ptr, Ptr, I64], Ptr, Constructs);
+            ("set", "relate", lkrt_lkset_relate, ReadsHost, [Ptr, Ptr, I64], I64, Borrowed);
             ("set", "eq", lkrt_lkset_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
             ("set", "iter", lkrt_lkset_iter, WritesHost, [Ptr], Ptr, Constructs);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);

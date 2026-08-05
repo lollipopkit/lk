@@ -2136,6 +2136,42 @@ fn mixed_type_addition_and_equality() {
 /// The rule the answers follow: the result is the same carrier when it can be
 /// one, and a `List` otherwise. `b.reverse()` is a `Bytes`; `w.reverse()` is a
 /// `List`, because a reversed range is not a range of the source.
+/// The set operations, and the order their answers iterate in.
+///
+/// A `Set` whose whole surface is `add` / `delete` / `contains` / `values` /
+/// `len` is a deduplicating bag; these are what make it a set, and none of them
+/// existed.
+///
+/// The **insertion sequence** is what this case is really pinning. A set's
+/// iteration order is its hash order, so two sets with the same members can
+/// still print differently — the answer is filled in one stated order (the
+/// receiver's members, then the argument's) and both ends replay it. Building
+/// the same answer "some other way" would pass a membership test and print
+/// differently.
+#[test]
+fn a_set_can_do_set_things() {
+    run_differential(
+        "set_operations",
+        &[
+            new(
+                "combining",
+                "let z = 0;\nlet a = Set([1 + z, 2, 3]);\nlet b = Set([2, 3, 4]);\nprintln(a.union(b));\nprintln(a.intersection(b));\nprintln(a.difference(b));\nprintln(a.symmetric_difference(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "relating",
+                "let z = 0;\nlet a = Set([1 + z, 2, 3]);\nlet b = Set([2, 3, 4]);\nprintln(a.is_subset(b));\nprintln(a.is_subset(a));\nprintln(a.is_superset(Set([1 + z])));\nprintln(a.is_superset(b));\nprintln(a.is_disjoint(Set([9])));\nprintln(a.is_disjoint(b));\nreturn 0;\n",
+            ),
+            // Empty operands on both sides, and a string carrier — the members
+            // are keyed by the same `RtKey` whatever they hold.
+            new(
+                "edges_and_string_members",
+                "let z = 0;\nlet e = Set([1 + z]);\ne.delete(1);\nlet a = Set([1 + z, 2]);\nprintln(a.union(e));\nprintln(a.intersection(e));\nprintln(e.difference(a));\nprintln(e.is_subset(a));\nprintln(e.is_disjoint(a));\nlet s = Set([\"a\" + \"\", \"b\"]);\nlet t = Set([\"b\", \"c\"]);\nprintln(s.union(t));\nprintln(s.intersection(t));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn reverse_and_count_reach_every_sequence_carrier() {
     run_differential(

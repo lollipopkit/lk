@@ -758,6 +758,54 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Removes every member, in place; answers the set",
     ),
     m(Set, "values", &[], "List<Elem>", "The members"),
+    // The set operations. A `Set` that can only add, delete, test a member and
+    // hand back a list is a deduplicating bag; these are what make it a set.
+    // The answers are filled in a stated order — the receiver's members first,
+    // then the argument's — because a set's iteration order is its hash order,
+    // so two sets with the same members can still iterate differently.
+    m(Set, "union", &[p("other", "Set<Elem>")], "Self", "The members of both"),
+    m(
+        Set,
+        "intersection",
+        &[p("other", "Set<Elem>")],
+        "Self",
+        "The members present in both",
+    ),
+    m(
+        Set,
+        "difference",
+        &[p("other", "Set<Elem>")],
+        "Self",
+        "The members not in `other`",
+    ),
+    m(
+        Set,
+        "symmetric_difference",
+        &[p("other", "Set<Elem>")],
+        "Self",
+        "The members in exactly one of the two",
+    ),
+    m(
+        Set,
+        "is_subset",
+        &[p("other", "Set<Elem>")],
+        "Bool",
+        "Whether every member is also in `other`",
+    ),
+    m(
+        Set,
+        "is_superset",
+        &[p("other", "Set<Elem>")],
+        "Bool",
+        "Whether every member of `other` is also here",
+    ),
+    m(
+        Set,
+        "is_disjoint",
+        &[p("other", "Set<Elem>")],
+        "Bool",
+        "Whether the two share no member",
+    ),
     // ---- String ----
     //
     // Every position here is a *character* position, not a byte offset — see

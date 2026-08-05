@@ -1450,6 +1450,60 @@ pub(crate) fn lower_method_dispatch(
         // The order is a hash order, so this rides the mirror discipline that
         // makes set iteration lowerable at all (`set_iteration_order_matches_the_vm`,
         // and the single `RtKey` behind it).
+        // The set operations. The `kind` operand picks which; the numbering is
+        // `lkset::SET_OP_*` / `SET_REL_*`, and a second copy of it here would be
+        // a silent mismatch rather than an error — so it is one `match` beside
+        // the name that produced it.
+        (Ty::Set, "union" | "intersection" | "difference" | "symmetric_difference", [(other, Ty::Set)]) => {
+            let kind = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind,
+                value: Const::I64(match name {
+                    "union" => 0,
+                    "intersection" => 1,
+                    "difference" => 2,
+                    _ => 3,
+                }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "combine"),
+                args: vec![receiver, *other, kind],
+            });
+            (dst, Ty::Set)
+        }
+        (Ty::Set, "is_subset" | "is_superset" | "is_disjoint", [(other, Ty::Set)]) => {
+            let kind = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind,
+                value: Const::I64(match name {
+                    "is_subset" => 0,
+                    "is_superset" => 1,
+                    _ => 2,
+                }),
+            });
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("set", "relate"),
+                args: vec![receiver, *other, kind],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (dst, Ty::Bool)
+        }
         (Ty::Set, "values", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

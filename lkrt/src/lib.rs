@@ -232,9 +232,9 @@ pub use lkmap::{
     lkrt_lkmap_str_i64_iter_pairs, lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_values,
 };
 pub use lkset::{
-    lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_display, lkrt_lkset_eq, lkrt_lkset_from_dyn_list,
-    lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list, lkrt_lkset_has, lkrt_lkset_iter, lkrt_lkset_len,
-    lkrt_lkset_new,
+    lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_combine, lkrt_lkset_delete, lkrt_lkset_display, lkrt_lkset_eq,
+    lkrt_lkset_from_dyn_list, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list, lkrt_lkset_has, lkrt_lkset_iter,
+    lkrt_lkset_len, lkrt_lkset_new, lkrt_lkset_relate,
 };
 pub use lkslice::{
     lkrt_lkslice_i64_contains, lkrt_lkslice_i64_count, lkrt_lkslice_i64_display, lkrt_lkslice_i64_get_pair,

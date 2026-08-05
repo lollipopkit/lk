@@ -1909,6 +1909,30 @@ println(b);          // 打印 s
 四个序列载体的矩阵到此对齐:`Str` 不在这批里是因为它的"元素"是字符,`sum` /
 `min` / `max` / `chain` 在字符上没有意义,拼接用 `+`,要列表用 `chars()`。
 
+## 一个 `Set` 得能做集合的事(2026-08-05 裁决)
+
+`Set` 的全部方法是 7 个:`add` / `clear` / `contains` / `delete` / `is_empty` /
+`len` / `values`。`a.union(b)` 报 "Set has no method 'union'",`intersection` /
+`difference` / `is_subset` 同。只能加、删、判成员、取列表的 `Set` 是去重的袋子。
+这门语言把它做进了内建类型、给了构造、显示、迭代和 `in`,唯独没有让它做集合运算。
+
+补齐(Rust 的命名):`union` / `intersection` / `difference` /
+`symmetric_difference` 答 `Set`,`is_subset` / `is_superset` / `is_disjoint`
+答 `Bool`。
+
+**插入序是契约。** 集合的迭代序就是它的哈希序(见 `DYN_SET` 与镜像纪律),所以
+成员相同的两个集合仍可能迭代出不同的顺序 —— 换句话说,"用另一种方式构造同一个
+答案"会通过任何成员测试,然后打印得不一样。所以每个运算都按**一个写定的顺序**填
+结果:接收者自己的顺序在先,实参的在后。原生侧逐字复现同一序列,差分用例把它钉住。
+
+`is_disjoint` 不是 `intersection().is_empty()` 的展开:它在第一个共同成员处停下,
+一次分配都没有。
+
+**同时记一条不改的:** 成员判定在 `List` / `Str` / `Bytes` / `Slice` / `Set` 上
+叫 `contains`,在 `Map` 上叫 `has`。这不是"一个操作两个名字" —— `Map` 的
+`contains` 语义上真有歧义(键还是值),Rust 用 `contains_key` 正是为避开它;序列
+和集合的 `contains` 无歧义。分野保留。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。
