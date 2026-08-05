@@ -316,6 +316,30 @@ pub(super) fn cpu_read_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
 /// Without it a kernel written in this language cannot raise its own syscall or
 /// reschedule vector, which is not a small gap: it is the difference between
 /// defining an interrupt and merely handling one.
+/// The symbol above, for a **test** binary.
+///
+/// `lk-core`'s `no_std` face declares `lkrt_cpu_raise_interrupt` and does not
+/// depend on the crate that defines it — sound in the bare-metal image, where
+/// both are linked together, and unlinkable in a host test binary, where only
+/// one of them is. `cargo test -p lk-core --no-default-features` therefore
+/// could not link on x86_64 at all:
+///
+/// ```text
+/// rust-lld: error: undefined symbol: lkrt_cpu_raise_interrupt
+/// ```
+///
+/// That is a CI step (`check.yml`, "lk-core builds and *tests* as no_std") and
+/// a documented gate. `cargo build` with the same flags is green, because a
+/// library has no link step — which is why running the build in its place hid
+/// this.
+///
+/// A stub rather than a `cfg(test)` arm inside the function: the shipped code
+/// then stays the code the tests compile. Raising an interrupt from a host test
+/// process is not a thing to do, so it does nothing.
+#[cfg(all(test, not(feature = "std"), target_arch = "x86_64"))]
+#[unsafe(no_mangle)]
+extern "C" fn lkrt_cpu_raise_interrupt(_vector: i64) {}
+
 pub(super) fn cpu_raise_interrupt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
     {
