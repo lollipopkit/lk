@@ -17,6 +17,7 @@ gates pass" and a regression shipped past it.
 | `no_std` build | `cargo build -p lk-core --no-default-features` | A `use` deleted from under its `#[cfg(feature = "std")]` makes the *next* item std-only, silently. |
 | LK source formatting | `lk fmt --check` | 36 of 97 `.lk` files were not in the shape the tool produces — the feature shipped and no workflow ran it. |
 | AOT native-lowering coverage | `AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh` | A program that stops lowering natively still prints the right answer, ~3x slower. **No differential test can see it.** |
+| VM vs native sweep | `SWEEP_REQUIRE="identical=61 diverged=1" bash scripts/vm_native_sweep.sh` | Every example and bench program under both executors. The gap between "does it lower" and "does this pinned case agree": lowers fine, wrong answer, no corpus case with that shape. |
 | AOT differential suites | `cargo test -p lk-cli --test aot_differential_test --test clif_differential_test --test hybrid_compile_test` | VM vs. native disagreement on the pinned corpus. |
 | Generative differential fuzz | see below | Feature *combinations* nobody wrote a case for. |
 | Bare metal (ARM, x86) | `cd bare-metal && LK_BIN=… cargo run --release`, `cd bare-metal-x86 && LK_BIN=… python3 check_pci.py` | That the `no_std` VM *works*, not merely compiles. Note `LK_BIN`: the build defaults to the **installed** `lk`, not the one you just built. |

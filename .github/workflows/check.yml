@@ -69,6 +69,18 @@ jobs:
             fi
           done
           exit $fail
+      - name: VM vs native sweep (every example and bench program)
+        # Between the coverage gate ("does it lower?") and the differential
+        # suites ("does this pinned case agree?") sits the case that has bitten
+        # twice: lowers fine, answers differently, and no case in the corpus has
+        # that shape. This runs every program in the repo through both.
+        #
+        # It lived in a `/tmp` shell loop for months, which meant it was retyped
+        # from memory after every reboot and its expected counts lived in a
+        # commit message.
+        run: |
+          cargo build -p lk-cli --features aot
+          SWEEP_REQUIRE="identical=61 diverged=1" bash scripts/vm_native_sweep.sh
       - name: every LK source is `lk fmt` shape
         # `lk fmt --check` shipped as a CI feature and no workflow ran it, so
         # 36 of the repo's 97 `.lk` files were not in the shape the tool

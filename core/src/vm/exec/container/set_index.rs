@@ -135,7 +135,7 @@ impl Executor {
             }
         };
 
-        let key = self.resolve_negative_list_key(handle, key);
+        let key = self.resolve_negative_list_key(handle, key)?;
 
         if let Some(done) = self.try_set_string_list(handle, &key, value)? {
             self.maybe_bump_shape(handle, has_static_fact);
@@ -247,26 +247,40 @@ impl Executor {
     ///
     /// The length lookup happens only for a negative index, so the ordinary
     /// write pays one predictable compare.
+    ///
+    /// **Out of range is reported here, naming the index as written.** The
+    /// resolved value is what the rest of the write path carries, so raising
+    /// further down could only say `-6` for `xs.set(-9, v)` on a three-element
+    /// list — a number the program never wrote, and one the native build
+    /// (which still has the original) did not print either. Both ends of the
+    /// range now say `list index N out of bounds` with the same `N`.
     #[inline]
-    pub(super) fn negative_list_index_from_end(&self, handle: HeapRef, index: i64) -> i64 {
+    pub(super) fn negative_list_index_from_end(&self, handle: HeapRef, index: i64) -> Result<i64> {
         if index >= 0 {
-            return index;
+            return Ok(index);
         }
         match self.state.heap.get(handle) {
-            Some(HeapValue::List(list)) => index + list.len() as i64,
-            _ => index,
+            Some(HeapValue::List(list)) => {
+                let resolved = index + list.len() as i64;
+                if resolved < 0 {
+                    bail!("list index {index} out of bounds");
+                }
+                Ok(resolved)
+            }
+            // Not a list: the caller's own dispatch reports what it is.
+            _ => Ok(index),
         }
     }
 
     /// [`Self::negative_list_index_from_end`] for the dynamic path, where the
     /// key has already been built and the target may not be a list at all.
     #[inline]
-    fn resolve_negative_list_key(&self, handle: HeapRef, key: RuntimeMapKey) -> RuntimeMapKey {
+    fn resolve_negative_list_key(&self, handle: HeapRef, key: RuntimeMapKey) -> Result<RuntimeMapKey> {
         match key {
             RuntimeMapKey::Int(index) if index < 0 => {
-                RuntimeMapKey::Int(self.negative_list_index_from_end(handle, index))
+                Ok(RuntimeMapKey::Int(self.negative_list_index_from_end(handle, index)?))
             }
-            other => other,
+            other => Ok(other),
         }
     }
 
@@ -279,7 +293,8 @@ impl Executor {
         known_value_kind: Option<PerfValueKind>,
         has_static_fact: bool,
     ) -> Result<()> {
-        let index = self.negative_list_index_from_end(handle, self.int_key_from_register_or_value(key_reg, moved_key)?);
+        let index =
+            self.negative_list_index_from_end(handle, self.int_key_from_register_or_value(key_reg, moved_key)?)?;
         let key = RuntimeMapKey::Int(index);
         if matches!(
             self.state.heap.get(handle),

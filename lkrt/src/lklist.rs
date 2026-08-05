@@ -929,19 +929,16 @@ fn store_index(index: i64, len: usize) -> Option<usize> {
 /// non-negative` — a rule the language does not have, `xs[-1]` being the last
 /// element. The two builds agreed only by being wrong the same way.
 ///
-/// `N` is the index **after** resolving against the length, because that is
-/// what the VM has: a negative index is resolved when the key is built, several
-/// steps before the store, so the value it reports for `xs.set(-9, v)` on a
-/// three-element list is `-6`. Reporting what the program wrote would be the
-/// better message and is not available on that side; mirroring is what keeps a
-/// caught error's text the same answer in both builds.
+/// `N` is the index **as written**, at both ends. The VM briefly reported the
+/// resolved one for a negative index — `-6` for `xs.set(-9, v)` on a
+/// three-element list, a number the program never wrote — because it resolved
+/// when the key was built and raised several steps later. It now raises at the
+/// resolution point, where the original is still in hand, so this side does not
+/// have to mirror a worse message to agree.
 pub(crate) fn store_index_or_raise(index: i64, len: usize) -> usize {
     match store_index(index, len) {
         Some(resolved) => resolved,
-        None => {
-            let reported = if index < 0 { len as i64 + index } else { index };
-            crate::panic::raise_str(&alloc::format!("list index {reported} out of bounds"))
-        }
+        None => crate::panic::raise_str(&alloc::format!("list index {index} out of bounds")),
     }
 }
 
