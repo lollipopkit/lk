@@ -106,50 +106,21 @@ fn execute_module_calls_full_state_native_with_named_args() {
         Ok(RuntimeVal::Int((*value).clamp(min, max)))
     }
 
-    let entry = Function {
-        consts: ConstPool {
-            ints: vec![52, 40, 50],
-            strings: vec!["min".to_string(), "max".to_string()],
-            ..ConstPool::default()
-        },
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abx(Opcode::LoadInt, 1, 0),
-            Instr::abx(Opcode::LoadString, 2, 0),
-            Instr::abx(Opcode::LoadInt, 3, 1),
-            Instr::abx(Opcode::LoadString, 4, 1),
-            Instr::abx(Opcode::LoadInt, 5, 2),
-            Instr::abx(Opcode::CallNamed, 0, (2 << 7) | 1),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 6,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "full_state_clamp".to_string(),
-            arity: 1,
-            function: NativeFunction::FullState(full_state_clamp),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-
-    let result = execute_module(&module).expect("execute module");
+    // Named arguments to a native reached through a global, which is how every
+    // stdlib native with named parameters is called. The hand-built module
+    // spelled the same call in `CallNamed` operands against an inline table no
+    // binary fills.
+    let result = super::execute_source_with_natives(
+        "return full_state_clamp(52, min: 40, max: 50);",
+        &[(
+            "full_state_clamp",
+            NativeFunction::FullState(full_state_clamp),
+            crate::vm::NativeEntry::VARIADIC,
+        )],
+    )
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(50)]);
-    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[3], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[4], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[5], RuntimeVal::Nil);
 }
 
 #[test]

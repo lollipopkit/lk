@@ -364,17 +364,15 @@ fn compiler_lowers_native_call_through_module() {
         Ok(crate::val::RuntimeVal::Int(lhs + rhs))
     }
 
-    let module = compile_source_module_with_natives(
+    // The native arrives as a *global*, the only way a running program gets one
+    // (see `exec_tests::execute_source_with_natives`). Compiling it into the
+    // module's own table emitted `LoadNative`, which every production caller
+    // makes unreachable by passing an empty table.
+    let result = crate::vm::exec::exec_tests::execute_source_with_natives(
         "return native_add(19, 23);",
-        vec![NativeEntry {
-            name: "native_add".to_string(),
-            arity: 2,
-            function: NativeFunction::Plain(native_add),
-        }],
+        &[("native_add", NativeFunction::Plain(native_add), 2)],
     )
-    .expect("compile module");
-
-    let result = execute_module(&module).expect("execute module");
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
@@ -1506,13 +1504,18 @@ fn every_call_lands_in_exactly_one_bucket() {
         Ok(*value)
     }
 
+    // The native is *installed*, not compiled into the module: the counter this
+    // test defends is bumped by `exec::call`'s classification of the value being
+    // called, so proving it through an inline `NativeEntry` proved it for a path
+    // that does not ship — no production caller ever fills that table.
+    //
     // A *builtin* method for the method bucket (`xs.unique()` lowers to
-    // `CallMethodK`), so this needs no impl table and stays in the same harness
-    // as the other three.
-    let module = compile_source_module_with_natives(
+    // `CallMethodK`), so this needs no impl table.
+    crate::vm::vm_runtime_metrics_reset();
+    crate::vm::exec::exec_tests::execute_source_with_natives(
         r#"
-        fn direct(n) { return n + 1; }
-        let closure = |x| x + 1;
+        fn direct(n: Int) -> Int { return n + 1; }
+        let closure = |x: Int| x + 1;
         let xs = [3, 1, 2, 1];
         let total = 0;
         total = total + direct(1);
@@ -1521,16 +1524,9 @@ fn every_call_lands_in_exactly_one_bucket() {
         total = total + a_native(1);
         return total;
         "#,
-        vec![NativeEntry {
-            name: "a_native".to_string(),
-            arity: 1,
-            function: NativeFunction::Plain(a_native),
-        }],
+        &[("a_native", NativeFunction::Plain(a_native), 1)],
     )
-    .expect("compile module");
-
-    crate::vm::vm_runtime_metrics_reset();
-    execute_module(&module).expect("run module");
+    .expect("execute source");
     let metrics = crate::vm::vm_runtime_metrics_snapshot();
 
     assert!(

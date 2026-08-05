@@ -1566,4 +1566,4 @@ pub fn execute_module_with_globals_heap_and_ctx(
 }
 
 #[cfg(test)]
-mod exec_tests;
+pub(crate) mod exec_tests;

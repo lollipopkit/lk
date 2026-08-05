@@ -36,7 +36,7 @@ mod native;
 /// vector from the context, so it answers `module expected 1 globals, got 0`.
 /// Hence a helper rather than a one-line substitution.
 #[cfg(test)]
-pub(super) fn execute_source_with_natives(
+pub(crate) fn execute_source_with_natives(
     source: &str,
     natives: &[(&str, NativeFunction, u16)],
 ) -> anyhow::Result<crate::vm::ProgramResult> {
@@ -46,7 +46,7 @@ pub(super) fn execute_source_with_natives(
 /// As [`execute_source_with_natives`], collecting after every `threshold`
 /// allocations — what a hand-built module got by seeding its own `HeapStore`.
 #[cfg(test)]
-pub(super) fn execute_source_with_natives_and_gc(
+pub(crate) fn execute_source_with_natives_and_gc(
     source: &str,
     natives: &[(&str, NativeFunction, u16)],
     gc_threshold: Option<u32>,
