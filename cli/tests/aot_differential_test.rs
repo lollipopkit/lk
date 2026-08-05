@@ -270,6 +270,27 @@ fn differential_control_flow() {
                 "float_loop",
                 "let s = 0.0;\nlet i = 0;\nwhile (i < 5) { s = s + 1.5; i = i + 1; }\nreturn s;\n",
             ),
+            // Every arm returns, so nothing follows the match — the function's
+            // last block has no terminator, and the catch-all arm is entered
+            // with no test. Lowering saw a phantom edge off the end and either
+            // rejected the function or built a `ret void` in an `-> i64` one.
+            new(
+                "match_arms_return",
+                "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        1 => { return 8; }\n        _ => { return 9; }\n    }\n}\nprintln(g(0));\nprintln(g(1));\nprintln(g(2));\nreturn 0;\n",
+            ),
+            // Unreachable code: with no predecessors it has a definition for no
+            // register, and that emptiness used to flow into the blocks it
+            // falls into, rejecting the function over its own parameter.
+            new(
+                "code_after_a_total_if",
+                "fn h(n: Int) -> Int {\n    if n > 0 { return 1; } else { return 2; }\n    let z = n + 1;\n    return z;\n}\nprintln(h(5));\nprintln(h(-5));\nreturn 0;\n",
+            ),
+            // A binding arm catches every value, nil included — the same rule
+            // the wildcard follows.
+            new(
+                "binding_arm_catches_nil",
+                "fn f(v: Int?) -> Int {\n    return match v { x => 1 };\n}\nprintln(f(nil));\nprintln(f(3));\nreturn 0;\n",
+            ),
         ],
     );
 }

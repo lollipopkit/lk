@@ -322,6 +322,14 @@ pub(crate) fn lower_function(
         }
     }
 
+    // A function whose code simply runs out reaches the same one-past-end
+    // target an explicit exit would name, so it needs the same block. Only the
+    // last block can do this, and only when nothing in it is an exit.
+    let last_leader = *leaders.iter().next_back().expect("block 0 is always a leader");
+    if block_span(&exits, &consumed, last_leader, code_len).1.is_none() {
+        implicit_ret = true;
+    }
+
     // 3. Block ids (+ optional synthetic implicit-nil-return block).
     let leader_vec: Vec<usize> = leaders.iter().copied().collect();
     let pc_to_block: BTreeMap<usize, u32> = leader_vec.iter().enumerate().map(|(i, &pc)| (pc, i as u32)).collect();
@@ -347,10 +355,37 @@ pub(crate) fn lower_function(
         .enumerate()
         .map(|(bi, &start)| (start, leader_vec.get(bi + 1).copied().unwrap_or(code_len)))
         .collect();
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); total_blocks];
     for (bi, &(start, end)) in block_bounds.iter().enumerate() {
         let (_, exit) = block_span(&exits, &consumed, start, end);
-        for succ in exit_successors(exit, end) {
-            preds[block_of(succ)].push(bi);
+        successors[bi] = exit_successors(exit, end).into_iter().map(block_of).collect();
+    }
+
+    // Blocks control can actually get to, from the entry. Code after a `return`
+    // is not lowered and contributes no edges: with no predecessors of its own
+    // it has no definition for any register, and `read_recursive`'s empty-preds
+    // case answers "read before any definition" — which then propagated into
+    // every block it fell into, so `if c { return 1; } else { return 2; }`
+    // followed by one more line rejected the whole function over its own
+    // parameter. Bytecode also arrives from `.lkm` files, so the backend cannot
+    // rest on the compiler never emitting unreachable code.
+    let mut reachable = vec![false; total_blocks];
+    let mut worklist = vec![0usize];
+    reachable[0] = true;
+    while let Some(bi) = worklist.pop() {
+        for &succ in &successors[bi] {
+            if !reachable[succ] {
+                reachable[succ] = true;
+                worklist.push(succ);
+            }
+        }
+    }
+    for (bi, succs) in successors.iter().enumerate() {
+        if !reachable[bi] {
+            continue;
+        }
+        for &succ in succs {
+            preds[succ].push(bi);
         }
     }
 
@@ -539,6 +574,12 @@ pub(crate) fn lower_function(
 
     for (bi, &(start, end)) in block_bounds.iter().enumerate() {
         ssa.seal_ready()?;
+        if !reachable[bi] {
+            // Filled and left empty: it keeps its block id (successors are
+            // addressed by it) and gets a terminator in step 6.
+            ssa.mark_filled(bi);
+            continue;
+        }
         let (body_end, exit) = block_span(&exits, &consumed, start, end);
         if exit.is_none() {
             ssa.single_fallthrough_target[bi] = Some(end);
@@ -1394,6 +1435,21 @@ pub(crate) fn lower_function(
     let mut forwarded_args: Vec<(usize, Vec<ValueId>, BlockId)> = Vec::new();
     let mut mir_blocks: Vec<Block> = Vec::with_capacity(total_blocks);
     for bi in 0..leader_vec.len() {
+        if !reachable[bi] {
+            // No instructions, no params, and a terminator that names only
+            // itself — nothing about the rest of the function has to hold for
+            // a block control cannot enter.
+            mir_blocks.push(Block {
+                id: BlockId(bi as u32),
+                params: Vec::new(),
+                insts: Vec::new(),
+                term: Term::Br {
+                    target: BlockId(bi as u32),
+                    args: Vec::new(),
+                },
+            });
+            continue;
+        }
         let params: Vec<(ValueId, Ty)> = ssa.phis[bi].iter().map(|p| (p.param, p.ty)).collect();
         let exit = block_exit[bi];
         // Phi-edge conversions land after the block's own instructions,
@@ -1426,11 +1482,25 @@ pub(crate) fn lower_function(
         let params: Vec<(ValueId, Ty)> = ssa.phis[id as usize].iter().map(|p| (p.param, p.ty)).collect();
         // A Dyn-returning function's implicit return (falling off the end)
         // returns boxed nil — `ret void` in a `{i64,i64}` function is invalid.
-        let (insts, term) = if !is_entry && sig.dyn_rets.contains(&func_index) {
+        let (insts, term) = if !reachable[id as usize] {
+            (
+                Vec::new(),
+                Term::Br {
+                    target: BlockId(id),
+                    args: Vec::new(),
+                },
+            )
+        } else if !is_entry && sig.dyn_rets.contains(&func_index) {
             let dummy = ssa.new_val();
             let mut iv = Vec::new();
             let boxed = to_dyn(&mut ssa, &mut iv, dummy, Ty::Nil, 0).expect("nil always boxes");
             (iv, Term::Ret(Some(boxed)))
+        } else if ret_ty.is_some() {
+            // One path returns a value and another falls off the end, which
+            // answers nil. `ret void` in a value-returning function is not
+            // valid MIR, and there is no value of the return type that means
+            // nil — the same conflict two disagreeing `return`s produce.
+            return Err(Unsupported::ReturnTypeConflict);
         } else {
             (Vec::new(), Term::Ret(None))
         };

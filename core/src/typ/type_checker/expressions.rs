@@ -2878,31 +2878,19 @@ pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Ty
 
 /// The body of the first arm that an earlier unguarded catch-all shadows.
 ///
-/// Shares its notion of "catch-all" with [`matches_every_value`] — one rule
-/// about which patterns match everything, so a pattern that starts counting as
-/// total cannot be total for the type and non-shadowing for reachability.
+/// Shares its notion of "catch-all" with [`matches_every_value`], through
+/// [`crate::expr::Pattern::is_unguarded_catch_all`].
 fn first_arm_after_catch_all(arms: &[crate::expr::MatchArm]) -> Option<&Expr> {
     let mut seen_catch_all = false;
     for arm in arms {
         if seen_catch_all {
             return Some(arm.body.as_ref());
         }
-        if is_unguarded_catch_all(&arm.pattern) {
+        if arm.pattern.is_unguarded_catch_all() {
             seen_catch_all = true;
         }
     }
     None
-}
-
-/// A pattern that matches every value, with no guard to make it conditional.
-fn is_unguarded_catch_all(pattern: &crate::expr::Pattern) -> bool {
-    use crate::expr::Pattern;
-    match pattern {
-        Pattern::Wildcard | Pattern::Variable(_) => true,
-        // An or-pattern is total when any alternative is.
-        Pattern::Or(alternatives) => alternatives.iter().any(is_unguarded_catch_all),
-        _ => false,
-    }
 }
 
 /// Does some arm of `arms` match every value of `value_type`?
@@ -2922,7 +2910,7 @@ fn matches_every_value(arms: &[crate::expr::MatchArm], value_type: &Type) -> boo
         matches!(pattern, Pattern::Literal(LiteralVal::Bool(value)) if *value == wanted)
     }
 
-    if arms.iter().any(|arm| is_unguarded_catch_all(&arm.pattern)) {
+    if arms.iter().any(|arm| arm.pattern.is_unguarded_catch_all()) {
         return true;
     }
     if *value_type == Type::Bool {

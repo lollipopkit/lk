@@ -116,6 +116,28 @@ impl Compiler {
         Ok(())
     }
 
+    /// The bindings for a `match` arm that matches every value, or `None` when
+    /// the pattern needs a runtime test.
+    ///
+    /// Such an arm gets no test at all. Emitting one is dead work, and for a
+    /// binding it is also wrong: [`Self::lower_pattern_match`] is shared with
+    /// `if let`, where a binding means "the value is not nil", which is not
+    /// what it means in a `match` arm — `match nil { x => 1 }` answered nil
+    /// while `match nil { _ => 1 }` answered 1, and the type checker called
+    /// both of them total.
+    ///
+    /// An or-pattern is left out: it cannot bind (the compiler refuses
+    /// variables inside one), so the only thing skipping its test would save
+    /// is the test itself, and its alternatives' conditions can evaluate
+    /// arbitrary expressions.
+    pub(super) fn bind_catch_all(&mut self, pattern: &Pattern, value: u16) -> Option<PatternBindings> {
+        match pattern {
+            Pattern::Wildcard => Some(Vec::new()),
+            Pattern::Variable(name) => Some(vec![(name.clone(), self.insert_local(name.clone(), value))]),
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_pattern_match(&mut self, pattern: &Pattern, value: u16) -> Result<(u16, PatternBindings)> {
         let mut previous = Vec::new();
         let condition = match pattern {

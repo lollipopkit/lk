@@ -68,6 +68,30 @@ pub enum Pattern {
         inclusive: bool,
     },
 }
+impl Pattern {
+    /// Whether this pattern matches every value, with no guard to make it
+    /// conditional.
+    ///
+    /// Two questions the type checker asks are the same question, so they
+    /// share one answer: whether a `match` can fall through all its arms
+    /// (which is why its type is `T?` and not `T`), and whether a later arm is
+    /// dead code. Answering them separately lets a pattern be total for one
+    /// and partial for the other.
+    ///
+    /// The VM compiler recognizes a *narrower* set — `Compiler::bind_catch_all`
+    /// takes only `Wildcard` and `Variable`, leaving an or-pattern to its
+    /// ordinary test — so it is conservative exactly where this is permissive,
+    /// which is the safe direction: it emits a fallthrough the checker has
+    /// proven unreachable, rather than dropping one that is not.
+    pub fn is_unguarded_catch_all(&self) -> bool {
+        match self {
+            Pattern::Wildcard | Pattern::Variable(_) => true,
+            // An or-pattern is total when any alternative is.
+            Pattern::Or(alternatives) => alternatives.iter().any(Pattern::is_unguarded_catch_all),
+            _ => false,
+        }
+    }
+}
 /// Match arm: pattern => expression
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {

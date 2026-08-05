@@ -1270,3 +1270,56 @@ fn auto_display_uses_show_and_only_show() {
         assert!(display.contains("S{x:1}"), "the default rendering: {display}");
     }
 }
+
+/// Every arm's `return` is that arm's own, and returns from the function.
+///
+/// `emitted_return` — the "what follows is dead code" flag — was read
+/// *between* arms, so the first arm's `return` skipped the lowering of every
+/// later arm's body: the test for those arms was emitted with nothing behind
+/// it. `g(1)` therefore fell out of the match, off the end of a function
+/// declared `-> Int`, and answered nil. The decisive shape is the last one
+/// here: a `return` after the match still ran, so control had not stopped at
+/// the arm's `return` at all.
+#[test]
+fn every_match_arm_return_returns() {
+    let source = "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        1 => { return 8; }\n        _ => { return 9; }\n    }\n}\nreturn [g(0), g(1), g(2)];\n";
+    let result = execute_source(source).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[7,8,9]"
+    );
+
+    let after = "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        _ => { return 9; }\n    }\n    return 99;\n}\nreturn [g(0), g(5)];\n";
+    let result = execute_source(after).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[7,9]"
+    );
+}
+
+/// A binding arm catches every value, nil included.
+///
+/// `lower_pattern_match` is shared with `if let`, where a binding pattern
+/// means "the value is not nil". A `match` arm means no such thing, so
+/// `match nil { x => 1 }` answered nil while `match nil { _ => 1 }` answered
+/// 1 — and the type checker called both of them total, which is what made the
+/// difference silent.
+#[test]
+fn a_binding_arm_catches_nil_like_the_wildcard_does() {
+    for arm in ["x", "_"] {
+        let source = format!("return match nil {{ {arm} => 1 }};\n");
+        let result = execute_source(&source).expect("runs");
+        assert_eq!(result.returns[0], RuntimeVal::Int(1), "arm `{arm}`");
+    }
+}
+
+/// A match with no catch-all still answers nil when nothing matches — the
+/// path that makes the checker type it `T?` rather than `T`.
+#[test]
+fn a_match_with_no_catch_all_falls_through_to_nil() {
+    let result = execute_source("return [match 5 { 1 => 10 2 => 20 }, match 2 { 1 => 10 2 => 20 }];\n").expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[nil,20]"
+    );
+}
