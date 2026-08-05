@@ -119,7 +119,16 @@ impl ImportEnv {
                         env.file_namespaces.insert(stem, b);
                     }
                 }
-                ImportStmt::Module { .. } => {}
+                // `use math;` binds the module under its own name — the same
+                // binding `use math as math;` makes. It was an empty arm, so
+                // the lowering could not tell an imported module from a global
+                // that happens to share its name: `chan` is both (a bare
+                // constructor function *and* a module), and `chan.new(1)`
+                // therefore lowered natively whether or not the file imported
+                // it, while the VM refused the unimported spelling.
+                ImportStmt::Module { module } => {
+                    env.module_aliases.insert(module.clone(), module.clone());
+                }
             }
         }
         Ok(env)

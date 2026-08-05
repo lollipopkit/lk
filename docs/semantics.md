@@ -1859,6 +1859,30 @@ println(typeof(xs[2]));   // 改前 VM: Int,native: Float
     xs.push("a");
     → MIR lowering: an operand at pc 3 is a str where a i64 is required
 
+## 模块拼写需要 import,两端都要(2026-08-05 裁决)
+
+    let c = chan.new(1);          // 没写 use chan;
+    vm   → Error: index target object is not indexable: "Function"
+    原生 → 7
+
+`chan` 是唯一一个既是模块名、又是裸全局(通道构造函数)的名字。`math` / `string` /
+`time` 这些不是全局,检查期就报 "undefined name",两端一致;`chan` 会走到运行时。
+
+两端跑的是**同一份字节码**,加不加 `use chan;` 一个字都不差(`GetGlobal chan` /
+`LoadString "new"` / `GetIndex`)。差别在运行时:import 把全局 `chan` 从构造函数换成模块
+对象,VM 的 `GetIndex` 这才成立。
+
+原生侧原来无条件把这个形状解析成模块成员,注释里写着"字节码能区分二者"—— 那句对 VM
+的行为判错了。现在它读 `sig.imports`:**import 才是模块拼写的许可**。
+
+根因是 `ImportEnv::build` 里 `ImportStmt::Module { .. } => {}` 一个空分支 —— `use math;`
+这种最常见的写法在原生侧被整个丢掉,所以降低器分不清"导入的模块"和"碰巧同名的全局"。
+
+不动的一格:`chan(1)`(裸构造函数)无 import 可用,`use chan;` 之后 `chan(1)` 报
+"`chan` names the imported module here, and a module is not a function" —— 两端都对。
+
+门禁:`differential_concurrency_edges` 的 `the module spelling after its import`。
+
 ## `format` 与 `println` 是同一个操作(2026-08-05 记录)
 
 占位符是 `{}`,按顺序取实参;**多出来的占位符原样留下,多出来的实参空格分隔追加在

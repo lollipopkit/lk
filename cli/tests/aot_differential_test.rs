@@ -1117,6 +1117,16 @@ fn differential_concurrency_edges() {
     run_differential(
         "concurrency_edges",
         &[
+            // The module spelling needs the import — on both ends. `chan` is
+            // the one name that is a module *and* a bare global (the channel
+            // constructor), and `chan.new(1)` compiles to the same bytecode
+            // either way: the import is what replaces the global with the
+            // module object at run time. Native used to resolve it regardless,
+            // so an unimported program ran natively and failed under the VM.
+            new(
+                "the module spelling after its import",
+                "use chan;\nlet c = chan.new(1);\nchan.send(c, 7);\nprintln(chan.recv(c));\nreturn 0;\n",
+            ),
             // The two try/catch cases that used to live here moved to
             // `try_catch_differential` in clif_differential_test.rs: this corpus
             // runs under `LK_AOT_NO_FALLBACK=1` in CI, and a protected region has

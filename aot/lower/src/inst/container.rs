@@ -938,13 +938,25 @@ pub(super) fn lower(
             // the module case never got a chance: `chan.new(1)` dropped its
             // module to the VM while `chan(1)` lowered.
             //
-            // The bytecode tells them apart even though the name cannot: the
-            // constructor is `GetGlobal chan` + `Call`, the module is the same
-            // read followed by a `GetIndex`. Reaching *here* with the
-            // constructor's ref therefore means the module spelling.
+            // The bytecode does *not* tell them apart: `chan.new(1)` compiles to
+            // the same `GetGlobal chan` + `GetIndex "new"` whether or not the
+            // file wrote `use chan;`. What differs is at run time — the import
+            // replaces the global with the module object, and the VM's
+            // `GetIndex` only succeeds against that. Without the import the
+            // global still holds the constructor function and the VM answers
+            // `index target object is not indexable: "Function"`.
+            //
+            // So the import is what licenses the module spelling, and it is
+            // recorded: `sig.imports`. Reading it here is the difference
+            // between the two ends agreeing and a program that runs natively
+            // and fails under the VM.
             let module_ref = match ssa.builtin_regs.get(&(block, instr.b())).cloned() {
                 Some(GlobalRef::Module(module)) => Some(module),
-                Some(GlobalRef::Builtin(Builtin::ChanNew)) => Some("chan".to_string()),
+                Some(GlobalRef::Builtin(Builtin::ChanNew))
+                    if sig.imports.module_aliases.get("chan").is_some_and(|m| m == "chan") =>
+                {
+                    Some("chan".to_string())
+                }
                 _ => None,
             };
             if let Some(module) = module_ref {
