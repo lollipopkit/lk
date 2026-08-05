@@ -17,6 +17,7 @@ as covering both `no_std` faces when one of them was `lkrt`'s.
 | Gate | Command | Workflow | What only this catches |
 | --- | --- | --- | --- |
 | Workspace tests | `cargo test --workspace --all-features` | check.yml | Everything with a named test. |
+| Tutorial examples | `cargo test -p lk-cli --test tutorial_examples_test` | check.yml (inside the workspace run) | Every complete ```lk block in `LEARN.md` / `LEARN_zh.md` type-checks. Nothing checked the tutorial before; running its blocks by hand turned up four broken examples **and** a language defect the tutorial had documented correctly (`[1,2,3] - [2]`). A block that cannot stand alone is fenced ```lk,fragment and skipped. |
 | Format | `cargo fmt --all -- --check` | check.yml | — |
 | Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | check.yml | CI injects `RUSTFLAGS=-D warnings`, so **test-target** warnings fail CI; a plain `cargo clippy --workspace` does not compile tests. |
 | Lint, `no_std` faces | `cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings`, same for `-p lkrt` | check.yml | `--all-features` never compiles the `no_std` face; the bare-metal targets do. |
