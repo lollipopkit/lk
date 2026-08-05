@@ -105,7 +105,7 @@ pub(crate) struct SigInfer {
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.
-    pub(crate) dyn_lists: std::collections::HashSet<(u32, usize)>,
+    pub(crate) dyn_literals: std::collections::HashSet<(u32, usize)>,
     /// Loop-header phis discovered to merge heterogeneous boxable types
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.

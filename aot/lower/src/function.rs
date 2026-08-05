@@ -409,8 +409,8 @@ pub(crate) fn lower_function(
         .filter(|&&(fi, _, _)| fi == func_index)
         .map(|&(_, b, s)| (b, s))
         .collect();
-    ssa.dyn_list_pcs = sig
-        .dyn_lists
+    ssa.dyn_literal_pcs = sig
+        .dyn_literals
         .iter()
         .filter(|&&(fi, _)| fi == func_index)
         .map(|&(_, p)| p)

@@ -426,6 +426,18 @@ fn differential_maps() {
     run_differential(
         "maps",
         &[
+            // A map literal whose value type a later store contradicts is
+            // built with a Dyn carrier — the same fixpoint retry the list
+            // literals use. The VM widens the carrier in place; native cannot,
+            // so both of these used to fall back.
+            new(
+                "widened_after_a_typed_literal",
+                "let m: Map<String, Any> = {\"a\": 1};\nm[\"b\"] = \"x\";\nprintln(m);\nreturn 0;\n",
+            ),
+            new(
+                "widened_from_an_empty_literal",
+                "let n: Map<String, Any> = {};\nn[\"a\"] = 1;\nn[\"b\"] = \"y\";\nprintln(n);\nreturn 0;\n",
+            ),
             new("str_get", "let m = {\"a\": 1, \"b\": 2};\nreturn m[\"b\"];\n"),
             new("missing_nil", "let m = {\"a\": 1};\nreturn m[\"z\"];\n"),
             new(

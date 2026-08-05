@@ -721,3 +721,26 @@ VM 的做法是把 `TypedList::Int` 就地拓宽成 `Mixed`;原生的 `Vec<i64>`
 门禁在 `cli/tests/aot_differential_test.rs` 的 `differential_lists`:
 `widened_after_a_typed_literal`(Int/Float/Str 三种载体各推翻一次)、
 `widened_from_a_register_window`(变量元素、循环里 push)。
+
+### 20.1 map 载体同理(同日)
+
+`let m: Map<String, Any> = {"a": 1}; m["b"] = "x";` 与空 map 的同一形状都回落。这两条
+与列表那条是同一件事在另一个载体族里,而 map 侧一条通路都没有 —— 连"空字面量猜错就
+重试"都只在列表侧存在。
+
+补齐三处:
+
+- **存储臂。** `SetIndex` 上没有 `Ty::MapStrDyn` 的臂,所以就算把 map 建成 Dyn 载体,
+  也没有东西能存进去(`SetFieldK` 那侧本来就有,给结构体字段用)。
+- **字面量记录。** 空 `{}` 与非空字面量都记进 `literal_carrier`,并都认
+  `dyn_literal_pcs`:被推翻的那个用 `map_h.str_dyn_new` / `lit_finish_str_dyn` 重建。
+- **报重试而不是直接拒。** `SetFieldK` 与 `SetIndex` 的类型化 map 臂原来答
+  `TypeMismatch`,现在先问 `carrier_contradicted`。
+
+"谁的载体被推翻了"这条判断从 push 那侧的闭包提成一个函数 `carrier_contradicted`,
+列表与 map 共用 —— 一条规则,一处实现。名字也再改了一轮以覆盖两族:
+`ListElemTypeContradicted` → `LiteralElemTypeContradicted`,`dyn_list_pcs` →
+`dyn_literal_pcs`,`literal_list_ty` → `literal_carrier`,`dyn_lists` → `dyn_literals`。
+
+门禁:`differential_maps` 的 `widened_after_a_typed_literal`、
+`widened_from_an_empty_literal`。

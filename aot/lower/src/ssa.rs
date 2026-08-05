@@ -209,11 +209,17 @@ pub(crate) struct Ssa {
     /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
     /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
     pub(crate) dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
-    /// Empty-`[]` literal pcs forced to Dyn by a fixpoint retry.
-    pub(crate) dyn_list_pcs: std::collections::HashSet<usize>,
-    /// Guessed empty-list handles → their literal pc (a consumer that
-    /// contradicts the guess reports `ListElemTypeContradicted`).
-    pub(crate) literal_list_ty: std::collections::HashMap<ValueId, (usize, Ty)>,
+    /// Container-literal pcs forced to a Dyn carrier by a fixpoint retry.
+    pub(crate) dyn_literal_pcs: std::collections::HashSet<usize>,
+    /// A container literal's handle → `(its pc, the carrier it was built with)`.
+    ///
+    /// The carrier is a *judgement about what goes in*, and a later store can
+    /// contradict it: an empty `[]` guesses, a `[1, 2]` reads its own elements,
+    /// a `{"a": 1}` reads its own values — and all three are equally wrong when
+    /// the program then puts a String in. Whoever finds the contradiction
+    /// reports `LiteralElemTypeContradicted` naming this pc, and the fixpoint
+    /// rebuilds that literal with a Dyn carrier.
+    pub(crate) literal_carrier: std::collections::HashMap<ValueId, (usize, Ty)>,
     /// Constant-range materializations (`NewRange` with all-const operands,
     /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
     /// a range key (`s[1..3]`) and emit a real slice.
@@ -295,8 +301,8 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             dyn_loop_slots: std::collections::HashSet::new(),
-            dyn_list_pcs: std::collections::HashSet::new(),
-            literal_list_ty: std::collections::HashMap::new(),
+            dyn_literal_pcs: std::collections::HashSet::new(),
+            literal_carrier: std::collections::HashMap::new(),
             range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
@@ -623,7 +629,7 @@ impl Ssa {
                 if v == param {
                     continue;
                 }
-                match self.literal_list_ty.get(&v) {
+                match self.literal_carrier.get(&v) {
                     Some(&g) if guess.is_none() || guess == Some(g) => guess = Some(g),
                     _ => {
                         all_guessed = false;
@@ -632,7 +638,7 @@ impl Ssa {
                 }
             }
             if all_guessed && let Some(g) = guess {
-                self.literal_list_ty.insert(param, g);
+                self.literal_carrier.insert(param, g);
             }
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {

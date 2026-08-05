@@ -29,7 +29,7 @@ pub(super) fn lower(
             let all = |t: Ty| elems.iter().all(|&(_, ty)| ty == t);
             // Same retry channel as the constant-list path above: a push of a
             // wider element contradicted this literal's element type.
-            let contradicted = ssa.dyn_list_pcs.contains(&pc);
+            let contradicted = ssa.dyn_literal_pcs.contains(&pc);
             let materialized = if contradicted {
                 None
             } else if !elems.is_empty() && all(Ty::I64) {
@@ -57,7 +57,7 @@ pub(super) fn lower(
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
-                ssa.literal_list_ty.insert(handle, (pc, list_ty));
+                ssa.literal_carrier.insert(handle, (pc, list_ty));
                 ssa.write(instr.a(), block, (handle, list_ty));
             } else if !elems.is_empty()
                 && elems.iter().all(|&(_, ty)| {
@@ -315,7 +315,7 @@ pub(super) fn lower(
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
                     if elems.is_empty() {
-                        let (new_fn, list_ty) = if ssa.dyn_list_pcs.contains(&pc) {
+                        let (new_fn, list_ty) = if ssa.dyn_literal_pcs.contains(&pc) {
                             // A consumer contradicted an earlier guess — the
                             // fixpoint retry forces the Dyn materialization.
                             ("dyn_new", Ty::ListDyn)
@@ -333,7 +333,7 @@ pub(super) fn lower(
                             args: Vec::new(),
                         });
                         if list_ty != Ty::ListDyn {
-                            ssa.literal_list_ty.insert(handle, (pc, list_ty));
+                            ssa.literal_carrier.insert(handle, (pc, list_ty));
                         }
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
@@ -351,7 +351,7 @@ pub(super) fn lower(
                     // and the only reason it was refused here is that a
                     // `Vec<i64>` cannot become a `Vec<LkDyn>` after the fact.
                     // Building it Dyn from the start is the same answer.
-                    if ssa.dyn_list_pcs.contains(&pc) && elems.iter().all(const_is_dyn_boxable) {
+                    if ssa.dyn_literal_pcs.contains(&pc) && elems.iter().all(const_is_dyn_boxable) {
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(handle),
@@ -428,7 +428,7 @@ pub(super) fn lower(
                     // Recorded like an empty literal's guess: a later push of a
                     // wider element names this pc, and the fixpoint rebuilds it
                     // above as a Dyn list.
-                    ssa.literal_list_ty.insert(handle, (pc, list_ty));
+                    ssa.literal_carrier.insert(handle, (pc, list_ty));
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
@@ -452,7 +452,10 @@ pub(super) fn lower(
                     // wrong guess only costs a fallback), the value defaults
                     // to `i64`; no entries means no order to mirror.
                     if entries.is_empty() {
-                        let new_fn = if empty_map_is_int_keyed(func, pc, instr.a()) {
+                        let new_fn = if ssa.dyn_literal_pcs.contains(&pc) {
+                            // A store of a wider value contradicted the guess.
+                            ("str_dyn_new", Ty::MapStrDyn)
+                        } else if empty_map_is_int_keyed(func, pc, instr.a()) {
                             ("i64_i64_new", Ty::MapI64I64)
                         } else {
                             ("str_i64_new", Ty::MapStrI64)
@@ -463,10 +466,18 @@ pub(super) fn lower(
                             callee: AbiRef::new("map_h", new_fn.0),
                             args: Vec::new(),
                         });
+                        if new_fn.1 != Ty::MapStrDyn {
+                            ssa.literal_carrier.insert(handle, (pc, new_fn.1));
+                        }
                         ssa.write(instr.a(), block, (handle, new_fn.1));
                         return Ok(());
                     }
-                    let (finish_fn, map_ty) = if all_str_keys && all_bool_vals {
+                    let contradicted = ssa.dyn_literal_pcs.contains(&pc)
+                        && all_str_keys
+                        && entries.iter().all(|(_, v)| const_is_dyn_boxable(v));
+                    let (finish_fn, map_ty) = if contradicted {
+                        ("lit_finish_str_dyn", Ty::MapStrDyn)
+                    } else if all_str_keys && all_bool_vals {
                         ("lit_finish_str_bool", Ty::MapStrBool)
                     } else if all_str_keys && all_int_vals {
                         ("lit_finish_str_i64", Ty::MapStrI64)
@@ -529,6 +540,9 @@ pub(super) fn lower(
                         callee: AbiRef::new("map_h", finish_fn),
                         args: vec![lit],
                     });
+                    if map_ty != Ty::MapStrDyn {
+                        ssa.literal_carrier.insert(handle, (pc, map_ty));
+                    }
                     ssa.write(instr.a(), block, (handle, map_ty));
                 }
                 ConstHeapValueData::LongString(s) => {
@@ -838,37 +852,7 @@ pub(super) fn lower(
             // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
             // A push whose value type contradicts a guessed empty-`[]`
             // element type retries the literal as a Dyn list (fixpoint).
-            let guess_wrong = |ssa: &Ssa| {
-                if ssa.literal_list_ty.is_empty() {
-                    None
-                } else {
-                    // The handle itself when known; otherwise a handle read
-                    // through an unsealed loop phi has no provenance yet —
-                    // mark the pending guesses *of the receiver's own shape*
-                    // (only those can be the contradicted literal; a
-                    // correctly guessed `ListStr` elsewhere in the function
-                    // must keep its typed lowering — `join` etc. have no Dyn
-                    // arm). If shape-filtering leaves nothing, over-mark all
-                    // (costs typed-ness, never correctness).
-                    let pcs = match ssa.literal_list_ty.get(&handle) {
-                        Some(&(pc0, _)) => vec![pc0],
-                        None => {
-                            let same_shape: Vec<usize> = ssa
-                                .literal_list_ty
-                                .values()
-                                .filter(|&&(_, gty)| gty == list_ty)
-                                .map(|&(p0, _)| p0)
-                                .collect();
-                            if same_shape.is_empty() {
-                                ssa.literal_list_ty.values().map(|&(p0, _)| p0).collect()
-                            } else {
-                                same_shape
-                            }
-                        }
-                    };
-                    Some(Unsupported::ListElemTypeContradicted { pcs })
-                }
-            };
+            let guess_wrong = |ssa: &Ssa| carrier_contradicted(ssa, handle, list_ty);
             match list_ty {
                 Ty::ListI64 => {
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
@@ -1286,6 +1270,20 @@ pub(super) fn lower(
             }
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
+            // A boxed map takes any value: box it and store. Without this arm
+            // the Dyn carrier existed but nothing could be put into it, so the
+            // retry below would have had nowhere to land.
+            if list_ty == Ty::MapStrDyn {
+                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
+                let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", "str_dyn_set"),
+                    args: vec![handle, key, boxed],
+                });
+                return Ok(());
+            }
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
                 let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
@@ -1293,7 +1291,15 @@ pub(super) fn lower(
                     (Ty::MapStrI64, Ty::I64) => ("str_i64_set", cv),
                     (Ty::MapStrF64, Ty::F64) => ("str_f64_set", cv),
                     (Ty::MapStrF64, Ty::I64) => ("str_f64_set", coerce_to_f64(ssa, insts, cv, cty)),
-                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                    // The value contradicts what this map was built to hold —
+                    // the same situation a push contradicting a list literal is,
+                    // and the same answer: name the literal and let the fixpoint
+                    // rebuild it with a Dyn carrier.
+                    _ => {
+                        return Err(
+                            carrier_contradicted(ssa, handle, list_ty).unwrap_or(Unsupported::TypeMismatch { pc })
+                        );
+                    }
                 };
                 insts.push(Inst::Call {
                     dst: None,
@@ -1444,14 +1450,20 @@ pub(super) fn lower(
                 .ok_or(Unsupported::BadConst { pc })?;
             let key_v = materialize_key(ssa, insts, globals, key);
             let (set_fn, value) = match map_ty {
-                Ty::MapStrI64 => (
-                    "str_i64_set",
-                    read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?,
-                ),
+                // A value the carrier cannot hold contradicts the literal this
+                // map was built from — the same situation a push contradicting
+                // a list literal is, and the same answer: name the literal so
+                // the fixpoint rebuilds it with a Dyn carrier.
+                Ty::MapStrI64 => match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
+                    Ok(v) => ("str_i64_set", v),
+                    Err(e) => return Err(carrier_contradicted(ssa, handle, map_ty).unwrap_or(e)),
+                },
                 Ty::MapStrF64 => {
                     let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
-                        return Err(Unsupported::TypeMismatch { pc });
+                        return Err(
+                            carrier_contradicted(ssa, handle, map_ty).unwrap_or(Unsupported::TypeMismatch { pc })
+                        );
                     }
                     ("str_f64_set", coerce_to_f64(ssa, insts, bv, bty))
                 }
@@ -1725,4 +1737,38 @@ pub(super) fn lower(
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
+}
+
+/// The container literal whose carrier a store into `handle` contradicts.
+///
+/// `None` when this function built no literal whose carrier is a judgement —
+/// then the store is simply unsupported and the caller says so.
+///
+/// The handle itself when its provenance is known; otherwise a handle read
+/// through an unsealed loop phi has none yet, so the pending literals *of the
+/// receiver's own shape* are marked (only those can be the contradicted one; a
+/// correctly typed `ListStr` elsewhere in the function must keep its typed
+/// lowering — `join` and friends have no Dyn arm). If shape-filtering leaves
+/// nothing, over-mark all: that costs typed-ness, never correctness.
+fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> Option<Unsupported> {
+    if ssa.literal_carrier.is_empty() {
+        return None;
+    }
+    let pcs = match ssa.literal_carrier.get(&handle) {
+        Some(&(pc0, _)) => vec![pc0],
+        None => {
+            let same_shape: Vec<usize> = ssa
+                .literal_carrier
+                .values()
+                .filter(|&&(_, gty)| gty == carrier)
+                .map(|&(p0, _)| p0)
+                .collect();
+            if same_shape.is_empty() {
+                ssa.literal_carrier.values().map(|&(p0, _)| p0).collect()
+            } else {
+                same_shape
+            }
+        }
+    };
+    Some(Unsupported::LiteralElemTypeContradicted { pcs })
 }
