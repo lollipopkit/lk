@@ -8,21 +8,27 @@ gates pass" and a regression shipped past it.
 
 ## The set
 
-| Gate | Command | What only this catches |
-| --- | --- | --- |
-| Workspace tests | `cargo test --workspace --all-features` | Everything with a named test. |
-| Format | `cargo fmt --all -- --check` | — |
-| Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | CI injects `RUSTFLAGS=-D warnings`, so **test-target** warnings fail CI; a plain `cargo clippy --workspace` does not compile tests. |
-| Lint, `no_std` faces | `cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings`, same for `-p lkrt` | `--all-features` never compiles the `no_std` face; the bare-metal targets do. |
-| `no_std` build | `cargo build -p lk-core --no-default-features` | A `use` deleted from under its `#[cfg(feature = "std")]` makes the *next* item std-only, silently. |
-| `no_std` **tests** | `cargo test -p lk-core --no-default-features` | 1073 tests that `--all-features` never compiles. **Not** the row above: a library has no link step, so `build` stayed green for months while `test` could not link at all (`undefined symbol: lkrt_cpu_raise_interrupt`) — running the build in its place proves nothing about the tests. |
-| LK source formatting | `lk fmt --check` | 36 of 97 `.lk` files were not in the shape the tool produces — the feature shipped and no workflow ran it. |
-| AOT native-lowering coverage | `AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh` | A program that stops lowering natively still prints the right answer, ~3x slower. **No differential test can see it.** |
-| VM vs native sweep | `SWEEP_REQUIRE="identical=61 diverged=1" bash scripts/vm_native_sweep.sh` | Every example and bench program under both executors. The gap between "does it lower" and "does this pinned case agree": lowers fine, wrong answer, no corpus case with that shape. |
-| AOT differential suites | `cargo test -p lk-cli --test aot_differential_test --test clif_differential_test --test hybrid_compile_test` | VM vs. native disagreement on the pinned corpus. |
-| Generative differential fuzz | see below | Feature *combinations* nobody wrote a case for. |
-| Bare metal (ARM, x86) | `cd bare-metal && LK_BIN=… cargo run --release`, `cd bare-metal-x86 && LK_BIN=… python3 check_pci.py` | That the `no_std` VM *works*, not merely compiles. Note `LK_BIN`: the build defaults to the **installed** `lk`, not the one you just built. |
-| Performance | `cargo build --profile dist -p lk-cli` then `bench/run_workload_bench.sh` | A hard 10% geomean gate; see `bench/README.md`. |
+Which workflow runs each row is a column, because "is this actually run?" has
+been answered wrong twice: `cargo build -p lk-core --no-default-features` was
+run in place of `cargo test …` (a library has no link step, so the build stayed
+green while the tests could not link at all), and "two clippy runs" was counted
+as covering both `no_std` faces when one of them was `lkrt`'s.
+
+| Gate | Command | Workflow | What only this catches |
+| --- | --- | --- | --- |
+| Workspace tests | `cargo test --workspace --all-features` | check.yml | Everything with a named test. |
+| Format | `cargo fmt --all -- --check` | check.yml | — |
+| Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | check.yml | CI injects `RUSTFLAGS=-D warnings`, so **test-target** warnings fail CI; a plain `cargo clippy --workspace` does not compile tests. |
+| Lint, `no_std` faces | `cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings`, same for `-p lkrt` | check.yml | `--all-features` never compiles the `no_std` face; the bare-metal targets do. |
+| `no_std` build | `cargo build -p lk-core --no-default-features` | check.yml | A `use` deleted from under its `#[cfg(feature = "std")]` makes the *next* item std-only, silently. |
+| `no_std` **tests** | `cargo test -p lk-core --no-default-features` | check.yml | 1073 tests that `--all-features` never compiles. **Not** the row above: a library has no link step, so `build` stayed green for months while `test` could not link at all (`undefined symbol: lkrt_cpu_raise_interrupt`) — running the build in its place proves nothing about the tests. |
+| LK source formatting | `lk fmt --check` | check.yml | 36 of 97 `.lk` files were not in the shape the tool produces — the feature shipped and no workflow ran it. |
+| AOT native-lowering coverage | `AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh` | check.yml | A program that stops lowering natively still prints the right answer, ~3x slower. **No differential test can see it.** |
+| VM vs native sweep | `SWEEP_REQUIRE="identical=61 diverged=1" bash scripts/vm_native_sweep.sh` | check.yml | Every example and bench program under both executors. The gap between "does it lower" and "does this pinned case agree": lowers fine, wrong answer, no corpus case with that shape. |
+| AOT differential suites | `cargo test -p lk-cli --test aot_differential_test --test clif_differential_test --test hybrid_compile_test` | check.yml (strict, first two) + correctness.yml (ASan/UBSan, plus `examples_differential_test`) | VM vs. native disagreement on the pinned corpus. `hybrid_compile_test` is deliberately *not* in the strict line — it exercises the fallback, and `LK_AOT_NO_FALLBACK=1` forbids the thing it tests; the workspace row covers it in default mode. |
+| Generative differential fuzz | see below | correctness.yml | Feature *combinations* nobody wrote a case for. |
+| Bare metal (ARM, x86) | `cd bare-metal && LK_BIN=… cargo run --release`, `cd bare-metal-x86 && LK_BIN=… python3 check_pci.py` | check.yml | That the `no_std` VM *works*, not merely compiles. Note `LK_BIN`: the build defaults to the **installed** `lk`, not the one you just built. |
+| Performance | `cargo build --profile dist -p lk-cli` then `bench/run_workload_bench.sh` | perf.yml | A hard 10% geomean gate; see `bench/README.md`. |
 
 ## Generative differential fuzz
 
