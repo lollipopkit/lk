@@ -747,6 +747,11 @@ macro_rules! for_each_abi_fn {
             // per unbox because `delete` writes — a materialized copy would
             // answer the reads and drop the write.
             ("dyn", "to_iter", lkrt_dyn_to_iter, WritesHost, [DynVal], Ptr);
+            // `needle in v` on a boxed haystack. A map answers key membership
+            // and every other container element membership, which is a
+            // run-time choice — the lowering had no `Dyn` arm at all, so the
+            // whole program fell back.
+            ("dyn", "contains", lkrt_dyn_contains, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "map_pairs", lkrt_dyn_map_pairs, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "map_keys", lkrt_dyn_map_keys, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "map_values", lkrt_dyn_map_values, WritesHost, [DynVal], Ptr, Constructs);

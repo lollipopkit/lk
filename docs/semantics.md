@@ -1742,7 +1742,7 @@ regex.split(pattern, text)      // 改前
 | `c[0].delete(k)` | 编译失败 | 答,且原地删 |
 | `for k in c[0]` | raise | 答 |
 | `for x in [Set/Bytes/Str][0]` | raise | 答 |
-| `"a" in c[0]` | 编译失败 | 编译失败(回落,非错答案) |
+| `"a" in c[0]` | 编译失败 | 答 |
 
 **分发按操作,不按解箱。** 让 `dyn.as_map` 在遇到类型化标签时物化一份
 `str_dyn` 返回,能答出上表里的四条读,然后**静默丢掉 `delete` 的写** —— 用错
@@ -1753,6 +1753,11 @@ regex.split(pattern, text)      // 改前
 `for-in` 同理:它发的是 `dyn.as_list`,一个**列表**守卫,所以装箱的 map、Set、
 Bytes、字符串在循环里全部 raise。VM 的 `to_iter` 不是"解出一个列表",是"这个值
 按什么迭代",`dyn.to_iter` 现在照着写。
+
+`in` 是第三处同形的:降低侧**根本没有 `Dyn` 干草堆这一臂**,所以整程序回落。
+`dyn.contains` 按标签分派 —— map 测键(存了 nil 的键也算,所以不能用 get 再判
+标签),其余载体测元素。`in` 不收 `Bytes` 是另一回事,类型检查器在两条路上都拒,
+单列(见任务表)。
 
 连带删掉 `MethodRow::unbox_map` 整列:没有哪个名字再需要"先解箱成 map"了。
 
@@ -1813,6 +1818,39 @@ println(typeof(xs[2]));   // 改前 VM: Int,native: Float
 拓宽成 Mixed,原生 raise。原生的 `Vec<i64>` 没法就地变成 `Vec<LkDyn>` —— 别的别名
 按静态类型直接读这块内存。未装箱路径在那里回落,装箱路径 raise;两者都不是错答案。
 未裁决,见任务表。
+
+## 可变容器是协变的,这是不健全的(2026-08-05 记录,**未裁决**)
+
+`values/src/types.rs` 的 `is_assignable_to` 里写着 `// Generic containers with
+covariant element types`,是有意为之。实测它可以推翻类型系统自己的保证:
+
+```
+fn add_any(xs: List, v: Any) { xs.push(v); }
+let a: List<Int> = [1, 2];
+add_any(a, "s");
+let b: Int = a[2];   // 过检查
+println(b);          // 打印 s
+```
+
+`lk check` 全过。四种拼写都通:形参写 `List` 或 `List<Any>` 都接受 `List<Int>`;
+`Map<String, Int>` 传给 `Map` 后写入,`let b: Int = m["k"]` 同样过检查并拿到字符串。
+
+**它也是"拓宽"那条的根**:VM 之所以要把 `TypedList` 拓宽成 `Mixed`,正是因为检查器
+放进来了它本不该放的元素。
+
+### 为什么还没改
+
+四条路都量过或试过:
+
+| 路 | 代价 |
+| --- | --- |
+| 元素类型完全不变(Rust 的选择) | 这门语言**没有泛型函数**(`fn first<T>(...)` 语法错误),所以写不出"对任意元素类型的列表"的签名。stdlib 里 15 个 `params(values: List)` 会全部拒绝类型化列表。 |
+| 裸 `List`/`Map`/`Set` 改成只读视图,带参数的不变 | LK 代码里裸拼写用了 **0 处**,爆炸半径只在 stdlib 签名。但要求 `List<?>` 与 `List<Any>` 是两个类型,`Type::List(Box<Type>)` 装不下,得加变体并改所有匹配点。 |
+| 形参可变性推断驱动的按参数型变 | 健全,无语法代价,读的位置全部照旧。需要一遍变更分析加 stdlib 侧的"会不会改实参"标注。 |
+| 运行时存储检查(Java 数组的做法) | 需要列表记住**声明的**元素类型;今天的载体是从内容推出来的,`let xs: List<Any> = [1,2]` 的载体是 Int,照这个检查会误拒。 |
+
+没有一条是小改动,而选错会把不健全换成另一种不健全。先记在这里,连同上面的可复现
+用例;裁决之前不要在任一侧打补丁使某个测试变绿。
 
 ## 维护约定
 

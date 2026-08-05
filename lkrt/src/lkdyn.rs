@@ -1297,6 +1297,47 @@ pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
     }
 }
 
+/// `needle in v` where `v` is boxed — the tag decides what membership means.
+///
+/// A map answers **key** membership (a stored nil still counts, which is why it
+/// is not get-then-test); every other container answers element membership
+/// under [`contains_eq`]. Both are what the unboxed spellings already do; this
+/// is the one entry point that can pick between them at run time, which is what
+/// a boxed haystack needs — `"a" in c[0]` used to drop the whole program to the
+/// VM because the lowering had no arm for a `Dyn` haystack at all.
+///
+/// # Safety
+/// The payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
+    if is_map_tag(v.tag) {
+        if needle.tag == DYN_STR {
+            return unsafe { lkrt_dyn_map_has(v, needle.payload as *const c_char) };
+        }
+        return i64::from(map_entries(v).contains_key(&crate::vm_mirror::key_from_dyn(needle)));
+    }
+    if is_list_tag(v.tag) {
+        return i64::from(dyn_list_values(v).iter().any(|&e| contains_eq(e, needle)));
+    }
+    match v.tag {
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_has(v.payload as *mut c_void, needle) },
+        DYN_SLICE => {
+            // SAFETY: a `DYN_SLICE` payload is a live window handle.
+            let window = unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) };
+            i64::from(window.iter().any(|&e| contains_eq(lkrt_dyn_from_i64(e), needle)))
+        }
+        DYN_BYTES => {
+            let bytes = crate::lkbytes::bytes_slice(v.payload as *mut c_void);
+            i64::from(
+                bytes
+                    .iter()
+                    .any(|&b| contains_eq(lkrt_dyn_from_i64(i64::from(b)), needle)),
+            )
+        }
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 /// `m.keys()` on a boxed map. See [`lkrt_dyn_map_pairs`].
 ///
 /// # Safety

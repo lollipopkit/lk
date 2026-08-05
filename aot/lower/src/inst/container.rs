@@ -1429,6 +1429,34 @@ pub(super) fn lower(
             // Dyn containers: list membership boxes the needle and defers to
             // the structural `dyn_contains`; map membership is a dedicated
             // `has` (a stored-nil value still counts, unlike get+tag).
+            // A **boxed** haystack: what membership means is the tag's answer,
+            // not the static type's, so the runtime picks. A map tests its
+            // keys, every other container its elements.
+            if list_ty == Ty::Dyn {
+                let (nv, nty) = ssa.read(instr.b(), block, pc)?;
+                let needle = to_dyn_any(ssa, insts, nv, nty, pc)?;
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", "contains"),
+                    args: vec![handle, needle],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             if list_ty == Ty::ListDyn || list_ty == Ty::MapStrDyn {
                 let raw = ssa.new_val();
                 if list_ty == Ty::ListDyn {

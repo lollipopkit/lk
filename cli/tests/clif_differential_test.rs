@@ -2213,6 +2213,14 @@ fn a_boxed_typed_map_keeps_its_order() {
                 "for_over_every_boxed_carrier",
                 "let z = 0;\nlet s = Set([1 + z, 2]);\nfor x in [s][0] { println(x); }\nlet b = \"ab\".bytes();\nfor x in [b][0] { println(x); }\nlet t = \"ab\" + \"\";\nfor x in [t][0] { println(x); }\nlet xs = [1 + z, 2];\nfor x in [xs][0] { println(x); }\nreturn 0;\n",
             ),
+            // `needle in v` on a boxed haystack. What membership means is the
+            // tag's answer — a map tests keys, everything else tests elements
+            // — and the lowering had no `Dyn` arm at all, so the whole program
+            // fell back.
+            new(
+                "in_over_a_boxed_haystack",
+                "let z = 0;\nlet m = {\"a\": 1 + z};\nlet c = [m];\nprintln(\"a\" in c[0]);\nprintln(\"zz\" in c[0]);\nlet xs = [1 + z, 2];\nlet d = [xs];\nprintln(2 in d[0]);\nprintln(9 in d[0]);\nlet s = Set([1 + z]);\nlet e = [s];\nprintln(1 in e[0]);\nprintln(4 in e[0]);\nreturn 0;\n",
+            ),
             new(
                 "reading_a_key_out_of_a_boxed_typed_map",
                 "let z = 0;\nlet m = {\"a\": 1 + z};\nlet c = [m];\nprintln(c[0][\"a\"]);\nprintln(c[0][\"zz\"]);\nlet n = {3: 4 + z};\nlet d = [n];\nprintln(d[0][3]);\nprintln(d[0][9]);\nreturn 0;\n",
