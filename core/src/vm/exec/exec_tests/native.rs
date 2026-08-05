@@ -2,6 +2,13 @@ use super::*;
 use crate::util::fast_map::fast_hash_map_from_iter;
 use crate::vm::ProgramExec;
 use crate::vm::analysis::PerfGlobalFact;
+/// A native is called through the same `Call` opcode as anything else, and the
+/// argument window is cleared afterwards.
+///
+/// Written against an installed native rather than an inline `NativeEntry`: the
+/// inline table is a mechanism no binary reaches (see
+/// [`super::execute_source_with_natives`]), so this used to prove the property
+/// for a path that does not ship.
 #[test]
 fn execute_module_calls_native_function_with_same_call_opcode() {
     fn native_add(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -11,89 +18,57 @@ fn execute_module_calls_native_function_with_same_call_opcode() {
         Ok(RuntimeVal::Int(lhs + rhs))
     }
 
-    let entry = Function {
-        consts: ConstPool {
-            ints: vec![13, 29],
-            ..ConstPool::default()
-        },
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abx(Opcode::LoadInt, 1, 0),
-            Instr::abx(Opcode::LoadInt, 2, 1),
-            Instr::abc(Opcode::Call, 0, 0, 2),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 3,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "native_add".to_string(),
-            arity: 2,
-            function: NativeFunction::Plain(native_add),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-
-    let result = execute_module(&module).expect("execute module");
+    let result = super::execute_source_with_natives(
+        "return native_add(13, 29);",
+        &[("native_add", NativeFunction::Plain(native_add), 2)],
+    )
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    // The call window is cleared: the arguments do not outlive the call, which
+    // is what keeps a native's arguments from pinning heap values (see
+    // `clear_call_window_temps`).
+    // The same two slots the hand-built module asserted on: the argument window
+    // is cleared after the call, so `13` and `29` do not outlive it. Slot 0
+    // holds the callable the global was read into.
     assert_eq!(result.state.stack[1], RuntimeVal::Nil);
     assert_eq!(result.state.stack[2], RuntimeVal::Nil);
 }
 
+/// A native that allocates a value nobody keeps: the collector takes it.
+///
+/// Runs the program a user would write, with the collector set to run after
+/// every allocation — the hand-built module got that by seeding its own
+/// `HeapStore`, which is also why it could not reach an installed native.
 #[test]
 fn execute_module_collects_after_native_heap_allocation() {
     fn native_alloc_dead(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         runtime
             .heap_mut()
-            .alloc(HeapValue::String(Arc::<str>::from("native-dead")));
+            .alloc(HeapValue::String(Arc::<str>::from("dead-native-allocation")));
         Ok(RuntimeVal::Nil)
     }
 
-    let entry = Function {
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abc(Opcode::Call, 0, 0, 0),
-            Instr::abc(Opcode::Nop, 0, 0, 0),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 1,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "native_alloc_dead".to_string(),
-            arity: 0,
-            function: NativeFunction::Plain(native_alloc_dead),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-    let mut heap = HeapStore::new();
-    heap.set_gc_threshold(1);
+    // Five hundred allocations nobody keeps, collected as they go.
+    //
+    // The old form asserted an *empty* heap, which a hand-built module can have
+    // and a real program cannot — a program's heap holds its globals and the
+    // callable this native was read from. What still separates "collected" from
+    // "kept" is that the heap stays *bounded*: without the collector it would
+    // carry all five hundred strings.
+    let result = super::execute_source_with_natives_and_gc(
+        "let i = 0;\nwhile i < 500 { native_alloc_dead(); i = i + 1; }\nreturn i;",
+        &[("native_alloc_dead", NativeFunction::Plain(native_alloc_dead), 0)],
+        Some(1),
+    )
+    .expect("execute source");
 
-    let result = Executor::new(1)
-        .run_module_with_globals_and_heap(&module, Vec::new(), heap)
-        .expect("execute module");
-
-    assert_eq!(result.returns, vec![RuntimeVal::Nil]);
-    assert_eq!(result.state.heap.len(), 0);
+    assert_eq!(result.returns, vec![RuntimeVal::Int(500)]);
+    assert!(
+        result.state.heap.len() < 100,
+        "five hundred unreferenced allocations were not collected: heap holds {}",
+        result.state.heap.len()
+    );
     assert!(!result.state.heap.should_collect());
 }
 

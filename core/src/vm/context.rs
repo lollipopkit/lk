@@ -678,7 +678,12 @@ impl VmContext {
         Ok(())
     }
 
-    fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
+    /// Install a native under a global name — the shape every stdlib native
+    /// arrives in (a global holding a `CallableValue::RuntimeNative`).
+    ///
+    /// `pub(crate)` so tests can reach the *shipped* path; see
+    /// `exec_tests::execute_source_with_natives`.
+    pub(crate) fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
         if self.runtime_globals.contains_key(name) {
             return;
         }

@@ -381,6 +381,9 @@ fn should_insert_space(prev: Option<&Token>, current: &Token) -> bool {
 
 #[cfg(test)]
 mod render_test {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
+
     use super::{ParseOptions, render_tokens, tokenize_and_expand};
 
     /// The expansion comes back one statement per line.
