@@ -1323,3 +1323,28 @@ fn a_match_with_no_catch_all_falls_through_to_nil() {
         "[nil,20]"
     );
 }
+
+/// A `return` in one branch of a conditional expression is that branch's own.
+///
+/// `lower_conditional` never touched `emitted_return`, so a branch whose block
+/// returned left the "what follows is dead code" flag set: every statement
+/// after the conditional was dropped, and the function fell off its end.
+/// `if`/`else` as a statement, `try`/`catch` and `match` all save and restore
+/// the flag per branch; the conditional expression was the one that did not.
+#[test]
+fn a_return_in_one_conditional_branch_does_not_kill_the_code_after_it() {
+    let source = "fn f(n: Int) -> Int {\n    let a = if n > 0 { return 1; } else { 2 };\n    return a + 10;\n}\nreturn [f(5), f(-5)];\n";
+    let result = execute_source(source).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1,12]"
+    );
+
+    let ternary =
+        "fn f(n: Int) -> Int {\n    let a = n > 0 ? { return 1; } : 2;\n    return a + 10;\n}\nreturn [f(5), f(-5)];\n";
+    let result = execute_source(ternary).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1,12]"
+    );
+}

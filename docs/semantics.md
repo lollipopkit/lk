@@ -305,6 +305,11 @@ example、差分用例或 fuzz 种子碰到过它。AOT 覆盖门禁也看不见
   的臂体降低,`g(1)` 落出 match、落到声明 `-> Int` 的函数末尾、答 nil。
   `every_match_arm_return_returns` 是它的门禁,其中决定性的一组是 match 之后
   再写 `return 99;`:控制流当时根本没在臂里停下。
+- **条件表达式的每条分支各算各的返回**(2026-08-05 裁决):`lower_conditional`
+  过去完全不碰"接下来是死代码"的标志,分支块里的 `return` 因此泄漏到整个条件
+  表达式之外 —— `let a = if n > 0 { return 1; } else { 2 }; return a + 10;` 里
+  后一条 `return` 被当成死代码丢掉,函数落到末尾答 nil。`if` 作语句、
+  `try`/`catch`、`match` 都是每条分支各存各的,条件表达式是漏的那处。
 - **`if` 是表达式**:`if c { a } else { b }` 取所在分支块的最后一个表达式为值;
   没有 `else`、或分支块以语句结尾,值为 nil。`else if` 链按嵌套展开。它与
   `match`、三元 `? :` 降到同一个节点(`Expr::Conditional`),所以三者不会走散。

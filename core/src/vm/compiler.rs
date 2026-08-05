@@ -908,17 +908,32 @@ impl Compiler {
 
     pub(super) fn lower_conditional(&mut self, condition: &Expr, then_expr: &Expr, else_expr: &Expr) -> Result<u16> {
         let dst = self.alloc_reg();
+        let watermark = self.next_reg;
         let false_jumps = self.emit_condition_false_jumps(condition)?;
 
+        // Each branch is its own path, so `emitted_return` is saved and
+        // restored around it — the same discipline `lower_if` uses. A branch
+        // whose block returns (`let a = if c { return 1; } else { 2 };`) left
+        // the flag set, and every statement after the conditional was then
+        // dropped as dead code: the function fell off its end and answered nil.
+        self.emitted_return = false;
         self.lower_expr_to_register(dst, then_expr, "conditional then")?;
-        let jmp_end = self.emit_jmp_placeholder();
+        let then_returns = self.emitted_return;
+        let jmp_end = (!then_returns).then(|| self.emit_jmp_placeholder());
+        self.next_reg = watermark; // recycle the branch's temporaries
 
         let else_start = self.function.code.len();
         self.patch_condition_false_jumps(false_jumps, else_start)?;
+        self.emitted_return = false;
         self.lower_expr_to_register(dst, else_expr, "conditional else")?;
+        let else_returns = self.emitted_return;
+        self.next_reg = watermark;
 
-        let end = self.function.code.len();
-        self.patch_jmp(jmp_end, end)?;
+        if let Some(jmp_end) = jmp_end {
+            let end = self.function.code.len();
+            self.patch_jmp(jmp_end, end)?;
+        }
+        self.emitted_return = then_returns && else_returns;
         Ok(dst)
     }
 

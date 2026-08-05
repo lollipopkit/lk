@@ -285,6 +285,12 @@ fn differential_control_flow() {
                 "code_after_a_total_if",
                 "fn h(n: Int) -> Int {\n    if n > 0 { return 1; } else { return 2; }\n    let z = n + 1;\n    return z;\n}\nprintln(h(5));\nprintln(h(-5));\nreturn 0;\n",
             ),
+            // A `return` in one branch of a conditional expression ends that
+            // branch, not the lowering of what follows the conditional.
+            new(
+                "conditional_branch_returns",
+                "fn f(n: Int) -> Int {\n    let a = if n > 0 { return 1; } else { 2 };\n    return a + 10;\n}\nprintln(f(5));\nprintln(f(-5));\nreturn 0;\n",
+            ),
             // A binding arm catches every value, nil included — the same rule
             // the wildcard follows.
             new(
