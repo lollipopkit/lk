@@ -140,9 +140,10 @@ enum Commands {
         /// Source file to bundle
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
-        /// Output executable path
+        /// Output executable path (default: the source path without its
+        /// extension, as `lk compile` does)
         #[arg(short, long, value_name = "OUT", value_parser = parse_sanitized_path)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
     /// Report VM coverage for a source file.
     Coverage {
@@ -534,6 +535,12 @@ fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(feature = "aot")]
                 {
+                    // The same default `lk compile` uses. Both commands produce
+                    // an executable from a source file, and one of them used to
+                    // demand a name for it while the other worked one out —
+                    // `lk bundle app.lk` was a usage error, which is also the
+                    // spelling `CLAUDE.md` and `README` documented.
+                    let output = output.unwrap_or_else(|| file.with_extension(""));
                     run_bundle(&file, &output)?;
                     return Ok(());
                 }
