@@ -117,13 +117,6 @@ impl Executor {
     }
 
     #[cold]
-    pub(super) fn dispatch_load_native(&mut self, instr: Instr, module: Option<&Module>) -> Result<()> {
-        self.load_native_value(instr.a(), instr.bx(), module)?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    #[cold]
     /// `A = B as <C>`.
     ///
     /// Machine-int targets truncate to the width and then sign- or zero-extend
@@ -686,9 +679,6 @@ impl Executor {
             }
             Opcode::MakeClosure => {
                 self.dispatch_make_closure(instr, module)?;
-            }
-            Opcode::LoadNative => {
-                self.dispatch_load_native(instr, module)?;
             }
             Opcode::Not => {
                 self.dispatch_not(function, instr)?;

@@ -161,9 +161,6 @@ impl Compiler {
         if self.function_names.contains_key(name) {
             return self.load_function_by_name(name).map(Some);
         }
-        if self.native_names.contains_key(name) {
-            return self.load_native_by_name(name).map(Some);
-        }
         if let Some(slot) = self.global_names.get(name).copied() {
             return self.emit_get_global(slot).map(Some);
         }
@@ -197,29 +194,6 @@ impl Compiler {
             },
         );
         Ok(())
-    }
-
-    pub(super) fn load_native_by_name(&mut self, name: &str) -> Result<u16> {
-        let native_index = *self
-            .native_names
-            .get(name)
-            .ok_or_else(|| anyhow!("Compiler undefined native `{name}`"))?;
-        let dst = self.alloc_reg();
-        let native_index =
-            u16::try_from(native_index).map_err(|_| anyhow!("Compiler native index {native_index} exceeds u16"))?;
-        self.emit(Instr::abx(
-            Opcode::LoadNative,
-            checked_u8("native dst", dst)?,
-            native_index,
-        ));
-        self.function.performance.set_register_fact(
-            dst,
-            PerfRegisterFact {
-                callable: PerfCallTargetKind::Native,
-                ..PerfRegisterFact::default()
-            },
-        );
-        Ok(dst)
     }
 
     pub(super) fn emit_get_global(&mut self, slot: u32) -> Result<u16> {

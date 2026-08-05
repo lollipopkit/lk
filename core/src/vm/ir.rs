@@ -283,56 +283,55 @@ pub enum Opcode {
     CallDirect = 69,
     CallNamed = 70,
     LoadFunction = 71,
-    LoadNative = 72,
-    MakeClosure = 73,
-    LoadCapture = 74,
-    LoadCellVal = 75,
-    StoreCellVal = 76,
-    GetGlobal = 77,
-    SetGlobal = 78,
-    NewList = 79,
-    NewMap = 80,
-    NewRange = 81,
-    NewObject = 82,
-    GetIndex = 83,
-    SetIndex = 84,
-    GetIndexStrI = 85,
-    SetIndexStrI = 86,
-    GetFieldK = 87,
-    SetFieldK = 88,
-    GetList = 89,
-    ListPush = 90,
-    Len = 91,
-    ToIter = 92,
-    Contains = 93,
-    SliceFrom = 94,
-    MapRest = 95,
-    ToString = 96,
-    ConcatString = 97,
-    ConcatN = 98,
-    StringSplit = 99,
-    ListJoin = 100,
-    Raise = 101,
-    TryBegin = 102,
-    TryEnd = 103,
-    Wide = 104,
+    MakeClosure = 72,
+    LoadCapture = 73,
+    LoadCellVal = 74,
+    StoreCellVal = 75,
+    GetGlobal = 76,
+    SetGlobal = 77,
+    NewList = 78,
+    NewMap = 79,
+    NewRange = 80,
+    NewObject = 81,
+    GetIndex = 82,
+    SetIndex = 83,
+    GetIndexStrI = 84,
+    SetIndexStrI = 85,
+    GetFieldK = 86,
+    SetFieldK = 87,
+    GetList = 88,
+    ListPush = 89,
+    Len = 90,
+    ToIter = 91,
+    Contains = 92,
+    SliceFrom = 93,
+    MapRest = 94,
+    ToString = 95,
+    ConcatString = 96,
+    ConcatN = 97,
+    StringSplit = 98,
+    ListJoin = 99,
+    Raise = 100,
+    TryBegin = 101,
+    TryEnd = 102,
+    Wide = 103,
     /// Boxing-free method call: `a` = window base (receiver at `a`, args at
     /// `[a+1, a+1+c)`, result written to `a`), `b` = method-name string
     /// constant index, `c` = positional argument count. Replaces the
     /// `GetGlobal __lk_call_method` + `NewList` + `Call` sequence for
     /// positional method calls whose name constant index fits in `b`.
-    CallMethodK = 105,
+    CallMethodK = 104,
     /// `A = B as <type encoded in C>` — see `CastTarget`.
     ///
     /// One opcode for every conversion rather than one per source/target pair:
     /// the source type is only known at runtime anyway, so a per-pair opcode
     /// would not save the dispatch on it.
-    CastTo = 106,
+    CastTo = 105,
     /// `A = -B`.
     ///
     /// Not `0 - B`: the two differ on floats, where `-0.0` is a value distinct
     /// from `0.0 - 0.0`, and negation is what the writer asked for.
-    Neg = 107,
+    Neg = 106,
     /// `A = floor(B / C)` on two `Int`s — the fused form of
     /// `math.floor(a / b)`.
     ///
@@ -341,7 +340,7 @@ pub enum Opcode {
     /// a native call. Floor, not truncation: `math.floor(-7 / 2)` is `-4`.
     /// Non-`Int` operands divide as `f64` and floor the result, which is what
     /// `math.floor` would have answered.
-    FloorDivInt = 108,
+    FloorDivInt = 107,
 }
 
 impl Opcode {
@@ -423,43 +422,42 @@ impl Opcode {
             69 => Some(Self::CallDirect),
             70 => Some(Self::CallNamed),
             71 => Some(Self::LoadFunction),
-            72 => Some(Self::LoadNative),
-            73 => Some(Self::MakeClosure),
-            74 => Some(Self::LoadCapture),
-            75 => Some(Self::LoadCellVal),
-            76 => Some(Self::StoreCellVal),
-            77 => Some(Self::GetGlobal),
-            78 => Some(Self::SetGlobal),
-            79 => Some(Self::NewList),
-            80 => Some(Self::NewMap),
-            81 => Some(Self::NewRange),
-            82 => Some(Self::NewObject),
-            83 => Some(Self::GetIndex),
-            84 => Some(Self::SetIndex),
-            85 => Some(Self::GetIndexStrI),
-            86 => Some(Self::SetIndexStrI),
-            87 => Some(Self::GetFieldK),
-            88 => Some(Self::SetFieldK),
-            89 => Some(Self::GetList),
-            90 => Some(Self::ListPush),
-            91 => Some(Self::Len),
-            92 => Some(Self::ToIter),
-            93 => Some(Self::Contains),
-            94 => Some(Self::SliceFrom),
-            95 => Some(Self::MapRest),
-            96 => Some(Self::ToString),
-            97 => Some(Self::ConcatString),
-            98 => Some(Self::ConcatN),
-            99 => Some(Self::StringSplit),
-            100 => Some(Self::ListJoin),
-            101 => Some(Self::Raise),
-            102 => Some(Self::TryBegin),
-            103 => Some(Self::TryEnd),
-            104 => Some(Self::Wide),
-            105 => Some(Self::CallMethodK),
-            106 => Some(Self::CastTo),
-            107 => Some(Self::Neg),
-            108 => Some(Self::FloorDivInt),
+            72 => Some(Self::MakeClosure),
+            73 => Some(Self::LoadCapture),
+            74 => Some(Self::LoadCellVal),
+            75 => Some(Self::StoreCellVal),
+            76 => Some(Self::GetGlobal),
+            77 => Some(Self::SetGlobal),
+            78 => Some(Self::NewList),
+            79 => Some(Self::NewMap),
+            80 => Some(Self::NewRange),
+            81 => Some(Self::NewObject),
+            82 => Some(Self::GetIndex),
+            83 => Some(Self::SetIndex),
+            84 => Some(Self::GetIndexStrI),
+            85 => Some(Self::SetIndexStrI),
+            86 => Some(Self::GetFieldK),
+            87 => Some(Self::SetFieldK),
+            88 => Some(Self::GetList),
+            89 => Some(Self::ListPush),
+            90 => Some(Self::Len),
+            91 => Some(Self::ToIter),
+            92 => Some(Self::Contains),
+            93 => Some(Self::SliceFrom),
+            94 => Some(Self::MapRest),
+            95 => Some(Self::ToString),
+            96 => Some(Self::ConcatString),
+            97 => Some(Self::ConcatN),
+            98 => Some(Self::StringSplit),
+            99 => Some(Self::ListJoin),
+            100 => Some(Self::Raise),
+            101 => Some(Self::TryBegin),
+            102 => Some(Self::TryEnd),
+            103 => Some(Self::Wide),
+            104 => Some(Self::CallMethodK),
+            105 => Some(Self::CastTo),
+            106 => Some(Self::Neg),
+            107 => Some(Self::FloorDivInt),
             _ => None,
         }
     }
@@ -489,7 +487,6 @@ impl Opcode {
                 | Self::LoadHeapConst
                 | Self::LoadCapture
                 | Self::LoadFunction
-                | Self::LoadNative
                 | Self::CallNamed
                 | Self::BrEqIntI4
                 | Self::BrNeIntI4
@@ -875,6 +872,39 @@ mod tests {
     use crate::{val::RuntimeVal, vm::NativeFunction};
 
     use super::*;
+
+    /// The opcode discriminants run 0..=N with no holes, and that is a
+    /// **performance** property, not tidiness.
+    ///
+    /// Removing `LoadNative` (an opcode no production path ever emitted) left a
+    /// hole at 72 and cost **9%** on the workload suite — measured three times
+    /// either side: 1.075 / 1.086 / 1.089 against a 0.991 / 0.986 baseline.
+    /// Renumbering the opcodes above it to close the hole put it back to
+    /// 0.994 / 0.987. The dispatch `match` lowers to a jump table only while the
+    /// discriminants are dense; one gap is enough to lose it.
+    ///
+    /// Nothing guarded this, and the next opcode removal would have paid the
+    /// same 9% with no test and no reviewer able to see why. Note the cost is
+    /// the *hole*, not the missing arm: the same removal with contiguous
+    /// numbering is free.
+    ///
+    /// Renumbering changes the artifact encoding, so it comes with a
+    /// `MODULE_ARTIFACT_VERSION` bump.
+    #[test]
+    fn opcodes_are_contiguous() {
+        let decoded: Vec<u8> = (0u8..=255)
+            .filter(|&value| Opcode::from_bits(value).is_some())
+            .collect();
+        assert!(!decoded.is_empty(), "no opcode decodes at all");
+        let expected: Vec<u8> = (0..decoded.len() as u8).collect();
+        assert_eq!(
+            decoded,
+            expected,
+            "opcode discriminants must be 0..={} with no gaps — a hole costs ~9% by \
+             breaking the dispatch jump table",
+            decoded.len() - 1
+        );
+    }
 
     #[test]
     fn abc_round_trips_opcode_format_and_registers() {

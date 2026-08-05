@@ -390,19 +390,6 @@ impl FunctionVerifier<'_> {
                         ));
                     }
                 }
-                Opcode::LoadNative => {
-                    self.check_reg(pc, "a", instr.a())?;
-                    let index = instr.bx() as usize;
-                    if index >= self.module.natives.len() {
-                        return Err(self.fail(
-                            pc,
-                            format_args!(
-                                "LoadNative index {index} out of bounds ({} natives)",
-                                self.module.natives.len()
-                            ),
-                        ));
-                    }
-                }
                 Opcode::MakeClosure => {
                     self.check_reg(pc, "a", instr.a())?;
                     let callee_index = instr.b() as usize;

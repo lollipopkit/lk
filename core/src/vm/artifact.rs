@@ -57,7 +57,10 @@ use super::{
 // consumer cannot read as an `Option`; a v15 consumer cannot read the `null` a
 // v16 producer writes. Neither direction degrades quietly, but the version says
 // so first.
-pub const MODULE_ARTIFACT_VERSION: u32 = 16;
+/// Bumped to 17 when `LoadNative` was removed and the opcodes above it were
+/// renumbered to close the hole — see `opcodes_are_contiguous` for why the hole
+/// could not simply be left.
+pub const MODULE_ARTIFACT_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -519,7 +522,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 16);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 17);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

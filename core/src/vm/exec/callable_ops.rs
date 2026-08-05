@@ -45,22 +45,6 @@ impl Executor {
         self.write(dst, value)
     }
 
-    #[cold]
-    pub(super) fn load_native_value(&mut self, dst: u8, native_index: u16, module: Option<&Module>) -> Result<()> {
-        let native_index = native_index as usize;
-        let module = module.ok_or_else(|| anyhow!("LoadNative requires Module execution"))?;
-        let native = module
-            .natives
-            .get(native_index)
-            .ok_or_else(|| anyhow!("LoadNative index {} out of bounds", native_index))?;
-        let value = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Callable(CallableValue::RuntimeNative {
-            name: Arc::<str>::from(native.name.as_str()),
-            arity: native.arity,
-            function: native.function.clone(),
-        })));
-        self.write(dst, value)
-    }
-
     fn capture_values(&self, base: u8, count: u16) -> Result<Vec<RuntimeVal>> {
         let count = usize::from(count);
         if usize::from(base) + count > usize::from(self.register_count) {

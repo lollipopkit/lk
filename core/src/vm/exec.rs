@@ -406,10 +406,6 @@ impl Executor {
                     self.dispatch_cold(Opcode::MakeClosure, function, module, instr, ctx, collect_metrics)?;
                     let _ = &profile; // suppress unused warning
                 }
-                Opcode::LoadNative => {
-                    self.dispatch_cold(Opcode::LoadNative, function, module, instr, ctx, collect_metrics)?;
-                    let _ = &profile; // suppress unused warning
-                }
                 Opcode::AddInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
