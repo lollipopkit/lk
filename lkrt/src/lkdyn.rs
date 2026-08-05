@@ -777,11 +777,46 @@ pub(crate) fn map_entries(v: LkDyn) -> crate::lkmap::FxMap<crate::lkmap::MapKey,
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
-    match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_sub(y)),
-        (Some(x), Some(y)) => from_f64(x.as_f64() - y.as_f64()),
-        _ => binary_type_error("Sub", "expected numbers or list/map lhs", a, b),
+    if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
+        return match (x, y) {
+            (Numeric::Int(x), Numeric::Int(y)) => from_i64(x.wrapping_sub(y)),
+            (x, y) => from_f64(x.as_f64() - y.as_f64()),
+        };
     }
+    // `-` removes, which this had never implemented — while its own error text
+    // said "expected numbers or list/map lhs", borrowing the VM's rule to
+    // describe an ability it did not have. The VM's `dynamic_sub` drops every
+    // element of `b` from a list and every key of `b` from a map.
+    //
+    // Order, as everywhere else: the answer keeps the left's own order, since
+    // removal takes entries away and never adds one.
+    if is_list_tag(a.tag) && is_list_tag(b.tag) {
+        let drop = dyn_list_values(b);
+        let kept: Vec<LkDyn> = dyn_list_values(a)
+            .iter()
+            .filter(|value| !drop.iter().any(|other| contains_eq(**value, *other)))
+            .copied()
+            .collect();
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(kept) as i64,
+        };
+    }
+    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+        let drop: crate::lkmap::FxSet<_> = crate::lkmap::map_entries_ordered(b)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
+            .into_iter()
+            .filter(|(key, _)| !drop.contains(key))
+            .collect();
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+        };
+    }
+    binary_type_error("Sub", "expected numbers or list/map lhs", a, b)
 }
 
 #[unsafe(no_mangle)]

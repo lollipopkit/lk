@@ -1184,7 +1184,26 @@ impl TypeChecker {
                     Some(left_expr.clone()),
                 ))
             }
-            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            // `-` removes: `xs - ys` drops every element of `ys`, `m - n` drops
+            // every key of `n`. Both executors have implemented it all along
+            // (the VM's `dynamic_sub` has list and map arms, and its own error
+            // says "expected numbers or list/map lhs"), the tutorial documents
+            // it (`[1, 2, 3] - [2]  // [1, 3]`), and only the checker refused —
+            // so it ran with the types erased to `Any` and was "the left
+            // operand must be numeric types" without. The same defect `+` had,
+            // in the operator beside it.
+            BinOp::Sub => {
+                let left_resolved = self.resolve_aliases(&left_type);
+                let right_resolved = self.resolve_aliases(&right_type);
+                if matches!(left_resolved, Type::List(_)) || matches!(right_resolved, Type::List(_)) {
+                    return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(left_resolved, Type::Map(_, _)) || matches!(right_resolved, Type::Map(_, _)) {
+                    return self.check_map_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
+            }
+            BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
             }
             BinOp::Eq | BinOp::Ne => {
@@ -1424,6 +1443,58 @@ impl TypeChecker {
             left.clone()
         } else {
             Type::Any
+        }
+    }
+
+    /// `xs - ys` — `xs` without the elements `ys` holds.
+    ///
+    /// The answer keeps the receiver's element type: removal takes elements
+    /// away and never introduces one, so nothing widens.
+    fn check_list_removal(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
+            (Type::List(left_inner), Type::List(_)) => Ok(Type::List(left_inner)),
+            (Type::List(_), other) | (other, Type::List(_)) => Err(Self::type_err(
+                "list removal requires both operands to be lists",
+                Some(Type::List(Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Sub,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_list_removal is only reached when a side is a list"),
+        }
+    }
+
+    /// `m - n` — `m` without the keys `n` holds. Keeps `m`'s types, for the
+    /// reason [`check_list_removal`] gives.
+    fn check_map_removal(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
+            (Type::Map(left_key, left_value), Type::Map(_, _)) => Ok(Type::Map(left_key, left_value)),
+            (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
+                "map removal requires both operands to be maps",
+                Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Sub,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_map_removal is only reached when a side is a map"),
         }
     }
 

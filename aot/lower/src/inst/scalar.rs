@@ -547,6 +547,35 @@ pub(super) fn lower(
                 // keeps falling back rather than answering `{"3": 1}` where the
                 // VM answers `{3: 1}`.
                 let is_str_map = |t: Ty| matches!(t, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn);
+                // `xs - ys` / `m - n` removes, and both go through the runtime
+                // for the reason the merge below does: the answer is built by
+                // filtering, in the left's own order.
+                let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+                if op == Opcode::SubInt
+                    && ((is_list(lty_raw) && is_list(rty_raw)) || (is_str_map(lty_raw) && is_str_map(rty_raw)))
+                {
+                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                    let boxed = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(boxed),
+                        callee: AbiRef::new("dyn", "sub"),
+                        args: vec![lhs, rhs],
+                    });
+                    let (unbox, out_ty) = if is_list(lty_raw) {
+                        ("as_list", Ty::ListDyn)
+                    } else {
+                        ("as_map", Ty::MapStrDyn)
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", unbox),
+                        args: vec![boxed],
+                    });
+                    ssa.write(instr.a(), block, (dst, out_ty));
+                    return Ok(());
+                }
                 if op == Opcode::AddInt && is_str_map(lty_raw) && is_str_map(rty_raw) {
                     let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                     let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;

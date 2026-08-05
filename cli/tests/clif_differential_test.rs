@@ -2169,6 +2169,36 @@ fn mixed_type_addition_and_equality() {
 ///
 /// A window still falls back natively (there is no sub-window symbol), which is
 /// a fallback and not a wrong answer.
+/// `-` removes: `xs - ys` drops every element of `ys`, `m - n` every key of
+/// `n`.
+///
+/// The tutorial documents it (`[1, 2, 3] - [2]  // [1, 3]`) and the VM has
+/// implemented it all along; only the checker refused, so it ran with the types
+/// erased to `Any` and was "the left operand must be numeric types" without —
+/// the same defect `+` had, in the operator beside it. `lkrt_dyn_sub` had never
+/// implemented it either, while its own error text said "expected numbers or
+/// list/map lhs".
+///
+/// The answer keeps the left's own order, because removal takes entries away
+/// and never adds one.
+#[test]
+fn subtraction_removes_from_a_list_and_a_map() {
+    run_differential(
+        "container_removal",
+        &[
+            new(
+                "lists",
+                "let z = 0;\nprintln([1 + z, 2, 3] - [2]);\nprintln([1 + z, 2, 3] - []);\nprintln([] - [1 + z]);\nprintln([1 + z, 2, 2, 3] - [2]);\nprintln([\"a\" + \"\", \"b\"] - [\"b\"]);\nreturn 0;\n",
+            ),
+            new(
+                "maps_keep_the_left_order",
+                "let z = 0;\nlet m = {\"k1\": 1 + z, \"k2\": 2, \"k3\": 3, \"k4\": 4, \"k5\": 5};\nprintln(m - {\"k2\": 0, \"k4\": 0});\nprintln(m);\nprintln(m - {});\nprintln((m - {\"k2\": 0}).len());\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn a_range_index_answers_what_the_slice_method_does() {
     run_differential(
