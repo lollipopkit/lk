@@ -362,6 +362,8 @@ fn direct_runtime_native_collects_after_heap_allocation() {
         state.heap.get(live),
         Some(HeapValue::String(value)) if value.as_ref() == "native-live"
     ));
+    // Handle 1: the string the native allocated before failing. Handle 0 is the
+    // callable itself, which the global keeps alive.
     assert!(state.heap.get(HeapRef::new(1)).is_none());
     assert!(matches!(
         state.heap.get(match callable {
@@ -753,7 +755,7 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
     }
 
     let callee = Function {
-        code: vec![Instr::abx(Opcode::LoadNative, 0, 0), Instr::abc(Opcode::Call, 0, 0, 0)],
+        code: vec![Instr::abx(Opcode::GetGlobal, 0, 0), Instr::abc(Opcode::Call, 0, 0, 0)],
         register_count: 1,
         param_count: 0,
         positional_param_count: 0,
@@ -763,17 +765,24 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: vec![NativeEntry {
-            name: "native_alloc_then_error".to_string(),
-            arity: 0,
-            function: NativeFunction::Plain(native_alloc_then_error),
+        natives: Vec::new(),
+        globals: vec![crate::vm::GlobalSlot {
+            name: "native_alloc_then_error".into(),
         }],
-        globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
         type_scope: Default::default(),
     });
-    let mut state = RuntimeModuleState::new(HeapStore::new(), Vec::new());
+    // The native lives in the callable's *own* state, as a global holding a
+    // `RuntimeNative` — the shape a loaded module has. An inline `NativeEntry`
+    // plus `LoadNative` is a mechanism nothing but these tests builds.
+    let mut heap = HeapStore::new();
+    let native = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+        name: Arc::<str>::from("native_alloc_then_error"),
+        arity: 0,
+        function: NativeFunction::Plain(native_alloc_then_error),
+    })));
+    let mut state = RuntimeModuleState::new(heap, vec![native]);
     state.heap.set_gc_threshold(1);
     let callable = RuntimeCallable::with_state(
         Arc::clone(&callee_module),
@@ -952,19 +961,18 @@ fn execute_module_context_native_can_use_vm_context() {
         Ok(RuntimeVal::Int(value))
     }
 
-    let module = Compiler::compile_source_module_with_natives(
-        "return add_seed(2);",
-        vec![NativeEntry {
-            name: "add_seed".to_string(),
-            arity: 1,
-            function: NativeFunction::Context(add_seed),
-        }],
-    )
-    .expect("compile module");
+    // Installed on the context and named as an external global: how a stdlib
+    // native reaches a program. Compiling one *into* the module was the
+    // `LoadNative` path, which no binary built.
+    let program = crate::syntax::parse_program_source("return add_seed(2);", Default::default()).expect("parse");
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
+    ctx.install_runtime_builtin("add_seed", NativeFunction::Context(add_seed), 1);
     ctx.define_runtime_value("seed", RuntimeVal::Int(40), HeapStore::new());
 
-    let result = execute_module_with_globals_and_ctx(&module, Vec::new(), &mut ctx).expect("execute module");
+    // The program path, because that is what seeds a module's globals from the
+    // context (`seed_module_globals`); `execute_module_with_globals_and_ctx`
+    // takes the values from its caller and this one has none to give.
+    let result = crate::vm::execute_program_with_ctx(&program, &mut ctx).expect("execute program");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(matches!(

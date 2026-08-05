@@ -5,8 +5,7 @@ use alloc::sync::Arc;
 use crate::{
     val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{
-        ConstHeapValue, ConstPool, Instr, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, Opcode,
-        RuntimeCallable, VmContext,
+        ConstHeapValue, ConstPool, Instr, NativeArgs, NativeFunction, NativeRuntime, Opcode, RuntimeCallable, VmContext,
     },
 };
 

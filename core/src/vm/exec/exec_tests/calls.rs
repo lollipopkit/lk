@@ -364,7 +364,9 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
             ..ConstPool::default()
         },
         code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
+            // Slot 1: the native. Slot 0 stays the closure the native looks up
+            // through `runtime.globals().first()`.
+            Instr::abx(Opcode::GetGlobal, 0, 1),
             Instr::abx(Opcode::LoadInt, 1, 0),
             Instr::abc(Opcode::Call, 0, 0, 1),
             Instr::abc(Opcode::Return, 0, 1, 0),
@@ -378,12 +380,13 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: vec![NativeEntry {
-            name: "invoke_global_closure".to_string(),
-            arity: 1,
-            function: NativeFunction::FullState(invoke_global_closure),
-        }],
-        globals: vec![GlobalSlot { name: "f".into() }],
+        natives: Vec::new(),
+        globals: vec![
+            GlobalSlot { name: "f".into() },
+            GlobalSlot {
+                name: "invoke_global_closure".into(),
+            },
+        ],
         entry: 0,
         type_info: Default::default(),
         type_scope: Default::default(),
@@ -393,9 +396,16 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
         function_index: 1,
         captures: Arc::new(Vec::new()),
     })));
+    // The native as a global too — the shape a loaded module has, rather than
+    // an inline table nothing outside these tests fills.
+    let native = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+        name: Arc::<str>::from("invoke_global_closure"),
+        arity: 1,
+        function: NativeFunction::FullState(invoke_global_closure),
+    })));
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let result = execute_module_with_globals_heap_and_ctx(&module, vec![closure], heap, &mut ctx)
+    let result = execute_module_with_globals_heap_and_ctx(&module, vec![closure, native], heap, &mut ctx)
         .expect("execute native-mediated closure call");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);

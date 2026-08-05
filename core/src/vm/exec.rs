@@ -55,6 +55,8 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
+#[cfg(test)]
+use super::GlobalSlot;
 use super::{
     CallWindow, Function, Module, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
     analysis::{
@@ -62,8 +64,6 @@ use super::{
         record_container_op_known_enabled, vm_runtime_metrics_enabled,
     },
 };
-#[cfg(test)]
-use super::{Compiler, GlobalSlot};
 use call::push_traceback_frame;
 use frame::{CallFrame, FrameOutcome};
 use handler::{ErrorHandler, LanguageRaise};
