@@ -2145,6 +2145,21 @@ fn reverse_and_count_reach_every_sequence_carrier() {
                 "reverse_keeps_the_carrier_where_it_can",
                 "let z = 0;\nlet b = \"abca\".bytes();\nprintln(b.reverse());\nprintln(typeof(b.reverse()));\nlet w = [3 + z, 1, 2].slice(0, 3);\nprintln(w.reverse());\nprintln(typeof(w.reverse()));\nprintln([1 + z, 2].reverse());\nreturn 0;\n",
             ),
+            // Shape-preserving on `Bytes` (ordered scalars, every element still
+            // a byte), materializing on a window (neither answer is a range of
+            // the source).
+            new(
+                "sort_and_unique_reach_them_too",
+                "let z = 0;\nlet b = \"cab a\".bytes();\nprintln(b.sort());\nprintln(b.unique());\nprintln(typeof(b.sort()));\nlet w = [3 + z, 1, 3, 2].slice(0, 4);\nprintln(w.sort());\nprintln(w.unique());\nprintln(typeof(w.sort()));\nreturn 0;\n",
+            ),
+            // The operations whose answer is a list of the elements: they are
+            // the list's, reached by materializing once. `join` too, which is a
+            // fused opcode rather than a method call and needed the carrier
+            // arms there instead.
+            new(
+                "the_list_answering_operations_delegate",
+                "let z = 0;\nlet b = \"abc\".bytes();\nprintln(b.enumerate());\nprintln(b.chunk(2));\nprintln(b.chain([9]));\nprintln(b.zip([7, 8, 9]));\nprintln(b.join(\"-\"));\nlet w = [1 + z, 2, 3].slice(0, 3);\nprintln(w.enumerate());\nprintln(w.chunk(2));\nprintln(w.join(\"-\"));\nprintln([1 + z, 2].join(\"-\"));\nreturn 0;\n",
+            ),
             new(
                 "count_is_index_of_s_sibling",
                 "let z = 0;\nlet b = \"abca\".bytes();\nprintln(b.count(97));\nprintln(b.count(122));\nprintln(b.count(300));\nprintln([1 + z, 2, 1].count(1));\nprintln([1.5 + 0.0, 2.5, 1.5].count(1.5));\nlet w = [1 + z, 2, 1].slice(0, 3);\nprintln(w.count(1));\nprintln(\"aa\".count(\"a\"));\nreturn 0;\n",

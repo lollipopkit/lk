@@ -127,6 +127,24 @@ pub(super) fn lower(
             // about when it declined the numeric carriers — a decision argued
             // from a branch that never ran.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
+            // `Bytes` and a window join their elements too — the same reading
+            // the arms above take, and the same one the VM takes now. They
+            // materialize first because their elements are not a list handle;
+            // one conversion, then the `i64` helper the values are.
+            let (handle, list_ty) = if matches!(list_ty, Ty::Bytes | Ty::SliceI64) {
+                let list = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(list),
+                    callee: match list_ty {
+                        Ty::Bytes => AbiRef::new("bytes_h", "to_i64_list"),
+                        _ => AbiRef::new("slice_h", "i64_to_list"),
+                    },
+                    args: vec![handle],
+                });
+                (list, Ty::ListI64)
+            } else {
+                (handle, list_ty)
+            };
             let helper = match list_ty {
                 Ty::ListStr => "str_join",
                 Ty::ListI64 => "i64_join",

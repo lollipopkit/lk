@@ -177,6 +177,25 @@ pub(super) fn dispatch_slice_builtin_method(
             let items = TypedList::from_runtime_values(&items, heap);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
         }
+        // Neither answer is a range of the source, so both materialize — the
+        // same rule `reverse` and `map` follow here.
+        "sort" | "unique" => {
+            if !positional.is_empty() {
+                bail!("slice.{method}() expects no arguments, got {}", positional.len());
+            }
+            let items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
+            let items = TypedList::from_runtime_values(&items, heap);
+            // Routed through the list implementations rather than repeated:
+            // `sort`'s order and `unique`'s "later duplicates dropped, order
+            // preserved" are rules, and a second copy of a rule is how two
+            // spellings of one operation come to disagree.
+            let answer = if method == "sort" {
+                typed_list_sorted(&items, heap)
+            } else {
+                typed_list_unique(&items, heap)?
+            };
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(answer)))))
+        }
         // `index_of`'s sibling, and it was on `Str` alone.
         "count" => {
             if positional.len() != 1 {
@@ -199,6 +218,15 @@ pub(super) fn dispatch_slice_builtin_method(
             let items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
             let items = TypedList::from_runtime_values(&items, heap);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
+        }
+        // As in `bytes_dispatch`: the operations whose answer is a list of the
+        // elements are the list's, reached by materializing the window once.
+        // `join` too — a window's elements display the same as a list's.
+        "enumerate" | "zip" | "chain" | "chunk" => {
+            let items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
+            let items = TypedList::from_runtime_values(&items, heap);
+            let list = RuntimeVal::Obj(heap.alloc(HeapValue::List(items)));
+            super::dispatch_list_builtin_method(&list, method, positional, heap)
         }
         _ => Ok(None),
     }

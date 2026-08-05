@@ -188,31 +188,27 @@ impl Executor {
             .get(handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
-            HeapValue::List(TypedList::String(values)) => values
+            HeapValue::List(values) => join_typed_list(values, heap, separator.as_ref()),
+            // The other two sequence carriers. `join` reaching only `List` is
+            // the same shape the comment above describes — one carrier's
+            // arbitrary limit becoming the operator's.
+            HeapValue::Bytes(bytes) => bytes
                 .iter()
-                .map(|value| value.as_ref())
+                .map(|byte| crate::vm::display_runtime_value(&RuntimeVal::Int(i64::from(*byte)), heap))
                 .collect::<Vec<_>>()
                 .join(separator.as_ref()),
-            HeapValue::List(TypedList::Int(values)) => values
-                .iter()
-                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Int(*value), heap))
-                .collect::<Vec<_>>()
-                .join(separator.as_ref()),
-            HeapValue::List(TypedList::Float(values)) => values
-                .iter()
-                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Float(*value), heap))
-                .collect::<Vec<_>>()
-                .join(separator.as_ref()),
-            HeapValue::List(TypedList::Bool(values)) => values
-                .iter()
-                .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Bool(*value), heap))
-                .collect::<Vec<_>>()
-                .join(separator.as_ref()),
-            HeapValue::List(TypedList::Mixed(values)) => values
-                .iter()
-                .map(|value| crate::vm::display_runtime_value(value, heap))
-                .collect::<Vec<_>>()
-                .join(separator.as_ref()),
+            // A window joins the range it windows, through the same function
+            // the list arm uses.
+            HeapValue::Slice(slice) => match slice.source {
+                RuntimeVal::Obj(source) => match heap.get(source) {
+                    Some(HeapValue::List(values)) => {
+                        let window = values.window(slice.start, slice.live_len(heap));
+                        join_typed_list(&window, heap, separator.as_ref())
+                    }
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            },
             other => bail!("ListJoin target must be list, got {:?}", HeapValue::type_name(other)),
         };
         self.write_string(dst, joined)
@@ -300,5 +296,44 @@ impl Executor {
         } else {
             RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value)))
         }
+    }
+}
+
+/// `xs.join(sep)` over a list's elements, whatever carrier holds them.
+///
+/// Its own function because three receivers need it — a list, a window over a
+/// list, and (through its own byte rendering) `Bytes`. Every element is written
+/// the way the language writes it anywhere else, through the one renderer, so
+/// there is no second spelling of "how does an Int look". The `String` carrier
+/// keeps its direct path: it is already what the renderer would produce (a bare
+/// string renders unquoted; only *inside* a container is it quoted), and it
+/// avoids an allocation per element.
+fn join_typed_list(values: &TypedList, heap: &crate::val::HeapStore, separator: &str) -> String {
+    match values {
+        TypedList::String(values) => values
+            .iter()
+            .map(|value| value.as_ref())
+            .collect::<Vec<_>>()
+            .join(separator),
+        TypedList::Int(values) => values
+            .iter()
+            .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Int(*value), heap))
+            .collect::<Vec<_>>()
+            .join(separator),
+        TypedList::Float(values) => values
+            .iter()
+            .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Float(*value), heap))
+            .collect::<Vec<_>>()
+            .join(separator),
+        TypedList::Bool(values) => values
+            .iter()
+            .map(|value| crate::vm::display_runtime_value(&RuntimeVal::Bool(*value), heap))
+            .collect::<Vec<_>>()
+            .join(separator),
+        TypedList::Mixed(values) => values
+            .iter()
+            .map(|value| crate::vm::display_runtime_value(value, heap))
+            .collect::<Vec<_>>()
+            .join(separator),
     }
 }

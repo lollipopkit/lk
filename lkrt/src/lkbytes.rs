@@ -357,6 +357,37 @@ pub unsafe extern "C" fn lkrt_lkbytes_reverse(handle: *mut c_void) -> *mut c_voi
     bytes_handle(out)
 }
 
+/// `b.sort()` — the bytes in ascending order, as a new `Bytes`.
+///
+/// # Safety
+/// `handle` must be a live handle from a `bytes_h` constructor, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_sort(handle: *mut c_void) -> *mut c_void {
+    let mut out = bytes_slice(handle).to_vec();
+    out.sort_unstable();
+    bytes_handle(out)
+}
+
+/// `b.unique()` — later duplicates dropped, order kept, as a new `Bytes`.
+///
+/// 256 possible values, so the "seen" set is a bitmap rather than a hash set.
+///
+/// # Safety
+/// `handle` must be a live handle from a `bytes_h` constructor, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_unique(handle: *mut c_void) -> *mut c_void {
+    let bytes = bytes_slice(handle);
+    let mut seen = [false; 256];
+    let mut out = Vec::with_capacity(bytes.len());
+    for byte in bytes {
+        if !seen[*byte as usize] {
+            seen[*byte as usize] = true;
+            out.push(*byte);
+        }
+    }
+    bytes_handle(out)
+}
+
 /// `b.count(v)` — how many bytes equal `v`. A value no byte can hold counts
 /// zero, which is the answer `contains` gives it too.
 ///

@@ -441,6 +441,49 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     // this materializes where `take`/`skip`/`slice` answer sub-windows, the
     // same rule `map` follows here.
     m(Slice, "reverse", &[], "List<Elem>", "The window's elements, reversed"),
+    m(
+        Slice,
+        "sort",
+        &[],
+        "List<Elem>",
+        "The window's elements in ascending order",
+    ),
+    m(Slice, "enumerate", &[], "List<List<Any>>", "`[index, element]` pairs"),
+    m(
+        Slice,
+        "zip",
+        &[p("other", "List")],
+        "List<List<Any>>",
+        "Pairs with `other`",
+    ),
+    m(
+        Slice,
+        "chain",
+        &[p("other", "List")],
+        "List<Any>",
+        "The window's elements then `other`'s",
+    ),
+    m(
+        Slice,
+        "chunk",
+        &[p("size", "Int")],
+        "List<List<Elem>>",
+        "Groups of `size` elements",
+    ),
+    m(
+        Slice,
+        "join",
+        &[p("separator", "String")],
+        "String",
+        "Elements joined by `separator`",
+    ),
+    m(
+        Slice,
+        "unique",
+        &[],
+        "List<Elem>",
+        "The window's elements with later duplicates dropped, order kept",
+    ),
     // A contiguous run of a window is still a window; what `filter` keeps is
     // not contiguous, so it materializes a list.
     m(
@@ -523,6 +566,47 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     // Shape-preserving and element-type-independent, so a `Bytes` again — the
     // reading `take`, `skip`, `slice` and `concat` already take here.
     m(Bytes, "reverse", &[], "Bytes", "The bytes in reverse order"),
+    // Byte values are ordered scalars, so both mean here what they mean on a
+    // `List<Int>`, and both keep the carrier.
+    m(Bytes, "sort", &[], "Bytes", "The bytes in ascending order"),
+    // The operations whose answer is a *list of the elements*: they mean the
+    // same here as on a `List` and cannot keep the carrier, so they answer one.
+    m(Bytes, "enumerate", &[], "List<List<Int>>", "`[index, byte]` pairs"),
+    m(
+        Bytes,
+        "zip",
+        &[p("other", "List")],
+        "List<List<Any>>",
+        "Pairs with `other`",
+    ),
+    m(
+        Bytes,
+        "chain",
+        &[p("other", "List")],
+        "List<Any>",
+        "The bytes then `other`'s elements",
+    ),
+    m(
+        Bytes,
+        "chunk",
+        &[p("size", "Int")],
+        "List<List<Int>>",
+        "Groups of `size` bytes",
+    ),
+    m(
+        Bytes,
+        "join",
+        &[p("separator", "String")],
+        "String",
+        "Byte values joined by `separator`",
+    ),
+    m(
+        Bytes,
+        "unique",
+        &[],
+        "Bytes",
+        "The bytes with later duplicates dropped, order kept",
+    ),
     m(
         Bytes,
         "slice",

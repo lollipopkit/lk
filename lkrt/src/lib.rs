@@ -113,8 +113,9 @@ pub use isr::lkrt_cpu_raise_interrupt;
 pub use lkbytes::{
     lkrt_lkbytes_concat, lkrt_lkbytes_contains, lkrt_lkbytes_count, lkrt_lkbytes_eq, lkrt_lkbytes_from_i64_list,
     lkrt_lkbytes_from_str, lkrt_lkbytes_get, lkrt_lkbytes_index_of, lkrt_lkbytes_is_empty, lkrt_lkbytes_len,
-    lkrt_lkbytes_max, lkrt_lkbytes_min, lkrt_lkbytes_reverse, lkrt_lkbytes_skip, lkrt_lkbytes_slice, lkrt_lkbytes_sum,
-    lkrt_lkbytes_take, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str, lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
+    lkrt_lkbytes_max, lkrt_lkbytes_min, lkrt_lkbytes_reverse, lkrt_lkbytes_skip, lkrt_lkbytes_slice, lkrt_lkbytes_sort,
+    lkrt_lkbytes_sum, lkrt_lkbytes_take, lkrt_lkbytes_to_i64_list, lkrt_lkbytes_to_str, lkrt_lkbytes_unique,
+    lkrt_lkbytes_utf8, lkrt_lkbytes_utf8_lossy,
 };
 #[cfg(feature = "std")]
 pub use lkprocess::{

@@ -209,6 +209,37 @@ pub(super) fn dispatch_bytes_builtin_method(
                 heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
             )))
         }
+        // Byte values are ordered scalars, so both mean here exactly what they
+        // mean on a `List<Int>` — and both keep the carrier, because every
+        // element of the answer is still a byte.
+        "sort" => {
+            if !positional.is_empty() {
+                bail!("bytes.sort() expects no arguments, got {}", positional.len());
+            }
+            let mut out = bytes.to_vec();
+            out.sort_unstable();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
+            )))
+        }
+        "unique" => {
+            if !positional.is_empty() {
+                bail!("bytes.unique() expects no arguments, got {}", positional.len());
+            }
+            // Later duplicates dropped, order preserved — `List::unique`'s
+            // rule. 256 possible values, so the "seen" set is a bitmap.
+            let mut seen = [false; 256];
+            let mut out = Vec::with_capacity(bytes.len());
+            for byte in bytes.iter() {
+                if !seen[*byte as usize] {
+                    seen[*byte as usize] = true;
+                    out.push(*byte);
+                }
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
+            )))
+        }
         // `count` is `index_of`'s sibling — how many rather than where — and
         // `index_of` is on all four sequence carriers while `count` was on
         // `Str` alone. A value no byte can equal counts zero, which is the
@@ -233,6 +264,18 @@ pub(super) fn dispatch_bytes_builtin_method(
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Int(values))),
             )))
+        }
+        // The operations whose answer is a *list of the elements*, whatever the
+        // elements were: they mean the same thing here as on a `List` and
+        // cannot keep the carrier, so they are the list's, reached by
+        // materializing. One arm rather than six bodies — `enumerate`'s pairs,
+        // `chunk`'s grouping and `flatten`'s one level are rules, and a second
+        // copy of a rule is how two spellings of one operation come to
+        // disagree.
+        "enumerate" | "zip" | "chain" | "chunk" => {
+            let values: Vec<i64> = bytes.iter().map(|byte| *byte as i64).collect();
+            let list = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(values))));
+            super::dispatch_list_builtin_method(&list, method, positional, heap)
         }
         _ => Ok(None),
     }

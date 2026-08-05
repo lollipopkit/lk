@@ -83,6 +83,15 @@ pub(crate) fn lower_method_call_k(
     // method names (a non-list tag aborts — the VM's method-on-wrong-type is
     // a loud error too). Names shared with str/map receivers stay boxed.
     let role = method_role(&name);
+    /// The methods whose answer is a list of the receiver's elements, whatever
+    /// carrier held them. See the arm below.
+    fn answers_a_list_of_the_elements(name: &str) -> bool {
+        // `flatten` is not here: a `Bytes` and an `i64` window hold scalars,
+        // so flattening one is a no-op and the checker declines it. `join` is
+        // not here either — the bytecode compiler matches it by name into the
+        // fused `ListJoin`, so no method call by that name reaches this.
+        matches!(name, "enumerate" | "zip" | "chain" | "chunk")
+    }
     let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_list) {
         let unboxed = ssa.new_val();
         insts.push(Inst::Call {
@@ -91,6 +100,23 @@ pub(crate) fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
+    } else if matches!(receiver_ty, Ty::Bytes | Ty::SliceI64) && answers_a_list_of_the_elements(&name) {
+        // The operations whose answer is a *list of the elements*: they mean
+        // the same on `Bytes` and on a window as on a `List`, and cannot keep
+        // the carrier, so they are the list's — reached by materializing once
+        // and letting the list arms run. Six arms per carrier would be six
+        // copies of `enumerate`'s pairing and `chunk`'s grouping, and the VM
+        // delegates for exactly that reason.
+        let list = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(list),
+            callee: match receiver_ty {
+                Ty::Bytes => AbiRef::new("bytes_h", "to_i64_list"),
+                _ => AbiRef::new("slice_h", "i64_to_list"),
+            },
+            args: vec![receiver],
+        });
+        (list, Ty::ListI64)
     } else {
         (receiver, receiver_ty)
     };
@@ -1120,7 +1146,7 @@ pub(crate) fn lower_method_dispatch(
         // A reversed window is not a window of the source, so it materializes
         // — the same rule `map` follows here. Composed from the two symbols
         // that already exist rather than a third that would answer the same.
-        (Ty::SliceI64, "reverse", []) => {
+        (Ty::SliceI64, "reverse" | "sort" | "unique", []) => {
             let list = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(list),
@@ -1130,7 +1156,14 @@ pub(crate) fn lower_method_dispatch(
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_reverse"),
+                callee: AbiRef::new(
+                    "list_h",
+                    match name {
+                        "sort" => "i64_sort",
+                        "unique" => "i64_unique",
+                        _ => "i64_reverse",
+                    },
+                ),
                 args: vec![list],
             });
             (dst, Ty::ListI64)
@@ -2271,11 +2304,18 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::I64)
         }
-        (Ty::Bytes, "reverse", []) => {
+        (Ty::Bytes, "reverse" | "sort" | "unique", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("bytes_h", "reverse"),
+                callee: AbiRef::new(
+                    "bytes_h",
+                    match name {
+                        "sort" => "sort",
+                        "unique" => "unique",
+                        _ => "reverse",
+                    },
+                ),
                 args: vec![receiver],
             });
             (dst, Ty::Bytes)

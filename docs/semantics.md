@@ -1884,8 +1884,25 @@ println(b);          // 打印 s
 
 `Bytes` 里放不下的针值(`300`、`-1`)`count` 答 0,与 `contains` 给它的答案一致。
 
-还没补的同类:`sort` / `unique` / `enumerate` / `zip` / `chain` / `chunk` /
-`flatten` / `join` 仍然只在 `List` 上。见任务表。
+`sort` / `unique` 按同一规则:`Bytes` 上答 `Bytes`(字节是有序标量,每个元素仍是
+字节),窗口上答 `List`(两种答案都不是源的一个区间)。窗口的这两个路由到
+`typed_list_sorted` / `typed_list_unique`,不重写一遍 —— "排序的序"和"后来的重复
+被丢掉、顺序保留"是规则,规则抄第二份就是将来漂移。
+
+`enumerate` / `zip` / `chain` / `chunk` 的答案是**元素的列表**,与载体无关,所以
+它们是 `List` 的:两个载体各加**一条**委派臂,把元素物化一次再走 `List` 的实现。
+六个方法各写两份就是把 `enumerate` 的配对、`chunk` 的分组各抄两遍。降低侧同形 ——
+接收者是 `Bytes` 或窗口且方法在这一组时,先物化成 `ListI64` 再让已有的 List 臂跑。
+
+`flatten` **不**在这一组:`Bytes` 和 `i64` 窗口装的是标量,展平是空操作,检查器
+拒得对。
+
+`join` 是第三种情况:字节码编译器按名字把它匹配成融合的 `ListJoin`,所以没有叫
+`join` 的方法调用能到降低的方法分发。VM 侧和降低侧的载体臂都得加在那个 opcode 上,
+而且 VM 侧把五个渲染分支抽成了 `join_typed_list` —— 列表、窗口、`Bytes` 三个接收者
+共用它。
+
+还没补的同类:`concat`(`Str` 用 `+`,窗口未补)。见任务表。
 
 ## 维护约定
 

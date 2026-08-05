@@ -254,6 +254,8 @@ macro_rules! for_each_abi_fn {
             // operations `Bytes` was missing while it had every other read.
             ("bytes_h", "count", lkrt_lkbytes_count, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "reverse", lkrt_lkbytes_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("bytes_h", "sort", lkrt_lkbytes_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("bytes_h", "unique", lkrt_lkbytes_unique, WritesHost, [Ptr], Ptr, Constructs);
             ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
