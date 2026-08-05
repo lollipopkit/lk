@@ -793,7 +793,7 @@ pub extern "C" fn lkrt_dyn_mul(a: LkDyn, b: LkDyn) -> LkDyn {
     }
 }
 
-/// `/` always produces Float in LK (docs/semantics.md 数值), zero divisor is
+/// `/` always produces Float in LK (docs/semantics.md, the numeric adjudication), zero divisor is
 /// a loud failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {

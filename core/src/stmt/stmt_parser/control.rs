@@ -70,7 +70,7 @@ impl<'a> StmtParser<'a> {
         })))
     }
 
-    /// 解析 if 语句
+    /// Parses an `if` statement.
     pub fn parse_if_stmt(&mut self) -> Result<Stmt> {
         let keyword_pos = self.pos;
         self.expect_token(Token::If)?;
@@ -223,7 +223,7 @@ impl<'a> StmtParser<'a> {
         self.try_parse_tail_expression_stmt(keyword_pos)
     }
 
-    /// 解析 while 语句
+    /// Parses a `while` statement.
     pub fn parse_while_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::While)?;
 
@@ -266,11 +266,10 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// 解析 for 语句
+    /// Parses a `for` statement.
     pub fn parse_for_stmt(&mut self) -> Result<Stmt> {
-        self.expect_token(Token::For)?; // 消费 'for'
+        self.expect_token(Token::For)?;
 
-        // 解析模式 (变量名或解构)
         let mut pattern = self.parse_for_pattern()?;
         if !self.eof() && self.tokens[self.pos] == Token::Comma {
             let mut patterns = vec![pattern];
@@ -281,12 +280,11 @@ impl<'a> StmtParser<'a> {
             pattern = ForPattern::Tuple(patterns);
         }
 
-        self.expect_token(Token::In)?; // 消费 'in'
+        self.expect_token(Token::In)?;
 
-        // 解析可迭代表达式 - 在for循环中遇到LBrace时停止
+        // The iterable stops at `{`, which starts the body rather than a map.
         let iterable = self.parse_expression_with_options(true)?;
 
-        // 解析循环体
         let body = Box::new(self.parse_statement()?);
 
         Ok(Stmt::For {
@@ -296,26 +294,25 @@ impl<'a> StmtParser<'a> {
         })
     }
 
-    /// 解析 for 循环的模式
+    /// Parses a `for` loop's binding pattern.
     pub fn parse_for_pattern(&mut self) -> Result<ForPattern> {
         match &self.tokens[self.pos] {
-            // 忽略模式: _
+            // `_`
             Token::Id(name) if name == "_" => {
                 self.pos += 1;
                 Ok(ForPattern::Ignore)
             }
-            // 简单变量: identifier
+            // A plain name.
             Token::Id(name) => {
                 let var_name = name.clone();
                 self.pos += 1;
                 Ok(ForPattern::Variable(var_name))
             }
-            // 元组模式: (a, b, c)
+            // `(a, b, c)`
             Token::LParen => {
-                self.pos += 1; // 消费 '('
+                self.pos += 1;
                 let mut patterns = Vec::new();
 
-                // 处理空元组 ()
                 if !self.eof() && self.tokens[self.pos] == Token::RParen {
                     self.pos += 1;
                     return Ok(ForPattern::Tuple(patterns));
@@ -330,8 +327,8 @@ impl<'a> StmtParser<'a> {
 
                     match &self.tokens[self.pos] {
                         Token::Comma => {
-                            self.pos += 1; // 消费 ','
-                            // 允许尾随逗号: (a, b,)
+                            self.pos += 1;
+                            // A trailing comma is allowed.
                             if !self.eof() && self.tokens[self.pos] == Token::RParen {
                                 break;
                             }
@@ -342,27 +339,25 @@ impl<'a> StmtParser<'a> {
                     }
                 }
 
-                self.pos += 1; // 消费 ')'
+                self.pos += 1;
                 Ok(ForPattern::Tuple(patterns))
             }
-            // 数组模式: [a, b] 或 [a, b, ..rest]
+            // `[a, b]` or `[a, b, ..rest]`
             Token::LBracket => {
-                self.pos += 1; // 消费 '['
+                self.pos += 1;
                 let mut patterns = Vec::new();
                 let mut rest = None;
 
-                // 处理空数组 []
                 if !self.eof() && self.tokens[self.pos] == Token::RBracket {
                     self.pos += 1;
                     return Ok(ForPattern::Array { patterns, rest });
                 }
 
                 loop {
-                    // 检查剩余模式 ..
                     if !self.eof() && self.tokens[self.pos] == Token::Range {
-                        self.pos += 1; // 消费 '..'
+                        self.pos += 1;
 
-                        // 可选的剩余变量名
+                        // The rest binding may be anonymous.
                         if !self.eof()
                             && let Token::Id(name) = &self.tokens[self.pos]
                         {
@@ -370,7 +365,7 @@ impl<'a> StmtParser<'a> {
                             self.pos += 1;
                         }
 
-                        // 剩余模式后不能再有其他模式
+                        // Nothing may follow a rest pattern.
                         if self.eof() {
                             return Err(anyhow!(self.err("Expected ']' after rest pattern")));
                         }
@@ -399,8 +394,8 @@ impl<'a> StmtParser<'a> {
 
                     match &self.tokens[self.pos] {
                         Token::Comma => {
-                            self.pos += 1; // 消费 ','
-                            // 允许尾随逗号: [a, b,]
+                            self.pos += 1;
+                            // A trailing comma is allowed.
                             if !self.eof() && self.tokens[self.pos] == Token::RBracket {
                                 break;
                             }
@@ -411,15 +406,14 @@ impl<'a> StmtParser<'a> {
                     }
                 }
 
-                self.pos += 1; // 消费 ']'
+                self.pos += 1;
                 Ok(ForPattern::Array { patterns, rest })
             }
-            // 对象模式: {"k1": v1, "k2": v2}
+            // `{"k1": v1, "k2": v2}`
             Token::LBrace => {
-                self.pos += 1; // 消费 '{'
+                self.pos += 1;
                 let mut entries: Vec<(String, ForPattern)> = Vec::new();
 
-                // 处理空对象 {}
                 if !self.eof() && self.tokens[self.pos] == Token::RBrace {
                     self.pos += 1;
                     return Ok(ForPattern::Object(entries));
@@ -430,7 +424,7 @@ impl<'a> StmtParser<'a> {
                         return Err(anyhow!(self.err("Expected string key in object pattern")));
                     }
 
-                    // 键必须是字符串字面量
+                    // The key is a string literal.
                     let key = if let Token::Str(s) = &self.tokens[self.pos] {
                         let k = s.clone();
                         self.pos += 1;
@@ -439,10 +433,9 @@ impl<'a> StmtParser<'a> {
                         return Err(anyhow!(self.err("Expected string key in object pattern")));
                     };
 
-                    // 冒号
                     self.expect_token(Token::Colon)?;
 
-                    // 值部分可以是任意 for 模式（变量、_、元组、数组、嵌套对象等）
+                    // The value is any `for` pattern, nesting included.
                     let value_pattern = self.parse_for_pattern()?;
 
                     entries.push((key, value_pattern));
@@ -453,8 +446,8 @@ impl<'a> StmtParser<'a> {
 
                     match &self.tokens[self.pos] {
                         Token::Comma => {
-                            self.pos += 1; // 继续解析下一个键值
-                            // 允许尾随逗号
+                            self.pos += 1;
+                            // A trailing comma is allowed.
                             if !self.eof() && self.tokens[self.pos] == Token::RBrace {
                                 break;
                             }
@@ -467,7 +460,7 @@ impl<'a> StmtParser<'a> {
                     }
                 }
 
-                self.pos += 1; // 消费 '}'
+                self.pos += 1;
                 Ok(ForPattern::Object(entries))
             }
             _ => Err(anyhow!(self.err("Expected pattern after 'for'"))),

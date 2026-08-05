@@ -3,7 +3,7 @@
 //! A minimal, safe surface for embedding the LK VM in a Rust host. Each [`Vm`]
 //! is an **isolated instance**: it owns its own `VmContext` (heap, globals,
 //! async runtime handle), so multiple VMs are fully independent with no shared
-//! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
+//! global state — this is exactly what the M0 global-state removal enabled. Add a
 //! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
 
 use lk_core::vm::ModuleResolver;
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn instances_are_isolated() {
-        // Two independent VMs share no global state (M0 去全局状态).
+        // Two independent VMs share no global state (M0 global-state removal).
         let mut a = Vm::new();
         let mut b = Vm::new();
         assert_eq!(a.eval("let x = 10; return x;").unwrap(), "10");

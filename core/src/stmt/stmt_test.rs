@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_complex_program() {
-        // 简化程序，避免无限循环
+        // Kept small so the loop terminates.
         let program = parse_program(
             r#"
             let n = 3;

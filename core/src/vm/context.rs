@@ -109,7 +109,7 @@ impl Default for VmContext {
     }
 }
 
-/// 调用帧信息，用于错误报告。
+/// One call frame, for error reporting.
 #[derive(Debug, Clone)]
 pub struct CallFrameInfo {
     pub function_name: Arc<str>,
@@ -118,7 +118,7 @@ pub struct CallFrameInfo {
 }
 
 impl VmContext {
-    /// 创建一个空上下文。
+    /// An empty context.
     pub fn new() -> Self {
         let mut ctx = Self::new_without_core_vm_builtins();
         ctx.type_checker = Some(TypeChecker::new());
@@ -145,7 +145,7 @@ impl VmContext {
         }
     }
 
-    /// 当前全局缓存版本。
+    /// The global cache version.
     #[inline]
     pub fn generation(&self) -> u64 {
         self.generation
@@ -200,7 +200,7 @@ impl VmContext {
         self.generation = generation;
     }
 
-    /// 构建函数，允许自定义组件。
+    /// Builds one with the components given.
     pub fn with_resolver(mut self, resolver: Arc<ModuleResolver>) -> Self {
         for (name, value) in resolver.runtime_builtin_iter() {
             if self.runtime_globals.contains_key(name.as_ref()) {
@@ -213,7 +213,7 @@ impl VmContext {
         self
     }
 
-    /// 设置类型检查器。
+    /// Installs a type checker.
     pub fn with_type_checker(mut self, type_checker: Option<TypeChecker>) -> Self {
         self.type_checker = type_checker;
         self
@@ -258,7 +258,7 @@ impl VmContext {
         self.define_runtime_global(name, RuntimeExport::from_value(value, heap));
     }
 
-    /// 手动递增版本号，用于强制失效缓存。
+    /// Bumps the version, invalidating the caches.
     #[inline]
     pub fn touch(&mut self) {
         self.bump_generation();
@@ -268,7 +268,7 @@ impl VmContext {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// 调用栈管理：进入函数调用
+    /// Pushes a call frame.
     pub fn push_call_frame<N, L>(&mut self, name: N, location: Option<L>)
     where
         N: Into<Arc<str>>,
@@ -281,23 +281,24 @@ impl VmContext {
         });
     }
 
-    /// 调用栈管理：退出函数调用
+    /// Pops a call frame.
     pub fn pop_call_frame(&mut self) -> Option<CallFrameInfo> {
         self.call_stack.pop()
     }
 
-    /// 获取当前调用栈信息
+    /// The current call stack.
     pub fn call_stack(&self) -> &[CallFrameInfo] {
         &self.call_stack
     }
 
-    /// 获取当前函数名
+    /// The function being executed.
     pub fn current_function(&self) -> Option<&str> {
         self.call_stack.last().map(|frame| frame.function_name.as_ref())
     }
 
-    /// 返回当前调用栈的格式化字符串。深栈截断打印(头 20 帧 + 尾 10 帧):
-    /// 递归打满调用深度上限时,完整 traceback 会有几十万行,淹没真正的错误。
+    /// The call stack, rendered. A deep stack prints its first 20 and last 10
+    /// frames: a recursion that reaches the depth limit has a traceback of
+    /// hundreds of thousands of lines, which buries the actual error.
     pub fn call_stack_report(&self) -> Option<String> {
         const HEAD_FRAMES: usize = 20;
         const TAIL_FRAMES: usize = 10;
@@ -335,7 +336,7 @@ impl VmContext {
         Some(msg)
     }
 
-    /// 生成增强的错误信息，包含调用栈上下文
+    /// The error with its call-stack context attached.
     pub fn format_error_with_context(&self, error_message: &str) -> String {
         if let Some(report) = self.call_stack_report() {
             let mut msg = error_message.to_string();
@@ -347,27 +348,27 @@ impl VmContext {
         }
     }
 
-    /// 获取模块解析器的引用
+    /// The module resolver.
     pub fn resolver(&self) -> &Arc<ModuleResolver> {
         &self.resolver
     }
 
-    /// 获取类型检查器的引用
+    /// The type checker.
     pub fn type_checker(&self) -> &Option<TypeChecker> {
         &self.type_checker
     }
 
-    /// 获取结构体定义的引用
+    /// The struct declarations.
     pub fn structs(&self) -> &FastHashMap<String, FastHashMap<String, Type>> {
         &self.structs
     }
 
-    /// 获取类型检查器的可变引用
+    /// The type checker, mutably.
     pub fn get_type_checker_mut(&mut self) -> Option<&mut TypeChecker> {
         self.type_checker.as_mut()
     }
 
-    /// 注册结构体模式
+    /// Registers a struct shape.
     pub fn register_struct_schema(&mut self, name: String, fields: FastHashMap<String, Type>) {
         self.structs.insert(name, fields);
     }

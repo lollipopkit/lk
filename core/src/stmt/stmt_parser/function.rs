@@ -13,7 +13,6 @@ impl<'a> StmtParser<'a> {
     pub fn parse_function_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Fn)?;
 
-        // 解析函数名
         let name = if let Token::Id(id) = &self.tokens[self.pos] {
             let name = id.clone();
             self.pos += 1;
@@ -37,7 +36,6 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected function name")));
         };
 
-        // 解析参数列表
         self.expect_token(Token::LParen)?;
         let mut params: Vec<String> = Vec::new();
         let mut param_types: Vec<Option<Type>> = Vec::new();
@@ -46,7 +44,8 @@ impl<'a> StmtParser<'a> {
         let mut saw_default_positional = false;
 
         while !self.eof() && self.tokens[self.pos] != Token::RParen {
-            // 若遇到具名参数块，则解析之；具名块必须位于位置参数之后
+            // The named-parameter block, which must follow the positional
+            // parameters.
             if self.tokens[self.pos] == Token::LBrace {
                 if saw_named_block {
                     return Err(anyhow!(self.err("Duplicate named parameter block")));
@@ -54,11 +53,10 @@ impl<'a> StmtParser<'a> {
                 saw_named_block = true;
                 let named = self.parse_named_param_block()?;
                 named_params.extend(named);
-                // 允许块后跟逗号
+                // A comma may follow the block.
                 if !self.eof() && self.tokens[self.pos] == Token::Comma {
                     self.pos += 1;
                 }
-                // 继续循环以期待 ')' 结束
                 continue;
             }
 
@@ -68,7 +66,6 @@ impl<'a> StmtParser<'a> {
                 ));
             }
 
-            // 参数名
             let param_name = if let Token::Id(param) = &self.tokens[self.pos] {
                 let p = param.clone();
                 self.pos += 1;
@@ -77,7 +74,6 @@ impl<'a> StmtParser<'a> {
                 return Err(anyhow!(self.err("Expected parameter name or '{' for named block")));
             };
 
-            // 可选的参数类型注解 `: Type`
             let mut parsed_type: Option<Type> = None;
             if !self.eof() && self.tokens[self.pos] == Token::Colon {
                 self.pos += 1; // consume ':'
@@ -104,9 +100,8 @@ impl<'a> StmtParser<'a> {
                 param_types.push(parsed_type);
             }
 
-            // 分隔符：逗号或结束
             if !self.eof() && self.tokens[self.pos] == Token::Comma {
-                self.pos += 1; // 继续下一个参数
+                self.pos += 1;
             } else if !self.eof() && self.tokens[self.pos] == Token::RParen {
                 // end of params
             } else if self.eof() {
@@ -118,7 +113,6 @@ impl<'a> StmtParser<'a> {
 
         self.expect_token(Token::RParen)?;
 
-        // 可选的返回类型 `-> Type`
         let mut return_type: Option<Type> = None;
         if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
             self.pos += 1; // consume '->'
@@ -126,7 +120,7 @@ impl<'a> StmtParser<'a> {
             return_type = Some(ty);
         }
 
-        // 解析函数体 (必须是块语句)
+        // The body has to be a block.
         let body = Box::new(self.parse_block_stmt()?);
 
         Ok(Stmt::Function {
@@ -139,19 +133,18 @@ impl<'a> StmtParser<'a> {
         })
     }
 
-    /// 解析具名参数块：形如 `{a: T, b: ?U = default}`
+    /// Parses a named-parameter block: `{a: T, b: ?U = default}`.
     pub fn parse_named_param_block(&mut self) -> Result<Vec<NamedParamDecl>> {
         self.expect_token(Token::LBrace)?;
         let mut named_params: Vec<NamedParamDecl> = Vec::new();
 
-        // 允许空块
+        // An empty block is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(named_params);
         }
 
         loop {
-            // 名称
             let name = if let Token::Id(id) = &self.tokens[self.pos] {
                 let n = id.clone();
                 self.pos += 1;
@@ -160,11 +153,9 @@ impl<'a> StmtParser<'a> {
                 return Err(anyhow!(self.err("Expected identifier in named parameter block")));
             };
 
-            // ':' 类型
             self.expect_token(Token::Colon)?;
             let ty = self.parse_inline_type_until_named_delim()?;
 
-            // 可选默认值 `= expr`
             let mut default_expr: Option<Expr> = None;
             if !self.eof() && self.tokens[self.pos] == Token::Assign {
                 self.pos += 1; // consume '='
@@ -178,14 +169,13 @@ impl<'a> StmtParser<'a> {
                 default: default_expr,
             });
 
-            // 分隔符处理：逗号继续，右花括号结束
             if self.eof() {
                 return Err(anyhow!(self.err("Unexpected end in named parameter block")));
             }
             match &self.tokens[self.pos] {
                 Token::Comma => {
                     self.pos += 1;
-                    // 允许尾随逗号：{a: T,}
+                    // A trailing comma is allowed.
                     if !self.eof() && self.tokens[self.pos] == Token::RBrace {
                         self.pos += 1;
                         break;
@@ -205,7 +195,8 @@ impl<'a> StmtParser<'a> {
         Ok(named_params)
     }
 
-    /// 将参数类型解析到 ',' 或 '}'（深度为 0）之前，不消耗分隔符
+    /// Parses a parameter type up to the ',' or '}' at depth 0, leaving the
+    /// separator unconsumed.
     pub fn parse_inline_type_until_named_delim(&mut self) -> Result<Type> {
         let start_pos = self.pos;
         let mut tokens: Vec<&Token> = Vec::new();

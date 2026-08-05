@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{NumericClass, NumericHierarchy};
 
-/// 内联短字符串：0–7 字节 UTF-8，完全存储在 LiteralVal 内（零堆分配）。
-/// 实现了 Copy，克隆无需原子操作。
+/// An inline short string: 0–7 UTF-8 bytes, held entirely inside a
+/// `LiteralVal` with no heap allocation. `Copy`, so a clone costs no atomic.
 ///
-/// **不变量：`data[..len]` 是合法 UTF-8。** 两个字段都是私有的，本模块之外无法
-/// 构造；模块内的每一个构造点要么从一个 `&str` 的字节整段拷贝、要么是
-/// `char::encode_utf8` 的输出、要么是拼在合法前缀后面的 ASCII 数字，`Deserialize`
-/// 也走 [`ShortStr::new`]。新增构造点必须自己守住它 ——
-/// `every_short_str_constructor_keeps_the_utf8_invariant` 逐个构造点验这条。
+/// **Invariant: `data[..len]` is valid UTF-8.** Both fields are private, so
+/// nothing outside this module can build one; every construction site inside it
+/// either copies a `&str`'s bytes whole, is `char::encode_utf8`'s output, or
+/// appends ASCII digits to a valid prefix, and `Deserialize` goes through
+/// [`ShortStr::new`]. A new construction site has to keep it —
+/// `every_short_str_constructor_keeps_the_utf8_invariant` checks each one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShortStr {
     len: u8,
@@ -26,7 +27,7 @@ pub struct ShortStr {
 }
 
 impl ShortStr {
-    /// 从 str 创建。若 s.len() > 7 返回 None。
+    /// From a `str`; `None` when it is longer than 7 bytes.
     #[inline]
     pub fn new(s: &str) -> Option<Self> {
         let bytes = s.as_bytes();
@@ -53,14 +54,16 @@ impl ShortStr {
 
     #[inline]
     pub fn as_str(&self) -> &str {
-        // 明知不变量成立还是走带校验的 `from_utf8`：换成
-        // `from_utf8_unchecked` 量过，**没有收益**（min-of-9，一个 200 万次
-        // map-字符串键 + 方法调用的负载：0.87s vs 0.89s）。profile 里
-        // `core::str::converts::from_utf8` 占 5% 是误导 —— 长度上限是 7 字节，
-        // 校验对 ASCII 就是一趟字节扫描，编译器早已把它压平。
+        // The checked `from_utf8`, although the invariant above says it cannot
+        // fail: swapping in `from_utf8_unchecked` was measured and **bought
+        // nothing** (min-of-9 over a two-million-iteration map-string-key plus
+        // method-call workload: 0.87s vs 0.89s). The 5% that
+        // `core::str::converts::from_utf8` takes in a profile is misleading —
+        // the length is capped at 7 bytes, so for ASCII the check is one byte
+        // scan the compiler has already flattened.
         //
-        // 所以这里不引入 unsafe：为一个量不出来的收益换掉安全性是亏的。别再改
-        // 回去了，要改先把上面那组数字重跑一遍。
+        // So no `unsafe` here: trading safety for a gain that does not measure
+        // is a loss. Re-run those numbers before changing it back.
         core::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
     }
 

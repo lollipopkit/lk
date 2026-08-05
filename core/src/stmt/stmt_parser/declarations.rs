@@ -25,7 +25,6 @@ impl<'a> StmtParser<'a> {
     pub fn parse_struct_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Struct)?;
 
-        // 名称
         let name = if let Token::Id(id) = &self.tokens[self.pos] {
             let n = id.clone();
             self.pos += 1;
@@ -34,18 +33,16 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected struct name after 'struct'")));
         };
 
-        // 字段块
         self.expect_token(Token::LBrace)?;
         let mut fields: Vec<(String, Option<Type>)> = Vec::new();
 
-        // 允许空结构体
+        // An empty struct is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(Stmt::Struct { name, fields });
         }
 
         loop {
-            // 字段名
             // A field is only ever reached through `.` or a struct literal, so
             // a keyword names one unambiguously (`struct Row { type: String }`).
             let field_name = if let Token::Id(id) = &self.tokens[self.pos] {
@@ -59,11 +56,11 @@ impl<'a> StmtParser<'a> {
                 return Err(anyhow!(self.err("Expected field name in struct")));
             };
 
-            // ':' 类型（可选；未注解视为 Any）
+            // The annotation is optional; an unannotated field is `Any`.
             let mut ty: Option<Type> = None;
             if !self.eof() && self.tokens[self.pos] == Token::Colon {
                 self.pos += 1; // consume ':'
-                // 复用具名参数的类型解析（直至 ',' 或 '}'）
+                // The named-parameter type parser, which stops at ',' or '}'.
                 let parsed = self.parse_inline_type_until_named_delim()?;
                 ty = Some(parsed);
             }
@@ -76,7 +73,7 @@ impl<'a> StmtParser<'a> {
             match &self.tokens[self.pos] {
                 Token::Comma => {
                     self.pos += 1;
-                    // 允许尾随逗号
+                    // A trailing comma is allowed.
                     if !self.eof() && self.tokens[self.pos] == Token::RBrace {
                         self.pos += 1;
                         break;
@@ -93,11 +90,10 @@ impl<'a> StmtParser<'a> {
         Ok(Stmt::Struct { name, fields })
     }
 
-    /// 解析 trait 语句：trait Name { fn method(params[: type]...) [-> type]; ... }
+    /// Parses `trait Name { fn method(params[: type]…) [-> type]; … }`.
     pub fn parse_trait_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Trait)?;
 
-        // trait 名称
         let name = if let Token::Id(id) = &self.tokens[self.pos] {
             let n = id.clone();
             self.pos += 1;
@@ -111,7 +107,7 @@ impl<'a> StmtParser<'a> {
         let mut methods: Vec<(String, Type)> = Vec::new();
         let mut default_methods: Vec<Stmt> = Vec::new();
 
-        // 允许空 trait
+        // An empty trait is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(Stmt::Trait {
@@ -155,10 +151,8 @@ impl<'a> StmtParser<'a> {
                 default_methods.push(method);
                 continue;
             }
-            // 每个方法声明以 fn 开始
             self.expect_token(Token::Fn)?;
 
-            // 方法名
             let mname = if let Token::Id(id) = &self.tokens[self.pos] {
                 let m = id.clone();
                 self.pos += 1;
@@ -171,24 +165,21 @@ impl<'a> StmtParser<'a> {
                 return Err(anyhow!(self.err("Expected method name in trait")));
             };
 
-            // 参数列表（仅用于签名）
+            // The parameter list is the signature; there is no body.
             self.expect_token(Token::LParen)?;
             let mut param_types: Vec<Type> = Vec::new();
             while !self.eof() && self.tokens[self.pos] != Token::RParen {
-                // 参数名
                 if let Token::Id(_param_name) = &self.tokens[self.pos] {
                     self.pos += 1; // consume name
                 } else {
                     return Err(anyhow!(self.err("Expected parameter name in trait method")));
                 }
-                // 可选类型注解
                 let mut pty: Type = Type::Any;
                 if !self.eof() && self.tokens[self.pos] == Token::Colon {
                     self.pos += 1; // ':'
                     pty = self.parse_inline_type_until_param_delim()?;
                 }
                 param_types.push(pty);
-                // 分隔符
                 if !self.eof() && self.tokens[self.pos] == Token::Comma {
                     self.pos += 1;
                 } else if !self.eof() && self.tokens[self.pos] == Token::RParen {
@@ -201,7 +192,6 @@ impl<'a> StmtParser<'a> {
             }
             self.expect_token(Token::RParen)?;
 
-            // 可选返回类型
             let mut ret_ty: Type = Type::Any;
             if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
                 self.pos += 1; // '->'
@@ -209,7 +199,6 @@ impl<'a> StmtParser<'a> {
                 // parse_inline_type_until_semicolon stops before ';'
                 self.expect_token(Token::Semicolon)?;
             } else {
-                // 末尾分号（无返回类型时）
                 self.expect_token(Token::Semicolon)?;
             }
 
@@ -335,7 +324,7 @@ impl<'a> StmtParser<'a> {
 
         let mut methods: Vec<Stmt> = Vec::new();
 
-        // 允许空 impl
+        // An empty impl is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(Stmt::Impl {
@@ -351,7 +340,7 @@ impl<'a> StmtParser<'a> {
             } else {
                 Vec::new()
             };
-            // 只允许方法定义（fn），可带属性
+            // Only `fn` items, optionally attributed.
             if self.tokens[self.pos] != Token::Fn {
                 return Err(anyhow!(self.err("Expected 'fn' in impl block")));
             }

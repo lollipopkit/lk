@@ -461,7 +461,7 @@ impl<'a> StmtParser<'a> {
         Ok(pattern)
     }
 
-    /// TODO(待删除): the second copy of [`crate::type_syntax::spelling`].
+    /// TODO(remove): the second copy of [`crate::type_syntax::spelling`].
     ///
     /// `parse_type_annotation` now goes through the shared one; three positions
     /// still collect their own tokens with their own stop rules

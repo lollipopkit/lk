@@ -910,7 +910,7 @@ fn fold_literal_numeric(
 }
 
 impl Expr {
-    /// 静态类型检查表达式
+    /// Type-checks the expression.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<Type> {
         type_checker.check_expr(self)
     }

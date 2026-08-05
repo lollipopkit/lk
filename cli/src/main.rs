@@ -99,11 +99,13 @@ pub(crate) enum CompileMode {
 enum Commands {
     /// Compile sources into supported migration targets.
     Compile {
-        /// 支持 `lk compile [TARGET] [FILE]`（默认编译 exe；省略 FILE 时自动查找当前目录入口）
+        /// `lk compile [TARGET] [FILE]` — the default target is a native exe,
+        /// and an omitted FILE looks for this directory's entry point.
         #[arg(value_name = "ARGS", num_args = 0..=2)]
         positional: Vec<String>,
         #[cfg(feature = "aot")]
-        /// 输出文件路径（针对默认 exe 目标指定最终可执行文件路径）
+        /// Where to write the answer; for the default exe target, the final
+        /// executable's path.
         #[arg(long)]
         output: Option<PathBuf>,
     },

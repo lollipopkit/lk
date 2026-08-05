@@ -8,12 +8,11 @@ use crate::{
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
-    /// 解析整个程序
+    /// Parses a whole program.
     pub fn parse_program(&mut self) -> Result<Program> {
         let mut statements = Vec::new();
 
         while !self.eof() {
-            // 跳过空语句
             if self.tokens[self.pos] == Token::Semicolon {
                 statements.push(Box::new(Stmt::Empty));
                 self.pos += 1;
@@ -31,7 +30,6 @@ impl<'a> StmtParser<'a> {
         let mut statements = Vec::new();
 
         while !self.eof() {
-            // 跳过空语句
             if self.tokens[self.pos] == Token::Semicolon {
                 statements.push(Box::new(Stmt::Empty));
                 self.pos += 1;
@@ -204,7 +202,7 @@ impl<'a> StmtParser<'a> {
         })
     }
 
-    /// 解析单个语句
+    /// Parses one statement.
     pub fn parse_statement(&mut self) -> Result<Stmt> {
         if self.eof() {
             return Ok(Stmt::Empty);
@@ -231,7 +229,8 @@ impl<'a> StmtParser<'a> {
             Token::Fn => self.parse_function_stmt(),
             Token::LBrace => self.parse_block_stmt(),
             Token::Id(id) => {
-                // 优先解析短声明 `id := expr` 以避免与标签 `id:` 冲突
+                // The short declaration `id := expr` is tried first, so it is
+                // not read as the label `id:`.
                 if self.peek_ahead(1) == Some(&Token::Colon) && self.peek_ahead(2) == Some(&Token::Assign) {
                     self.parse_define_stmt_with_id(id.clone())
                 } else if matches!(self.peek_ahead(1), Some(Token::LBracket | Token::Dot))
@@ -239,7 +238,6 @@ impl<'a> StmtParser<'a> {
                 {
                     Ok(stmt)
                 } else if self.peek_ahead(1) == Some(&Token::Assign) {
-                    // 赋值 (id = expr;)
                     self.parse_assign_stmt_with_id(id.clone())
                 } else if matches!(
                     self.peek_ahead(1),

@@ -212,7 +212,7 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
             }
             // The Cranelift native backend covers only a lowerable subset.
             // Instead of failing the whole program (the old all-or-nothing —
-            // plan 问题 2), fall back to the Tier 0 VM bundle, which embeds the
+            // plan issue 2), fall back to the Tier 0 VM bundle, which embeds the
             // interpreter and runs any valid program. `lk compile` thus never
             // rejects a valid program: native when possible, VM-embed otherwise.
             diagnostic::warning(format!(

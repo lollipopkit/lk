@@ -16,38 +16,38 @@ pub struct Attribute {
     pub span: Option<Span>,
 }
 
-/// For 循环的模式匹配 (类似 Rust 的 Pattern)
+/// A `for` loop's binding pattern.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForPattern {
-    /// 简单变量绑定：for x in iter
+    /// `for x in iter`
     Variable(String),
-    /// 忽略模式：for _ in iter
+    /// `for _ in iter`
     Ignore,
-    /// 元组解构：for (a, b, c) in iter
+    /// `for (a, b, c) in iter`
     Tuple(Vec<ForPattern>),
-    /// 数组解构：for [a, b] in iter
+    /// `for [a, b] in iter`
     Array {
         patterns: Vec<ForPattern>,
         rest: Option<String>, // for [a, b, ..rest] or [a, b, ..]
     },
-    /// 对象解构：for {"k1": v1, "k2": v2} in iter
-    /// 仅支持字符串字面量作为键，值位置可以是变量或更深的模式（递归支持）
+    /// `for {"k1": v1, "k2": v2} in iter` — string-literal keys only; a value
+    /// position takes a name or a deeper pattern.
     Object(Vec<(String, ForPattern)>),
 }
 
-/// 具名参数声明（用于函数定义）
+/// A named parameter, as a function declares it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedParamDecl {
     pub name: String,
-    /// 可选类型注解（None 表示未注解，按 Any 处理）
+    /// `None` means unannotated, which is `Any`.
     pub type_annotation: Option<Type>,
-    /// 可选默认值表达式（仅在调用省略该具名参数时使用）
+    /// Used only when the call omits this parameter.
     pub default: Option<Expr>,
 }
 
-/// Statement AST 节点类型定义
+/// The statement AST.
 ///
-/// 语法设计：
+/// The syntax:
 /// program  ::= statement*
 /// statement ::= import_stmt | if_stmt | while_stmt | let_stmt | assign_stmt | break_stmt | continue_stmt | return_stmt | fn_stmt | expr_stmt | block_stmt
 /// import_stmt ::= 'use' import_spec ';'
@@ -108,20 +108,20 @@ pub enum Stmt {
         span: Option<Span>,
         is_const: bool,
     },
-    /// name = value; (赋值语句)
+    /// `name = value;`
     Assign {
         name: String,
         value: Box<Expr>,
         span: Option<Span>,
     },
-    /// name op= value; (复合赋值语句, 如 x += 5)
+    /// `name op= value;` — `x += 5` and the rest.
     CompoundAssign {
         name: String,
         op: BinOp,
         value: Box<Expr>,
         span: Option<Span>,
     },
-    /// name := value; (变量定义，类似 Go 的短声明)
+    /// `name := value;` — Go's short declaration.
     ///
     /// The same binding `let name = value` makes — both lower through
     /// `lower_define` — so it carries a span for the same reasons `Let` does:
@@ -216,7 +216,7 @@ pub enum Stmt {
     Block {
         statements: Vec<Box<Stmt>>,
     },
-    /// 空语句 (用于处理解析时的占位)
+    /// A placeholder the parser emits where a statement was expected.
     Empty,
 }
 
@@ -233,7 +233,7 @@ impl Stmt {
     }
 }
 
-/// 程序结构 - 包含语句列表
+/// A program: its statements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub statements: Vec<Box<Stmt>>,

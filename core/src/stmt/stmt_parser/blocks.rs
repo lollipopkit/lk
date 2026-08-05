@@ -10,7 +10,6 @@ impl<'a> StmtParser<'a> {
 
         let mut statements = Vec::new();
         while !self.eof() && self.tokens[self.pos] != Token::RBrace {
-            // 跳过空语句
             if self.tokens[self.pos] == Token::Semicolon {
                 statements.push(Box::new(Stmt::Empty));
                 self.pos += 1;
@@ -75,7 +74,6 @@ impl<'a> StmtParser<'a> {
     }
 
     fn parse_expression_slice(&mut self, stop_at_for_loop_body: bool, end_at_block: bool) -> Result<Expr> {
-        // 找到表达式的结束位置
         let start_pos = self.pos;
         let mut depth = 0;
         let mut end_pos = start_pos;
@@ -101,7 +99,7 @@ impl<'a> StmtParser<'a> {
 
             match token {
                 Token::LBrace if depth == 0 && stop_at_for_loop_body => {
-                    break; // for循环体的开始
+                    break; // the `for` body starts here
                 }
                 Token::LParen | Token::LBrace | Token::LBracket => {
                     depth += 1;
@@ -109,14 +107,14 @@ impl<'a> StmtParser<'a> {
                 }
                 Token::RParen => {
                     if depth == 0 {
-                        break; // 条件表达式的结束
+                        break; // the condition ends here
                     }
                     depth -= 1;
                     end_pos += 1;
                 }
                 Token::RBrace => {
                     if depth == 0 {
-                        break; // 块的结束
+                        break; // the block ends here
                     }
                     depth -= 1;
                     end_pos += 1;
@@ -164,7 +162,6 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected expression")));
         }
 
-        // 使用表达式解析器解析这部分 tokens
         let expr_tokens = &self.tokens[start_pos..end_pos];
         let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
         let mut expr_parser = if let Some(spans) = expr_spans {
@@ -174,7 +171,6 @@ impl<'a> StmtParser<'a> {
         };
         let expr = expr_parser.parse()?;
 
-        // 更新位置
         self.pos = end_pos;
 
         Ok(expr)

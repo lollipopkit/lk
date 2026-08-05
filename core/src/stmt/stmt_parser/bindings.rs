@@ -108,8 +108,8 @@ impl<'a> StmtParser<'a> {
     }
 
     pub fn parse_assign_stmt_with_id(&mut self, name: String) -> Result<Stmt> {
-        // 我们已经在parse_statement中匹配了Id，现在跳过它并继续解析赋值
-        self.pos += 1; // 跳过已匹配的 Id token
+        // `parse_statement` already matched the `Id`; step over it.
+        self.pos += 1;
         self.expect_token(Token::Assign)?;
 
         let value = self.parse_expression()?;
@@ -123,10 +123,9 @@ impl<'a> StmtParser<'a> {
     }
 
     pub fn parse_compound_assign_stmt_with_id(&mut self, name: String) -> Result<Stmt> {
-        // 我们已经在parse_statement中匹配了Id，现在跳过它并继续解析复合赋值
-        self.pos += 1; // 跳过已匹配的 Id token
+        // `parse_statement` already matched the `Id`; step over it.
+        self.pos += 1;
 
-        // 获取复合赋值操作符
         let op = match &self.tokens[self.pos] {
             Token::AddAssign => BinOp::Add,
             Token::SubAssign => BinOp::Sub,
@@ -135,7 +134,7 @@ impl<'a> StmtParser<'a> {
             Token::ModAssign => BinOp::Mod,
             _ => return Err(anyhow!("Expected compound assignment operator")),
         };
-        self.pos += 1; // 跳过复合赋值操作符
+        self.pos += 1;
 
         let value = self.parse_expression()?;
         self.expect_token(Token::Semicolon)?;
@@ -285,7 +284,7 @@ impl<'a> StmtParser<'a> {
     pub fn parse_return_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Return)?;
 
-        // 检查是否有返回值（如果下一个token不是分号，则有返回值）
+        // A `;` right here means the `return` carries no value.
         let value = if !self.eof() && self.tokens[self.pos] != Token::Semicolon {
             Some(Box::new(self.parse_expression()?))
         } else {

@@ -14,7 +14,7 @@ use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
 impl Stmt {
-    /// 静态类型检查语句
+    /// Type-checks a statement.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         let result = self.type_check_inner(type_checker);
         let Err(error) = result else {
@@ -182,7 +182,6 @@ impl Stmt {
                 if let Some(annotation) = type_annotation {
                     type_checker.check_type_annotation(annotation, "this binding")?;
                 }
-                // 检查表达式的类型
                 //
                 // A function-type annotation flows *into* a lambda instead of
                 // being compared against it afterwards. Checked in isolation a
@@ -227,7 +226,7 @@ impl Stmt {
                     type_checker.define_top_level(&name);
                 }
 
-                // 如果有类型注解，验证类型匹配
+                // An annotation is a claim about the value; check it.
                 //
                 // A machine-int annotation *retypes* an integer literal rather
                 // than rejecting it — `let x: u8 = 5` is the common case, and
@@ -280,10 +279,8 @@ impl Stmt {
                 Ok(())
             }
             Stmt::Assign { name, value, span } => {
-                // 检查表达式的类型
                 let expr_type = value.type_check(type_checker)?;
 
-                // 获取变量的已声明类型
                 if let Some(var_type) = type_checker.get_local_type(name) {
                     if type_checker.is_const_local(name) {
                         let error_msg = format!("Cannot assign to const variable '{}'", name);
@@ -384,7 +381,8 @@ impl Stmt {
                             Err(anyhow!(error_msg))
                         };
                     }
-                    // 检查操作类型兼容性 (var_type op expr_type -> var_type).
+                    // The compound form promises the variable keeps its type:
+                    // `var_type op expr_type` has to answer `var_type`.
                     // If either side is still inferred, keep the relationship as a constraint
                     // so function-body compound assignments can refine unannotated params.
                     if var_type.contains_variables() {
@@ -781,12 +779,10 @@ impl Stmt {
             } => {
                 type_checker.check_condition(condition)?;
 
-                // then 分支
                 type_checker.push_scope();
                 then_stmt.type_check(type_checker)?;
                 type_checker.pop_scope();
 
-                // else 分支
                 if let Some(else_stmt) = else_stmt {
                     type_checker.push_scope();
                     else_stmt.type_check(type_checker)?;
@@ -801,22 +797,19 @@ impl Stmt {
                 then_stmt,
                 else_stmt,
             } => {
-                // 检查值表达式的类型
                 let value_type = value.type_check(type_checker)?;
 
-                // 为 then 分支创建新作用域，以便模式变量绑定
+                // The pattern binds into the `then` arm only.
                 type_checker.push_scope();
 
-                // 根据模式与被匹配值类型，添加类型绑定，并校验模式兼容性
+                // Binds the pattern variables and rejects a pattern the
+                // matched type cannot produce.
                 type_checker.add_bindings_for_pattern(pattern, &value_type).ok();
 
-                // 现在检查 then 分支
                 then_stmt.type_check(type_checker)?;
 
-                // 弹出作用域
                 type_checker.pop_scope();
 
-                // 检查 else 分支（如果有）
                 if let Some(else_stmt) = else_stmt {
                     else_stmt.type_check(type_checker)?;
                 }
@@ -826,25 +819,22 @@ impl Stmt {
             Stmt::While { condition, body } => {
                 condition.type_check(type_checker)?;
 
-                // 检查循环体
                 body.type_check(type_checker)?;
 
                 Ok(())
             }
             Stmt::WhileLet { pattern, value, body } => {
-                // 检查值表达式的类型
                 let value_type = value.type_check(type_checker)?;
 
-                // 为循环体创建新作用域，以便模式变量绑定
+                // The pattern binds into the body only.
                 type_checker.push_scope();
 
-                // 根据模式与被匹配值类型，添加类型绑定，并校验模式兼容性
+                // Binds the pattern variables and rejects a pattern the
+                // matched type cannot produce.
                 type_checker.add_bindings_for_pattern(pattern, &value_type).ok();
 
-                // 现在简化为检查循环体
                 body.type_check(type_checker)?;
 
-                // 弹出作用域
                 type_checker.pop_scope();
 
                 Ok(())
@@ -854,20 +844,19 @@ impl Stmt {
                 iterable,
                 body,
             } => {
-                // 检查可迭代表达式的类型
                 let iter_type = iterable.type_check(type_checker)?;
 
-                // 验证可迭代类型
                 match &iter_type {
                     Type::List(_) | Type::String | Type::Map(_, _) | Type::Set(_) | Type::Any | Type::Variable(_) => {
-                        // 这些类型都是可迭代的（Any和类型变量在运行时确定）
+                        // `Any` and a type variable are decided at run time.
                     }
-                    // 窗口按它自己的长度和索引迭代，两个后端都是如此
-                    // （`to_iter` 把 slice 句柄原样交回去，不materialize）。
+                    // A window iterates by its own length and indices, on both
+                    // back ends: `to_iter` hands the slice handle back as-is
+                    // rather than materializing it.
                     Type::Generic { name, .. } if name == "Slice" => {}
-                    // Bytes 同理：它是一个序列，元素是 Int。
+                    // `Bytes` likewise — a sequence whose elements are `Int`.
                     Type::Named(name) if name == "Bytes" => {}
-                    // 元组就是列表，`is_assignable_to` 已经这么说了。
+                    // A tuple is a list; `is_assignable_to` already says so.
                     Type::Tuple(_) => {}
                     _ => {
                         return Err(anyhow!(format!(
@@ -877,35 +866,28 @@ impl Stmt {
                     }
                 }
 
-                // 为模式匹配创建新的作用域
                 type_checker.push_scope();
 
-                // 根据模式添加变量类型
                 Self::add_pattern_types(pattern, &iter_type, type_checker)?;
 
-                // 检查循环体
                 body.type_check(type_checker)?;
 
-                // 弹出作用域
                 type_checker.pop_scope();
 
                 Ok(())
             }
             Stmt::Expr { value: expr, .. } => {
-                // 表达式语句，只检查类型，不使用结果
+                // An expression statement: checked, answer discarded.
                 expr.type_check(type_checker)?;
                 Ok(())
             }
             Stmt::Block { statements } => {
-                // 为块语句创建新的作用域
                 type_checker.push_scope();
 
-                // 检查块中的所有语句
                 for stmt in statements {
                     stmt.type_check(type_checker)?;
                 }
 
-                // 弹出作用域
                 type_checker.pop_scope();
 
                 Ok(())
@@ -948,7 +930,7 @@ impl Stmt {
                 Ok(())
             }
             Stmt::Break | Stmt::Continue => {
-                // 控制流语句暂时不需要类型检查
+                // `break` / `continue` carry no value to check.
                 Ok(())
             }
             Stmt::Define { name, value, span } => {
@@ -969,16 +951,16 @@ impl Stmt {
         }
     }
 
-    /// 为 for 循环模式添加类型信息
+    /// Binds a `for` pattern's variables to the element type.
     fn add_pattern_types(pattern: &ForPattern, iter_type: &Type, type_checker: &mut TypeChecker) -> Result<()> {
         match pattern {
             ForPattern::Variable(name) => {
-                // 根据可迭代类型确定变量类型
                 let var_type = match iter_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::String => Type::String,
                     Type::Map(k, v) => {
-                        // Map 迭代返回 [key, value] 对，使用 Tuple 表示
+                        // Iterating a map yields `[key, value]` pairs, spelled
+                        // as a tuple here.
                         Type::Tuple(vec![(**k).clone(), (**v).clone()])
                     }
                     Type::Set(inner) => (**inner).clone(),
@@ -987,7 +969,7 @@ impl Stmt {
                 type_checker.add_local_type(name.clone(), var_type);
             }
             ForPattern::Ignore => {
-                // 忽略模式，不需要添加类型
+                // A wildcard binds nothing.
             }
             ForPattern::Tuple(patterns) => match iter_type {
                 Type::List(inner_types) => {
@@ -996,7 +978,7 @@ impl Stmt {
                     }
                 }
                 Type::Map(k, v) => {
-                    // 直接迭代 Map：元素为 [key, value]
+                    // Iterating a map directly: the element is `[key, value]`.
                     for (i, pattern) in patterns.iter().enumerate() {
                         let elem_ty = if i == 0 { (**k).clone() } else { (**v).clone() };
                         Self::add_pattern_types(pattern, &elem_ty, type_checker)?;
@@ -1006,7 +988,6 @@ impl Stmt {
             },
             ForPattern::Array { patterns, rest } => match iter_type {
                 Type::List(inner_types) => {
-                    // 为固定模式的每个部分添加类型
                     for pattern in patterns {
                         Self::add_pattern_types(pattern, inner_types, type_checker)?;
                     }
@@ -1015,24 +996,25 @@ impl Stmt {
                     }
                 }
                 Type::Map(k, v) => {
-                    // 为 [k, v] 模式提供类型
                     for (i, pattern) in patterns.iter().enumerate() {
                         let elem_ty = if i == 0 { (**k).clone() } else { (**v).clone() };
                         Self::add_pattern_types(pattern, &elem_ty, type_checker)?;
                     }
-                    // 数组解构下的 rest 在 Map 迭代语义中不太适用，忽略处理
+                    // A rest binding has no meaning against a two-element
+                    // pair, so it binds nothing.
                 }
                 _ => {}
             },
             ForPattern::Object(entries) => {
-                // 目前仅支持元素为 Map<K, V> 的列表：List<Map<K,V>>
-                // 将每个绑定变量加入作用域，类型为 V（未知则 Any）
+                // Only `List<Map<K, V>>` is destructured this way: each bound
+                // name takes `V`, or `Any` when that is unknown.
                 let value_ty = match iter_type {
                     Type::List(inner) => match &**inner {
                         Type::Map(_k, v) => Some((**v).clone()),
                         _ => None,
                     },
-                    // 直接迭代 Map 时 create_iterator 产生 [key,value] 对，不适配对象解构
+                    // Iterating a map yields `[key, value]` pairs, which object
+                    // destructuring does not fit.
                     _ => None,
                 }
                 .unwrap_or(Type::Any);
@@ -1043,7 +1025,8 @@ impl Stmt {
                             type_checker.add_local_type(name.clone(), value_ty.clone());
                         }
                         ForPattern::Ignore => {}
-                        // 对于嵌套模式，保守地继续使用相同的 value_ty
+                        // A nested pattern keeps the same `value_ty` rather
+                        // than guessing a narrower one.
                         other => {
                             Self::add_pattern_types(other, &value_ty, type_checker)?;
                         }
@@ -1234,7 +1217,7 @@ impl Program {
         Ok(())
     }
 
-    /// 类型检查程序
+    /// Type-checks a whole program.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         self.check_method_name_collisions()?;
         self.predeclare_type_declarations(type_checker);

@@ -332,7 +332,7 @@ mod test {
         expect("nil", "nil");
     }
 
-    // 缺失 Optional Chanining 测试
+    // TODO(coverage): optional chaining has no case here.
 
     #[test]
     fn optional_chaining_access_and_index() {
@@ -424,7 +424,7 @@ mod test {
         expect("-3..=3", "[-3,-2,-1,0,1,2,3]");
     }
 
-    // 缺失 Closure 测试
+    // TODO(coverage): closures have no case here.
 
     #[test]
     fn template_strings() {

@@ -1264,7 +1264,7 @@ fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> 
 ///
 /// `reverse` used to materialize every element — allocating a heap string per
 /// element past seven bytes — reverse the `RuntimeVal`s, and box the result as
-/// `Mixed`. Reversing a `Vec<Arc<str>>` is a pointer shuffle; the old路 cost
+/// `Mixed`. Reversing a `Vec<Arc<str>>` is a pointer shuffle; the old path cost
 /// about two hundred nanoseconds an element to do the same thing, and left the
 /// list boxed so every later read took the slow path.
 pub(super) fn typed_list_reversed(list: &TypedList) -> TypedList {

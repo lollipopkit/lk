@@ -63,7 +63,7 @@ pub(crate) fn lower_spawn(
                     let slot = ssa.cell_slot(*cid);
                     ssa.read_slot(slot, block, pc)?
                 }
-                // TODO(待补): captured onward from an enclosing closure. Only the
+                // TODO(unsupported): captured onward from an enclosing closure. Only the
                 // ordinary closure call (`inst::call`) resolves these; `spawn`, a
                 // `try` region and an erased-closure environment refuse, so the
                 // program falls back rather than losing the write-back.
@@ -309,7 +309,7 @@ pub(crate) fn lower_try_call(
                 cell_writebacks.push((*cid, cell));
                 (cell, Ty::Cell)
             }
-            // TODO(待补): captured onward from an enclosing closure. Only the
+            // TODO(unsupported): captured onward from an enclosing closure. Only the
             // ordinary closure call (`inst::call`) resolves these; `spawn`, a
             // `try` region and an erased-closure environment refuse, so the
             // program falls back rather than losing the write-back.
@@ -568,7 +568,7 @@ pub(crate) fn lower_user_call(
                             let slot = ssa.cell_slot(*cid);
                             ssa.read_slot(slot, block, pc)?
                         }
-                        // TODO(待补): captured onward from an enclosing closure. Only the
+                        // TODO(unsupported): captured onward from an enclosing closure. Only the
                         // ordinary closure call (`inst::call`) resolves these; `spawn`, a
                         // `try` region and an erased-closure environment refuse, so the
                         // program falls back rather than losing the write-back.
