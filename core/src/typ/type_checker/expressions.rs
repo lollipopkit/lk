@@ -1998,7 +1998,6 @@ impl TypeChecker {
     /// as it does everywhere else.
     fn check_container_store(&mut self, container_ty: &Type, key: &Expr, value: &Expr) -> Result<()> {
         let container = self.resolve_aliases(container_ty);
-        let value_ty = self.check_expr(value)?;
         let declared = match &container {
             Type::List(elem) => (**elem).clone(),
             Type::Map(key_ty, val) => {
@@ -2019,6 +2018,35 @@ impl TypeChecker {
                 }
                 (**val).clone()
             }
+            // A heterogeneous list literal infers `Tuple`, and its positions
+            // have *different* types, so a store is checked per position. With
+            // an index that is not a literal the position is unknown, so the
+            // value has to fit every one of them — the read `l[0]` is typed
+            // from position 0, and a dynamic store landing there must not
+            // break it. `let l = [1, "a"]; l[0] = 2.5;` used to be accepted,
+            // and `let n: Int = l[0]` then held 2.5.
+            Type::Tuple(elems) => match key {
+                Expr::Literal(LiteralVal::Int(index)) if (*index as usize) < elems.len() => {
+                    elems[*index as usize].clone()
+                }
+                _ => {
+                    let value_ty = self.check_expr(value)?;
+                    if value_ty.contains_variables() {
+                        return Ok(());
+                    }
+                    for elem in elems.iter() {
+                        if !elem.contains_variables() && !self.is_assignable(&value_ty, elem) {
+                            return Err(Self::type_err(
+                                "stored value has the wrong type for some position of this tuple",
+                                Some(elem.clone()),
+                                Some(value_ty),
+                                Some(value.clone()),
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+            },
             // A struct's field names its own type; anything else about the
             // field (unknown name, non-literal) is the field-access path's
             // business, so a failure to resolve one is simply not checked here.
@@ -2028,6 +2056,7 @@ impl TypeChecker {
             },
             _ => return Ok(()),
         };
+        let value_ty = self.check_expr(value)?;
         // Nothing settled to check against: an unannotated container's element
         // type is still a variable, so the store *teaches* it rather than being
         // refused by it. Same rule `check_argument` applies to an argument, and

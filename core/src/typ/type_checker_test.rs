@@ -699,6 +699,18 @@ mod tests {
                 "the method spelling, which always was",
                 "let l: List<Int> = [1];\nl.set(0, \"a\");",
             ),
+            // A heterogeneous literal infers `Tuple`, whose positions have
+            // different types — the carrier the first version of this check
+            // did not cover.
+            ("tuple position, literal index", "let l = [1, \"a\"];\nl[0] = 2.5;"),
+            (
+                "tuple, index not a literal",
+                "let l = [1, \"a\"];\nlet i = 0;\nl[i] = 2.5;",
+            ),
+            (
+                "annotated tuple position",
+                "let l: Tuple<Int, String> = [1, \"a\"];\nl[0] = \"z\";",
+            ),
         ];
         for (what, source) in refused {
             check_program(source).expect_err(what);
@@ -719,6 +731,7 @@ mod tests {
                 "an untyped container still takes anything",
                 "let l = [];\nl.push(1);\nl[0] = \"a\";",
             ),
+            ("a tuple position of its own type", "let l = [1, \"a\"];\nl[1] = \"z\";"),
         ];
         for (what, source) in accepted {
             check_program(source).expect(what);
