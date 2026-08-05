@@ -973,9 +973,18 @@ pub(super) fn lower(
                     dst: end,
                     value: Const::I64(r_end),
                 });
+                // Every carrier that has a slice symbol, not the two this
+                // listed. `xs[1..3]` lowered for `List<Int>` and fell back for
+                // `List<Float>`, `List<str>`, a mixed list, a `Bytes` and a
+                // window — the same operation, decided by which carrier the
+                // list happened to have.
                 let (module, name, out_ty) = match list_ty {
                     Ty::Str => ("str", "slice_chars", Ty::Str),
                     Ty::ListI64 => ("list_h", "i64_slice", Ty::ListI64),
+                    Ty::ListF64 => ("list_h", "f64_slice", Ty::ListF64),
+                    Ty::ListStr => ("list_h", "str_slice", Ty::ListStr),
+                    Ty::ListDyn => ("list_h", "dyn_slice", Ty::ListDyn),
+                    Ty::Bytes => ("bytes_h", "slice", Ty::Bytes),
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 let dst = ssa.new_val();

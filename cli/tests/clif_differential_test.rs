@@ -2159,6 +2159,36 @@ fn mixed_type_addition_and_equality() {
 /// different orders, and was unreachable so nothing said.
 ///
 /// Five keys on the left because a one-key map cannot show an order.
+/// `c[a..b]` is `c.slice(a, b)` written the other way, on every carrier.
+///
+/// The two spellings had drifted apart: the method worked on a `Bytes` and a
+/// window while the range said "Bytes index must be integer", and the lowering
+/// covered `Str` and `List<Int>` while `List<Float>`, `List<str>`, a mixed list
+/// and a `Bytes` fell back — the same operation, decided by which carrier the
+/// value happened to have.
+///
+/// A window still falls back natively (there is no sub-window symbol), which is
+/// a fallback and not a wrong answer.
+#[test]
+fn a_range_index_answers_what_the_slice_method_does() {
+    run_differential(
+        "range_index",
+        &[
+            new(
+                "every_carrier",
+                "let z = 0;\nprintln([1 + z, 2, 3][1..3]);\nprintln([1.5 + 0.0, 2.5, 3.5][1..3]);\nprintln([\"a\" + \"\", \"b\", \"c\"][1..3]);\nprintln((\"abcd\" + \"\")[1..3]);\nlet b = \"abcd\".bytes();\nprintln(b[1..3]);\nprintln(b.slice(1, 3));\nprintln(typeof(b[1..3]));\nreturn 0;\n",
+            ),
+            // Out of range and counted from the end, which the method clamps
+            // the same way.
+            new(
+                "clamping",
+                "let z = 0;\nlet b = \"abcd\".bytes();\nprintln(b[-2..4]);\nprintln(b[0..99]);\nprintln(b[3..1]);\nlet xs = [1 + z, 2, 3];\nprintln(xs[-2..3]);\nprintln(xs[0..99]);\nprintln(xs[3..1]);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn two_maps_merge_in_the_vm_s_order() {
     run_differential(

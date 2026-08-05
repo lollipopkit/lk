@@ -1048,10 +1048,15 @@ fn a_carrier_list_in_an_error_message_matches_what_the_operation_accepts() {
     // `len`'s list lives on the opcode, and reaching it needs a receiver with
     // no static type — an out-of-bounds read, whose `nil` the method dispatch
     // passes through. `for`'s lives in the checker, which a literal reaches
-    // directly. `slice` is not here: every rejecting receiver is answered by
-    // the method dispatch first, so its opcode message is unreachable and
-    // there is nothing for this to compare.
-    const OPERATIONS: &[(&str, &str)] = &[("c.len()", "[1][5].len();"), ("for _x in c {}", "for _x in 1 {}")];
+    // directly. The range index `c[a..b]` is where the `Slice target` list
+    // lives; the `c.slice(a, b)` *method* has no message for this to compare,
+    // because every receiver it rejects is answered by the method dispatch
+    // before the opcode.
+    const OPERATIONS: &[(&str, &str)] = &[
+        ("c.len()", "[1][5].len();"),
+        ("for _x in c {}", "for _x in 1 {}"),
+        ("c[0..1]", "let c = [1][5]; c[0..1];"),
+    ];
 
     for (op, rejecting) in OPERATIONS {
         let message = match execute_source(rejecting) {

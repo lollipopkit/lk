@@ -1965,6 +1965,14 @@ impl TypeChecker {
             // `Int`. Without this the index fell through to struct-field
             // access, so `b[0]` reported "Unknown struct 'Bytes'".
             Type::Named(name) if name == "Bytes" => {
+                // `b[a..c]` is `b.slice(a, c)` written the other way, and it
+                // answers a `Bytes` for the same reason: every element of the
+                // answer is still a byte. The two spellings used to disagree —
+                // the method worked and the range said "Bytes index must be
+                // integer".
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::Named("Bytes".to_string()));
+                }
                 if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "Bytes index must be integer",
@@ -1978,6 +1986,11 @@ impl TypeChecker {
             // A window indexes like the list it windows, and yields the same
             // element type — which is the point of `Slice` carrying one.
             Type::Generic { name, params } if name == "Slice" => {
+                // A sub-range of a window is a window, which is what
+                // `w.slice(a, c)` already answers.
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(resolved_expr_type.clone());
+                }
                 if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "Slice index must be integer",

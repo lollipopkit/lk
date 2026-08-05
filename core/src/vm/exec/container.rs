@@ -227,6 +227,40 @@ impl Executor {
                         let slice = TypedList::from_runtime_values(&slice, &self.state.heap);
                         Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(slice))))
                     }
+                    // `b[a..c]` is `b.slice(a, c)` written the other way, and
+                    // the two have to answer the same thing — a `Bytes`, since
+                    // every element of the answer is still a byte. Clamped and
+                    // counted from the end exactly as the list arm above does.
+                    HeapValue::Bytes(bytes) => {
+                        let bytes = Arc::clone(bytes);
+                        let source_len = bytes.len() as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(bytes.len());
+                        let start = (start as usize).min(end);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Bytes(
+                            Arc::<[u8]>::from(&bytes[start..end]),
+                        ))))
+                    }
+                    // A sub-range of a window is a window, which is what
+                    // `w.slice(a, c)` answers.
+                    HeapValue::Slice(slice) => {
+                        let slice = Arc::clone(slice);
+                        let source_len = slice.live_len(&self.state.heap) as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(source_len as usize);
+                        let start = (start as usize).min(end);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Slice(Arc::new(
+                            crate::val::SliceValue {
+                                source: slice.source,
+                                start: slice.start + start,
+                                len: end - start,
+                            },
+                        )))))
+                    }
                     _ => bail!("Slice target must be a string, list, bytes or slice"),
                 }
             }
