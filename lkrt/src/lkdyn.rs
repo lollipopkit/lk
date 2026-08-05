@@ -715,14 +715,23 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
         };
     }
     // 2. Two maps merge, the right side winning.
+    //
+    // The **fill sequence** is the VM's, replayed: the left's entries in the
+    // left's own order minus the keys the right also has, then the right's
+    // entries in the right's own order (`merge_typed_maps` +
+    // `typed_map_without_merge_keys`). A merge builds a new table, and a new
+    // table's iteration order is decided by the order it was filled — so
+    // "the same members" is not the same answer. This used to merge two
+    // *unordered* views into a third, which is three different orders.
     if is_map_tag(a.tag) && is_map_tag(b.tag) {
-        let mut merged = map_entries(a);
-        for (key, value) in map_entries(b) {
-            merged.insert(key, value);
-        }
+        let left = crate::lkmap::map_entries_ordered(a);
+        let right = crate::lkmap::map_entries_ordered(b);
+        let replaced: crate::lkmap::FxSet<_> = right.iter().map(|(key, _)| key.clone()).collect();
+        let mut merged: Vec<_> = left.into_iter().filter(|(key, _)| !replaced.contains(key)).collect();
+        merged.extend(right);
         return LkDyn {
             tag: DYN_MAP,
-            payload: crate::lkmap::str_dyn_from_keyed(merged) as i64,
+            payload: crate::lkmap::str_dyn_from_ordered(merged) as i64,
         };
     }
     // 3. A list on *either* side concatenates; the other operand is one element.

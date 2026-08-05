@@ -536,6 +536,38 @@ pub(super) fn lower(
                     ssa.write(instr.a(), block, (dst, Ty::Str));
                     return Ok(());
                 }
+                // `map + map` merges, the right side winning. Both operands
+                // box and the runtime does it, because the answer's key and
+                // value types are the two operands' widened — there is no
+                // typed carrier for "either of these" — and because the fill
+                // *sequence* is the contract (`lkrt_dyn_add` replays the VM's).
+                //
+                // Only string-keyed maps: the boxed map carrier is
+                // string-keyed, so an int-keyed merge has nowhere to land and
+                // keeps falling back rather than answering `{"3": 1}` where the
+                // VM answers `{3: 1}`.
+                let is_str_map = |t: Ty| matches!(t, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn);
+                if op == Opcode::AddInt && is_str_map(lty_raw) && is_str_map(rty_raw) {
+                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                    let boxed = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(boxed),
+                        callee: AbiRef::new("dyn", "add"),
+                        args: vec![lhs, rhs],
+                    });
+                    // The answer is always a `str -> Dyn` map, so unbox to the
+                    // typed handle rather than leaving it `Dyn` — every later
+                    // read then stays on the typed path.
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "as_map"),
+                        args: vec![boxed],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::MapStrDyn));
+                    return Ok(());
+                }
                 // `list + list` concatenates into a fresh list (the VM's
                 // AddInt dispatch; the `[a, ..spread, b]` literal desugars to
                 // an `+` chain). Same-typed operands keep the typed carrier —

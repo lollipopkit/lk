@@ -2148,6 +2148,36 @@ fn mixed_type_addition_and_equality() {
 /// receiver's members, then the argument's) and both ends replay it. Building
 /// the same answer "some other way" would pass a membership test and print
 /// differently.
+/// `m + n` merges, and the merged map iterates the way the VM's does.
+///
+/// Both executors implemented the merge all along and only the checker refused,
+/// so this case is new on both ends at once. The **fill sequence** is what it
+/// pins: a merge builds a new table, and a new table's iteration order is
+/// decided by the order it was filled — the left's entries in the left's order
+/// minus the keys the right also has, then the right's in the right's order.
+/// The runtime used to merge two *unordered* views into a third, which is three
+/// different orders, and was unreachable so nothing said.
+///
+/// Five keys on the left because a one-key map cannot show an order.
+#[test]
+fn two_maps_merge_in_the_vm_s_order() {
+    run_differential(
+        "map_merge",
+        &[
+            new(
+                "order_and_the_right_side_winning",
+                "let z = 0;\nlet a = {\"k1\": 1 + z, \"k2\": 2, \"k3\": 3, \"k4\": 4, \"k5\": 5};\nlet b = {\"k9\": 9, \"k2\": 20};\nprintln(a + b);\nprintln(a);\nprintln(b);\nprintln((a + b).len());\nprintln((a + b)[\"k2\"]);\nreturn 0;\n",
+            ),
+            // Widened values, and an empty operand on each side.
+            new(
+                "widening_and_empty_operands",
+                "let z = 0;\nlet a = {\"a\": 1 + z, \"b\": 2};\nlet f = {\"x\": 1.5 + 0.0};\nprintln(a + f);\nlet e = {\"gone\": 1 + z};\ne.delete(\"gone\");\nprintln(a + e);\nprintln(e + a);\nprintln(e + e);\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn a_set_can_do_set_things() {
     run_differential(

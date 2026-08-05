@@ -636,6 +636,72 @@ pub(crate) fn typed_map_delete(kind: i64, handle: *mut c_void, key: *const c_cha
 /// This is a copy, and that is fine here and nowhere else: `==` over maps is
 /// order-free, so a different layout cannot change the answer. Display must
 /// never come through this.
+/// A map's entries **in its own iteration order**, under the general key type.
+///
+/// [`typed_map_keyed`] answers the same entries as a hash map, which is right
+/// for equality and wrong for anything that fills a new map from them: the
+/// order a map is filled in decides the order it iterates in, so a merge built
+/// from an unordered view produces the same members in an order the VM never
+/// would.
+pub(crate) fn map_entries_ordered(v: crate::lkdyn::LkDyn) -> Vec<(RtKey, crate::lkdyn::LkDyn)> {
+    use crate::lkdyn::{DYN_MAP, DYN_TMAP_BASE, lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    let handle = v.payload as *mut c_void;
+    if handle.is_null() {
+        return Vec::new();
+    }
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+        return unsafe { (*(handle as *mut StrDynMap)).iter() }
+            .map(|(k, v)| (str_key(k), *v))
+            .collect();
+    }
+    // SAFETY: the tag the caller holds is only set by `dyn.from_typed_map` on a
+    // handle of that carrier.
+    unsafe {
+        match v.tag - DYN_TMAP_BASE {
+            KIND_STR_I64 => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_STR_F64 => (*(handle as *mut StrF64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            KIND_STR_BOOL => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_bool(*v)))
+                .collect(),
+            KIND_I64_I64 => (*(handle as *mut I64I64Map))
+                .iter()
+                .map(|(k, v)| (RtKey::Int(k.0), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_I64_F64 => (*(handle as *mut I64F64Map))
+                .iter()
+                .map(|(k, v)| (RtKey::Int(k.0), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// Fills a fresh `str -> Dyn` map from an **ordered** entry sequence.
+///
+/// The sequence is the payload: filling in another order gives the same members
+/// and a different iteration order. A non-string key raises rather than being
+/// stringified — the boxed map carrier is string-keyed, and answering
+/// `{"3": 1}` where the VM answers `{3: 1}` would be a wrong answer dressed as
+/// a conversion.
+pub(crate) fn str_dyn_from_ordered(entries: Vec<(RtKey, crate::lkdyn::LkDyn)>) -> *mut c_void {
+    let mut out = StrDynMap::default();
+    for (key, value) in entries {
+        match &key {
+            RtKey::ShortStr(_) | RtKey::String(_) => out.insert(crate::vm_mirror::key_str(&key).to_string(), value),
+            _ => crate::panic::raise_str("map merge with a non-string key has no native carrier"),
+        };
+    }
+    crate::state::arena_handle(out)
+}
+
 pub(crate) fn typed_map_keyed(kind: i64, handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {
     use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
     let mut out: FxMap<RtKey, crate::lkdyn::LkDyn> = FxMap::default();
@@ -682,19 +748,6 @@ pub(crate) fn typed_map_keyed(kind: i64, handle: *mut c_void) -> FxMap<RtKey, cr
 /// The general map key, re-exported so the `dyn` layer can name the type its
 /// keyed views return without reaching into the mirror.
 pub(crate) type MapKey = RtKey;
-
-/// Turns a keyed view back into a boxed `str -> Dyn` map.
-///
-/// String keys only, which is what `+`'s merge produces: an int-keyed operand
-/// would have raised at `key_str`. The insertion order is the view's, and this
-/// is a *new* map — nothing is claiming to preserve an order it never had.
-pub(crate) fn str_dyn_from_keyed(entries: FxMap<MapKey, crate::lkdyn::LkDyn>) -> *mut c_void {
-    let mut out = StrDynMap::default();
-    for (key, value) in entries {
-        out.insert(crate::vm_mirror::key_str(&key).to_string(), value);
-    }
-    crate::state::arena_handle(out)
-}
 
 /// The same view of a **boxed** (`str -> Dyn`) map, so equality can compare one
 /// against a typed one.
