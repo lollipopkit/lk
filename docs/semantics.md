@@ -1760,6 +1760,37 @@ Bytes、字符串在循环里全部 raise。VM 的 `to_iter` 不是"解出一个
 元素 —— 整数键落在 map 上是键不是位置。常量整数键直接降低到 `dyn.index`,不经过
 `dyn.get`,所以规则写在实际到达的那一层。
 
+## 类型化 list 装箱也是原地打标签(2026-08-05 裁决)
+
+`#118` 对类型化 map 立的规矩,同样适用于 list,而这里丢的不只是顺序 —— 是两个
+方向的别名:
+
+```
+let xs = [1];
+let c  = [xs];
+xs.push(2);      println(c[0].len());   // VM 2,native 1
+c[0].push(9);    println(xs);           // VM [1,2,9],native [1,2]
+```
+
+两条都**完整编译成原生**(`LK_AOT_NO_FALLBACK=1` 通过)然后答错。原因是装箱走
+`list_h.*_to_dyn`:逐元素重建成 `Vec<LkDyn>`,那是另一个列表。
+
+`DYN_TLIST_BASE..DYN_TLIST_END` 三个标签,一个载体一个,`dyn.from_typed_list`
+原地打标签。消费点全部改为认两种表示:类型名、转整数的报错、`+` 拼接、与窗口的
+比较、跨表示的列表相等、显示、`len`(直接数载体,不装箱)、索引、`in` 的按句柄
+比较、`flatten`、`to_iter`、JSON 序列化、通道深拷贝。
+
+**`dyn.as_list` 是只读的,这条得写下来。** `DYN_LIST` 交回自己的句柄,写得进去;
+类型化载体必须物化一份元素,写不进去。两者不能都从这一个口出去。到得了这个守卫
+的名字 —— `map` / `filter` / `reduce` / `take` / `skip` / `concat` / `unique` /
+`sort` / `reverse` —— 全部构造新列表,不动接收者(这门语言里 `sort` 和 `reverse`
+返回新列表,不是原地排)。唯一的写是 `push`,它走 `dyn.list_push`,直接到载体。
+
+规则靠 `no_unbox_list_name_mutates_its_receiver` 钉住:给一个会写的名字加上
+`unbox_list`,写就会在这个守卫里被静默丢掉。
+
+`sort()` 在装箱接收者上仍然回落,与本次改动无关,单列(见任务表)。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

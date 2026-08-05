@@ -776,23 +776,20 @@ impl Ssa {
                 });
                 Some(dst)
             }
+            // In place, under a tag naming the carrier — see `dyn_box`'s arm
+            // for the aliasing the old element-wise rebuild lost.
             Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
-                let converter = match ty {
-                    Ty::ListI64 => "i64_to_dyn",
-                    Ty::ListF64 => "f64_to_dyn",
-                    _ => "str_to_dyn",
-                };
-                let converted = self.new_val();
-                self.edge_insts[pred].push(Inst::Call {
-                    dst: Some(converted),
-                    callee: AbiRef::new("list_h", converter),
-                    args: vec![v],
+                let kind = crate::dyn_box::typed_list_kind(ty).expect("checked by the arm");
+                let kind_v = self.new_val();
+                self.edge_insts[pred].push(Inst::Const {
+                    dst: kind_v,
+                    value: Const::I64(kind),
                 });
                 let dst = self.new_val();
                 self.edge_insts[pred].push(Inst::Call {
                     dst: Some(dst),
-                    callee: AbiRef::new("dyn", "from_list"),
-                    args: vec![converted],
+                    callee: AbiRef::new("dyn", "from_typed_list"),
+                    args: vec![v, kind_v],
                 });
                 Some(dst)
             }

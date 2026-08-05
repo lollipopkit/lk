@@ -725,6 +725,14 @@ macro_rules! for_each_abi_fn {
             // could not enter a mixed container, a struct field, or a bridged
             // return at all.
             ("dyn", "from_typed_map", lkrt_dyn_from_typed_map, Pure, [Ptr, I64], DynVal);
+            // A typed list boxes in place too. `list_h.*_to_dyn` still exists —
+            // it is the element-wise *conversion* a mixed-list method result
+            // needs — but boxing must not go through it: the copy is a
+            // different list, and both directions of aliasing died on it.
+            ("dyn", "from_typed_list", lkrt_dyn_from_typed_list, Pure, [Ptr, I64], DynVal);
+            // `push` through a boxed receiver reaches the carrier itself; see
+            // `dyn.as_list`, which is read-only for exactly this reason.
+            ("dyn", "list_push", lkrt_dyn_list_push, WritesHost, [DynVal, DynVal], Nil, Borrowed);
             ("dyn", "from_set", lkrt_dyn_from_set, Pure, [Ptr], DynVal);
             ("dyn", "from_bytes", lkrt_dyn_from_bytes, Pure, [Ptr], DynVal);
             // A window boxes in place, like `from_set`/`from_bytes`; `as_slice`

@@ -1326,6 +1326,35 @@ mod tests {
     /// compile — but only for those calls, and only after building a native
     /// binary. This answers it for the whole list, immediately, and names the
     /// member that went missing.
+    /// No `unbox_list` name may mutate its receiver.
+    ///
+    /// `dyn.as_list` is read-only, and has to be: a `DYN_LIST` hands back its
+    /// own handle while a typed carrier has to materialize one, so a write
+    /// through the guard lands on a copy for three of the four list
+    /// representations. The names that reach it — `map`, `filter`, `sort`,
+    /// `reverse`, … — all answer new lists in this language and leave the
+    /// receiver alone. `push` is the mutating one and goes to `dyn.list_push`.
+    ///
+    /// Nothing about `unbox_list = true` says "read-only", so a mutating name
+    /// given that flag would compile, run, and drop writes. This is what says
+    /// it. The mutating list methods were read off the VM: `a.push(9)`,
+    /// `a.set(0, 9)`, `a.insert(0, 9)`, `a.clear()` and `a.pop()` all change
+    /// `a`; every other list method answers a new value.
+    #[test]
+    fn no_unbox_list_name_mutates_its_receiver() {
+        const MUTATING: &[&str] = &["push", "set", "insert", "clear", "pop"];
+        let offenders: Vec<&str> = METHOD_TABLE
+            .iter()
+            .filter(|row| row.unbox_list && MUTATING.contains(&row.name))
+            .map(|row| row.name)
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these mutate the receiver but unbox through the read-only `dyn.as_list` guard, \
+             so the write would land on a materialized copy: {offenders:?}"
+        );
+    }
+
     #[test]
     fn the_natively_lowered_stdlib_surface_stays_lowered() {
         for (module, member) in [

@@ -17,6 +17,20 @@ pub(crate) fn typed_map_kind(ty: Ty) -> Option<i64> {
     })
 }
 
+/// The `lkdyn::TLIST_*` number for a typed list carrier, or `None` for anything
+/// else (a boxed list, a non-list).
+///
+/// The list counterpart of [`typed_map_kind`], and read by the same kinds of
+/// call sites for the same reason: one numbering, not two.
+pub(crate) fn typed_list_kind(ty: Ty) -> Option<i64> {
+    Some(match ty {
+        Ty::ListI64 => 0,
+        Ty::ListF64 => 1,
+        Ty::ListStr => 2,
+        _ => return None,
+    })
+}
+
 /// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn` passes
 /// through and `nil` becomes an empty map (the VM accepts a nil merge base).
 ///
@@ -274,25 +288,23 @@ pub(crate) fn to_dyn(
             });
             return Ok(boxed);
         }
-        // Typed lists box via an element-wise conversion (cold path: only
-        // emitted where a typed list actually meets a Dyn).
+        // A typed list boxes **in place** too, for the same reason the typed
+        // maps above do — and here the rebuild was losing more than an order.
+        // `let xs = [1]; let c = [xs]; xs.push(2); c[0].len()` answered 1 where
+        // the VM answers 2, and `c[0].push(9)` appended to the copy: both
+        // directions of aliasing, on programs that compiled fully native.
         Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
-            let converter = match ty {
-                Ty::ListI64 => "i64_to_dyn",
-                Ty::ListF64 => "f64_to_dyn",
-                _ => "str_to_dyn",
-            };
-            let converted = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(converted),
-                callee: AbiRef::new("list_h", converter),
-                args: vec![v],
+            let kind = typed_list_kind(ty).expect("checked by the arm");
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
             });
             let boxed = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(boxed),
-                callee: AbiRef::new("dyn", "from_list"),
-                args: vec![converted],
+                callee: AbiRef::new("dyn", "from_typed_list"),
+                args: vec![v, kind_v],
             });
             return Ok(boxed);
         }

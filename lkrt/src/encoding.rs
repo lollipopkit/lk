@@ -29,7 +29,7 @@ use alloc::{
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_SLICE, LkDyn};
+use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_SLICE, LkDyn, is_list_tag};
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
 use crate::vm_mirror::str_dyn_map_mirrored;
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn lkrt_toml_parse(text: *const c_char) -> LkDyn {
 /// argument that governs `parse` does not apply in reverse.
 mod write {
     use super::*;
-    use crate::lkdyn::{DYN_BYTES, DYN_NIL, DYN_RAW, DYN_SET, DYN_STR, dyn_list, is_map_tag, map_entries};
+    use crate::lkdyn::{DYN_BYTES, DYN_NIL, DYN_RAW, DYN_SET, DYN_STR, is_map_tag, map_entries};
     use crate::vm_mirror::{RtKey, key_str};
 
     /// The VM's `MAX_VALUE_DEPTH`, and its refusal names the number.
@@ -215,9 +215,12 @@ mod write {
                 }
             }
             DYN_STR => serde_json::Value::String(input(value.payload as *const c_char).to_string()),
-            DYN_LIST => {
+            // Every list representation, not only the boxed one: a typed
+            // carrier boxes in place now, so `json.stringify([[1]])` sees a
+            // `DYN_TLIST_*` tag where it used to see a rebuilt `DYN_LIST`.
+            tag if is_list_tag(tag) => {
                 let mut out = Vec::new();
-                for element in dyn_list(value) {
+                for element in crate::lkdyn::dyn_list_values(value).iter() {
                     out.push(to_serde(*element, depth + 1)?);
                 }
                 serde_json::Value::Array(out)

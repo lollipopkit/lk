@@ -2110,6 +2110,47 @@ fn mixed_type_addition_and_equality() {
 ///
 /// The deletions are the point of these cases — without them the two layouts
 /// coincide and the bug hides.
+/// A typed **list** boxed into a container is the same list, not a copy.
+///
+/// The map counterpart (`a_boxed_typed_map_keeps_its_order`) fixed an order;
+/// this one fixed two aliasing directions, both of which compiled fully native
+/// and answered wrong:
+///
+/// * `xs.push(2)` after `let c = [xs]` was invisible through `c[0]` — the box
+///   held a rebuilt copy made at boxing time.
+/// * `c[0].push(9)` appended to that copy, so `xs` never saw it.
+///
+/// A typed list boxes in place under a tag naming its carrier now, so every
+/// read goes to the carrier and `push` reaches it through `dyn.list_push`.
+/// `dyn.as_list` stays read-only: it has to materialize for a typed carrier,
+/// and the names that reach it all build new lists.
+#[test]
+fn a_boxed_typed_list_is_the_same_list() {
+    run_differential(
+        "typed_list_boxing_identity",
+        &[
+            new(
+                "writes_cross_the_box_both_ways",
+                "let z = 0;\nlet xs = [3 + z, 1];\nlet c = [xs];\nxs.push(2);\nprintln(c[0].len());\nc[0].push(9);\nprintln(xs);\nprintln(c[0]);\nreturn 0;\n",
+            ),
+            // Every read off the carrier, and the float and string carriers
+            // alongside the int one — one tag per carrier, so a missing arm
+            // shows up here rather than in whichever program hits it first.
+            new(
+                "reads_off_every_carrier",
+                "let z = 0;\nlet a = [3 + z, 1];\nlet b = [1.5 + 0.0, 0.5];\nlet s = [\"x\" + \"\", \"y\"];\nlet c = [a, b, s];\nprintln(c[0]);\nprintln(c[1]);\nprintln(c[2]);\nprintln(c[0].len() + c[1].len() + c[2].len());\nprintln(c[0][0]);\nprintln(c[1][-1]);\nprintln(c[2][1]);\nprintln(c[0] == [3, 1]);\nprintln(c[2] == [\"x\", \"y\"]);\nfor x in c[0] { println(x); }\nfor x in c[2] { println(x); }\nprintln(c[0].map(|x| x + 1));\nprintln(c[0].reverse());\nprintln(c[0].unique());\nprintln(c[0] + [7]);\nreturn 0;\n",
+            ),
+            // A boxed typed list inside a map, and nested one level deeper —
+            // the tag has to survive every place a `Dyn` goes.
+            new(
+                "through_maps_and_nesting",
+                "use encoding;\nlet z = 0;\nlet xs = [1 + z, 2];\nlet m = {\"k\": xs};\nxs.push(3);\nprintln(m[\"k\"]);\nlet outer = [[xs]];\nprintln(outer[0][0].len());\nprintln(encoding.json.stringify(m));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn a_boxed_typed_map_keeps_its_order() {
     run_differential(

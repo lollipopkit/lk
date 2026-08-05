@@ -1899,6 +1899,76 @@ pub unsafe extern "C" fn lkrt_lklist_str_eq(a: *mut c_void, b: *mut c_void) -> i
     i64::from(equal)
 }
 
+/// A typed list's elements, boxed — the carrier read behind every `DYN_TLIST_*`
+/// consumer.
+///
+/// A copy, and only reads use it: `lkdyn::dyn_list_values` documents why, and
+/// [`lkrt_dyn_list_push`](crate::lkrt_dyn_list_push) is the write that does not.
+pub(crate) fn typed_list_boxed(kind: i64, handle: *mut c_void) -> alloc::vec::Vec<crate::lkdyn::LkDyn> {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR, lkrt_dyn_from_f64, lkrt_dyn_from_i64, lkrt_dyn_from_str};
+    if handle.is_null() {
+        return alloc::vec::Vec::new();
+    }
+    // SAFETY: `kind` names the carrier the caller tagged this handle with.
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_i64(v))
+                .collect(),
+            TLIST_F64 => (*(handle as *mut Vec<f64>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_f64(v))
+                .collect(),
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_str(v))
+                .collect(),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// Element count without boxing anything.
+pub(crate) fn typed_list_len(kind: i64, handle: *mut c_void) -> i64 {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: as in [`typed_list_boxed`].
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>)).len() as i64,
+            TLIST_F64 => (*(handle as *mut Vec<f64>)).len() as i64,
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>)).len() as i64,
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `xs.push(v)` on a **boxed** typed list: appends to the carrier itself, so
+/// the box and the original stay one list.
+///
+/// The element is unboxed back to the carrier's type. A value the carrier
+/// cannot hold is the VM's loud failure — the same one the unboxed spelling
+/// gives, because the static types would have rejected it there.
+pub(crate) fn typed_list_push(kind: i64, handle: *mut c_void, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    // SAFETY: as in [`typed_list_boxed`], and the handle is uniquely reachable
+    // through this call for its duration.
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>)).push(crate::lkdyn::lkrt_dyn_as_i64(value)),
+            TLIST_F64 => (*(handle as *mut Vec<f64>)).push(crate::lkdyn::lkrt_dyn_as_f64(value)),
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>)).push(crate::lkdyn::lkrt_dyn_as_str(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

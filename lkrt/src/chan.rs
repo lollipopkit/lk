@@ -19,7 +19,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn};
+use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, is_list_tag};
 use crate::lkmap::StrDynMap;
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
@@ -53,15 +53,11 @@ fn own(v: LkDyn) -> OwnedVal {
             };
             OwnedVal::Str(text)
         }
-        DYN_LIST => {
-            let handle = v.payload as *mut c_void;
-            let items: &[LkDyn] = if handle.is_null() {
-                &[]
-            } else {
-                // SAFETY: DYN_LIST payloads are live dyn-list handles.
-                unsafe { &*(handle as *mut Vec<LkDyn>) }
-            };
-            OwnedVal::List(items.iter().map(|&item| own(item)).collect())
+        // A channel copies by value, so every list representation deep-copies
+        // the same way — the typed carriers box in place now and would
+        // otherwise fall through to the unsupported arm.
+        tag if is_list_tag(tag) => {
+            OwnedVal::List(crate::lkdyn::dyn_list_values(v).iter().map(|&item| own(item)).collect())
         }
         DYN_MAP => {
             let handle = v.payload as *mut c_void;

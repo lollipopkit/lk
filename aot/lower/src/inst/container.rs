@@ -781,20 +781,21 @@ pub(super) fn lower(
             // handle is a reference (matching the VM), so the push is visible through
             // aliases; no new SSA value is produced for the list.
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
-            // A boxed receiver (a cell readback across a `try$call` boundary)
-            // unwraps through the as_list guard: the push mutates the shared
-            // handle, exactly the VM's aliasing.
-            let (handle, list_ty) = if list_ty == Ty::Dyn {
-                let unboxed = ssa.new_val();
+            // A boxed receiver pushes through `dyn.list_push`, which reaches
+            // the carrier behind the tag. It used to unwrap through
+            // `dyn.as_list` — correct while every boxed list was a
+            // `Vec<LkDyn>`, and a lost write once typed carriers box in place,
+            // because that guard has to materialize one.
+            if list_ty == Ty::Dyn {
+                let (value, value_ty) = ssa.read(instr.b(), block, pc)?;
+                let boxed = to_dyn_any(ssa, insts, value, value_ty, pc)?;
                 insts.push(Inst::Call {
-                    dst: Some(unboxed),
-                    callee: AbiRef::new("dyn", "as_list"),
-                    args: vec![handle],
+                    dst: None,
+                    callee: AbiRef::new("dyn", "list_push"),
+                    args: vec![handle, boxed],
                 });
-                (unboxed, Ty::ListDyn)
-            } else {
-                (handle, list_ty)
-            };
+                return Ok(());
+            }
             // Values read through `read_scalar` so a `Maybe` (a dynamic list
             // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
             // A push whose value type contradicts a guessed empty-`[]`

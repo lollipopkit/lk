@@ -74,6 +74,28 @@ pub const DYN_TMAP_BASE: i64 = 10;
 /// One past the last typed-map tag.
 pub const DYN_TMAP_END: i64 = 15;
 
+/// A **typed list** handle, boxed in place — one tag per carrier.
+///
+/// The same rule [`DYN_TMAP_BASE`] states, for the other container: boxing must
+/// not re-represent. A typed list used to box by rebuilding element-wise into a
+/// `Vec<LkDyn>`, and that copy is a *different list*, so both directions of
+/// aliasing broke — `let xs = [1]; let c = [xs]; xs.push(2); c[0].len()` answered
+/// 1 where the VM answers 2, and `c[0].push(9)` appended to the copy. Wrong
+/// answers on programs that compiled fully native.
+///
+/// Three tags rather than one because there are three carriers; the tag is the
+/// only thing that says which. The numbering below is the `kind` argument of
+/// [`lkrt_dyn_from_typed_list`], and matches the lowering's carrier order.
+pub const DYN_TLIST_BASE: i64 = 16;
+/// `Vec<i64>` — `DYN_TLIST_BASE + 0`.
+pub const TLIST_I64: i64 = 0;
+/// `Vec<f64>` — `DYN_TLIST_BASE + 1`.
+pub const TLIST_F64: i64 = 1;
+/// `Vec<*const c_char>` — `DYN_TLIST_BASE + 2`.
+pub const TLIST_STR: i64 = 2;
+/// One past the last typed-list tag.
+pub const DYN_TLIST_END: i64 = 19;
+
 /// A **window** handle (`xs.slice(a, b)`), boxed in place. See [`DYN_SET`] for
 /// why a carrier without a tag cannot be boxed at all, and therefore cannot
 /// enter a list, a map, a struct field, or a `try` region's value.
@@ -86,6 +108,43 @@ pub const DYN_SLICE: i64 = DYN_TMAP_END;
 /// Whether a tag denotes a map of any representation.
 pub(crate) fn is_map_tag(tag: i64) -> bool {
     tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
+}
+
+/// Whether a tag denotes a list of any representation.
+pub(crate) fn is_list_tag(tag: i64) -> bool {
+    tag == DYN_LIST || (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag)
+}
+
+/// Boxes a typed list handle under its carrier's tag. `kind` is `TLIST_*`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_typed_list(handle: *mut c_void, kind: i64) -> LkDyn {
+    if !(0..DYN_TLIST_END - DYN_TLIST_BASE).contains(&kind) {
+        crate::panic::raise_str("runtime type error");
+    }
+    LkDyn {
+        tag: DYN_TLIST_BASE + kind,
+        payload: handle as i64,
+    }
+}
+
+/// A boxed list's elements, whatever carrier holds them.
+///
+/// A `DYN_LIST` borrows its `Vec<LkDyn>`; a typed carrier has to box each
+/// element, which is a copy — sound because every caller of this reads. The
+/// callers that *write* (`push`) go to [`lkrt_dyn_list_push`] instead, which
+/// reaches the carrier itself.
+pub(crate) fn dyn_list_values<'a>(v: LkDyn) -> alloc::borrow::Cow<'a, [LkDyn]> {
+    use alloc::borrow::Cow;
+    if v.tag == DYN_LIST {
+        return Cow::Borrowed(dyn_list(v));
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    Cow::Owned(crate::lklist::typed_list_boxed(
+        v.tag - DYN_TLIST_BASE,
+        v.payload as *mut c_void,
+    ))
 }
 
 /// Boxes a typed map handle under its carrier's tag. `kind` is `lkmap::KIND_*`.
@@ -331,7 +390,7 @@ fn kind_name(v: LkDyn) -> String {
         DYN_I64 => "Int",
         DYN_F64 => "Float",
         DYN_STR => "String",
-        DYN_LIST => "List",
+        tag if is_list_tag(tag) => "List",
         DYN_SET => "Set",
         DYN_BYTES => "Bytes",
         DYN_SLICE => "Slice",
@@ -409,7 +468,7 @@ pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
         DYN_F64 => v.f64_value() as i64,
         DYN_BOOL => v.payload,
         DYN_STR => crate::panic::raise_str("cannot cast String to an integer"),
-        DYN_LIST => crate::panic::raise_str("cannot cast List to an integer"),
+        tag if is_list_tag(tag) => crate::panic::raise_str("cannot cast List to an integer"),
         DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
         DYN_SET => crate::panic::raise_str("cannot cast Set to an integer"),
         DYN_BYTES => crate::panic::raise_str("cannot cast Bytes to an integer"),
@@ -667,11 +726,11 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
         };
     }
     // 3. A list on *either* side concatenates; the other operand is one element.
-    if a.tag == DYN_LIST || b.tag == DYN_LIST {
+    if is_list_tag(a.tag) || is_list_tag(b.tag) {
         let mut out: Vec<LkDyn> = Vec::new();
         for side in [a, b] {
-            if side.tag == DYN_LIST {
-                out.extend_from_slice(dyn_list(side));
+            if is_list_tag(side.tag) {
+                out.extend_from_slice(&dyn_list_values(side));
             } else {
                 out.push(side);
             }
@@ -794,8 +853,8 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
     // handle-wise, and across the tag difference, for the same reason the two
     // map representations compare across theirs.
     if (a.tag == DYN_SLICE || b.tag == DYN_SLICE)
-        && matches!(b.tag, DYN_SLICE | DYN_LIST)
-        && matches!(a.tag, DYN_SLICE | DYN_LIST)
+        && (b.tag == DYN_SLICE || is_list_tag(b.tag))
+        && (a.tag == DYN_SLICE || is_list_tag(a.tag))
     {
         let boxed = |v: LkDyn| -> alloc::vec::Vec<LkDyn> {
             if v.tag == DYN_SLICE {
@@ -805,11 +864,19 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
                     .map(|value| lkrt_dyn_from_i64(*value))
                     .collect()
             } else {
-                dyn_list(v).to_vec()
+                dyn_list_values(v).into_owned()
             }
         };
         let (xs, ys) = (boxed(a), boxed(b));
         return xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, y)| dyn_eq_inner(x, y));
+    }
+    // Two lists compare element-wise across representations, for the same
+    // reason the two map representations do: `[1]` written as a typed carrier
+    // and the same list boxed are one value, and which representation a program
+    // happens to hold is not something it can see.
+    if is_list_tag(a.tag) && is_list_tag(b.tag) {
+        let (xs, ys) = (dyn_list_values(a), dyn_list_values(b));
+        return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(&x, &y)| dyn_eq_inner(x, y));
     }
     if a.tag != b.tag {
         return false;
@@ -818,10 +885,6 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
         DYN_NIL => true,
         DYN_BOOL => a.payload == b.payload,
         DYN_STR => unsafe { dyn_str(a) == dyn_str(b) },
-        DYN_LIST => {
-            let (xs, ys) = (dyn_list(a), dyn_list(b));
-            xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| dyn_eq_inner(x, y))
-        }
         DYN_MAP => {
             // A struct instance is a marked map, and its *type* is part of
             // its identity: the VM says `P{x:1} != Q{x:1}` and
@@ -914,7 +977,7 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                 out.push_str(s);
             }
         }
-        DYN_LIST => {
+        tag if is_list_tag(tag) => {
             // A string inside a container is quoted, whatever the container's
             // representation is. This used to pass `false` here, mirroring a VM
             // quirk: a *mixed* list rendered its strings bare (`[1,a b,2]`)
@@ -923,7 +986,7 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
             // program can see. The VM stopped doing that; this follows, and the
             // differential gate is what noticed.
             out.push('[');
-            for (i, &e) in dyn_list(v).iter().enumerate() {
+            for (i, &e) in dyn_list_values(v).iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
@@ -1004,6 +1067,11 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
 pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
     match v.tag {
         DYN_LIST => dyn_list(v).len() as i64,
+        // Counted off the carrier — no boxing, which is the whole point of a
+        // tag that names one.
+        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => {
+            crate::lklist::typed_list_len(tag - DYN_TLIST_BASE, v.payload as *mut c_void)
+        }
         DYN_MAP => {
             if (v.payload as *mut c_void).is_null() {
                 0
@@ -1025,14 +1093,54 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
     }
 }
 
-/// Guarded list unboxing: the handle behind a `DYN_LIST` tag (loud failure
-/// otherwise — iterating a non-container is a VM error).
+/// Guarded list unboxing: a `Vec<LkDyn>` handle for a boxed list of either
+/// representation (loud failure otherwise — a method on a non-list is a VM
+/// error).
+///
+/// **Read-only.** A `DYN_LIST` hands back its own handle, so a write through it
+/// would be visible; a typed carrier has to box its elements, so a write
+/// through *that* one would be lost. The two cannot both be served here, and
+/// every name that reaches this guard — `map`, `filter`, `reduce`, `take`,
+/// `skip`, `concat`, `unique`, `sort`, `reverse` — builds a new list and leaves
+/// the receiver alone (`sort` and `reverse` answer new lists in this language;
+/// they do not sort in place). `push` is the one mutating consumer and it goes
+/// to [`lkrt_dyn_list_push`], which reaches the carrier itself.
+///
+/// `no_unbox_list_name_mutates_its_receiver` in the lowering is what keeps
+/// that true: a mutating name given `unbox_list` would silently start dropping
+/// writes here.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_list(v: LkDyn) -> *mut c_void {
-    if v.tag != DYN_LIST {
+    if v.tag == DYN_LIST {
+        return v.payload as *mut c_void;
+    }
+    if !is_list_tag(v.tag) {
         crate::panic::raise_str("runtime type error");
     }
-    v.payload as *mut c_void
+    arena_handle(crate::lklist::typed_list_boxed(
+        v.tag - DYN_TLIST_BASE,
+        v.payload as *mut c_void,
+    ))
+}
+
+/// `xs.push(e)` where `xs` is boxed — appends to the carrier behind the tag, so
+/// the box and the original stay one list.
+///
+/// The counterpart to [`lkrt_dyn_as_list`]'s read-only rule. `ListPush` used to
+/// unbox through that guard, which for a typed carrier meant appending to a
+/// materialized copy: `c[0].push(9)` answered as if nothing had been pushed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_push(v: LkDyn, value: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`, uniquely
+        // reachable through this call for its duration.
+        unsafe { (*(v.payload as *mut Vec<LkDyn>)).push(value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_push(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, value);
 }
 
 #[unsafe(no_mangle)]
@@ -1164,6 +1272,13 @@ pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
     }
     match v.tag {
         DYN_LIST => v.payload as *mut c_void,
+        // A typed carrier snapshots, which is what the VM's `to_iter` does for
+        // every map too: the loop reads elements as values, and a value read
+        // out of an `i64` carrier has to be boxed to be one.
+        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => arena_handle(crate::lklist::typed_list_boxed(
+            tag - DYN_TLIST_BASE,
+            v.payload as *mut c_void,
+        )),
         // A window iterates as itself; `len` and indexing on the loop handle
         // are window-relative, which is what the loop wants.
         DYN_SLICE => v.payload as *mut c_void,
@@ -1253,10 +1368,7 @@ pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
             .copied()
             .unwrap_or(LkDyn::NIL);
     }
-    if v.tag != DYN_LIST {
-        crate::panic::raise_str("runtime type error");
-    }
-    let values = dyn_list(v);
+    let values = dyn_list_values(v);
     let len = values.len() as i64;
     let idx = if index < 0 { len + index } else { index };
     if idx < 0 || idx >= len {
@@ -1465,6 +1577,7 @@ pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
         // `DYN_RAW` stays out: it parks a handle that is not a value, and
         // reading one as a value is a loud failure by design.
         DYN_LIST | DYN_MAP | DYN_SET | DYN_BYTES | DYN_SLICE => a.payload == b.payload,
+        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => a.payload == b.payload,
         tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => a.payload == b.payload,
         _ => false,
     }
@@ -1693,8 +1806,8 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_unique(handle: *mut c_void) -> *mut c_v
 pub unsafe extern "C" fn lkrt_lklist_dyn_flatten(handle: *mut c_void) -> *mut c_void {
     let mut flat: Vec<LkDyn> = Vec::new();
     for &item in dyn_slice(handle) {
-        if item.tag == DYN_LIST {
-            flat.extend_from_slice(dyn_list(item));
+        if is_list_tag(item.tag) {
+            flat.extend_from_slice(&dyn_list_values(item));
         } else {
             flat.push(item);
         }
