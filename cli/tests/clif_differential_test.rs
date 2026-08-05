@@ -2142,6 +2142,15 @@ fn a_boxed_typed_list_is_the_same_list() {
             ),
             // A boxed typed list inside a map, and nested one level deeper —
             // the tag has to survive every place a `Dyn` goes.
+            // Pushing an `Int` into a `List<Float>`. The checker accepts it by
+            // numeric promotion, so the list is still a `List<Float>` — the VM
+            // used to widen to `Mixed` and keep the `Int`, so `typeof` answered
+            // `Int` there and `Float` natively on a program neither side
+            // rejects.
+            new(
+                "an_int_pushed_into_a_float_list_is_a_float",
+                "let z = 0.0;\nlet xs = [1.5 + z, 2.5];\nxs.push(9);\nprintln(typeof(xs[2]));\nprintln(xs);\nprintln(xs[2] / 2);\nlet c = [xs];\nc[0].push(7);\nprintln(typeof(xs[3]));\nprintln(xs);\nreturn 0;\n",
+            ),
             new(
                 "through_maps_and_nesting",
                 "use encoding;\nlet z = 0;\nlet xs = [1 + z, 2];\nlet m = {\"k\": xs};\nxs.push(3);\nprintln(m[\"k\"]);\nlet outer = [[xs]];\nprintln(outer[0][0].len());\nprintln(encoding.json.stringify(m));\nreturn 0;\n",

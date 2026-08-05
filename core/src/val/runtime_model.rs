@@ -618,6 +618,21 @@ impl TypedList {
             },
             TypedList::Float(values) => match value {
                 RuntimeVal::Float(value) => values.push(value),
+                // An `Int` into a `Float` list is the checker's numeric
+                // promotion, and it has already been *accepted*:
+                // `let xs = [1.5]; xs.push(9)` type-checks because `Int` is
+                // assignable to `Float`. Widening to `Mixed` here stores the
+                // `Int` unchanged, so `typeof(xs[1])` answered `Int` — the
+                // list stopped being the `List<Float>` the checker had just
+                // promised, and the native carrier (which does hold `9.0`)
+                // read back a different type for the same program.
+                //
+                // Materializing the promotion is what the acceptance meant.
+                // The reverse is not symmetric and is left alone: `Float` into
+                // an `Int` list is a narrowing the checker rejects, so it is
+                // reachable only through an erased type, where widening is the
+                // dynamic behaviour.
+                RuntimeVal::Int(value) => values.push(value as f64),
                 value => {
                     let mut mixed = copy_numeric_list(values, RuntimeVal::Float);
                     mixed.push(value);
@@ -1499,6 +1514,33 @@ impl RuntimeMapKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The checker's numeric promotion survives into the representation.
+    ///
+    /// `xs.push(9)` on a `List<Float>` type-checks — `Int` is assignable to
+    /// `Float` — so the list is still a `List<Float>` afterwards. Widening to
+    /// `Mixed` and storing the `Int` unchanged made `typeof(xs[1])` answer
+    /// `Int`, which the native carrier (holding `9.0`) contradicts.
+    ///
+    /// The reverse stays a widening: `Float` into an `Int` list is a narrowing
+    /// the checker rejects, so it arrives only through an erased type, where
+    /// the dynamic answer is the right one.
+    #[test]
+    fn an_int_pushed_into_a_float_list_becomes_a_float() {
+        let mut list = TypedList::Float(vec![1.5]);
+        list.push(RuntimeVal::Int(9), None).expect("push");
+        assert!(
+            matches!(&list, TypedList::Float(values) if values == &[1.5, 9.0]),
+            "an accepted promotion must be materialized, not widened away: {list:?}"
+        );
+
+        let mut narrowing = TypedList::Int(vec![1]);
+        narrowing.push(RuntimeVal::Float(1.5), None).expect("push");
+        assert!(
+            matches!(&narrowing, TypedList::Mixed(_)),
+            "a narrowing arrives only through an erased type and stays dynamic: {narrowing:?}"
+        );
+    }
 
     #[test]
     fn runtime_entries_materialize_to_typed_string_maps() {
