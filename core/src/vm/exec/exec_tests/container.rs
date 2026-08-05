@@ -1017,3 +1017,57 @@ fn a_negative_count_is_refused_on_a_string_as_it_is_on_a_list() {
     // their answers.
     assert!(display.contains(r#""","a","b","b""#), "{display}");
 }
+
+/// The carrier lists in these messages are the messages' whole content, and
+/// they had drifted from the arms above them.
+///
+/// `len` accepts `Bytes` and a window; its message said "String, List, Map or
+/// Set". `slice`, `skip` and `for` were the same, each naming the set the
+/// operation had when the message was written. A reader is told the rule, and
+/// the rule was wrong in the direction that makes a working program look
+/// impossible.
+///
+/// This walks every carrier, asks whether the operation accepts it, and
+/// requires the rejection message to name exactly the ones it does. Both
+/// directions: a carrier that stops being accepted has to leave the message
+/// too.
+#[test]
+fn a_carrier_list_in_an_error_message_matches_what_the_operation_accepts() {
+    // `(carrier, how to build one, the word the message uses for it)`.
+    const CARRIERS: &[(&str, &str, &str)] = &[
+        ("List", "[1, 2, 3]", "list"),
+        ("String", "\"ab\"", "string"),
+        ("Map", "{\"a\": 1}", "map"),
+        ("Set", "Set([1])", "set"),
+        ("Bytes", "\"ab\".bytes()", "bytes"),
+        ("Slice", "[1, 2, 3].slice(0, 2)", "slice"),
+    ];
+    // `(what the program writes, a program that reaches the same opcode with a
+    // receiver it rejects)`.
+    //
+    // `len`'s list lives on the opcode, and reaching it needs a receiver with
+    // no static type — an out-of-bounds read, whose `nil` the method dispatch
+    // passes through. `for`'s lives in the checker, which a literal reaches
+    // directly. `slice` is not here: every rejecting receiver is answered by
+    // the method dispatch first, so its opcode message is unreachable and
+    // there is nothing for this to compare.
+    const OPERATIONS: &[(&str, &str)] = &[("c.len()", "[1][5].len();"), ("for _x in c {}", "for _x in 1 {}")];
+
+    for (op, rejecting) in OPERATIONS {
+        let message = match execute_source(rejecting) {
+            Ok(result) => panic!("`{rejecting}` was expected to fail: {result:?}"),
+            Err(err) => format!("{err}").to_lowercase(),
+        };
+        for (carrier, build, word) in CARRIERS {
+            let program = format!("let c = {build};\n{op};\n");
+            let accepted = execute_source(&program).is_ok();
+            assert_eq!(
+                accepted,
+                message.contains(word),
+                "`{op}` {} `{carrier}`, and the message {} name it: {message}",
+                if accepted { "accepts" } else { "rejects" },
+                if accepted { "does not" } else { "does" },
+            );
+        }
+    }
+}

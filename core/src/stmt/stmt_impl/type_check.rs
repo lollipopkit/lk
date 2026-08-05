@@ -871,7 +871,7 @@ impl Stmt {
                     Type::Tuple(_) => {}
                     _ => {
                         return Err(anyhow!(format!(
-                            "For loop iterable must be List, String, Map, or Set, but got {}",
+                            "For loop iterable must be List, String, Map, Set, Bytes, Slice or Tuple, but got {}",
                             iter_type.display()
                         )));
                     }

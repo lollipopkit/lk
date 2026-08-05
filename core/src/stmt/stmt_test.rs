@@ -809,7 +809,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.to_string()
-                .contains("For loop iterable must be List, String, Map, or Set")
+                .contains("For loop iterable must be List, String, Map, Set, Bytes, Slice or Tuple")
         );
     }
 

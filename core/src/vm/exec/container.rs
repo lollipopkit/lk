@@ -227,10 +227,13 @@ impl Executor {
                         let slice = TypedList::from_runtime_values(&slice, &self.state.heap);
                         Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(slice))))
                     }
-                    _ => bail!("Slice target must be string or list"),
+                    _ => bail!("Slice target must be a string, list, bytes or slice"),
                 }
             }
-            other => bail!("Slice target expected string/list, got {}", self.value_type_name(other)),
+            other => bail!(
+                "Slice target expected string/list/bytes/slice, got {}",
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -316,7 +319,7 @@ impl Executor {
             // No article: "a Int" is wrong and "an Int" needs a rule about
             // vowels that has nothing to do with anything here.
             other => bail!(
-                "`len()` works on a String, List, Map or Set, got {}",
+                "`len()` works on a String, List, Map, Set, Bytes or Slice, got {}",
                 match self.value_type_name(other) {
                     "Nil" => "nil",
                     name => name,
@@ -413,7 +416,7 @@ impl Executor {
                 }
             }
             other => bail!(
-                "SliceFrom target expected string/list object, got {}",
+                "SliceFrom target expected string/list/bytes/slice object, got {}",
                 self.value_type_name(&other)
             ),
         }
@@ -568,7 +571,7 @@ impl Executor {
                 self.finish_to_iter_plan(plan)
             }
             other => bail!(
-                "ToIter target expected string/list/map/set, got {}",
+                "ToIter target expected string/list/map/set/bytes/slice, got {}",
                 self.value_type_name(&other)
             ),
         }
