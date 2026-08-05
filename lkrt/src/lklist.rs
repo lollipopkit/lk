@@ -1560,6 +1560,43 @@ list_reverse!(
 /// disagree. Hence the comparison arrives as a function rather than being
 /// spelled inside the macro — for the boxed carrier that means `contains_eq`
 /// (the `in` operator's equality), not `dyn_eq_inner`.
+/// `xs.count(v)` per carrier — `index_of`'s sibling, sharing its element
+/// comparison so the two spellings of "which elements equal this" cannot
+/// drift apart.
+macro_rules! list_count {
+    ($name:ident, $elem:ty, $needle:ty, $eq:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, needle: $needle) -> i64 {
+            if handle.is_null() {
+                return 0;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let eq: fn(&$elem, $needle) -> bool = $eq;
+            values.iter().filter(|value| eq(value, needle)).count() as i64
+        }
+    };
+}
+
+list_count!(
+    lkrt_lklist_i64_count,
+    i64,
+    i64,
+    |value, needle| *value == needle,
+    "`count` on a `List<i64>`."
+);
+list_count!(
+    lkrt_lklist_f64_count,
+    f64,
+    f64,
+    |value, needle| *value == needle,
+    "`count` on a `List<f64>`."
+);
+
 macro_rules! list_index_of {
     ($name:ident, $elem:ty, $needle:ty, $position:expr, $doc:literal) => {
         #[doc = $doc]

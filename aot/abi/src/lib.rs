@@ -250,6 +250,10 @@ macro_rules! for_each_abi_fn {
             ("bytes_h", "take", lkrt_lkbytes_take, WritesHost, [Ptr, I64], Ptr);
             ("bytes_h", "skip", lkrt_lkbytes_skip, WritesHost, [Ptr, I64], Ptr);
             ("bytes_h", "index_of", lkrt_lkbytes_index_of, ReadsHost, [Ptr, I64], DynVal);
+            // `index_of`'s sibling, and `reverse` — the two pure sequence
+            // operations `Bytes` was missing while it had every other read.
+            ("bytes_h", "count", lkrt_lkbytes_count, ReadsHost, [Ptr, I64], I64);
+            ("bytes_h", "reverse", lkrt_lkbytes_reverse, WritesHost, [Ptr], Ptr, Constructs);
             ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
@@ -537,6 +541,8 @@ macro_rules! for_each_abi_fn {
             // `index_of` is on every sequence in the VM; the lowering had it
             // only on `Str`.
             ("list_h", "i64_index_of", lkrt_lklist_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("list_h", "i64_count", lkrt_lklist_i64_count, ReadsHost, [Ptr, I64], I64, Borrowed);
+            ("list_h", "f64_count", lkrt_lklist_f64_count, ReadsHost, [Ptr, F64], I64, Borrowed);
             ("list_h", "f64_index_of", lkrt_lklist_f64_index_of, ReadsHost, [Ptr, F64], DynVal, Borrowed);
             ("list_h", "str_index_of", lkrt_lklist_str_index_of, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
             ("list_h", "dyn_index_of", lkrt_lklist_dyn_index_of, ReadsHost, [Ptr, DynVal], DynVal, Borrowed);
@@ -577,6 +583,7 @@ macro_rules! for_each_abi_fn {
             ("slice_h", "i64_max", lkrt_lkslice_i64_max, ReadsHost, [Ptr], DynVal, Borrowed);
             ("slice_h", "i64_contains", lkrt_lkslice_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
             ("slice_h", "i64_index_of", lkrt_lkslice_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("slice_h", "i64_count", lkrt_lkslice_i64_count, ReadsHost, [Ptr, I64], I64, Borrowed);
             // Sub-windows, and `WritesHost` because a negative count raises.
             ("slice_h", "i64_take", lkrt_lkslice_i64_take, WritesHost, [Ptr, I64], Ptr, ConstructsView);
             ("slice_h", "i64_skip", lkrt_lkslice_i64_skip, WritesHost, [Ptr, I64], Ptr, ConstructsView);

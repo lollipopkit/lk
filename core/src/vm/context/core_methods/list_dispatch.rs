@@ -158,6 +158,19 @@ pub(super) fn dispatch_list_builtin_method(
                 .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64));
             Ok(Some(index))
         }
+        // `index_of`'s sibling: how many rather than where. It was on `Str`
+        // alone, so `"aa".count("a")` answered 2 and `[1, 1].count(1)` was
+        // "List has no method 'count'".
+        "count" => {
+            if positional.len() != 1 {
+                bail!("list.count() expects 1 argument (value), got {}", positional.len());
+            }
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let found = typed_list_count(list, &positional[0], heap)?;
+            Ok(Some(RuntimeVal::Int(found as i64)))
+        }
         "is_empty" => {
             if !positional.is_empty() {
                 bail!("list.is_empty() expects no arguments, got {}", positional.len());

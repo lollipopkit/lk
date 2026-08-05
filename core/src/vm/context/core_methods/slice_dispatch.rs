@@ -165,6 +165,33 @@ pub(super) fn dispatch_slice_builtin_method(
                 found.map_or(RuntimeVal::Nil, |index| RuntimeVal::Int(index as i64))
             }))
         }
+        // A window is a *range of its source*, and a reversed range is not one
+        // — so unlike `take`/`skip`/`slice`, which answer sub-windows, this
+        // materializes. That is the same rule `map` already follows here.
+        "reverse" => {
+            if !positional.is_empty() {
+                bail!("slice.reverse() expects no arguments, got {}", positional.len());
+            }
+            let mut items: Vec<RuntimeVal> = (0..len).map(|index| slice_item(&slice, index, heap)).collect();
+            items.reverse();
+            let items = TypedList::from_runtime_values(&items, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(items)))))
+        }
+        // `index_of`'s sibling, and it was on `Str` alone.
+        "count" => {
+            if positional.len() != 1 {
+                bail!("slice.count() expects 1 argument (value), got {}", positional.len());
+            }
+            let needle = positional[0];
+            let mut found = 0i64;
+            for index in 0..len {
+                let item = slice_item(&slice, index, heap);
+                if crate::val::runtime_values_equal(&item, &needle, heap)? {
+                    found += 1;
+                }
+            }
+            Ok(Some(RuntimeVal::Int(found)))
+        }
         "to_list" => {
             if !positional.is_empty() {
                 bail!("slice.to_list() expects no arguments, got {}", positional.len());

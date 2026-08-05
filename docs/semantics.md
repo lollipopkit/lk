@@ -1856,6 +1856,37 @@ println(b);          // 打印 s
 没有一条是小改动,而选错会把不健全换成另一种不健全。先记在这里,连同上面的可复现
 用例;裁决之前不要在任一侧打补丁使某个测试变绿。
 
+## 纯序列操作在每个序列载体上都可用(2026-08-05 裁决)
+
+四个序列载体 —— `List` / `Str` / `Bytes` / `Slice`(窗口)。从
+`builtin_method_sig.rs` 的声明表算差集,`Bytes` 和窗口已经有 `len`、`is_empty`、
+`first`、`last`、`get`、`contains`、`index_of`、`take`、`skip`、`slice`、`min`、
+`max`、`sum`、`map`、`filter`、`reduce` —— 列表读取面的每一个,唯独少两个:
+
+| | List | Str | Bytes | Slice |
+| --- | --- | --- | --- | --- |
+| `reverse` | 有 | 有 | **无** | **无** |
+| `count` | **无** | 有 | **无** | **无** |
+
+`count` 那一行的后果具体是:`"aa".count("a")` 答 2,而 `[1, 1].count(1)` 报
+"List has no method 'count'"。
+
+**规则:结果能用同一载体表示时答同载体,否则答 `List`。** `b.reverse()` 是
+`Bytes`;`w.reverse()` 是 `List`,因为反转后的那段不是源列表的一个区间 —— 与
+`w.map(..)` 已经在做的事同规矩,也与 `w.take(1)` 答窗口不矛盾(子区间还是区间)。
+`bytes_dispatch` 的文档注释本来就写着判据("含义不依赖元素类型的操作"),这两个
+正属于这一类,是漏了不是排除。
+
+`index_of` 与 `count` 现在从**同一个扫描函数**出(`typed_list_scan`),因为规则
+才是内容:`Int` 元素等于 `Float` 针值(`1.0 == 1`),`Float` 列表按值比所以
+`0.0` 找得到 `-0.0`,`Mixed` 交给 `runtime_values_equal`。分开写就是同一个操作的
+两种拼写将来会各自漂移。
+
+`Bytes` 里放不下的针值(`300`、`-1`)`count` 答 0,与 `contains` 给它的答案一致。
+
+还没补的同类:`sort` / `unique` / `enumerate` / `zip` / `chain` / `chunk` /
+`flatten` / `join` 仍然只在 `List` 上。见任务表。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

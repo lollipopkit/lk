@@ -343,6 +343,33 @@ pub unsafe extern "C" fn lkrt_lkbytes_to_i64_list(handle: *mut c_void) -> *mut c
 ///
 /// # Safety
 /// `handle` must be a live `Bytes` handle.
+/// `b.reverse()` — the bytes in reverse order, as a new `Bytes`.
+///
+/// Shape-preserving and element-type-independent, so the answer is a `Bytes`
+/// and not a list: the same reading `take`, `skip`, `slice` and `concat` take.
+///
+/// # Safety
+/// `handle` must be a live handle from a `bytes_h` constructor, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_reverse(handle: *mut c_void) -> *mut c_void {
+    let mut out = bytes_slice(handle).to_vec();
+    out.reverse();
+    bytes_handle(out)
+}
+
+/// `b.count(v)` — how many bytes equal `v`. A value no byte can hold counts
+/// zero, which is the answer `contains` gives it too.
+///
+/// # Safety
+/// `handle` must be a live handle from a `bytes_h` constructor, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_count(handle: *mut c_void, value: i64) -> i64 {
+    match u8::try_from(value) {
+        Ok(needle) => bytes_slice(handle).iter().filter(|byte| **byte == needle).count() as i64,
+        Err(_) => 0,
+    }
+}
+
 pub(crate) fn bytes_slice<'a>(handle: *mut c_void) -> &'a [u8] {
     bytes_ref(handle).as_slice()
 }

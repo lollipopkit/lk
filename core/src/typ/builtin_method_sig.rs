@@ -189,6 +189,16 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int?",
         "Position of the first equal element, or nil",
     ),
+    // `index_of`'s sibling — how many rather than where. It was declared on
+    // `Str` alone, so `"aa".count("a")` answered 2 while `[1, 1].count(1)` was
+    // "List has no method 'count'".
+    m(
+        List,
+        "count",
+        &[p("value", "Elem")],
+        "Int",
+        "How many elements equal `value`",
+    ),
     m(
         List,
         "contains",
@@ -420,6 +430,17 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int?",
         "Position within the window of the first equal element, or nil",
     ),
+    m(
+        Slice,
+        "count",
+        &[p("value", "Elem")],
+        "Int",
+        "How many elements in the window equal `value`",
+    ),
+    // A window is a range of its source, and a reversed range is not one — so
+    // this materializes where `take`/`skip`/`slice` answer sub-windows, the
+    // same rule `map` follows here.
+    m(Slice, "reverse", &[], "List<Elem>", "The window's elements, reversed"),
     // A contiguous run of a window is still a window; what `filter` keeps is
     // not contiguous, so it materializes a list.
     m(
@@ -492,6 +513,16 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int?",
         "Position of the first byte equal to `value`, or nil",
     ),
+    m(
+        Bytes,
+        "count",
+        &[p("value", "Int")],
+        "Int",
+        "How many bytes equal `value`",
+    ),
+    // Shape-preserving and element-type-independent, so a `Bytes` again — the
+    // reading `take`, `skip`, `slice` and `concat` already take here.
+    m(Bytes, "reverse", &[], "Bytes", "The bytes in reverse order"),
     m(
         Bytes,
         "slice",

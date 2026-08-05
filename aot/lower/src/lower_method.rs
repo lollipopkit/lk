@@ -787,6 +787,24 @@ pub(crate) fn lower_method_dispatch(
         // carriers rather than four written one at a time — which is how it came
         // to exist for `Int` and nowhere else, dropping `[1.5, 2.5].reverse()`'s
         // whole module to the VM.
+        (Ty::ListI64, "count", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListF64, "count", [(value, Ty::F64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "f64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
         (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "reverse", []) => {
             let callee = match receiver_ty {
                 Ty::ListI64 => "i64_reverse",
@@ -1089,6 +1107,33 @@ pub(crate) fn lower_method_dispatch(
                 rhs: zero,
             });
             (dst, Ty::Bool)
+        }
+        (Ty::SliceI64, "count", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        // A reversed window is not a window of the source, so it materializes
+        // — the same rule `map` follows here. Composed from the two symbols
+        // that already exist rather than a third that would answer the same.
+        (Ty::SliceI64, "reverse", []) => {
+            let list = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(list),
+                callee: AbiRef::new("slice_h", "i64_to_list"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_reverse"),
+                args: vec![list],
+            });
+            (dst, Ty::ListI64)
         }
         (Ty::SliceI64, "index_of", [(value, Ty::I64)]) => {
             let dst = ssa.new_val();
@@ -2213,6 +2258,27 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::ListI64)
+        }
+        // The two pure sequence operations `Bytes` was missing while it had
+        // every other read of the list surface. `reverse` answers a `Bytes` —
+        // shape-preserving and element-type-independent, like `take`/`slice`.
+        (Ty::Bytes, "count", [(needle, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "count"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Bytes, "reverse", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "reverse"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
         }
         (Ty::Bytes, "index_of", [(needle, Ty::I64)]) => {
             let dst = ssa.new_val();

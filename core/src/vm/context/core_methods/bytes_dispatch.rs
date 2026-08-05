@@ -195,6 +195,36 @@ pub(super) fn dispatch_bytes_builtin_method(
                 heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
             )))
         }
+        // Shape-preserving, element-type-independent, and therefore a `Bytes`
+        // again — the same reading `take`, `skip`, `slice` and `concat` already
+        // take. `reverse` was on `List` and on `Str` and on neither of the two
+        // carriers that have every other read of the list surface.
+        "reverse" => {
+            if !positional.is_empty() {
+                bail!("bytes.reverse() expects no arguments, got {}", positional.len());
+            }
+            let mut out = bytes.to_vec();
+            out.reverse();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(out))),
+            )))
+        }
+        // `count` is `index_of`'s sibling — how many rather than where — and
+        // `index_of` is on all four sequence carriers while `count` was on
+        // `Str` alone. A value no byte can equal counts zero, which is the
+        // same answer `contains` gives it.
+        "count" => {
+            if positional.len() != 1 {
+                bail!("bytes.count() expects 1 argument (value), got {}", positional.len());
+            }
+            let RuntimeVal::Int(needle) = &positional[0] else {
+                bail!("bytes.count() value must be Int");
+            };
+            let found = u8::try_from(*needle)
+                .map(|needle| bytes.iter().filter(|byte| **byte == needle).count())
+                .unwrap_or(0);
+            Ok(Some(RuntimeVal::Int(found as i64)))
+        }
         "to_list" => {
             if !positional.is_empty() {
                 bail!("bytes.to_list() expects no arguments, got {}", positional.len());

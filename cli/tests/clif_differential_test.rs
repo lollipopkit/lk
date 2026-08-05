@@ -2124,6 +2124,36 @@ fn mixed_type_addition_and_equality() {
 /// read goes to the carrier and `push` reaches it through `dyn.list_push`.
 /// `dyn.as_list` stays read-only: it has to materialize for a typed carrier,
 /// and the names that reach it all build new lists.
+/// The pure sequence operations, on every carrier that is a sequence.
+///
+/// `Bytes` and a window already had `len`, `is_empty`, `first`, `last`, `get`,
+/// `contains`, `index_of`, `take`, `skip`, `slice`, `min`, `max`, `sum`,
+/// `map`, `filter` and `reduce` — every read of the list surface except two.
+/// `reverse` was on `List` and `Str` alone, and `count` on `Str` alone, so
+/// `"aa".count("a")` answered 2 while `[1, 1].count(1)` was "List has no
+/// method 'count'".
+///
+/// The rule the answers follow: the result is the same carrier when it can be
+/// one, and a `List` otherwise. `b.reverse()` is a `Bytes`; `w.reverse()` is a
+/// `List`, because a reversed range is not a range of the source.
+#[test]
+fn reverse_and_count_reach_every_sequence_carrier() {
+    run_differential(
+        "sequence_surface",
+        &[
+            new(
+                "reverse_keeps_the_carrier_where_it_can",
+                "let z = 0;\nlet b = \"abca\".bytes();\nprintln(b.reverse());\nprintln(typeof(b.reverse()));\nlet w = [3 + z, 1, 2].slice(0, 3);\nprintln(w.reverse());\nprintln(typeof(w.reverse()));\nprintln([1 + z, 2].reverse());\nreturn 0;\n",
+            ),
+            new(
+                "count_is_index_of_s_sibling",
+                "let z = 0;\nlet b = \"abca\".bytes();\nprintln(b.count(97));\nprintln(b.count(122));\nprintln(b.count(300));\nprintln([1 + z, 2, 1].count(1));\nprintln([1.5 + 0.0, 2.5, 1.5].count(1.5));\nlet w = [1 + z, 2, 1].slice(0, 3);\nprintln(w.count(1));\nprintln(\"aa\".count(\"a\"));\nreturn 0;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn a_boxed_typed_list_is_the_same_list() {
     run_differential(

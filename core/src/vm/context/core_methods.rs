@@ -1402,40 +1402,76 @@ pub(super) fn typed_list_element(list_handle: HeapRef, index: usize, heap: &mut 
 /// The typed variants never touch the heap at all: an `Int` list compares
 /// integers, a `String` list compares text against text.
 pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Result<Option<usize>> {
-    Ok(match list {
+    let mut found = None;
+    typed_list_scan(list, needle, heap, |index| {
+        found = Some(index);
+        false
+    })?;
+    Ok(found)
+}
+
+/// How many elements equal `needle`, under the same rules.
+pub(super) fn typed_list_count(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Result<usize> {
+    let mut found = 0;
+    typed_list_scan(list, needle, heap, |_| {
+        found += 1;
+        true
+    })?;
+    Ok(found)
+}
+
+/// Every index whose element equals `needle`, in order, until `on_match`
+/// answers `false`.
+///
+/// One function rather than one per question, because the *rules* are the
+/// payload: an `Int` element equals a `Float` needle when the numbers match
+/// (`1.0 == 1`, the language's rule for `==`), a `Float` list compares by value
+/// so `0.0` finds `-0.0`, and a `Mixed` list defers to `runtime_values_equal`.
+/// `index_of` and `count` are the same scan with different accumulators, and
+/// writing them apart is how two spellings of one operation come to disagree.
+fn typed_list_scan(
+    list: &TypedList,
+    needle: &RuntimeVal,
+    heap: &HeapStore,
+    mut on_match: impl FnMut(usize) -> bool,
+) -> Result<()> {
+    fn scan<T>(values: &[T], mut eq: impl FnMut(&T) -> bool, on_match: &mut impl FnMut(usize) -> bool) {
+        for (index, value) in values.iter().enumerate() {
+            if eq(value) && !on_match(index) {
+                return;
+            }
+        }
+    }
+    match list {
         TypedList::Int(values) => match needle {
-            RuntimeVal::Int(needle) => values.iter().position(|value| value == needle),
-            // A float needle can still equal an integer element (`1.0 == 1`),
-            // which is the language's rule for `==`.
-            RuntimeVal::Float(needle) => values.iter().position(|value| *value as f64 == *needle),
-            _ => None,
+            RuntimeVal::Int(needle) => scan(values, |value| value == needle, &mut on_match),
+            RuntimeVal::Float(needle) => scan(values, |value| *value as f64 == *needle, &mut on_match),
+            _ => {}
         },
-        // By value, like `==`: bits made `0.0` not find `-0.0` and `NaN` find
-        // itself, in this one function.
         TypedList::Float(values) => match needle {
-            RuntimeVal::Float(needle) => values.iter().position(|value| value == needle),
-            RuntimeVal::Int(needle) => values.iter().position(|value| *value == *needle as f64),
-            _ => None,
+            RuntimeVal::Float(needle) => scan(values, |value| value == needle, &mut on_match),
+            RuntimeVal::Int(needle) => scan(values, |value| *value == *needle as f64, &mut on_match),
+            _ => {}
         },
-        TypedList::Bool(values) => match needle {
-            RuntimeVal::Bool(needle) => values.iter().position(|value| value == needle),
-            _ => None,
-        },
-        TypedList::String(values) => match runtime_value_text(needle, heap) {
-            Some(needle) => values.iter().position(|value| value.as_ref() == needle),
-            None => None,
-        },
+        TypedList::Bool(values) => {
+            if let RuntimeVal::Bool(needle) = needle {
+                scan(values, |value| value == needle, &mut on_match);
+            }
+        }
+        TypedList::String(values) => {
+            if let Some(needle) = runtime_value_text(needle, heap) {
+                scan(values, |value| value.as_ref() == needle, &mut on_match);
+            }
+        }
         TypedList::Mixed(values) => {
-            let mut found = None;
             for (index, value) in values.iter().enumerate() {
-                if crate::val::runtime_values_equal(value, needle, heap)? {
-                    found = Some(index);
+                if crate::val::runtime_values_equal(value, needle, heap)? && !on_match(index) {
                     break;
                 }
             }
-            found
         }
-    })
+    }
+    Ok(())
 }
 
 /// The list with later duplicates dropped, order preserved, representation kept.

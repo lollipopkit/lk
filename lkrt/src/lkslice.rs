@@ -226,6 +226,16 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_contains(handle: *mut c_void, value: i
     i64::from(unsafe { window_values(handle) }.contains(&value))
 }
 
+/// `w.count(v)` — how many elements of the window equal `v`.
+///
+/// # Safety
+/// `handle` must be a live window handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkslice_i64_count(handle: *mut c_void, value: i64) -> i64 {
+    // SAFETY: the caller guarantees a live window handle or null.
+    unsafe { window_values(handle) }.iter().filter(|v| **v == value).count() as i64
+}
+
 /// `w.index_of(v)` — the position *within the window*, or absent.
 ///
 /// Absent rather than `-1`: `-1` is a legal position (the last element), so
