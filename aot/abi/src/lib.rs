@@ -733,6 +733,17 @@ macro_rules! for_each_abi_fn {
             ("dyn", "from_slice", lkrt_dyn_from_slice, Pure, [Ptr], DynVal);
             ("dyn", "as_slice", lkrt_dyn_as_slice, ReadsHost, [DynVal], Ptr);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
+            // Map methods on a *boxed* receiver. `as_map` cannot serve them:
+            // it hands back a `str_dyn` handle, and a typed map boxed in place
+            // is still its own carrier. Dispatched per operation rather than
+            // per unbox because `delete` writes — a materialized copy would
+            // answer the reads and drop the write.
+            ("dyn", "to_iter", lkrt_dyn_to_iter, WritesHost, [DynVal], Ptr);
+            ("dyn", "map_pairs", lkrt_dyn_map_pairs, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_keys", lkrt_dyn_map_keys, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_values", lkrt_dyn_map_values, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_has", lkrt_dyn_map_has, ReadsHost, [DynVal, StrPtr], I64);
+            ("dyn", "map_delete", lkrt_dyn_map_delete, WritesHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
             ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);

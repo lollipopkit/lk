@@ -1106,6 +1106,139 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     }
 }
 
+/// `for pair in m` / `m.keys()` / `m.values()` / `m.has(k)` / `m.delete(k)` on
+/// a **boxed** map, dispatched on the tag.
+///
+/// The unboxed spellings reach a carrier-specific symbol because the static
+/// type names the carrier. A boxed map has no static carrier — the tag is the
+/// only thing that says which — and `dyn.as_map`, which hands back a `str_dyn`
+/// handle, cannot serve a typed one. Unboxing through that guard is what made
+/// `c[0].keys()` raise `runtime type error` on a program the VM answers.
+///
+/// Materializing a `str_dyn` copy inside the guard would answer the reads and
+/// silently drop `delete`, so the dispatch is per operation rather than per
+/// unbox.
+///
+/// # Safety
+/// A map payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_pairs(v: LkDyn) -> *mut c_void {
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+        return unsafe { crate::lkmap::lkrt_lkmap_str_dyn_iter_pairs(v.payload as *mut c_void) };
+    }
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lkmap::typed_map_pair_list(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+}
+
+/// The `n`th component of every `[key, value]` pair — 0 for `.keys()`, 1 for
+/// `.values()`. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+unsafe fn dyn_map_pair_column(v: LkDyn, column: usize) -> *mut c_void {
+    let pairs = unsafe { lkrt_dyn_map_pairs(v) };
+    let column: Vec<LkDyn> = dyn_slice(pairs)
+        .iter()
+        .map(|pair| dyn_list(*pair).get(column).copied().unwrap_or(LkDyn::NIL))
+        .collect();
+    arena_handle(column)
+}
+
+/// `for x in v` where `v` is boxed — the VM's `to_iter` normalization, decided
+/// by the tag.
+///
+/// The loop lowering used to call `dyn.as_list` here, which is a *list* guard:
+/// every other iterable answered `runtime type error` once boxed, including
+/// every map. `to_iter` is not "unwrap a list", it is "what does this value
+/// iterate as", and each carrier already has that answer.
+///
+/// # Safety
+/// The payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
+    if is_map_tag(v.tag) {
+        return unsafe { lkrt_dyn_map_pairs(v) };
+    }
+    match v.tag {
+        DYN_LIST => v.payload as *mut c_void,
+        // A window iterates as itself; `len` and indexing on the loop handle
+        // are window-relative, which is what the loop wants.
+        DYN_SLICE => v.payload as *mut c_void,
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_iter(v.payload as *mut c_void) },
+        // The i64 list the unboxed spelling also iterates: byte values, in
+        // order, boxed one per element so the loop variable is a value.
+        DYN_BYTES => {
+            let values: Vec<LkDyn> = crate::lkbytes::bytes_slice(v.payload as *mut c_void)
+                .iter()
+                .map(|byte| lkrt_dyn_from_i64(i64::from(*byte)))
+                .collect();
+            arena_handle(values)
+        }
+        DYN_STR => unsafe { crate::lkstr::lkrt_str_chars(v.payload as *const c_char) },
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
+/// `m.keys()` on a boxed map. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_keys(v: LkDyn) -> *mut c_void {
+    unsafe { dyn_map_pair_column(v, 0) }
+}
+
+/// `m.values()` on a boxed map. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_values(v: LkDyn) -> *mut c_void {
+    unsafe { dyn_map_pair_column(v, 1) }
+}
+
+/// `m.has(k)` on a boxed map — presence, which is order-free, so it reads the
+/// keyed view rather than the ordered snapshot.
+///
+/// # Safety
+/// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_has(v: LkDyn, key: *const c_char) -> i64 {
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    let key = if key.is_null() {
+        ""
+    } else {
+        unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")
+    };
+    if v.tag == DYN_MAP {
+        return i64::from(dyn_map(v).contains_key(key));
+    }
+    i64::from(map_entries(v).contains_key(&crate::vm_mirror::str_key(key)))
+}
+
+/// `m.delete(k)` / `m.remove(k)` on a boxed map — removes **in place**, so the
+/// box and the original stay one map, and answers the removed value or nil.
+///
+/// # Safety
+/// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_delete(v: LkDyn, key: *const c_char) -> LkDyn {
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; `key` is the
+        // caller's NUL-terminated key.
+        return unsafe { crate::lkmap::lkrt_lkmap_str_dyn_delete(v.payload as *mut c_void, key) };
+    }
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lkmap::typed_map_delete(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void, key)
+}
+
 /// An integer key on a map is a *key*, not a position.
 ///
 /// `{3: 4}[3]` is `4` and there is no element 3 — so a map tag of either

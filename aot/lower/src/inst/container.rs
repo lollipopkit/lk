@@ -700,11 +700,15 @@ pub(super) fn lower(
                     });
                     ssa.write(instr.a(), block, (dst, Ty::ListI64));
                 }
+                // A boxed value normalizes at run time, by tag, exactly as the
+                // arms above do by static type. This used to be `dyn.as_list`
+                // — a *list* guard — so a boxed map, set, bytes or string
+                // raised `runtime type error` in a loop the VM runs.
                 Ty::Dyn => {
                     let dst = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(dst),
-                        callee: AbiRef::new("dyn", "as_list"),
+                        callee: AbiRef::new("dyn", "to_iter"),
                         args: vec![v],
                     });
                     ssa.write(instr.a(), block, (dst, Ty::ListDyn));

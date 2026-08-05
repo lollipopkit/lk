@@ -1724,6 +1724,42 @@ regex.split(pattern, text)      // 改前
 答案照样对。`every_declared_named_list_reaches_the_lowering_table` 补的就是这个方向,
 反向验过:十个成员加完声明、表还没改时,它报出正好那五个有降低行的成员。
 
+## 装箱的值必须**每一种读法**都认得两种表示(2026-08-05 裁决)
+
+`#118` 把类型化 map 改成原地打标签,理由写在 `DYN_RAW` 上:装箱不能重新表示
+容器。做对了,但只教会了三个消费点 —— `len`、显示、相等。
+
+其余读法仍然先解箱。`dyn.as_map` 的答案是一个 `str_dyn` 句柄,而六种载体里只有
+一种是 `str_dyn`,所以下面这些在 `LK_AOT_NO_FALLBACK=1` 下**编译成完整原生**,
+运行时 raise `runtime type error`,而 VM 全都答得出:
+
+| 形状 | 改前 | 改后 |
+| --- | --- | --- |
+| `c[0]["a"]` | raise | 答 |
+| `c[0][3]`(整数键 map) | raise | 答 |
+| `c[0].keys()` / `.values()` | raise | 答 |
+| `c[0].has(k)` | raise | 答 |
+| `c[0].delete(k)` | 编译失败 | 答,且原地删 |
+| `for k in c[0]` | raise | 答 |
+| `for x in [Set/Bytes/Str][0]` | raise | 答 |
+| `"a" in c[0]` | 编译失败 | 编译失败(回落,非错答案) |
+
+**分发按操作,不按解箱。** 让 `dyn.as_map` 在遇到类型化标签时物化一份
+`str_dyn` 返回,能答出上表里的四条读,然后**静默丢掉 `delete` 的写** —— 用错
+答案换编译通过。所以每个操作各有一个 Dyn 层入口(`dyn.map_keys` /
+`map_values` / `map_has` / `map_delete` / `map_pairs`),在运行时按标签分派到
+载体自己的访问器,顺序也就是载体自己的顺序。
+
+`for-in` 同理:它发的是 `dyn.as_list`,一个**列表**守卫,所以装箱的 map、Set、
+Bytes、字符串在循环里全部 raise。VM 的 `to_iter` 不是"解出一个列表",是"这个值
+按什么迭代",`dyn.to_iter` 现在照着写。
+
+连带删掉 `MethodRow::unbox_map` 整列:没有哪个名字再需要"先解箱成 map"了。
+
+整数键那条单列一句,因为它不只是缺一个分支:`{3: 4}[3]` 是 **4**,而没有第 3 个
+元素 —— 整数键落在 map 上是键不是位置。常量整数键直接降低到 `dyn.index`,不经过
+`dyn.get`,所以规则写在实际到达的那一层。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

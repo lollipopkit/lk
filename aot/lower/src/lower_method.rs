@@ -91,17 +91,6 @@ pub(crate) fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
-    } else if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_map) {
-        // Map-only method names unbox through the as_map guard (a parsed
-        // json/yaml value flows as Dyn); `get` stays ambiguous (lists have
-        // it too) and keeps rejecting.
-        let unboxed = ssa.new_val();
-        insts.push(Inst::Call {
-            dst: Some(unboxed),
-            callee: AbiRef::new("dyn", "as_map"),
-            args: vec![receiver],
-        });
-        (unboxed, Ty::MapStrDyn)
     } else {
         (receiver, receiver_ty)
     };
@@ -1148,6 +1137,57 @@ pub(crate) fn lower_method_dispatch(
         }
         // Map iteration family (order = the VM's, layout mirror): keys/
         // values snapshots (Mixed → dyn lists), delete-with-removed-value.
+        // A **boxed** map receiver: the tag decides the carrier at run time, so
+        // these dispatch inside the runtime instead of unboxing first. They
+        // used to go through `dyn.as_map`, which hands back a `str_dyn` handle
+        // — fine for a boxed `Map<str, Dyn>` and a `runtime type error` for
+        // every typed carrier, on programs the VM answers.
+        (Ty::Dyn, "keys" | "values", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", if name == "keys" { "map_keys" } else { "map_values" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::Dyn, "has", [(k, Ty::Str)]) => {
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("dyn", "map_has"),
+                args: vec![receiver, *k],
+            });
+            // The ABI answers a machine-width flag; `Ty::Bool` is one bit, and
+            // handing the wide value over as-is makes codegen extend an `i64`
+            // to `i64` and the verifier reject the function.
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: present,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (present, Ty::Bool)
+        }
+        // `delete` writes, which is why the dispatch is per operation: an
+        // `as_map` that materialized a copy would answer `keys`/`values`/`has`
+        // and silently drop this one.
+        (Ty::Dyn, "delete" | "remove", [(k, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "map_delete"),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {
             let family = match receiver_ty {
                 Ty::MapStrI64 => "str_i64",

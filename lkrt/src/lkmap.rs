@@ -591,6 +591,46 @@ pub(crate) fn typed_map_len(kind: i64, handle: *mut c_void) -> i64 {
     }
 }
 
+/// `for pair in m` / `.keys()` / `.values()` off the carrier, as the
+/// `[key, value]` snapshot list, in the carrier's own order.
+///
+/// One function per operation would be five dispatches; the pair snapshot is
+/// what every one of them is built from, and it is the only shape all five
+/// carriers already produce. `keys` and `values` project it — they are cold
+/// paths, and paying one snapshot there is what buys the int-keyed carriers
+/// the two methods the unboxed lowering never gave them.
+pub(crate) fn typed_map_pair_list(kind: i64, handle: *mut c_void) -> *mut c_void {
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_iter_pairs(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_iter_pairs(handle),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_iter_pairs(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_iter_pairs(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_iter_pairs(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `.delete(k)` on a boxed typed map — removes in place, so the box and the
+/// original stay one map.
+///
+/// String keys only, which is the set the unboxed lowering also serves: an
+/// int-keyed carrier has no `delete` symbol to dispatch to, and inventing one
+/// here would give the boxed spelling a method the plain one does not have.
+pub(crate) fn typed_map_delete(kind: i64, handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
+    // SAFETY: as in `typed_map_text`; `key` is the caller's NUL-terminated key.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_delete(handle, key),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_delete(handle, key),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_delete(handle, key),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 /// The entries under the general key type, for **equality only**.
 ///
 /// This is a copy, and that is fine here and nowhere else: `==` over maps is

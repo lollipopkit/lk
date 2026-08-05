@@ -2146,6 +2146,23 @@ fn a_boxed_typed_map_keeps_its_order() {
             // fully native and then raised `runtime type error` on a program
             // the VM answers. Both key spellings, both representations, and a
             // miss on each — a missing key is nil, not a failure.
+            // Every *method* on a boxed map, and `for` over one. These reached
+            // `dyn.as_map`, whose answer is a `str_dyn` handle — so a boxed
+            // `Map<str, Int>` raised `runtime type error` on `keys`, `values`,
+            // `has`, `delete` and the loop, all of which the VM answers. They
+            // dispatch on the tag now. `delete` is why the dispatch is per
+            // operation: materializing a copy inside the guard would have
+            // answered the four reads and dropped the write.
+            new(
+                "methods_on_a_boxed_typed_map",
+                "let z = 0;\nlet m = {\"a\": 1 + z, \"b\": 2};\nlet c = [m];\nprintln(c[0].keys());\nprintln(c[0].values());\nprintln(c[0].has(\"a\"));\nprintln(c[0].has(\"zz\"));\nfor pair in c[0] { println(pair); }\nprintln(c[0].delete(\"a\"));\nprintln(m);\nprintln(m.len());\nreturn 0;\n",
+            ),
+            // `for` over a boxed value of every carrier: the loop lowering
+            // normalizes by tag now, where it used to demand a list.
+            new(
+                "for_over_every_boxed_carrier",
+                "let z = 0;\nlet s = Set([1 + z, 2]);\nfor x in [s][0] { println(x); }\nlet b = \"ab\".bytes();\nfor x in [b][0] { println(x); }\nlet t = \"ab\" + \"\";\nfor x in [t][0] { println(x); }\nlet xs = [1 + z, 2];\nfor x in [xs][0] { println(x); }\nreturn 0;\n",
+            ),
             new(
                 "reading_a_key_out_of_a_boxed_typed_map",
                 "let z = 0;\nlet m = {\"a\": 1 + z};\nlet c = [m];\nprintln(c[0][\"a\"]);\nprintln(c[0][\"zz\"]);\nlet n = {3: 4 + z};\nlet d = [n];\nprintln(d[0][3]);\nprintln(d[0][9]);\nreturn 0;\n",

@@ -1056,17 +1056,19 @@ pub(crate) fn abi_param_accepts(want: Ty, got: Ty) -> bool {
 }
 
 /// Method-name roles across the lowering — the single source of truth the
-/// `Dyn`-receiver unbox guards, the string-list lookahead, and the
+/// `Dyn`-receiver unbox guard, the string-list lookahead, and the
 /// `iter`/`stream` module-spelling forwarders all derive from. Adding a
 /// stdlib method with any of these behaviours is one row here.
+///
+/// There used to be a second unbox column, for map-only names. A boxed map's
+/// carrier is named by its tag and not by any static type, so those names now
+/// dispatch inside the runtime (`dyn.map_*`) instead of unboxing to a
+/// `str_dyn` handle that only one of the six carriers has.
 pub(crate) struct MethodRow {
     pub(crate) name: &'static str,
     /// A `Dyn` receiver unboxes through `dyn.as_list` (list-only name; a
     /// non-list tag aborts, the VM's method-on-wrong-type loud error).
     pub(crate) unbox_list: bool,
-    /// A `Dyn` receiver unboxes through `dyn.as_map` (map-only name).
-    /// Names shared with other receivers (`get`) stay boxed and reject.
-    pub(crate) unbox_map: bool,
     /// A string-list receiver's result is still a string list (the
     /// `strlist_regs` lookahead keeps tracking through the call).
     pub(crate) strlist: bool,
@@ -1075,17 +1077,10 @@ pub(crate) struct MethodRow {
     pub(crate) forward: bool,
 }
 
-pub(crate) const fn method_row(
-    name: &'static str,
-    unbox_list: bool,
-    unbox_map: bool,
-    strlist: bool,
-    forward: bool,
-) -> MethodRow {
+pub(crate) const fn method_row(name: &'static str, unbox_list: bool, strlist: bool, forward: bool) -> MethodRow {
     MethodRow {
         name,
         unbox_list,
-        unbox_map,
         strlist,
         forward,
     }
@@ -1093,27 +1088,27 @@ pub(crate) const fn method_row(
 
 #[rustfmt::skip]
 pub(crate) const METHOD_TABLE: &[MethodRow] = &[
-    //          name         unbox_list unbox_map strlist forward
-    method_row("map",        true,      false,    true,   true),
-    method_row("filter",     true,      false,    true,   true),
-    method_row("reduce",     true,      false,    false,  true),
-    method_row("take",       true,      false,    true,   true),
-    method_row("skip",       true,      false,    true,   true),
-    method_row("concat",     true,      false,    true,   false),
-    method_row("unique",     true,      false,    true,   true),
-    method_row("sort",       true,      false,    true,   false),
-    method_row("reverse",    true,      false,    true,   false),
-    method_row("slice",      false,     false,    true,   false),
-    method_row("enumerate",  false,     false,    false,  true),
-    method_row("zip",        false,     false,    false,  true),
-    method_row("chain",      false,     false,    false,  true),
-    method_row("flatten",    false,     false,    false,  true),
-    method_row("chunk",      false,     false,    false,  true),
-    method_row("has",        false,     true,     false,  false),
-    method_row("keys",       false,     true,     false,  false),
-    method_row("values",     false,     true,     false,  false),
-    method_row("delete",     false,     true,     false,  false),
-    method_row("remove",     false,     true,     false,  false),
+    //          name         unbox_list strlist forward
+    method_row("map",       true,     true,  true),
+    method_row("filter",    true,     true,  true),
+    method_row("reduce",    true,     false, true),
+    method_row("take",      true,     true,  true),
+    method_row("skip",      true,     true,  true),
+    method_row("concat",    true,     true,  false),
+    method_row("unique",    true,     true,  true),
+    method_row("sort",      true,     true,  false),
+    method_row("reverse",   true,     true,  false),
+    method_row("slice",     false,    true,  false),
+    method_row("enumerate", false,    false, true),
+    method_row("zip",       false,    false, true),
+    method_row("chain",     false,    false, true),
+    method_row("flatten",   false,    false, true),
+    method_row("chunk",     false,    false, true),
+    method_row("has",       false,    false, false),
+    method_row("keys",      false,    false, false),
+    method_row("values",    false,    false, false),
+    method_row("delete",    false,    false, false),
+    method_row("remove",    false,    false, false),
 ];
 
 /// The method `module.name(receiver, …)` is a spelling of, if it is one.
