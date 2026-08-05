@@ -497,18 +497,18 @@ hash.fnv64("hello")      // FNV-64 哈希
 
 | 函数 | 说明 |
 |------|------|
-| `is_match(pattern, text)` | 是否匹配 |
-| `find(pattern, text)` | 查找第一个 |
-| `find_all(pattern, text)` | 查找所有 |
-| `captures(pattern, text)` | 捕获分组 |
-| `replace(pattern, text, replacement)` | 替换 |
-| `split(pattern, text)` | 按正则拆分 |
+| `is_match(text, pattern)` | 是否匹配 |
+| `find(text, pattern)` | 查找第一个 |
+| `find_all(text, pattern)` | 查找所有 |
+| `captures(text, pattern)` | 捕获分组 |
+| `replace(text, pattern, replacement)` | 替换 |
+| `split(text, pattern)` | 按正则拆分 |
 
 ```lk
 use regex;
-regex.is_match(r"\d+", "abc123")     // true
-regex.find(r"\d+", "abc123")          // "123"
-regex.split(r"[,;]", "a,b;c")         // ["a", "b", "c"]
+regex.is_match("abc123", r"\d+")     // true
+regex.find("abc123", r"\d+")          // "123"
+regex.split("a,b;c", r"[,;]")         // ["a", "b", "c"]
 ```
 
 ## random

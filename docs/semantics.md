@@ -1681,6 +1681,37 @@ artifact 检查全部留着 —— 仍然是 1.077 / 1.087。再把 72 号后面
 
 重排编号会改变 artifact 编码,所以连带 bump `MODULE_ARTIFACT_VERSION`(16 -> 17)。
 
+## stdlib 的第一个参数是主体 —— regex 是最后一个例外(2026-08-05 裁决)
+
+`string` 的第一个参数叫 `text`,`bytes` 叫 `value`,`encoding` 叫 `source`,`hash`
+叫 `data`,`path` 叫 `path`。`regex` 六个成员全部是 `(pattern, text)`。
+
+这不是风格问题,因为两个模块里有同一个操作:
+
+```
+string.split(text, separator)
+regex.split(pattern, text)      // 改前
+```
+
+同一个操作,参数颠倒,两个参数都是 `String`。写反了类型检查看不出来,运行也不报
+错 —— `regex.is_match("a1b2", "[0-9]")` 答 `false`,`regex.replace("a1b2",
+"[0-9]", "#")` 原样返回 `"[0-9]"`。第一次探这个模块的十二个用例全部像是模块坏了,
+实际上是调用顺序反了。
+
+`replace` 上此前有一条注释承认了这一点,并用 `named(text, replacement)` 让调用方
+给参数贴标签绕过去 —— 在错的顺序上打补丁,而不是改顺序。
+
+现在六个成员都是主体在前,其余参数一律 named-eligible,与
+`string.replace(text, pattern, with, all)` / `named(pattern, with, all)` 同形。
+`lkrt` 侧的六个 extern 函数、AOT 降低表的 `named` 拷贝和 `leading` 起点同步改;
+`lowering_named_parameter_lists_match_the_stdlib_declaration` 守着后两者与声明一致。
+
+**探过一条更强的规则,不成立:**"同类型的参数必须可命名"。全 catalog 有 32 个成员
+不满足它(`fs.copy(from, to)`、`math.atan2(y, x)`、`random.int(min, max)`、
+`string.contains(text, needle)` …),所以它是新造的判据,不是仓库现有的约定。留作
+待定项:这 32 个里有一部分(`from`/`to`、`y`/`x`、`min`/`max`)交换后同样是静默的
+错答案。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

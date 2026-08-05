@@ -90,9 +90,9 @@ fn match_map(text: &str, start: usize, end: usize) -> *mut c_void {
     crate::vm_mirror::str_dyn_map_mirrored(pairs)
 }
 
-/// `regex.find(pattern, text)` — the match map, or nil when there is none.
+/// `regex.find(text, pattern)` — the match map, or nil when there is none.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_regex_find(pattern: *const c_char, text: *const c_char) -> crate::lkdyn::LkDyn {
+pub extern "C" fn lkrt_regex_find(text: *const c_char, pattern: *const c_char) -> crate::lkdyn::LkDyn {
     let regex = regex_or_raise(pattern);
     match regex.find(view(text)) {
         Some(m) => crate::lkdyn::lkrt_dyn_from_map(match_map(m.as_str(), m.start(), m.end())),
@@ -100,9 +100,9 @@ pub extern "C" fn lkrt_regex_find(pattern: *const c_char, text: *const c_char) -
     }
 }
 
-/// `regex.find_all(pattern, text)` — every match, as a list of match maps.
+/// `regex.find_all(text, pattern)` — every match, as a list of match maps.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_regex_find_all(pattern: *const c_char, text: *const c_char) -> *mut c_void {
+pub extern "C" fn lkrt_regex_find_all(text: *const c_char, pattern: *const c_char) -> *mut c_void {
     let regex = regex_or_raise(pattern);
     let values: Vec<crate::lkdyn::LkDyn> = regex
         .find_iter(view(text))
@@ -111,15 +111,15 @@ pub extern "C" fn lkrt_regex_find_all(pattern: *const c_char, text: *const c_cha
     crate::state::arena_handle(values)
 }
 
-/// `regex.captures(pattern, text)` — group 0 first, then each group, with
+/// `regex.captures(text, pattern)` — group 0 first, then each group, with
 /// **nil for a group that did not participate**; nil when nothing matched at
 /// all.
 ///
-/// Two different nils, and they are not interchangeable: `captures("z", "abc")`
-/// is nil because there was no match, while `captures("(a)(z)?", "xaq")` is
+/// Two different nils, and they are not interchangeable: `captures("abc", "z")`
+/// is nil because there was no match, while `captures("xaq", "(a)(z)?")` is
 /// `["a", "a", nil]` — a list whose last element is nil.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_regex_captures(pattern: *const c_char, text: *const c_char) -> crate::lkdyn::LkDyn {
+pub extern "C" fn lkrt_regex_captures(text: *const c_char, pattern: *const c_char) -> crate::lkdyn::LkDyn {
     let regex = regex_or_raise(pattern);
     let Some(captures) = regex.captures(view(text)) else {
         return crate::lkdyn::lkrt_dyn_from_nil();
@@ -136,27 +136,27 @@ pub extern "C" fn lkrt_regex_captures(pattern: *const c_char, text: *const c_cha
     crate::lkdyn::lkrt_dyn_from_list(crate::state::arena_handle(values))
 }
 
-/// `regex.is_match(pattern, text)`.
+/// `regex.is_match(text, pattern)`.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_regex_is_match(pattern: *const c_char, text: *const c_char) -> i64 {
+pub extern "C" fn lkrt_regex_is_match(text: *const c_char, pattern: *const c_char) -> i64 {
     let regex = regex_or_raise(pattern);
     i64::from(regex.is_match(view(text)))
 }
 
-/// `regex.split(pattern, text)` — a string list, empty pieces included, exactly
+/// `regex.split(text, pattern)` — a string list, empty pieces included, exactly
 /// as `Regex::split` yields them.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_regex_split(pattern: *const c_char, text: *const c_char) -> *mut c_void {
+pub extern "C" fn lkrt_regex_split(text: *const c_char, pattern: *const c_char) -> *mut c_void {
     let regex = regex_or_raise(pattern);
     str_list(regex.split(view(text)).map(ToString::to_string).collect())
 }
 
-/// `regex.replace(pattern, text, replacement)` — every match, and the
+/// `regex.replace(text, pattern, replacement)` — every match, and the
 /// replacement keeps the crate's `$1` capture syntax.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_regex_replace(
-    pattern: *const c_char,
     text: *const c_char,
+    pattern: *const c_char,
     replacement: *const c_char,
 ) -> *mut c_char {
     let regex = regex_or_raise(pattern);

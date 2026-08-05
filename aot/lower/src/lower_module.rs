@@ -621,7 +621,7 @@ pub(crate) fn lower_named_module_call(
 /// The table-row half of [`lower_module_call`], with the argument registers
 /// given explicitly rather than assumed consecutive.
 ///
-/// A named call (`regex.replace(p, text: t, replacement: r)`) supplies its
+/// A named call (`regex.replace(s, pattern: p, replacement: r)`) supplies its
 /// arguments out of frame order, so it permutes the registers and lands here.
 /// Everything above this point — the shapes with defaults, dispatch on argument
 /// type, or a variadic tail — stays positional-only: those read fixed register

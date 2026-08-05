@@ -497,18 +497,18 @@ Regular expressions.
 
 | Function | Description |
 |----------|-------------|
-| `is_match(pattern, text)` | Match check |
-| `find(pattern, text)` | Find first match |
-| `find_all(pattern, text)` | Find all matches |
-| `captures(pattern, text)` | Capture groups |
-| `replace(pattern, text, replacement)` | Replace |
-| `split(pattern, text)` | Split by regex |
+| `is_match(text, pattern)` | Match check |
+| `find(text, pattern)` | Find first match |
+| `find_all(text, pattern)` | Find all matches |
+| `captures(text, pattern)` | Capture groups |
+| `replace(text, pattern, replacement)` | Replace |
+| `split(text, pattern)` | Split by regex |
 
 ```lk
 use regex;
-regex.is_match(r"\d+", "abc123")     // true
-regex.find(r"\d+", "abc123")          // "123"
-regex.split(r"[,;]", "a,b;c")         // ["a", "b", "c"]
+regex.is_match("abc123", r"\d+")     // true
+regex.find("abc123", r"\d+")          // "123"
+regex.split("a,b;c", r"[,;]")         // ["a", "b", "c"]
 ```
 
 ## random

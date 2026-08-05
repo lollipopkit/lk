@@ -382,10 +382,10 @@ mod tests {
                 && encoding.hex.encode("hi") == "6869"
                 && bytes.to_string_utf8(encoding.hex.decode("6869")) == "hi"
                 && hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-                && regex.is_match("[0-9]+", "a12")
+                && regex.is_match("a12", "[0-9]+")
                 // `regex.find` is declared `Map?` — it finds nothing for some
                 // inputs — so the field access has to go through `?.`.
-                && regex.find("[0-9]+", "a12")?.text == "12"
+                && regex.find("a12", "[0-9]+")?.text == "12"
                 && random.int(1, 3) >= 1
                 && random.int(1, 3) <= 3
                 && uuid.is_valid(id)

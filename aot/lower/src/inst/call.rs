@@ -127,7 +127,7 @@ pub(super) fn lower(
             let named_count = (payload >> 7) as usize;
             let callee_idx = match ssa.builtin_ref_at(base, block) {
                 Some(GlobalRef::Lambda(fidx)) | Some(GlobalRef::UserFn(fidx)) => fidx as usize,
-                // A stdlib member called by name — `regex.replace(p, text: t,
+                // A stdlib member called by name — `regex.replace(s, pattern: p,
                 // replacement: r)`. The names come from the member's own row
                 // rather than from a user function's metadata; everything else
                 // (the permutation, the rejection rules) is the same problem.

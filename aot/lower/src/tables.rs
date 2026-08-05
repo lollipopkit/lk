@@ -235,10 +235,9 @@ pub(crate) struct ModuleAbiRow {
     /// declares names can be *called* by name, and that call is a different
     /// opcode (`CallNamed`) carrying its arguments in caller order; without
     /// these the permutation is unknown and the whole program falls back. The
-    /// stdlib marks a member `named` precisely when the positional spelling is
-    /// hard to read — `regex.replace(pattern, text, replacement)` is three
-    /// strings with the subject in the middle — so the spelling that lowers
-    /// would have been the one nobody is meant to write.
+    /// The stdlib marks every parameter after the subject `named`, so a caller
+    /// can label the ones a reader cannot tell apart — `regex.replace(s,
+    /// pattern: p, replacement: r)` is three strings otherwise.
     pub(crate) named: &'static [&'static str],
 }
 
@@ -821,40 +820,50 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // through the VM's own two-stage construction (`str_dyn_map_mirrored`) —
     // its keys are `text`, `start`, `end`, and that insertion order is what
     // `println` prints.
-    abi_row(
+    abi_row_named(
         "regex",
         "find",
         AbiRef::new("regex", "find"),
         &[Ty::Str, Ty::Str],
         Ty::Dyn,
+        1,
+        &["pattern"],
     ),
-    abi_row(
+    abi_row_named(
         "regex",
         "find_all",
         AbiRef::new("regex", "find_all"),
         &[Ty::Str, Ty::Str],
         Ty::ListDyn,
+        1,
+        &["pattern"],
     ),
-    abi_row(
+    abi_row_named(
         "regex",
         "captures",
         AbiRef::new("regex", "captures"),
         &[Ty::Str, Ty::Str],
         Ty::Dyn,
+        1,
+        &["pattern"],
     ),
-    abi_row(
+    abi_row_named(
         "regex",
         "is_match",
         AbiRef::new("regex", "is_match"),
         &[Ty::Str, Ty::Str],
         Ty::Bool,
+        1,
+        &["pattern"],
     ),
-    abi_row(
+    abi_row_named(
         "regex",
         "split",
         AbiRef::new("regex", "split"),
         &[Ty::Str, Ty::Str],
         Ty::ListStr,
+        1,
+        &["pattern"],
     ),
     abi_row_named(
         "regex",
@@ -864,7 +873,7 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         Ty::Str,
         // One leading positional-only parameter: the subject.
         1,
-        &["text", "replacement"],
+        &["pattern", "replacement"],
     ),
     // `uuid`. `v4` has no arguments and a different answer every call — see the
     // ABI schema for why it must not be `Pure`.

@@ -4826,12 +4826,11 @@ fn fs_members_answer_the_same_on_both_ends() {
 ///
 /// Named arguments are a `CallNamed`, and that opcode only ever resolved a
 /// *user* function — so a stdlib member called by name dropped the whole
-/// program to the VM. The members that allow it are exactly the ones where the
-/// positional spelling is unreadable (`regex.replace(pattern, text,
-/// replacement)` is three strings with the subject in the middle), so the
-/// spelling that lowered was the one nobody is meant to write.
+/// program to the VM. Every parameter after the subject is named-eligible, and
+/// `regex.replace("banana", "a", "X")` is three strings a reader cannot tell
+/// apart, so the spelling that lowered was the one nobody is meant to write.
 ///
-/// The permutation is what this case is really testing: `text` and
+/// The permutation is what this case is really testing: `pattern` and
 /// `replacement` swapped would still compile, still run, and answer `banana`
 /// instead of `bXnXnX`.
 #[test]
@@ -4841,20 +4840,20 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
         &[
             new(
                 "regex_members",
-                "use regex;\nlet z = \"\";\nprintln(regex.is_match(\"a+\", \"baaa\" + z));\n\
-                 println(regex.is_match(\"^z\", \"baaa\"));\nprintln(regex.split(\"[,;]\", \"a,b;c\"));\n\
-                 println(regex.split(\"x\", \"abc\"));\n\
-                 println(regex.replace(\"a+\", \"baaa\", \"X\"));\n\
-                 println(regex.find(\"a+\", \"xbaaay\"));\nprintln(regex.find(\"z\", \"abc\"));\n\
-                 println(regex.find_all(\"a\", \"banana\"));\n\
-                 println(regex.captures(\"(a)(z)?\", \"xaq\"));\n\
-                 println(regex.captures(\"z\", \"abc\"));\n\
-                 let e = try { regex.is_match(\"(\", \"x\") } catch err { err };\nprintln(e);\nreturn 0;\n",
+                "use regex;\nlet z = \"\";\nprintln(regex.is_match(\"baaa\" + z, \"a+\"));\n\
+                 println(regex.is_match(\"baaa\", \"^z\"));\nprintln(regex.split(\"a,b;c\", \"[,;]\"));\n\
+                 println(regex.split(\"abc\", \"x\"));\n\
+                 println(regex.replace(\"baaa\", \"a+\", \"X\"));\n\
+                 println(regex.find(\"xbaaay\", \"a+\"));\nprintln(regex.find(\"abc\", \"z\"));\n\
+                 println(regex.find_all(\"banana\", \"a\"));\n\
+                 println(regex.captures(\"xaq\", \"(a)(z)?\"));\n\
+                 println(regex.captures(\"abc\", \"z\"));\n\
+                 let e = try { regex.is_match(\"x\", \"(\") } catch err { err };\nprintln(e);\nreturn 0;\n",
             ),
             new(
                 "named_arguments",
                 "use regex;\nuse string;\nuse bytes;\nuse math;\nlet z = \"\";\n\
-                 println(regex.replace(\"a\", text: \"banana\" + z, replacement: \"X\"));\n\
+                 println(regex.replace(\"banana\" + z, pattern: \"a\", replacement: \"X\"));\n\
                  println(string.replace(\"banana\", pattern: \"a\", with: \"X\"));\n\
                  println(string.slice(\"hello\", start: 1, end: 3));\n\
                  println(bytes.slice(bytes.from_string(\"hello\"), start: 1, end: 3));\n\
@@ -4875,7 +4874,7 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
                  println(string.replace(\"banana\", \"a\", with: \"X\"));\n\
                  println(bytes.slice(bytes.from_string(\"hello\"), 1, end: 3));\n\
                  println(math.clamp(5, 1, max: 3));\n\
-                 println(regex.replace(\"a\", \"banana\", replacement: \"X\"));\nreturn 0;\n",
+                 println(regex.replace(\"banana\", \"a\", replacement: \"X\"));\nreturn 0;\n",
             ),
         ],
     );

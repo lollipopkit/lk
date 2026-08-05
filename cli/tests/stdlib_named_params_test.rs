@@ -13,7 +13,7 @@ use lk_core::module::ModuleRegistry;
 ///
 /// Order is the whole point: the list *is* the permutation from caller order
 /// into frame order, so a swapped pair would compile
-/// `regex.replace(p, text: t, replacement: r)` into `replace(p, r, t)` — a
+/// `regex.replace(s, pattern: p, replacement: r)` into `replace(s, r, p)` — a
 /// wrong answer that still runs.
 #[test]
 fn lowering_named_parameter_lists_match_the_stdlib_declaration() {
