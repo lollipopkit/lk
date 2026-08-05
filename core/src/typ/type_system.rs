@@ -191,6 +191,7 @@ impl TypeRegistry {
     fn type_to_string(typ: &Type) -> String {
         match typ {
             Type::Named(name) => name.clone(),
+            Type::Unknown => "_".to_string(),
             Type::Int => "Int".to_string(),
             Type::MachineInt(kind) => kind.name().to_string(),
             Type::Ptr { pointee, mutable } => {
@@ -456,6 +457,13 @@ impl TypeInferenceEngine {
         match (t1.clone(), t2.clone()) {
             // Same types unify
             (a, b) if a == b => Ok(()),
+
+            // `_` — the element type of a read-only container view — says
+            // nothing about what it stands for, so it constrains nothing. It
+            // reaches the unifier from a declared parameter (`List<_>`) meeting
+            // an argument (`List<Int>`), which is exactly the case it exists to
+            // accept.
+            (Type::Unknown, _) | (_, Type::Unknown) => Ok(()),
 
             // `Any` is a weak gradual-typing constraint. It must not bind an
             // otherwise fresh type variable, because later concrete call-site

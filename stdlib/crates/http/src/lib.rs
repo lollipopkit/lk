@@ -16,7 +16,7 @@ pub struct HttpModule;
 
 #[lk_stdlib_common::stdlib_exports(module = "http")]
 impl HttpModule {
-    #[stdlib_export(params(method: String, url: String, opts?: Map), returns = Map, docs = "Sends an HTTP request and returns a response map.")]
+    #[stdlib_export(params(method: String, url: String, opts?: Map<_, _>), returns = Map, docs = "Sends an HTTP request and returns a response map.")]
     fn request(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("http.request() expects 2 or 3 arguments: method, url[, opts]");
@@ -31,7 +31,7 @@ impl HttpModule {
         send_request(method.as_ref(), url.as_ref(), opts, None, runtime)
     }
 
-    #[stdlib_export(params(url: String, opts?: Map), returns = Map)]
+    #[stdlib_export(params(url: String, opts?: Map<_, _>), returns = Map)]
     fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.is_empty() || args.len() > 2 {
             bail!("http.get() expects 1 or 2 arguments: url[, opts]");
@@ -40,7 +40,7 @@ impl HttpModule {
         send_request("GET", url.as_ref(), args.get(1), None, runtime)
     }
 
-    #[stdlib_export(params(url: String, body: Bytes | String, opts?: Map), returns = Map)]
+    #[stdlib_export(params(url: String, body: Bytes | String, opts?: Map<_, _>), returns = Map)]
     fn post(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("http.post() expects 2 or 3 arguments: url, body[, opts]");

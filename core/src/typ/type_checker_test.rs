@@ -671,6 +671,60 @@ mod tests {
     ///
     /// The unifier had both directions in one arm all along, so this was also
     /// the two of them disagreeing.
+    /// A container cannot be widened at its element type, in any of the five
+    /// positions that could do it.
+    ///
+    /// These containers are mutable and a widening is an *alias*, so the wide
+    /// name can write an element the narrow name's type forbids:
+    ///
+    /// ```lk
+    /// let a: List<Int> = [1, 2];
+    /// let b: List<Any> = a;
+    /// b.push("s");
+    /// let c: Int = a[2];   // type-checked, and held "s"
+    /// ```
+    ///
+    /// Closing only the parameter position would have left the other four.
+    #[test]
+    fn a_container_cannot_be_widened_at_its_element_type() {
+        let widenings = [
+            ("bare let", "let a: List<Int> = [1, 2];\nlet b: List = a;"),
+            ("Any let", "let a: List<Int> = [1, 2];\nlet b: List<Any> = a;"),
+            (
+                "parameter",
+                "fn take(xs: List) -> Int { return 0; }\nlet a: List<Int> = [1, 2];\nreturn take(a);",
+            ),
+            (
+                "struct field",
+                "struct Box { xs: List }\nlet a: List<Int> = [1, 2];\nlet b = Box { xs: a };",
+            ),
+            (
+                "container element",
+                "let a: List<Int> = [1, 2];\nlet holder: List<List> = [a];",
+            ),
+            ("return type", "fn widen(xs: List<Int>) -> List { return xs; }"),
+            (
+                "map value",
+                "let m: Map<String, Int> = {\"k\": 1};\nlet w: Map<String, Any> = m;",
+            ),
+        ];
+        for (what, source) in widenings {
+            check_program(source).expect_err(what);
+        }
+
+        // A literal is a fresh container, so there is nothing to alias and the
+        // annotation is simply what it is checked against.
+        check_program("let a: List<Any> = [1, 2];").expect("a literal takes the declared element type");
+        check_program("let a: List = [1, 2, 3];").expect("and so does a bare one");
+        check_program("let m: Map<String, Any> = {\"k\": 1};").expect("map literals too");
+
+        // `List<_>` — the read-only view — accepts every list, and writing
+        // through it is refused because nothing is assignable to `_`.
+        check_program("let a: List<Int> = [1, 2];\nlet n = a.zip([3, 4]);")
+            .expect("a builtin that only reads its list argument takes any list");
+        check_program("let a: List<_> = [1, 2];\na.push(3);").expect_err("a read-only view cannot be written");
+    }
+
     #[test]
     fn a_list_satisfies_a_tuple_annotation_of_the_same_element_types() {
         check_program("let t: Tuple<Int, Int> = [1, 2];").expect("a two-Int list is a Tuple<Int, Int>");
@@ -678,7 +732,8 @@ mod tests {
         check_program("let t: Tuple<Int, String> = [1, \"a\"];").expect("the heterogeneous case still works");
         check_program("let xs: List<Int> = [1, 2];\nlet t: Tuple<Int, Int> = xs;")
             .expect("through a variable too — the type is what is checked, not the literal");
-        check_program("let t: List<Int> = [1, 2];\nlet u: List = t;").expect("Tuple -> List still holds");
+        check_program("fn f(t: Tuple<Int, Int>) -> Int { return t[0]; }\nreturn f([1, 2]);")
+            .expect("Tuple -> List still holds");
 
         check_program("let t: Tuple<Int, Int> = [\"a\", \"b\"];").expect_err("element types are still checked");
     }

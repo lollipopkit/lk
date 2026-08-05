@@ -323,7 +323,7 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         List,
         "zip",
-        &[p("other", "List<Any>")],
+        &[p("other", "List<_>")],
         "List<List<Any>>",
         "Elements paired positionally, up to the shorter length",
     ),
@@ -452,14 +452,14 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Slice,
         "zip",
-        &[p("other", "List")],
+        &[p("other", "List<_>")],
         "List<List<Any>>",
         "Pairs with `other`",
     ),
     m(
         Slice,
         "chain",
-        &[p("other", "List")],
+        &[p("other", "List<_>")],
         "List<Any>",
         "The window's elements then `other`'s",
     ),
@@ -475,7 +475,7 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Slice,
         "concat",
-        &[p("other", "List")],
+        &[p("other", "List<_>")],
         "List<Any>",
         "The window's elements then `other`'s",
     ),
@@ -584,14 +584,14 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
     m(
         Bytes,
         "zip",
-        &[p("other", "List")],
+        &[p("other", "List<_>")],
         "List<List<Any>>",
         "Pairs with `other`",
     ),
     m(
         Bytes,
         "chain",
-        &[p("other", "List")],
+        &[p("other", "List<_>")],
         "List<Any>",
         "The bytes then `other`'s elements",
     ),

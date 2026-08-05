@@ -459,6 +459,22 @@ pub enum Type {
 
     /// Any type (top type)
     Any,
+
+    /// An element type that is not known: `List<_>`, `Map<String, _>`.
+    ///
+    /// Written `_`, the same "unnamed anything" it means in a pattern, and only
+    /// valid inside a type's parameter list. **Nothing is assignable to it**,
+    /// which is what makes a container parameterised by it readable but not
+    /// writable — the read-only view falls out of the type rather than being a
+    /// second rule about containers.
+    ///
+    /// It exists because containers are invariant (see `is_assignable_to`):
+    /// without it, a signature could not say "a list of anything", and this
+    /// language has no generic functions to say it with. Covariance said it
+    /// instead, and covariance over a *mutable* container is unsound —
+    /// `List<Int>` widened to `List<Any>` accepted a `String` through the alias
+    /// and `let b: Int = a[2]` then type-checked and held one.
+    Unknown,
 }
 
 /// The parameterless builtin types, with the name the language spells each.
@@ -508,6 +524,14 @@ pub const CONTAINER_TYPE_NAMES: &[&str] = &["List", "Map", "Set", "Tuple", "Task
 impl Type {
     pub fn parse(s: &str) -> Option<Type> {
         let s = s.trim();
+
+        // `_` — an element type that is not known. No positional rule keeps it
+        // out of the top level: `let x: _ = 1;` parses and then fails to
+        // type-check, because nothing is assignable to `_`. That is the same
+        // answer a positional rule would give, from the type itself.
+        if s == "_" {
+            return Some(Type::Unknown);
+        }
 
         // Handle primitive types
         if let Some((_, ty)) = PRIMITIVE_TYPES.iter().find(|(name, _)| *name == s) {
@@ -684,6 +708,7 @@ impl Type {
     pub fn display(&self) -> String {
         match self {
             Type::Int => "Int".to_string(),
+            Type::Unknown => "_".to_string(),
             Type::MachineInt(kind) => kind.name().to_string(),
             Type::Ptr { pointee, mutable } => {
                 if *mutable {
@@ -762,6 +787,46 @@ impl Type {
         }
     }
 
+    /// Whether a container whose element type is `source` may be used where
+    /// one whose element type is `target` is expected.
+    ///
+    /// Invariant, with two exceptions that are not variance:
+    ///
+    /// - `target` is `_` — the container is being read, never written, so any
+    ///   element type is fine. This is the whole reason `_` exists.
+    /// - either side is still a free type variable — `let xs: List<Int> = [];`
+    ///   gives the empty literal `List<'T>`, and binding `'T` to `Int` is
+    ///   inference, not a widening of one container into another.
+    fn element_assignable(source: &Type, target: &Type) -> bool {
+        match (source, target) {
+            (_, Type::Unknown) => true,
+            (Type::Variable(_), _) | (_, Type::Variable(_)) => source.is_assignable_to(target),
+            _ => source == target,
+        }
+    }
+
+    /// Whether a container of `self` may fill a `target` **because it is a
+    /// literal** — a container the program has no other name for.
+    ///
+    /// Containers are invariant because a widening is an alias: two names for
+    /// one object, disagreeing about the element type, and the wider one can
+    /// write what the narrower one's type forbids. A literal has no second
+    /// name, so its elements are checked covariantly, exactly as they were
+    /// before, and `let xs: List<Any> = [1, 2];` or `f([1, 2])` still work.
+    ///
+    /// The counterpart of the machine-int literal rule (`let x: u8 = 5` rather
+    /// than `5 as u8`), for the same reason and at the same three positions:
+    /// a `let` with an annotation, a positional argument, and a named one.
+    /// Callers pass the *expression* so that only a literal takes this path.
+    pub fn container_literal_fits(&self, target: &Type) -> bool {
+        match (self, target) {
+            (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
+            (Type::Set(a), Type::Set(b)) => a.is_assignable_to(b),
+            (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),
+            _ => false,
+        }
+    }
+
     /// Check if this type can be assigned to another type (subtyping)
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         match (self, other) {
@@ -820,14 +885,26 @@ impl Type {
             (t, Type::Union(union_types)) => union_types.iter().any(|ut| t.is_assignable_to(ut)),
             // Union member is assignable to union
             (Type::Union(union_types), target) => union_types.iter().all(|ut| ut.is_assignable_to(target)),
-            // Generic containers with covariant element types
-            (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
-            (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),
-            (Type::Set(a), Type::Set(b)) => a.is_assignable_to(b),
-            // The same covariance for a parameterised named type — `Slice<T>`
-            // is the only one today. Without it `Slice<Int>` was assignable to
-            // nothing but itself, so a declaration could not accept "a window
-            // over anything".
+            // Containers are **invariant** in their element types, and the
+            // read-only view `List<_>` is how a signature says "a list of
+            // anything" without them.
+            //
+            // Covariance here was unsound, because these containers are mutable
+            // and a widening is an *alias*: `let b: List<Any> = a;` then
+            // `b.push("s")` put a String into an `List<Int>`, and
+            // `let c: Int = a[2]` type-checked and held it. Five widening
+            // positions did it — a `let`, a parameter, a struct field, a
+            // container element, and a return type — so restricting any one of
+            // them would not have been enough.
+            (Type::List(a), Type::List(b)) => Self::element_assignable(a, b),
+            (Type::Map(ak, av), Type::Map(bk, bv)) => {
+                Self::element_assignable(ak, bk) && Self::element_assignable(av, bv)
+            }
+            (Type::Set(a), Type::Set(b)) => Self::element_assignable(a, b),
+            // The same rule for a parameterised named type — `Slice<T>` is the
+            // only one today. Without an element rule at all, `Slice<Int>` was
+            // assignable to nothing but itself, so a declaration could not
+            // accept "a window over anything".
             (
                 Type::Generic {
                     name: a_name,
@@ -840,7 +917,10 @@ impl Type {
             ) => {
                 a_name == b_name
                     && a_params.len() == b_params.len()
-                    && a_params.iter().zip(b_params).all(|(a, b)| a.is_assignable_to(b))
+                    && a_params
+                        .iter()
+                        .zip(b_params)
+                        .all(|(a, b)| Self::element_assignable(a, b))
             }
             (Type::Tuple(as_), Type::Tuple(bs)) => {
                 as_.len() == bs.len() && as_.iter().zip(bs.iter()).all(|(a, b)| a.is_assignable_to(b))
@@ -852,7 +932,7 @@ impl Type {
             // reads as a different type, and `let xs: List = [1, "a"];` — an
             // ordinary list in a language whose lists are heterogeneous — was
             // rejected by the annotation written to describe it.
-            (Type::Tuple(elems), Type::List(target)) => elems.iter().all(|elem| elem.is_assignable_to(target)),
+            (Type::Tuple(elems), Type::List(target)) => elems.iter().all(|elem| Self::element_assignable(elem, target)),
             // And the way back, which was missing — so `Tuple<Int, Int>` was a
             // type nothing could satisfy: `[1, 2]` is `List<Int>` (its elements
             // do not differ, so no tuple is inferred), and without this rule it
@@ -868,7 +948,7 @@ impl Type {
             // length, so there is nothing to compare against the tuple's arity.
             // The precision a tuple adds is *per-position element types*, and
             // that is what this checks.
-            (Type::List(source), Type::Tuple(elems)) => elems.iter().all(|elem| source.is_assignable_to(elem)),
+            (Type::List(source), Type::Tuple(elems)) => elems.iter().all(|elem| Self::element_assignable(source, elem)),
             // Function types (contravariant parameters, covariant return)
             (
                 Type::Function {

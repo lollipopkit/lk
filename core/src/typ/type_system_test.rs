@@ -238,10 +238,21 @@ mod tests {
         assert!(boxed_float.is_assignable_to(&Type::Float));
         assert!(!Type::Bool.is_assignable_to(&int_or_string));
 
-        // Container types (covariant)
+        // Containers are invariant: they are mutable and a widening is an
+        // alias, so `List<Int>` used as a `List<Any>` would let a String be
+        // pushed through the wide name and read back as an Int through the
+        // narrow one.
         let list_int = Type::List(Box::new(Type::Int));
         let list_any = Type::List(Box::new(Type::Any));
-        assert!(list_int.is_assignable_to(&list_any));
+        assert!(!list_int.is_assignable_to(&list_any));
+        assert!(!list_any.is_assignable_to(&list_int));
+        assert!(list_int.is_assignable_to(&list_int));
+        // `List<_>` is the read-only view every list fits, and nothing fits
+        // into `_` itself — which is what makes it read-only.
+        let list_unknown = Type::List(Box::new(Type::Unknown));
+        assert!(list_int.is_assignable_to(&list_unknown));
+        assert!(list_any.is_assignable_to(&list_unknown));
+        assert!(!Type::Int.is_assignable_to(&Type::Unknown));
     }
 
     #[test]

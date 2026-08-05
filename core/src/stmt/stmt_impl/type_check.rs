@@ -251,6 +251,7 @@ impl Stmt {
                     }
                 } else if let Some(expected_type) = type_annotation
                     && !type_checker.is_assignable(&expr_type, expected_type)
+                    && !container_literal_fits(expected_type, value, &expr_type)
                 {
                     let error_msg = format!(
                         "Type mismatch in let statement: pattern expected type {}, but expression has type {}",
@@ -1479,4 +1480,20 @@ fn declared_admits_nil(declared: &Type) -> bool {
         Type::Variable(_) => true,
         _ => false,
     }
+}
+
+/// Whether `value` is a container *literal* whose type fits `expected`.
+///
+/// Containers are invariant because a widening is an alias; a literal has no
+/// second name, so its elements are checked covariantly. The same rule the
+/// call sites apply to an argument (`literal_fits_container` in
+/// `typ::type_checker::expressions::calls`), through the same
+/// `Type::container_literal_fits`.
+fn container_literal_fits(expected: &Type, value: &crate::expr::Expr, value_ty: &Type) -> bool {
+    use crate::expr::Expr;
+    let mut value = value;
+    while let Expr::Paren(inner) = value {
+        value = inner;
+    }
+    matches!(value, Expr::List(_) | Expr::Map(_)) && value_ty.container_literal_fits(expected)
 }

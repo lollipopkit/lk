@@ -108,7 +108,7 @@ impl StringModule {
         forward("split", args, runtime)
     }
 
-    #[stdlib_export(params(values: List, separator: String), returns = String)]
+    #[stdlib_export(params(values: List<_>, separator: String), returns = String)]
     fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;

@@ -180,6 +180,8 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
 
 fn collect_generated_type_origins(ty: &Type, span: Option<Span>, origins: &mut Vec<AstGeneratedMemberOrigin>) {
     match ty {
+        // `_` names nothing, so there is no type reference to record.
+        Type::Unknown => {}
         Type::Named(name) => {
             push_generated_statement_origin("type_expr named", span.clone(), origins);
             origins.push(AstGeneratedMemberOrigin {

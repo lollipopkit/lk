@@ -648,6 +648,7 @@ impl TypeChecker {
 
     fn resolve_aliases_internal(&self, ty: &Type, visiting: &mut HashSet<String>) -> Type {
         match ty {
+            Type::Unknown => Type::Unknown,
             Type::Named(name) => {
                 if let Some(alias) = self.registry.get_type_alias(name) {
                     if !visiting.insert(name.clone()) {

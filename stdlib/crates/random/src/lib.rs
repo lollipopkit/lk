@@ -57,7 +57,7 @@ impl RandomModule {
         Ok(runtime_bytes_value(data, runtime.heap_mut()))
     }
 
-    #[stdlib_export(name = "choice", params(values: List), returns = Any)]
+    #[stdlib_export(name = "choice", params(values: List<_>), returns = Any)]
     fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = list_values(args.get(0).expect("checked arity"), runtime, "random.choice list")?;
         if values.is_empty() {
@@ -67,7 +67,7 @@ impl RandomModule {
         Ok(values[index])
     }
 
-    #[stdlib_export(name = "shuffle", params(values: List), returns = List)]
+    #[stdlib_export(name = "shuffle", params(values: List<_>), returns = List)]
     fn shuffle(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let mut values = list_values(args.get(0).expect("checked arity"), runtime, "random.shuffle list")?;
         for i in (1..values.len()).rev() {

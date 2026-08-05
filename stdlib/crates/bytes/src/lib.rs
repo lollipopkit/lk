@@ -67,7 +67,7 @@ impl BytesModule {
     /// function whose first parameter is the receiver **is** the method, and
     /// two bodies for one operation is how `bytes.slice(b, 3, 1)` came to raise
     /// while `b.slice(3, 1)` answered an empty window.
-    #[stdlib_export(name = "from_list", params(values: List), returns = Bytes)]
+    #[stdlib_export(name = "from_list", params(values: List<_>), returns = Bytes)]
     fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("to_bytes", args, runtime)
     }

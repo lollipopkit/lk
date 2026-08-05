@@ -409,7 +409,7 @@ impl StreamCursor for ChannelCursor {
 
 #[lk_stdlib_common::stdlib_exports(module = "stream")]
 impl StreamModule {
-    #[stdlib_export(params(values: List), returns = Stream)]
+    #[stdlib_export(params(values: List<_>), returns = Stream)]
     fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
         let values = copy_typed_list(values);
