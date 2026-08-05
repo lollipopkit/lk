@@ -793,7 +793,11 @@ pub extern "C" fn lkrt_time_now_ms() -> i64 {
 pub extern "C" fn lkrt_time_sleep_ms(ms: i64) {
     raising(|| {
         if ms < 0 {
-            return Err(format!("time.sleep expects non-negative milliseconds, got {ms}"));
+            // Same wording as the VM's `duration_millis`, because a caught
+            // error's message *is* the program's output.
+            return Err(format!(
+                "time.sleep() expects a non-negative duration in milliseconds, got {ms}"
+            ));
         }
         std::thread::sleep(Duration::from_millis(ms as u64));
         Ok(())

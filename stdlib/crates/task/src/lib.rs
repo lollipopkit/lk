@@ -101,10 +101,7 @@ impl TaskModule {
 
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
     fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
-        if duration_ms < 0 {
-            bail!("task.sleep() duration must be non-negative");
-        }
+        let duration_ms = lk_stdlib_common::duration_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
         runtime
             .async_runtime()
             .with(|rt| {
@@ -144,14 +141,6 @@ fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<Task
     match value {
         HeapValue::Task(task) => Ok(task.clone()),
         other => Err(anyhow!("{name} expects a Task argument, got {}", other.type_name())),
-    }
-}
-
-fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
-    match value {
-        RuntimeVal::Int(value) => Ok(*value),
-        RuntimeVal::Float(value) => Ok(*value as i64),
-        other => Err(anyhow!("{name} expects a numeric argument, got {:?}", other.kind())),
     }
 }
 

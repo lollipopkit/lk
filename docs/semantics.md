@@ -1859,6 +1859,34 @@ println(typeof(xs[2]));   // 改前 VM: Int,native: Float
     xs.push("a");
     → MIR lowering: an operand at pc 3 is a str where a i64 is required
 
+## 时长不能是负数,四个入口一条规矩(2026-08-05 裁决)
+
+    use time;
+    println("before");
+    time.sleep(-1);        // 打印 before 之后再不返回
+
+`Duration::from_millis(duration_ms as u64)`,`-1 as u64` 是 u64::MAX 毫秒 ≈ 5.8 亿年。
+
+同一个操作四个答案:
+
+| 写法 | `-1` | `-0.5` |
+| --- | --- | --- |
+| `time.sleep` | **挂起** | 立即返回 |
+| `task.sleep` | 报错 | 立即返回 |
+| `time.timeout` / `time.after` | 定时器永不触发,静默 | 同上 |
+
+`-0.5` 那一列是关键:`task.sleep` **有**一个 `< 0` 守卫,但它跑在 `as i64` 之后 ——
+截断已经把值变成 `0` 了。所以判负必须在截断**之前**。
+
+现在:`lk_stdlib_common::duration_millis` 一处实现,四个入口共用,消息一句
+(`{name}() expects a non-negative duration in milliseconds, got {ms}`),lkrt 侧
+`lkrt_time_sleep_ms` 的措辞对齐 —— 被捕获的错误消息就是程序的输出,两端必须逐字一样。
+
+**时刻不是时长。** `time.since(start, end)` 取的是钟面上的两个点,差值才有方向,所以
+它留用 `numeric_millis`(任意符号),与 `duration_millis` 是两个概念。
+
+门禁:`a_duration_cannot_be_negative`。
+
 ## 模块拼写需要 import,两端都要(2026-08-05 裁决)
 
     let c = chan.new(1);          // 没写 use chan;
