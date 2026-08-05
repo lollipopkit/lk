@@ -1144,6 +1144,17 @@ impl TypeChecker {
                 if matches!(left_resolved, Type::List(_)) || matches!(right_resolved, Type::List(_)) {
                     return self.check_list_addition(left_expr, &left_type, right_expr, &right_type);
                 }
+                // Two maps merge, the right side winning. Both executors have
+                // implemented this all along — the VM's `Add` has a map arm
+                // (`merge_typed_maps`, which keeps the left's key order) and so
+                // does `lkrt_dyn_add` — and only the checker refused, so
+                // `a + b` ran when the types were erased to `Any` and was
+                // "the left operand must be numeric types" when they were not.
+                // The rule this breaks is written down: `lk check` answers the
+                // executors' question.
+                if matches!(left_resolved, Type::Map(_, _)) || matches!(right_resolved, Type::Map(_, _)) {
+                    return self.check_map_addition(left_expr, &left_type, right_expr, &right_type);
+                }
                 if self.is_string_like(&left_type) || self.is_string_like(&right_type) {
                     self.check_string_addition(left_expr, &left_type, right_expr, &right_type)
                 } else {
@@ -1365,6 +1376,55 @@ impl TypeChecker {
         self.coerce_to_string(left_ty);
         self.coerce_to_string(right_ty);
         Ok(Type::String)
+    }
+
+    /// `m + n` — the two maps merged, the right side winning on a shared key.
+    ///
+    /// The answer's key and value types follow `check_list_addition`'s rule:
+    /// whichever side subsumes the other, or `Any` when neither does. A merge
+    /// can only produce keys and values the two operands already had.
+    fn check_map_addition(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        let left_resolved = self.resolve_aliases(left_ty);
+        let right_resolved = self.resolve_aliases(right_ty);
+        match (left_resolved, right_resolved) {
+            (Type::Map(left_key, left_value), Type::Map(right_key, right_value)) => {
+                let key = self.wider_of(left_key.as_ref(), right_key.as_ref());
+                let value = self.wider_of(left_value.as_ref(), right_value.as_ref());
+                Ok(Type::Map(Box::new(key), Box::new(value)))
+            }
+            (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
+                "map merge requires both operands to be maps",
+                Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Add,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_map_addition is only reached when a side is a map"),
+        }
+    }
+
+    /// Whichever of the two subsumes the other, or `Any` when neither does.
+    ///
+    /// The rule `check_list_addition` uses for a concatenation's element type,
+    /// named once now that the map merge needs it for both halves of its key
+    /// and value.
+    fn wider_of(&mut self, left: &Type, right: &Type) -> Type {
+        if self.is_assignable(left, right) {
+            right.clone()
+        } else if self.is_assignable(right, left) {
+            left.clone()
+        } else {
+            Type::Any
+        }
     }
 
     fn check_list_addition(

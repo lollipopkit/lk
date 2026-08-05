@@ -1933,6 +1933,38 @@ println(b);          // 打印 s
 `contains` 语义上真有歧义(键还是值),Rust 用 `contains_key` 正是为避开它;序列
 和集合的 `contains` 无歧义。分野保留。
 
+## `Map + Map` 合并 —— 两个执行器一直都实现了,只有检查器不收(2026-08-05 裁决)
+
+```
+let a = {"a": 1};
+let b = {"b": 2};
+println(a + b);   // 改前:Type Error: the left operand must be numeric types
+```
+
+而把类型擦掉就跑得动:
+
+```
+let a: Any = {"a": 1};
+let b: Any = {"b": 2};
+println(a + b);   // {"a":1,"b":2}
+```
+
+VM 的 `Add` 有 map 分支(`merge_typed_maps`),`lkrt_dyn_add` 也有,注释里写着
+"两个 map 合并,右侧胜"。**只有检查器不收**,而且只在它知道类型的时候不收。
+这正是 `lk check 答的必须是执行器答的那个问题` 的反面 —— 检查器多出一条两个执行器
+都没有的规则,和它漏掉一条一样是缺陷。
+
+结果类型按 `check_list_addition` 已有的判据:哪一侧被另一侧包含就取哪一侧,都不
+包含取 `Any`;键和值各判一次。判据抽成 `wider_of`,两处共用。
+
+**没有一并放开的:** `Set + Set` 和 `Bytes + Bytes` 在运行时确实报错
+(`Add expected numbers or strings, got Set and Set`),所以检查器拒它们是对的。
+集合的并集现在是 `a.union(b)`,字节串拼接是 `b.concat(c)`。
+
+**原生仍然回落**,单列:降低侧的 `Add` 没有 map 臂,而在接上之前得先修 lkrt 那份
+合并的两条 —— 键种类被强转成字符串,插入序是哈希序而不是写定的序列。两条现在都
+不可达,所以是潜伏的。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

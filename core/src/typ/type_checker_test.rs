@@ -762,4 +762,37 @@ mod tests {
         check_program("fn f() -> Any { }").expect("Any admits it");
         check_program("fn f(c: Bool) { if c { return 1; } }").expect("no annotation, no promise");
     }
+    /// `m + n` merges, and the checker had to be told.
+    ///
+    /// Both executors have implemented map merge all along — the VM's `Add`
+    /// has a map arm and so does `lkrt_dyn_add` — and only the checker refused,
+    /// so `a + b` ran when the types were erased to `Any` and was "the left
+    /// operand must be numeric types" when they were not. `lk check` answers
+    /// the executors' question; a rule it enforces that neither executor has is
+    /// the same defect as a rule it misses.
+    #[test]
+    fn two_maps_merge_and_the_answer_widens_to_hold_both() {
+        check_program("let a = {\"a\": 1};\nlet b = {\"b\": 2};\nlet c = a + b;\nprintln(c);\n")
+            .expect("two maps merge");
+        assert_eq!(
+            infer("{\"a\": 1} + {\"b\": 2}"),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+            "two `Map<String, Int>` merge into one"
+        );
+        assert_eq!(
+            infer("{\"a\": 1} + {\"b\": \"s\"}"),
+            Type::Map(Box::new(Type::String), Box::new(Type::Any)),
+            "values that subsume neither widen to Any"
+        );
+
+        // A non-map on either side is still an error, and says what it expected
+        // rather than borrowing the numeric operator's message.
+        let err = check_program("let a = {\"a\": 1};\nlet c = a + 1;\nprintln(c);\n")
+            .expect_err("a map plus a number is an error");
+        assert!(
+            format!("{err}").contains("map merge requires both operands to be maps"),
+            "unexpected message: {err}"
+        );
+    }
+
 }
