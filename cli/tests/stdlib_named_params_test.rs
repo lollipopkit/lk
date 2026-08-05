@@ -48,3 +48,36 @@ fn lowering_named_parameter_lists_match_the_stdlib_declaration() {
     }
     assert!(checked > 0, "no named rows were checked — the accessor lost its rows");
 }
+
+/// The other direction: a member the stdlib declares `named(...)` must carry
+/// those names in its ABI row.
+///
+/// The test above walks the rows that already have names, so it cannot see a
+/// row that has none. That mistake is silent — `CallNamed` finds no names to
+/// resolve, the member stops lowering by name, and the program falls back to
+/// the VM with the right answer and none of the speed. Adding `named(...)` to
+/// a stdlib export without touching the table is exactly how it happens.
+#[test]
+fn every_declared_named_list_reaches_the_lowering_table() {
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registers");
+
+    let with_names: std::collections::HashSet<(&str, &str)> = lk_aot_lower::named_parameter_rows()
+        .map(|(module, member, _, _)| (module, member))
+        .collect();
+    let mut missing = Vec::new();
+    for (module, member) in lk_aot_lower::module_abi_row_paths() {
+        let path = format!("{module}.{member}");
+        let Some(signature) = lk_core::typ::stdlib_signature(&path) else {
+            continue;
+        };
+        if signature.params.iter().any(|param| param.named) && !with_names.contains(&(module, member)) {
+            missing.push(path);
+        }
+    }
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "declared `named(...)` but the lowering row has none, so the named spelling falls back: {missing:?}"
+    );
+}

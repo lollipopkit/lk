@@ -55,7 +55,7 @@ impl TimeModule {
         Ok(RuntimeVal::Int(epoch_millis()))
     }
 
-    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), returns = Int)]
+    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), named(end_ms), returns = Int)]
     fn since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let start = numeric_millis(&values[0], "time.since()")?;
@@ -132,12 +132,26 @@ mod tests {
         function(NativeArgs::new(args), &mut runtime)
     }
 
+    /// Registered arity follows the declaration: a member with `named(...)`
+    /// registers variadic, because a named argument occupies no positional
+    /// slot and the generated precheck — which knows the names — checks the
+    /// bounds instead.
     #[test]
     fn time_exports_use_runtime_native() -> Result<()> {
         for name in ["sleep", "timeout", "after", "now", "since"] {
             let (arity, function) = time_native(name)?;
             assert!(matches!(function, NativeFunction::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
+            let path = format!("time.{name}");
+            let nameable = TimeModule::stdlib_metadata()
+                .signatures
+                .iter()
+                .find(|signature| signature.path == path)
+                .is_some_and(|signature| signature.params.iter().any(|param| param.named));
+            if nameable {
+                assert_eq!(arity, lk_core::vm::NativeEntry::VARIADIC, "{name} declares named(...)");
+            } else {
+                assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC, "{name}");
+            }
         }
         Ok(())
     }

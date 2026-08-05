@@ -4858,7 +4858,9 @@ fn regex_and_named_arguments_answer_the_same_on_both_ends() {
                  println(string.slice(\"hello\", start: 1, end: 3));\n\
                  println(bytes.slice(bytes.from_string(\"hello\"), start: 1, end: 3));\n\
                  println(math.clamp(5, min: 1, max: 3));\n\
-                 println(math.clamp(0, min: 1, max: 3));\nreturn 0;\n",
+                 println(math.clamp(0, min: 1, max: 3));\n\
+                 println(math.pow(2 + math.abs(0), exponent: 10));\n\
+                 println(math.atan2(1, x: 1));\nreturn 0;\n",
             ),
             // The *mixed* spelling: some named-eligible parameters written
             // positionally and the rest by name. The VM has always taken all

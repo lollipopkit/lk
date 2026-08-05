@@ -154,27 +154,42 @@ mod tests {
         Ok(())
     }
 
+    /// Every `math` member is a plain `RuntimeNative`, and its registered arity
+    /// follows from its declaration rather than from a list kept here.
+    ///
+    /// A member that declares `named(...)` registers as `VARIADIC`: a named
+    /// argument does not occupy a positional slot, so the VM's pre-call check
+    /// would reject `math.pow(2, exponent: 10)` as "expects 2, got 1". The
+    /// bounds are checked by the generated precheck instead, which knows the
+    /// names. Asserting that rule keeps this test from having to be edited —
+    /// and from being *wrong* — every time a member becomes nameable.
     #[test]
     fn test_math_selected_functions_use_runtime_native_abi() -> Result<()> {
         for name in [
             "abs", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "log", "log10", "log2", "exp", "pow",
-            "floor", "ceil", "round", "min", "max", "random",
+            "floor", "ceil", "round", "min", "max", "random", "clamp",
         ] {
             let (arity, function) = math_native(name)?;
             assert!(
                 matches!(function, NativeFunction::Plain(_)),
                 "{name} should use plain RuntimeNative"
             );
-            assert_ne!(
-                arity,
-                NativeEntry::VARIADIC,
-                "{name} should have fixed positional arity"
-            );
+            let path = format!("math.{name}");
+            let nameable = MathModule::stdlib_metadata()
+                .signatures
+                .iter()
+                .find(|signature| signature.path == path)
+                .is_some_and(|signature| signature.params.iter().any(|param| param.named));
+            if nameable {
+                assert_eq!(arity, NativeEntry::VARIADIC, "{name} declares named(...)");
+            } else {
+                assert_ne!(
+                    arity,
+                    NativeEntry::VARIADIC,
+                    "{name} should have fixed positional arity"
+                );
+            }
         }
-
-        let (arity, function) = math_native("clamp")?;
-        assert!(matches!(function, NativeFunction::Plain(_)));
-        assert_eq!(arity, NativeEntry::VARIADIC);
         Ok(())
     }
 

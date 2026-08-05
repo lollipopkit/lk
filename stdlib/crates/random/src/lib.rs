@@ -15,7 +15,7 @@ pub struct RandomModule;
 
 #[lk_stdlib_common::stdlib_exports(module = "random")]
 impl RandomModule {
-    #[stdlib_export(name = "int", params(min: Int, max: Int), returns = Int)]
+    #[stdlib_export(name = "int", params(min: Int, max: Int), named(max), returns = Int)]
     fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let min = int_arg(args.get(0).expect("checked arity"), "random.int min")?;
         let max = int_arg(args.get(1).expect("checked arity"), "random.int max")?;

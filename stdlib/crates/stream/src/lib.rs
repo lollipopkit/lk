@@ -511,7 +511,7 @@ impl StreamModule {
         create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
     }
 
-    #[stdlib_export(params(left: Stream, right: Stream), returns = Stream)]
+    #[stdlib_export(params(left: Stream, right: Stream), named(right), returns = Stream)]
     fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;

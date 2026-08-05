@@ -111,7 +111,7 @@ impl IterModule {
         ))
     }
 
-    #[stdlib_export(params(left: List, right: List), returns = List, kind = "full_state")]
+    #[stdlib_export(params(left: List, right: List), named(right), returns = List, kind = "full_state")]
     fn zip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("zip", args, runtime)
     }
@@ -126,7 +126,7 @@ impl IterModule {
         forward("skip", args, runtime)
     }
 
-    #[stdlib_export(params(left: List, right: List), returns = List, kind = "full_state")]
+    #[stdlib_export(params(left: List, right: List), named(right), returns = List, kind = "full_state")]
     fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("chain", args, runtime)
     }

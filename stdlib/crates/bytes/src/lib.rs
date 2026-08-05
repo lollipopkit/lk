@@ -163,7 +163,7 @@ impl BytesModule {
         forward("to_string_lossy", args, runtime)
     }
 
-    #[stdlib_export(name = "concat", params(left: Bytes, right: Bytes), returns = Bytes)]
+    #[stdlib_export(name = "concat", params(left: Bytes, right: Bytes), named(right), returns = Bytes)]
     fn concat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("concat", args, runtime)
     }

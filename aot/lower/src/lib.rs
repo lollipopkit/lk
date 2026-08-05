@@ -67,7 +67,7 @@ mod vocab;
 
 pub use self::imports::BundledImport;
 pub(crate) use self::imports::ImportEnv;
-pub use self::tables::named_parameter_rows;
+pub use self::tables::{module_abi_row_paths, named_parameter_rows};
 pub use self::unsupported::Unsupported;
 pub(crate) use self::{
     cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,

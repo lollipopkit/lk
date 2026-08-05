@@ -152,7 +152,7 @@ impl MathModule {
         unary_float(args, "atan()", f64::atan)
     }
 
-    #[stdlib_export(name = "atan2", params(y: Number, x: Number), returns = Float)]
+    #[stdlib_export(name = "atan2", params(y: Number, x: Number), named(x), returns = Float)]
     fn atan2_(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let y = number_arg(&values[0], "atan2() first argument")?;
@@ -180,7 +180,7 @@ impl MathModule {
         unary_float(args, "exp()", f64::exp)
     }
 
-    #[stdlib_export(params(base: Number, exponent: Number), returns = Float)]
+    #[stdlib_export(params(base: Number, exponent: Number), named(exponent), returns = Float)]
     fn pow(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let base = number_arg(&values[0], "pow() first argument")?;

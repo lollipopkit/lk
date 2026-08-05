@@ -218,7 +218,10 @@ mod tests {
 
         for (name, arity) in [
             ("time::sleep", 1),
-            ("time::since", 2),
+            // `since` declares `named(end_ms)`, and a named argument does not
+            // occupy a positional slot — so it registers variadic and the
+            // generated precheck, which knows the names, checks the bounds.
+            ("time::since", lk_core::vm::NativeEntry::VARIADIC),
             ("chan::try_send", 2),
             ("task::join_all", lk_core::vm::NativeEntry::VARIADIC),
         ] {

@@ -410,15 +410,25 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &[Ty::Str],
         Ty::Bool,
     ),
-    abi_row(
+    abi_row_named(
         "fs",
         "rename",
         AbiRef::new("fs", "rename"),
         &[Ty::Str, Ty::Str],
         Ty::Bool,
+        1,
+        &["to"],
     ),
     // `copy` answers the byte count, not a bool.
-    abi_row("fs", "copy", AbiRef::new("fs", "copy"), &[Ty::Str, Ty::Str], Ty::I64),
+    abi_row_named(
+        "fs",
+        "copy",
+        AbiRef::new("fs", "copy"),
+        &[Ty::Str, Ty::Str],
+        Ty::I64,
+        1,
+        &["to"],
+    ),
     abi_row("env", "has", AbiRef::new("env", "has"), &[Ty::Str], Ty::Bool),
     // Sorted entry names as List<str> (the VM's exact shape).
     abi_row(
@@ -474,12 +484,14 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("math", "asin", AbiRef::new("math", "asin"), &[Ty::F64], Ty::F64),
     abi_row("math", "acos", AbiRef::new("math", "acos"), &[Ty::F64], Ty::F64),
     abi_row("math", "atan", AbiRef::new("math", "atan"), &[Ty::F64], Ty::F64),
-    abi_row(
+    abi_row_named(
         "math",
         "atan2",
         AbiRef::new("math", "atan2"),
         &[Ty::F64, Ty::F64],
         Ty::F64,
+        1,
+        &["x"],
     ),
     abi_row("math", "log", AbiRef::new("math", "log"), &[Ty::F64], Ty::F64),
     abi_row("math", "log10", AbiRef::new("math", "log10"), &[Ty::F64], Ty::F64),
@@ -496,7 +508,15 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
         &["min", "max"],
     ),
     abi_row("math", "exp", AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64),
-    abi_row("math", "pow", AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64),
+    abi_row_named(
+        "math",
+        "pow",
+        AbiRef::new("math", "pow"),
+        &[Ty::F64, Ty::F64],
+        Ty::F64,
+        1,
+        &["exponent"],
+    ),
     abi_row(
         "math",
         "hypot",
@@ -748,12 +768,14 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // `random`. `bool` is two arities (the probability defaults to 0.5), and
     // `choice`/`shuffle` are one row per list carrier — `choice` answers the
     // element, so it boxes; `shuffle` answers a list of the same carrier.
-    abi_row(
+    abi_row_named(
         "random",
         "int",
         AbiRef::new("random", "int"),
         &[Ty::I64, Ty::I64],
         Ty::I64,
+        1,
+        &["max"],
     ),
     abi_row("random", "float", AbiRef::new("random", "float"), &[], Ty::F64),
     abi_row("random", "bool", AbiRef::new("random", "bool"), &[], Ty::Bool),
@@ -1012,6 +1034,17 @@ pub fn named_parameter_rows() -> impl Iterator<Item = (&'static str, &'static st
         .iter()
         .filter(|row| !row.named.is_empty())
         .map(|row| (row.module, row.member, row.leading, row.named))
+}
+
+/// Every ABI row's `(module, member)`, named or not.
+///
+/// [`named_parameter_rows`] only reports rows that already carry names, so it
+/// cannot see the opposite mistake: a member the stdlib declares `named(...)`
+/// whose row here has none. That one is silent — the named spelling simply
+/// stops lowering and the whole program falls back — so the conformance test
+/// needs the full list to check both directions.
+pub fn module_abi_row_paths() -> impl Iterator<Item = (&'static str, &'static str)> {
+    MODULE_ABI.iter().map(|row| (row.module, row.member))
 }
 
 /// Whether a row's declared parameter type accepts an argument the lowering

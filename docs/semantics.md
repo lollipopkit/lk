@@ -1707,10 +1707,22 @@ regex.split(pattern, text)      // 改前
 `lowering_named_parameter_lists_match_the_stdlib_declaration` 守着后两者与声明一致。
 
 **探过一条更强的规则,不成立:**"同类型的参数必须可命名"。全 catalog 有 32 个成员
-不满足它(`fs.copy(from, to)`、`math.atan2(y, x)`、`random.int(min, max)`、
-`string.contains(text, needle)` …),所以它是新造的判据,不是仓库现有的约定。留作
-待定项:这 32 个里有一部分(`from`/`to`、`y`/`x`、`min`/`max`)交换后同样是静默的
-错答案。
+不满足它(`string.contains(text, needle)`、`path.with_extension(path, ext)` …),
+所以它是新造的判据,不是仓库现有的约定 —— 对这些成员,"主体在前"本身就定了序。
+
+**成立的是更窄的一条:参数是对等项、没有主体来定序时,调用方必须能贴标签。**
+`fs.copy(a, b)` 哪个是源、`math.atan2(y, x)` 哪个是 y、`random.int(min, max)`
+哪个是上界,约定回答不了,交换后两边都跑得动且答案不同。按这条筛出十个成员,
+第二个参数改为 named-eligible:`bytes.concat`、`fs.copy`、`fs.rename`、
+`iter.chain`、`iter.zip`、`math.atan2`、`math.pow`、`random.int`、`stream.chain`、
+`time.since`。`math.hypot` / `min` / `max` 也是对等项,但它们对称,交换无影响,
+不在此列。
+
+这次同时补上了守卫的另一半。`lowering_named_parameter_lists_match_the_stdlib_declaration`
+只走降低表里**已经有名字**的行,所以"声明加了 `named(...)`、表里没加"它看不见 ——
+而那种情况是静默的:`CallNamed` 找不到名字,命名拼写停止降低,整程序回落到 VM,
+答案照样对。`every_declared_named_list_reaches_the_lowering_table` 补的就是这个方向,
+反向验过:十个成员加完声明、表还没改时,它报出正好那五个有降低行的成员。
 
 ## 维护约定
 

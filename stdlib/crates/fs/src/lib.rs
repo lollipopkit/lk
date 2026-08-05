@@ -138,7 +138,7 @@ impl FsModule {
         remove_path(path.as_ref(), |path| std::fs::remove_dir_all(path))
     }
 
-    #[stdlib_export(params(from: String, to: String), returns = Bool)]
+    #[stdlib_export(params(from: String, to: String), named(to), returns = Bool)]
     fn rename(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let from = path_arg(args.get(0).expect("checked arity"), runtime, "fs.rename from")?;
         let to = path_arg(args.get(1).expect("checked arity"), runtime, "fs.rename to")?;
@@ -146,7 +146,7 @@ impl FsModule {
         Ok(RuntimeVal::Bool(true))
     }
 
-    #[stdlib_export(params(from: String, to: String), returns = Int)]
+    #[stdlib_export(params(from: String, to: String), named(to), returns = Int)]
     fn copy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let from = path_arg(args.get(0).expect("checked arity"), runtime, "fs.copy from")?;
         let to = path_arg(args.get(1).expect("checked arity"), runtime, "fs.copy to")?;
