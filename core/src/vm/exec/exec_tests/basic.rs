@@ -1236,3 +1236,37 @@ fn execute_materializes_typed_string_list_on_non_string_write() {
 
     assert_eq!(values[0], RuntimeVal::Int(42));
 }
+
+/// Auto-display looks up **one** method name, and the user-facing docs said
+/// three.
+///
+/// `LEARN.md` promised "implement `show`, `display`, or `to_string` and
+/// `println` will use it"; the VM hard-codes `"show"`
+/// (`try_runtime_display_show`), so the other two names did nothing — a reader
+/// who wrote `display` saw the default struct rendering and no error.
+///
+/// One name rather than three is the choice: a second spelling of one hook is
+/// what this codebase keeps removing, and `#[derive(Show)]` already generates
+/// `show`. This pins it so the docs and the lookup cannot drift apart again.
+#[test]
+fn auto_display_uses_show_and_only_show() {
+    let shown = execute_source(
+        "struct S { x: Int }\nimpl S { fn show(self) -> String { return \"via-show\"; } }\nreturn \"${S { x: 1 }}\";\n",
+    )
+    .expect("runs");
+    let display = crate::vm::display_runtime_value(&shown.returns[0], &shown.state.heap);
+    assert!(display.contains("via-show"), "{display}");
+
+    for name in ["display", "to_string", "str", "fmt"] {
+        let program = format!(
+            "struct S {{ x: Int }}\nimpl S {{ fn {name}(self) -> String {{ return \"via-{name}\"; }} }}\nreturn \"${{S {{ x: 1 }}}}\";\n"
+        );
+        let result = execute_source(&program).expect("runs");
+        let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+        assert!(
+            !display.contains(&format!("via-{name}")),
+            "`{name}` must not be an auto-display hook, or the docs have to say it is: {display}"
+        );
+        assert!(display.contains("S{x:1}"), "the default rendering: {display}");
+    }
+}

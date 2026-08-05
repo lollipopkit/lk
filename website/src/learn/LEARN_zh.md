@@ -418,7 +418,8 @@ impl Area for Rect {
 shape.area()   // 40
 ```
 
-自动展示：实现 `show`、`display` 或 `to_string` 方法后，`println("{}")` 和 `${value}` 自动使用它：
+自动展示：实现名为 `show` 的方法后，`println("{}")` 和 `${value}` 自动使用它。
+只有这一个名字 —— `display` 和 `to_string` 不会被查找，用这两个名字写的方法不起作用。
 
 ```lk
 impl Area for Rect {

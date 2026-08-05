@@ -420,7 +420,9 @@ impl Area for Rect {
 shape.area()   // 40
 ```
 
-Auto-display: implement `show`, `display`, or `to_string` and `println("{}")` and `${value}` will use it:
+Auto-display: implement a method named `show` and `println("{}")` and
+`${value}` will use it. One name, not three — `display` and `to_string` are not
+looked up, and a method by either of those names changes nothing.
 
 ```lk
 impl Area for Rect {

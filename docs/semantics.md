@@ -1222,6 +1222,12 @@ native 侧 struct 实例是普通 string-keyed map(**无 `"$type"` 隐藏键**�
 - **类型标记不跨 channel**:深拷贝(`OwnedVal`)重建 map 时不复制标记,
   收方对该 struct 实例的动态 trait 方法调用会 raise(VM 能成功)。语料无
   此形状;如需支持,`OwnedVal` 捕获/重放需带上标记。
+- **auto-Display 只有 `show` 这一个钩子**,面向用户的文档曾说有三个。
+  `LEARN.md` 写着"实现 `show`、`display` 或 `to_string`,`println` 就会用它",
+  而查找是硬编码的 `"show"` —— 写 `display` 的人看到的是默认渲染,没有报错。
+  取一个名字而不是三个:一个钩子的第二种拼写正是这个代码库一直在删的东西,
+  而 `#[derive(Show)]` 生成的也是 `show`。
+  `auto_display_uses_show_and_only_show` 钉住这条,文档与查找不能再各说各的。
 - **auto-Display 只镜像 `show`**:VM `try_runtime_display_show` 硬编码查
   方法名 `"show"`(与 trait 名无关;`#[derive(Debug)]` 展开出的
   `__LKShow::show` 也走它)。native 在 display 上下文(print/println 参数、
