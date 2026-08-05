@@ -1491,6 +1491,39 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
+            // `Bytes` and a window: both already have a `contains` symbol —
+            // the operator was the one place they were not containers, in the
+            // checker, in the VM and here. A needle the carrier cannot hold is
+            // the VM's `false`, not an error, which the `I64` needle read
+            // gives for free only when the needle *is* an `Int`; anything else
+            // keeps rejecting rather than guessing.
+            if matches!(list_ty, Ty::Bytes | Ty::SliceI64) {
+                let needle = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: match list_ty {
+                        Ty::Bytes => AbiRef::new("bytes_h", "contains"),
+                        _ => AbiRef::new("slice_h", "i64_contains"),
+                    },
+                    args: vec![handle, needle],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             // `key in map` tests key membership (VM `map_contains`): read the
             // map's `Maybe` for the key and take its present bit — no value
             // materialization needed. Mirrors the map `GetIndex` path.

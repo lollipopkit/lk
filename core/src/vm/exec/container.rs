@@ -350,13 +350,39 @@ impl Executor {
                 HeapValue::List(values) => self.list_contains(values, needle),
                 HeapValue::Map(values) => self.map_contains(values, needle),
                 HeapValue::Set(values) => self.set_contains(values, needle),
+                // `Bytes` and a window were the two carriers `in` did not
+                // search, and neither had a reason: both index, both report a
+                // `len`, both iterate, and `Bytes` even has a `contains`
+                // method. The operator was the one place they were not
+                // containers.
+                HeapValue::Bytes(bytes) => Ok(match needle {
+                    RuntimeVal::Int(byte) => u8::try_from(*byte).is_ok_and(|byte| bytes.contains(&byte)),
+                    // A byte string holds byte values, so nothing else can be
+                    // in it — the VM's answer for a needle of the wrong kind
+                    // is `false`, as it is for a list of Ints searched for a
+                    // string.
+                    _ => false,
+                }),
+                // A window is a range of its source, so membership is
+                // membership in that range — the same reading `len`,
+                // indexing and `for` already take.
+                HeapValue::Slice(slice) => {
+                    let RuntimeVal::Obj(source) = slice.source else {
+                        return Ok(false);
+                    };
+                    let Some(HeapValue::List(values)) = self.state.heap.get(source) else {
+                        return Ok(false);
+                    };
+                    let window = values.window(slice.start, slice.live_len(&self.state.heap));
+                    self.list_contains(&window, needle)
+                }
                 other => bail!(
                     "Contains haystack object is not searchable: {:?}",
                     HeapValue::type_name(other)
                 ),
             },
             other => bail!(
-                "Contains haystack expected string/list/map/set, got {}",
+                "Contains haystack expected string/list/map/set/bytes/slice, got {}",
                 self.value_type_name(other)
             ),
         }

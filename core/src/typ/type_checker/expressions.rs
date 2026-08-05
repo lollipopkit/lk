@@ -1208,8 +1208,14 @@ impl TypeChecker {
             // else (indexing, `len`, method dispatch) and rejected only here.
             // `"a" in "abc"` therefore worked as a folded literal and was a
             // type error one line later with the same value in a variable.
+            // `Bytes` and `Slice<T>` were the last two: both index, both have a
+            // `len`, both iterate, and `Bytes` even has a `contains` method —
+            // `in` was the one place they were not containers. The VM had no
+            // arm for either either, so this is not a checker-only relaxation.
             BinOp::In => match self.resolve_aliases(&right_type) {
                 Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) | Type::String => Ok(Type::Bool),
+                Type::Named(name) if name == "Bytes" => Ok(Type::Bool),
+                Type::Generic { name, .. } if name == "Slice" => Ok(Type::Bool),
                 other => Err(Self::type_err(
                     "'in' operator requires container type",
                     Some(Type::List(Box::new(Type::Any))),

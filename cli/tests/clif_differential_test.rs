@@ -2217,6 +2217,16 @@ fn a_boxed_typed_map_keeps_its_order() {
             // tag's answer — a map tests keys, everything else tests elements
             // — and the lowering had no `Dyn` arm at all, so the whole program
             // fell back.
+            // `Bytes` and a window as haystacks. Both index, both report a
+            // `len`, both iterate, and `Bytes` even has a `contains` method —
+            // `in` was the one place they were not containers, and it was
+            // missing in all three of the checker, the VM and the lowering.
+            // A byte value outside `u8` is `false`, not an error, which is what
+            // a list of Ints searched for a string already answers.
+            new(
+                "in_over_bytes_and_a_window",
+                "let z = 0;\nlet b = \"ab\".bytes();\nprintln(97 + z in b);\nprintln(3 in b);\nprintln(300 in b);\nprintln(-1 in b);\nlet xs = [1 + z, 2, 3];\nlet w = xs.slice(0, 2);\nprintln(1 in w);\nprintln(3 in w);\nreturn 0;\n",
+            ),
             new(
                 "in_over_a_boxed_haystack",
                 "let z = 0;\nlet m = {\"a\": 1 + z};\nlet c = [m];\nprintln(\"a\" in c[0]);\nprintln(\"zz\" in c[0]);\nlet xs = [1 + z, 2];\nlet d = [xs];\nprintln(2 in d[0]);\nprintln(9 in d[0]);\nlet s = Set([1 + z]);\nlet e = [s];\nprintln(1 in e[0]);\nprintln(4 in e[0]);\nreturn 0;\n",
