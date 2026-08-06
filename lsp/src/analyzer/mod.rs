@@ -86,6 +86,14 @@ pub(crate) fn readable_type(ty: &val::Type) -> Option<String> {
     }
     // `Type::display` writes a variable as `'name`, and no other type spelling
     // contains an apostrophe.
+    //
+    // The substitute is `_`, which is now also how `Type::Unknown` — the
+    // read-only container view, `List<_>` — is written. Deliberately the same:
+    // a hint is read, not parsed, and both say the one thing the reader needs,
+    // that nothing here pins this type. Dropping the hint instead was tried
+    // (2026-08-06) and is worse — `test_hints_never_show_solver_type_variables`
+    // pins the case it loses, a lambda whose parameter is open and whose return
+    // is known (`(_) -> Int`), which is most of what these hints are for.
     static TYPE_VARIABLE: once_cell::sync::Lazy<regex::Regex> =
         once_cell::sync::Lazy::new(|| regex::Regex::new(r"'[A-Za-z_][A-Za-z0-9_]*").expect("valid regex"));
     Some(TYPE_VARIABLE.replace_all(&rendered, "_").into_owned())
