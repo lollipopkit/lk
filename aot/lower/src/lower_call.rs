@@ -603,7 +603,7 @@ pub(crate) fn lower_user_call(
         // scalar-context unwrap abort.
         let (aval, aty) = ssa.read(arg_reg, block, pc)?;
         let want = sig.observe_param(callee_idx, i, aty, ssa.struct_types.get(&aval).map(String::as_str));
-        // A typed list reaching an erased parameter has to be built Dyn.
+        // A typed container reaching an erased parameter has to be built Dyn.
         //
         // `want` is `Dyn` here because two call sites disagreed on the
         // carrier, so the callee sees the list only through its tag and a
@@ -620,8 +620,17 @@ pub(crate) fn lower_user_call(
         // widening is invisible to it at compile time), or the callee was
         // lowered once and reported the push itself (`dyn_params`), which is
         // the monomorphic case a single call site produces.
-        if matches!(aty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr)
-            && (want == Ty::Dyn || sig.dyn_params.contains(&(callee_idx as u32, i as u8)))
+        if matches!(
+            aty,
+            Ty::ListI64
+                | Ty::ListF64
+                | Ty::ListStr
+                | Ty::MapStrI64
+                | Ty::MapStrF64
+                | Ty::MapStrBool
+                | Ty::MapI64I64
+                | Ty::MapI64F64
+        ) && (want == Ty::Dyn || sig.dyn_params.contains(&(callee_idx as u32, i as u8)))
             && let Some(unsupported) = crate::inst::container::carrier_contradicted(ssa, aval, aty)
         {
             return Err(unsupported);

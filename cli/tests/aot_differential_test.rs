@@ -440,6 +440,16 @@ fn differential_maps() {
     run_differential(
         "maps",
         &[
+            // The same rule across a call, for the other container: the
+            // callee stores a value the parameter's carrier cannot hold, so
+            // the caller's literal is built with a Dyn carrier. Only the
+            // monomorphic shape is here — a map parameter two call sites
+            // disagree about is erased to `Dyn`, and a store through a `Dyn`
+            // receiver has no lowering yet, so that one still falls back.
+            new(
+                "a_callee_widens_its_only_caller_s_map",
+                "fn widen(m: Any) -> Int {\n  m[\"k\"] = \"z\";\n  return m.len();\n}\nlet a = {\"x\": 1};\nprintln(widen(a));\nprintln(a);\nreturn 0;\n",
+            ),
             // A map literal whose value type a later store contradicts is
             // built with a Dyn carrier — the same fixpoint retry the list
             // literals use. The VM widens the carrier in place; native cannot,
