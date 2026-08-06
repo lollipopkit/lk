@@ -108,6 +108,12 @@ impl Compiler {
         entry.impl_method_names = impl_methods.clone();
         entry.global_machine_widths = global_widths.clone();
         entry.dynamic_function_base = module.functions.len() as u32;
+        // As in `compile_function_body`: method-name constants first, so a
+        // `CallMethodK`'s 8-bit name index does not run out on a top level that
+        // also names structs and fields.
+        for method in crate::stmt::init_order::method_names_called_at_top_level(program) {
+            entry.push_string(&method)?;
+        }
         entry.lower_program_statements(program)?;
         module.type_info = core::mem::take(&mut entry.type_info);
         module.functions[0] = entry.finish()?;
@@ -291,6 +297,11 @@ impl Compiler {
                 .function
                 .param_names
                 .push(alloc::sync::Arc::<str>::from(name.as_str()));
+        }
+        // Method-name constants first, before anything in the body can take a
+        // low index (see `stmt::init_order::method_names_called`).
+        for method in crate::stmt::init_order::method_names_called(body) {
+            compiler.push_string(&method)?;
         }
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = compiler.function.param_count;

@@ -61,6 +61,12 @@ struct Facts {
     binds: HashSet<String>,
     /// Every syntactic `name(…)` callee.
     calls: HashSet<String>,
+    /// Every method name a call spells, in walk order.
+    ///
+    /// A `Vec`, not a set: the compiler seeds a function's constant pool with
+    /// these before lowering the body, and the pool's order is part of the
+    /// artifact. Walk order is deterministic; a hash set's is not.
+    methods: Vec<String>,
 }
 
 impl Facts {
@@ -324,7 +330,56 @@ fn walk_callee(callee: &Expr, depth: Depth, out: &mut Facts) {
         out.calls.insert(name.clone());
         return;
     }
+    // `a.m(…)` is `CallExpr(Access(a, m), …)`, and `m` is a `Var` or a string
+    // literal (`vm::compiler::call::method_name` reads exactly these two).
+    if let Expr::Access(target, field) | Expr::OptionalAccess(target, field) = callee {
+        let name = match &**field {
+            Expr::Var(name) => Some(name.clone()),
+            Expr::Literal(value) => value.as_str().map(alloc::string::ToString::to_string),
+            _ => None,
+        };
+        if let Some(name) = name {
+            if !out.methods.contains(&name) {
+                out.methods.push(name);
+            }
+            walk_expr(target, depth, out);
+            return;
+        }
+    }
     walk_expr(callee, depth, out);
+}
+
+/// Every method name a body's calls spell, in source order and deduplicated.
+///
+/// The compiler seeds a function's constant pool with these before lowering it.
+/// `CallMethodK` carries the name's constant index in **8 bits** (the `abc`
+/// form is full: 7 opcode + 8 A + 1 K + 8 B + 8 C), so a name landing past 255
+/// falls back to a `__lk_call_method` helper call — which the native backend
+/// cannot lower, taking the whole program with it.
+///
+/// Measured before the seeding: 130 structs each with one method, called once
+/// each from `main`, stopped lowering at the 129th — the struct names and field
+/// names of the literals share the same per-function pool and pushed the method
+/// names past the byte. Seeding first makes the bound what it reads like: 256
+/// distinct method names called from one function.
+pub(crate) fn method_names_called(body: &Stmt) -> Vec<String> {
+    let mut facts = Facts::default();
+    walk_stmt(body, Depth::Everything, &mut facts);
+    facts.methods
+}
+
+/// The same, for the top level — whose statements are the entry function's
+/// body and are not wrapped in a `Stmt`.
+///
+/// `Depth::ExecutedNow` so a `fn`'s own body is left to its own seeding: those
+/// names belong in *that* function's pool, and crowding the entry's pool with
+/// them is what this whole seeding is avoiding.
+pub(crate) fn method_names_called_at_top_level(program: &Program) -> Vec<String> {
+    let mut facts = Facts::default();
+    for stmt in &program.statements {
+        walk_stmt(stmt, Depth::ExecutedNow, &mut facts);
+    }
+    facts.methods
 }
 
 fn collect_for_pattern(pattern: &ForPattern, out: &mut Facts) {

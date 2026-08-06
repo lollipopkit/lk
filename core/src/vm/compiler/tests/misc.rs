@@ -1427,6 +1427,53 @@ fn a_call_above_its_definition_still_knows_the_signature() {
 /// Every function gets its own `Compiler`, and each one used to receive a deep
 /// **clone** of the ten tables that describe the program — names, signatures,
 /// inlinable bodies (which hold ASTs), widths. So compiling the n-th function
+/// A function may call 256 distinct methods, not 128.
+///
+/// `CallMethodK` carries the method name's constant index in **8 bits** — the
+/// `abc` form is full (7 opcode + 8 A + 1 K + 8 B + 8 C) — and a name past 255
+/// falls back to a `__lk_call_method` helper call, which the native backend
+/// cannot lower. So the whole program silently loses native compilation.
+///
+/// The bound *read* like 256 method names and *was* 129: a function's constant
+/// pool is shared with everything else it mentions, so 130 structs each
+/// constructed and called once pushed the method names past the byte with their
+/// own type and field names. Seeding the pool with the body's method names
+/// first makes the two agree.
+///
+/// Asserted on the instruction, not on whether it compiles: the fallback path
+/// still produces a working program, so only the opcode says which one ran.
+#[test]
+fn a_function_may_call_two_hundred_distinct_methods() {
+    fn method_calls(n: usize) -> String {
+        let mut out = String::new();
+        for i in 0..n {
+            out.push_str(&alloc::format!(
+                "struct S{i} {{ x: Int }}\nimpl S{i} {{ fn m{i}(self) -> Int {{ return self.x + 1; }} }}\n"
+            ));
+        }
+        out.push_str("fn main() -> Int {\n");
+        for i in 0..n {
+            out.push_str(&alloc::format!("    let v{i} = S{i} {{ x: {i} }}.m{i}();\n"));
+        }
+        out.push_str("    return 0;\n}\nmain();\n");
+        out
+    }
+
+    let generic_calls = |source: &str| {
+        let program = parse_program(source);
+        let module = crate::vm::Compiler::compile_module(&program).expect("compile module");
+        module
+            .functions
+            .iter()
+            .flat_map(|function| function.code.iter().copied())
+            .filter(|instr| instr.opcode() == crate::vm::Opcode::CallMethodK)
+            .count()
+    };
+
+    // 200 distinct methods, each called once: every call is a `CallMethodK`.
+    assert_eq!(generic_calls(&method_calls(200)), 200);
+}
+
 /// copied everything the n-1 before it had declared. It was not subtle: 1000
 /// functions took 0.55s, 2000 took 2.30s, 4000 took 10.9s, and before the type
 /// checker's scopes stopped cloning too, 4000 took 23s.
