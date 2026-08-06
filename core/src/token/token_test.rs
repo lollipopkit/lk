@@ -1026,6 +1026,25 @@ line2""#,
         assert!(Tokenizer::tokenize("0x").is_err());
         assert!(Tokenizer::tokenize("0b").is_err());
     }
+
+    /// A lexer error is one line, and an unterminated string says where it
+    /// opened.
+    ///
+    /// It used to be three: `"Syntax error:\n{msg}\nLine {n}: {source}"`, with
+    /// the near context copied raw, so a newline inside it broke the message
+    /// again, and with `Line {n}` naming the line the *scan* reached — at end
+    /// of input that is one past the file, so the field printed empty. The
+    /// caller renders the offending line with a caret itself; this only has to
+    /// say what is wrong and where the quote is.
+    #[test]
+    fn an_unterminated_string_names_its_opening_quote_on_one_line() {
+        let error = Tokenizer::tokenize("let s = \"abc\nlet b = 2;\n")
+            .expect_err("an unterminated string is an error")
+            .to_string();
+        assert!(!error.contains('\n'), "the message is one line: {error}");
+        assert!(error.contains("1:9"), "it names the opening quote: {error}");
+        assert!(error.contains("String not closed"), "{error}");
+    }
 }
 
 /// A keyword may name a **member** — a field or a method — because a member is

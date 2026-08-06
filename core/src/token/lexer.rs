@@ -186,7 +186,7 @@ fn is_ident_continue(c: char) -> bool {
 }
 
 /// [chars] and [idx] can be used for syntax error reporting.
-pub struct Tokenizer<'a> {
+pub struct Tokenizer {
     chars: Vec<char>,
     idx: usize,
     len: usize,
@@ -194,10 +194,9 @@ pub struct Tokenizer<'a> {
     pub token_spans: Option<Vec<Span>>,
     line: u32,
     column: u32,
-    input: &'a str,
 }
 
-impl<'a> Tokenizer<'a> {
+impl Tokenizer {
     pub fn tokenize(s: &str) -> Result<Vec<Token>> {
         let chars: Vec<char> = s.chars().collect();
         let mut t = Tokenizer {
@@ -208,7 +207,6 @@ impl<'a> Tokenizer<'a> {
             token_spans: None,
             line: 1,
             column: 1,
-            input: s,
         };
         t.parse()?;
         Ok(t.tokens)
@@ -242,7 +240,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Create a tokenizer with enhanced error reporting
-    pub fn new_enhanced(input: &'a str) -> Self {
+    pub fn new_enhanced(input: &str) -> Self {
         let chars: Vec<char> = input.chars().collect();
         Self {
             len: chars.len(),
@@ -252,7 +250,6 @@ impl<'a> Tokenizer<'a> {
             token_spans: Some(Vec::with_capacity(input.len() / 4)),
             line: 1,
             column: 1,
-            input,
         }
     }
 
@@ -292,8 +289,18 @@ impl<'a> Tokenizer<'a> {
         };
         let l_idx = self.idx.saturating_sub(5);
         let r_idx = if r_idx > self.len { self.len } else { r_idx };
-        let chars = &self.chars[l_idx..r_idx];
-        let chars: String = chars.iter().collect();
+        // Escaped, not raw: the snippet is source text, and a newline in it
+        // used to break the message across lines — an error a caller renders
+        // with a caret cannot have its own line breaks.
+        let chars: String = self.chars[l_idx..r_idx]
+            .iter()
+            .flat_map(|c| match c {
+                '\n' => "\\n".chars().collect::<Vec<_>>(),
+                '\r' => "\\r".chars().collect(),
+                '\t' => "\\t".chars().collect(),
+                other => alloc::vec![*other],
+            })
+            .collect();
         let c = self.chars.get(self.idx);
         let ctx = if let Some(&c) = c {
             format!("'{}' at index {}, near '{}'", c, self.idx, chars)
@@ -301,25 +308,10 @@ impl<'a> Tokenizer<'a> {
             format!("at end, near '{}'", chars)
         };
 
-        // Use the stored input for better context if needed
-        let line_context = self.get_line_context();
-        format!(
-            "Syntax error:\n{} ({})\nLine {}: {}",
-            msg.as_ref(),
-            ctx,
-            self.line,
-            line_context
-        )
-    }
-
-    /// Get the current line from input for error context
-    fn get_line_context(&self) -> String {
-        let target = (self.line as usize).saturating_sub(1);
-        self.input
-            .lines()
-            .nth(target)
-            .map(|line| line.to_string())
-            .unwrap_or_default()
+        // One line, and the same "Syntax error: " prefix the statement parser
+        // uses — this used to be three lines with the source line embedded, which
+        // a caller that renders its own caret cannot lay out.
+        format!("Syntax error: {} ({})", msg.as_ref(), ctx)
     }
 
     fn advance_char(&mut self) {
@@ -487,7 +479,12 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Err(anyhow!(self.err("String not closed")))
+        // Where it *opened* is the useful position: the error is discovered at
+        // end of input, which is nowhere near the quote that has no partner.
+        Err(anyhow!(self.err(format!(
+            "String not closed — the quote at {}:{} has no partner",
+            start_pos.line, start_pos.column
+        ))))
     }
 
     /// Parse Rust-style raw string literals: r"...", r#"..."#, r##"..."##, ...
@@ -1416,7 +1413,7 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-impl<'a> Tokenizer<'a> {
+impl Tokenizer {
     fn push_with_span(&mut self, token: Token, start: Position, end: Position) {
         self.tokens.push(token);
         if let Some(spans) = &mut self.token_spans {
