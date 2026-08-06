@@ -160,16 +160,28 @@ impl Stmt {
                 if let Some(trait_name) = trait_name
                     && let Some(trait_def) = type_checker.registry().get_trait(trait_name)
                 {
-                    let declared: Vec<String> = trait_def.methods.keys().cloned().collect();
-                    for required in declared {
-                        let present = methods
+                    let declared: Vec<(String, crate::val::Type)> = trait_def
+                        .methods
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), ty.clone()))
+                        .collect();
+                    for (required, expected) in declared {
+                        let implemented = methods
                             .iter()
-                            .any(|method| matches!(item_of(method), Stmt::Function { name, .. } if *name == required));
-                        if !present {
+                            .map(item_of)
+                            .find(|item| matches!(item, Stmt::Function { name, .. } if *name == required));
+                        let Some(implemented) = implemented else {
                             return Err(anyhow!(format!(
                                 "Method '{required}' required by trait '{trait_name}' not implemented for type '{}'",
                                 target_type.display()
                             )));
+                        };
+                        // Present is not the whole question: the same rule the
+                        // VM applies when it registers the impl decides whether
+                        // the signature can stand in for the trait's, and it
+                        // used to run only there.
+                        if let Some((_, actual)) = crate::typ::declared_signature::signature_of_stmt(implemented) {
+                            crate::typ::trait_method_conformance(&required, trait_name, &expected, &actual)?;
                         }
                     }
                 }

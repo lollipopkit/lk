@@ -2590,3 +2590,18 @@ slice / bytes,独缺字符串)。
 那两处的注释写着"拒绝匹配类型产生不了的模式",而 `.ok()` 恰好把那个拒绝扔了。类型不匹配
 在 `if let` 上确实不该静态拒绝 —— 测试它正是这个构造的用途;但重名不是那类,没有任何值
 能让它成立。所以查重拆成独立的方法,不经过那条被吞的返回值。
+
+## `impl` 方法的签名必须顶得住 trait 的声明,而这句话在 `lk check` 里说(2026-08-06 裁决)
+
+    trait T { fn m(self, a: Int) -> Int; }
+    struct S { x: Int }
+    impl T for S { fn m(self) -> Int { return 1; } }
+    改前 → lk check 通过,一运行就 "Method 'm' arity mismatch for trait 'T'"
+    改后 → lk check 就报同一句
+
+判据本身一直存在(`TypeRegistry::validate_trait_impl`),只是在 **VM 注册 impl 时**才跑。
+#99 把"方法有没有实现"那一半搬进了检查器,并在注释里写下"present 就是全部问题" ——
+那句不准确:元数、形参类型、返回类型同样由那份判据管,同样被 `lk check` 放过。
+
+现在是一条规则两个调用者:`trait_method_conformance` 被注册路径和 `impl` 语句的检查
+共同调用。形参逆变、返回协变,是"一个签名要顶替另一个"的通常规矩。

@@ -1164,4 +1164,30 @@ mod tests {
             check_program(src).unwrap_or_else(|e| panic!("should be accepted: {src}: {e}"));
         }
     }
+    /// An `impl` method's signature has to stand in for the trait's, and
+    /// `lk check` is where that is said.
+    ///
+    /// The rule existed and ran only when the VM registered the impl, so a
+    /// method with the wrong arity, the wrong parameter type or the wrong
+    /// return type passed the pre-flight command and failed the moment the
+    /// program ran. #99 moved the *presence* half here and recorded that
+    /// presence was "the whole question" — it was not.
+    #[test]
+    fn an_impl_method_must_match_the_trait_signature() {
+        for src in [
+            // Arity.
+            "trait T { fn m(self, a: Int) -> Int; }\nstruct S { x: Int }\nimpl T for S { fn m(self) -> Int { return 1; } }\n",
+            // Parameter type.
+            "trait T { fn m(self, a: Int) -> Int; }\nstruct S { x: Int }\nimpl T for S { fn m(self, a: String) -> Int { return 1; } }\n",
+            // Return type.
+            "trait T { fn m(self) -> Int; }\nstruct S { x: Int }\nimpl T for S { fn m(self) -> String { return \"s\"; } }\n",
+        ] {
+            assert!(check_program(src).is_err(), "should be refused: {src}");
+        }
+
+        check_program(
+            "trait T { fn m(self, a: Int) -> Int; }\nstruct S { x: Int }\nimpl T for S { fn m(self, a: Int) -> Int { return a; } }\nprintln(S { x: 1 }.m(2));\n",
+        )
+        .expect("a matching signature is accepted");
+    }
 }

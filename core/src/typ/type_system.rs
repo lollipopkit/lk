@@ -89,6 +89,73 @@ pub struct TypeRegistry {
     type_var_counter: u32,
 }
 
+/// Whether an `impl`'s method signature satisfies the trait's declaration.
+///
+/// One rule, two callers: [`TypeRegistry::validate_trait_impl`], which the VM
+/// runs when it registers an impl, and the `impl` statement's own check, which
+/// `lk check` runs. The *presence* half was moved to the checker on its own
+/// and left this behind — so a method that took the wrong number of arguments,
+/// or returned the wrong type, passed `lk check` and failed the moment the
+/// program ran, with the pre-flight command saying nothing.
+///
+/// Parameters are contravariant and the return type covariant, which is the
+/// ordinary rule for a signature that has to stand in for another.
+pub fn trait_method_conformance(method_name: &str, trait_name: &str, expected: &Type, actual: &Type) -> Result<()> {
+    let (
+        Type::Function {
+            params: exp_params,
+            named_params: exp_named,
+            return_type: exp_ret,
+        },
+        Type::Function {
+            params: act_params,
+            named_params: act_named,
+            return_type: act_ret,
+        },
+    ) = (expected, actual)
+    else {
+        return Ok(());
+    };
+    if exp_params.len() != act_params.len() {
+        return Err(anyhow!(
+            "Method '{}' arity mismatch for trait '{}': expected {}, got {}",
+            method_name,
+            trait_name,
+            exp_params.len(),
+            act_params.len()
+        ));
+    }
+    if exp_named.len() != act_named.len() {
+        return Err(anyhow!(
+            "Method '{}' named parameter count mismatch for trait '{}': expected {}, got {}",
+            method_name,
+            trait_name,
+            exp_named.len(),
+            act_named.len()
+        ));
+    }
+    let params_ok = exp_params
+        .iter()
+        .zip(act_params.iter())
+        .all(|(e, a)| a.is_assignable_to(e));
+    let named_ok = exp_named.iter().all(|exp_np| {
+        act_named
+            .iter()
+            .find(|act_np| act_np.name == exp_np.name)
+            .map(|act_np| act_np.has_default == exp_np.has_default && act_np.ty.is_assignable_to(&exp_np.ty))
+            .unwrap_or(false)
+    });
+    let ret_ok = act_ret.is_assignable_to(exp_ret);
+    if !params_ok || !named_ok || !ret_ok {
+        return Err(anyhow!(
+            "Method '{}' signature mismatch for trait '{}'",
+            method_name,
+            trait_name
+        ));
+    }
+    Ok(())
+}
+
 impl TypeRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -335,58 +402,9 @@ impl TypeRegistry {
             }
 
             // If expected is a function, check arity
-            if let Type::Function {
-                params: exp_params,
-                named_params: exp_named,
-                return_type: exp_ret,
-            } = expected_ty
-            {
-                if let Type::Function {
-                    params: act_params,
-                    named_params: act_named,
-                    return_type: act_ret,
-                } = &actual_ty
-                {
-                    if exp_params.len() != act_params.len() {
-                        return Err(anyhow!(
-                            "Method '{}' arity mismatch for trait '{}': expected {}, got {}",
-                            method_name,
-                            impl_def.trait_name,
-                            exp_params.len(),
-                            act_params.len()
-                        ));
-                    }
-                    if exp_named.len() != act_named.len() {
-                        return Err(anyhow!(
-                            "Method '{}' named parameter count mismatch for trait '{}': expected {}, got {}",
-                            method_name,
-                            impl_def.trait_name,
-                            exp_named.len(),
-                            act_named.len()
-                        ));
-                    }
-                    // When signatures are concrete, ensure contravariant params and covariant return
-                    let params_ok = exp_params
-                        .iter()
-                        .zip(act_params.iter())
-                        .all(|(e, a)| a.is_assignable_to(e));
-                    let named_ok = exp_named.iter().all(|exp_np| {
-                        act_named
-                            .iter()
-                            .find(|act_np| act_np.name == exp_np.name)
-                            .map(|act_np| {
-                                act_np.has_default == exp_np.has_default && act_np.ty.is_assignable_to(&exp_np.ty)
-                            })
-                            .unwrap_or(false)
-                    });
-                    let ret_ok = act_ret.is_assignable_to(exp_ret);
-                    if !params_ok || !named_ok || !ret_ok {
-                        return Err(anyhow!(
-                            "Method '{}' signature mismatch for trait '{}'",
-                            method_name,
-                            impl_def.trait_name
-                        ));
-                    }
+            if let Type::Function { .. } = expected_ty {
+                if let Type::Function { .. } = &actual_ty {
+                    trait_method_conformance(method_name, &impl_def.trait_name, expected_ty, &actual_ty)?;
                 } else {
                     // Should not happen given construction above
                     return Err(anyhow!(
