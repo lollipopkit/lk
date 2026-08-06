@@ -1281,6 +1281,23 @@ pub(super) fn lower(
                 });
                 return Ok(());
             }
+            // A boxed receiver stores through `dyn.index_set`, which reaches
+            // the carrier behind the tag. Both the key and the value travel
+            // boxed: which key shape a carrier accepts is the callee's rule
+            // (an integer key on a map is a key, not a position), and this
+            // side has no carrier to check it against.
+            if list_ty == Ty::Dyn {
+                let (kv, kty) = ssa.read(instr.b(), block, pc)?;
+                let key = to_dyn_any(ssa, insts, kv, kty, pc)?;
+                let (cv, cty) = ssa.read(instr.c(), block, pc)?;
+                let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("dyn", "index_set"),
+                    args: vec![handle, key, boxed],
+                });
+                return Ok(());
+            }
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
             // A boxed map takes any value: box it and store. Without this arm

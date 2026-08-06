@@ -631,6 +631,46 @@ pub(crate) fn typed_map_delete(kind: i64, handle: *mut c_void, key: *const c_cha
     }
 }
 
+/// `m[k] = v` on a **boxed** typed map, by carrier kind.
+///
+/// The counterpart of [`typed_map_delete`], and the key rule is the one
+/// [`crate::lkdyn::lkrt_dyn_index`] states: an integer key on a map is a *key*,
+/// not a position, so each kind takes the key its carrier is keyed by and a key
+/// of the other shape raises.
+///
+/// A value the carrier cannot hold raises rather than widening it. The
+/// allocation belongs to whoever built the map, and their other aliases read it
+/// by its static type, so a `str -> i64` map cannot become a `str -> Dyn` one
+/// here; the carrier is decided at the literal instead (see
+/// `docs/semantics.md`, "拓宽一个列表的载体,只有构造点能做").
+pub(crate) fn typed_map_set(kind: i64, handle: *mut c_void, key: crate::lkdyn::LkDyn, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_str};
+    // SAFETY: as in `typed_map_delete`; the key pointer, when one is taken, is
+    // the boxed key's own NUL-terminated string.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_i64(value)),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_f64(value)),
+            // A `bool` carrier stores its members as `i64`; only a boxed bool
+            // belongs in one, so this does not go through `as_i64`.
+            KIND_STR_BOOL => lkrt_lkmap_str_i64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_bool(value)),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_set(handle, lkrt_dyn_as_i64(key), lkrt_dyn_as_i64(value)),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_set(handle, lkrt_dyn_as_i64(key), lkrt_dyn_as_f64(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// A boxed bool as the `i64` a `bool` carrier stores. An `Int` is *not*
+/// accepted: the two are distinct types in this language, and the carrier
+/// merely shares their machine representation.
+fn lkrt_dyn_as_bool(v: crate::lkdyn::LkDyn) -> i64 {
+    if v.tag != crate::lkdyn::DYN_BOOL {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload
+}
+
 /// The entries under the general key type, for **equality only**.
 ///
 /// This is a copy, and that is fine here and nowhere else: `==` over maps is

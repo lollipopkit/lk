@@ -1439,6 +1439,40 @@ pub unsafe extern "C" fn lkrt_dyn_map_delete(v: LkDyn, key: *const c_char) -> Lk
     crate::lkmap::typed_map_delete(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void, key)
 }
 
+/// `c[k] = v` where `c` is boxed — stores into the carrier behind the tag, so
+/// the box and the original stay one container.
+///
+/// One entry point for both containers, because the key rule is one rule: an
+/// integer key on a map is a *key*, not a position (the same adjudication
+/// [`lkrt_dyn_index`] states for reads). The key travels boxed so this side can
+/// apply it; a key of the wrong shape for the carrier raises.
+///
+/// The store twin of [`lkrt_dyn_list_push`]: `dyn.as_list` and `dyn.as_map` are
+/// read-only, and a write through either would land in a materialized copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_index_set(v: LkDyn, key: LkDyn, value: LkDyn) {
+    if is_map_tag(v.tag) {
+        if v.tag == DYN_MAP {
+            // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; the key
+            // pointer is the boxed key's own NUL-terminated string.
+            unsafe { crate::lkmap::lkrt_lkmap_str_dyn_set(v.payload as *mut c_void, lkrt_dyn_as_str(key), value) };
+            return;
+        }
+        crate::lkmap::typed_map_set(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void, key, value);
+        return;
+    }
+    let index = lkrt_dyn_as_i64(key);
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`.
+        unsafe { lkrt_lklist_dyn_set(v.payload as *mut c_void, index, value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_set(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index, value);
+}
+
 /// An integer key on a map is a *key*, not a position.
 ///
 /// `{3: 4}[3]` is `4` and there is no element 3 — so a map tag of either

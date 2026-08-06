@@ -2006,6 +2006,46 @@ pub(crate) fn typed_list_push(kind: i64, handle: *mut c_void, value: crate::lkdy
     }
 }
 
+/// `xs[i] = v` on a **boxed** typed list: stores into the carrier itself, so
+/// the box and the original stay one list.
+///
+/// The index rule is [`store_index_or_raise`]'s, the same one the unboxed
+/// spelling uses — out of range is the VM's halt, and a negative index counts
+/// from the end. The element unboxes back to the carrier's type, like
+/// [`typed_list_push`].
+pub(crate) fn typed_list_set(kind: i64, handle: *mut c_void, index: i64, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    // SAFETY: as in [`typed_list_push`].
+    unsafe {
+        match kind {
+            TLIST_I64 => {
+                let values = &mut *(handle as *mut Vec<i64>);
+                // Unboxed *before* the index is resolved, because both can
+                // raise and the VM reports the type first.
+                let v = crate::lkdyn::lkrt_dyn_as_i64(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            TLIST_F64 => {
+                let values = &mut *(handle as *mut Vec<f64>);
+                let v = crate::lkdyn::lkrt_dyn_as_f64(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            TLIST_STR => {
+                let values = &mut *(handle as *mut Vec<*const c_char>);
+                let v = crate::lkdyn::lkrt_dyn_as_str(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

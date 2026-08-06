@@ -442,10 +442,24 @@ fn differential_maps() {
         &[
             // The same rule across a call, for the other container: the
             // callee stores a value the parameter's carrier cannot hold, so
-            // the caller's literal is built with a Dyn carrier. Only the
-            // monomorphic shape is here — a map parameter two call sites
-            // disagree about is erased to `Dyn`, and a store through a `Dyn`
-            // receiver has no lowering yet, so that one still falls back.
+            // the caller's literal is built with a Dyn carrier. Both shapes,
+            // as for lists — the erased one stores through `dyn.index_set`.
+            new(
+                "a_callee_widens_a_shared_map_parameter",
+                "fn widen(m: Any) -> Int {\n  m[\"k\"] = \"z\";\n  return m.len();\n}\nlet a = {\"x\": 1};\nlet b = {\"y\": 1.5};\nprintln(widen(a));\nprintln(widen(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            // An index store through a boxed receiver, which is the other
+            // spelling `dyn.index_set` carries: an integer key is a position
+            // on a list and a key on a map, and the negative-from-end and
+            // out-of-range rules are the unboxed ones.
+            new(
+                "a_boxed_receiver_stores_by_index",
+                "fn setit(xs: Any) -> Int {\n  xs[0] = 9;\n  xs[-1] = 8;\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(setit(a));\nprintln(setit(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "a_boxed_receiver_store_is_bounds_checked",
+                "fn setit(xs: Any) -> Int {\n  xs[5] = 9;\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(setit(a));\nprintln(setit(b));\nreturn 0;\n",
+            ),
             new(
                 "a_callee_widens_its_only_caller_s_map",
                 "fn widen(m: Any) -> Int {\n  m[\"k\"] = \"z\";\n  return m.len();\n}\nlet a = {\"x\": 1};\nprintln(widen(a));\nprintln(a);\nreturn 0;\n",

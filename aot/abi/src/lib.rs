@@ -766,6 +766,10 @@ macro_rules! for_each_abi_fn {
             ("dyn", "map_values", lkrt_dyn_map_values, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "map_has", lkrt_dyn_map_has, ReadsHost, [DynVal, StrPtr], I64);
             ("dyn", "map_delete", lkrt_dyn_map_delete, WritesHost, [DynVal, StrPtr], DynVal);
+            // `c[k] = v` through a boxed receiver, for either container: the
+            // key is boxed so one row can carry both spellings, since which of
+            // them a tag accepts is what the callee decides.
+            ("dyn", "index_set", lkrt_dyn_index_set, WritesHost, [DynVal, DynVal, DynVal], Nil, Borrowed);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
             ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);
