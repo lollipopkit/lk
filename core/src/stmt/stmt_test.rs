@@ -1,5 +1,56 @@
 #[cfg(test)]
 mod tests {
+    /// Deeply nested *statements* used to abort the process.
+    ///
+    /// The parser bounded expression nesting (`ast::parser::MAX_EXPR_DEPTH`)
+    /// and nothing bounded statements, so `if { if { … } }` parsed fine and the
+    /// **type checker** — walking the same tree one Rust frame per level — ran
+    /// out of stack. A debug `lk check` on 170 levels printed
+    /// `fatal runtime error: stack overflow` and exited 134: no line, no
+    /// message, and on bare metal no guard page to trap it either.
+    ///
+    /// Two assertions, because either alone is satisfiable by a mistake: the
+    /// depth that a program may reach is accepted, and one past it is a *syntax
+    /// error* rather than an abort.
+    /// Deeply nested *statements* used to abort the process.
+    ///
+    /// The parser bounded expression nesting (`ast::parser::MAX_EXPR_DEPTH`)
+    /// and nothing bounded statements, so `if { if { … } }` parsed fine and the
+    /// **type checker** — walking the same tree one Rust frame per level — ran
+    /// out of stack. A debug `lk check` on 170 levels printed
+    /// `fatal runtime error: stack overflow` and exited 134: no line, no
+    /// message, and on bare metal no guard page to trap it either.
+    ///
+    /// Two assertions, because either alone is satisfiable by a mistake: the
+    /// depth a program may reach is accepted, and one past it is a *syntax
+    /// error* rather than an abort.
+    #[test]
+    fn deeply_nested_statements_error_instead_of_overflowing_the_stack() {
+        fn nested(levels: usize) -> String {
+            let mut src = String::from("fn main() -> Int {\n");
+            for _ in 0..levels {
+                src.push_str("if true {\n");
+            }
+            src.push_str("println(1);\n");
+            for _ in 0..levels {
+                src.push_str("}\n");
+            }
+            src.push_str("return 0;\n}\n");
+            src
+        }
+
+        // One source level costs two parse frames (the construct, and the block
+        // it takes as a body), so the source bound is half the constant.
+        let source_levels = crate::stmt::stmt_parser::MAX_STMT_DEPTH / 2;
+        crate::syntax::parse_program_source(&nested(source_levels - 1), Default::default())
+            .expect("a program may nest this deep");
+
+        let error = crate::syntax::parse_program_source(&nested(source_levels), Default::default())
+            .expect_err("one past the bound is refused, not aborted")
+            .to_string();
+        assert!(error.contains("statement nesting too deep"), "{error}");
+    }
+
     #[cfg(not(feature = "std"))]
     use crate::compat::prelude::*;
     use crate::vm::ProgramExec;

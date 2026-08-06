@@ -203,11 +203,34 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Parses one statement.
+    ///
+    /// The single choke point every level of statement nesting passes through:
+    /// a block parses its statements here, and `if`/`while`/`for`/`try` parse
+    /// their bodies as blocks. Bounding it here bounds every consumer that
+    /// walks the tree afterwards — which is the point, because the one that ran
+    /// out of stack first was the *type checker*, not this.
     pub fn parse_statement(&mut self) -> Result<Stmt> {
         if self.eof() {
             return Ok(Stmt::Empty);
         }
+        if self.depth >= super::MAX_STMT_DEPTH {
+            // Halved for the reader: the counter's unit is a parse frame,
+            // and a level of source nesting is two of them.
+            return Err(anyhow!(self.err(&alloc::format!(
+                "statement nesting too deep (more than {} levels)",
+                super::MAX_STMT_DEPTH / 2
+            ))));
+        }
+        self.depth += 1;
+        // Decremented on the error path too, like the expression parser's:
+        // a bounded parse that fails must not leave the counter raised for
+        // whatever the caller tries next.
+        let parsed = self.parse_statement_inner();
+        self.depth -= 1;
+        parsed
+    }
 
+    fn parse_statement_inner(&mut self) -> Result<Stmt> {
         match &self.tokens[self.pos] {
             Token::Hash => self.parse_attributed_stmt(),
             Token::Use => self.parse_import_stmt(),
