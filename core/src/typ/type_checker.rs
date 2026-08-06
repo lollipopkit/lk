@@ -481,6 +481,11 @@ impl TypeChecker {
         self.unsafe_depth > 0
     }
 
+    /// The top-level bindings not yet reached (see the field docs).
+    pub fn pending_top_level(&self) -> &HashSet<String> {
+        &self.pending_top_level
+    }
+
     /// Records the top-level bindings not yet reached (see the field docs).
     pub fn set_pending_top_level(&mut self, names: HashSet<String>) {
         self.pending_top_level = names;

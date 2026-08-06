@@ -3,6 +3,7 @@
 #[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 pub mod defer;
 pub mod import;
+pub(crate) mod init_order;
 mod stmt_impl;
 pub mod stmt_parser;
 pub mod struct_ctors;

@@ -773,6 +773,48 @@ mod tests {
         assert!(message.contains("struct 'P'"), "{message}");
     }
 
+    /// A top-level statement whose call reaches a binding declared below it.
+    ///
+    /// The top level runs in order, so `f()` above `const LATER` read nil —
+    /// and `typeof(f())` answered `Nil` for a function declared `-> Int`.
+    /// Whatever touched the nil next reported its own complaint; nothing ever
+    /// named the ordering. Python raises `NameError` here and JavaScript raises
+    /// out of the temporal dead zone.
+    ///
+    /// The other two cases were already settled: a direct top-level read is
+    /// refused, and a *body* reading a later binding is ordinary because bodies
+    /// run after the whole top level.
+    #[test]
+    fn a_top_level_call_may_not_reach_a_binding_declared_below_it() {
+        let message = check_program("fn f() -> Int { return LATER; }\nprintln(f());\nconst LATER = 7;\n")
+            .expect_err("`f` runs before line 3 does")
+            .to_string();
+        assert!(message.contains("`f` reads `LATER`"), "{message}");
+        assert!(message.contains("the top level runs in order"), "{message}");
+
+        // Transitively, through a second function.
+        let message = check_program(
+            "fn inner() -> Int { return LATER; }\n\
+             fn outer() -> Int { return inner(); }\n\
+             println(outer());\n\
+             const LATER = 7;\n",
+        )
+        .expect_err("the read is one call deeper")
+        .to_string();
+        assert!(message.contains("`LATER`"), "{message}");
+
+        // Below the declaration it is ordinary, and so is a body that reads a
+        // later binding without being called yet.
+        check_program("fn f() -> Int { return LATER; }\nconst LATER = 7;\nprintln(f());\n")
+            .expect("the declaration runs first");
+        check_program("fn f() -> Int { return LATER; }\nconst LATER = 7;\n").expect("never called above it");
+
+        // A local of the same name is not the global one (shadowing is
+        // subtracted wholesale — see `stmt::init_order`).
+        check_program("fn f() -> Int { let LATER = 1; return LATER; }\nprintln(f());\nconst LATER = 7;\n")
+            .expect("the read is the local");
+    }
+
     /// A method a scalar does not have is a *check-time* error, like it already
     /// was on a String or a List.
     ///

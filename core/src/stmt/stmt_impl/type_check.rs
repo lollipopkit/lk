@@ -1284,8 +1284,10 @@ impl Program {
         // made per-function instead: inferring a parameter from a call site
         // further down is a feature.
         let previous_defer = type_checker.begin_deferred_strict_function_checks();
+        let init_order = crate::stmt::init_order::InitOrder::of(self);
         let result = (|| {
             for stmt in &self.statements {
+                premature_read_error(&init_order, stmt, type_checker)?;
                 stmt.type_check(type_checker)?;
             }
             type_checker.finalize_deferred_strict_function_checks()
@@ -1316,7 +1318,11 @@ impl Program {
 
         let depth = type_checker.scope_depth();
         let mut errors = collision;
+        let init_order = crate::stmt::init_order::InitOrder::of(self);
         for stmt in &self.statements {
+            if let Err(err) = premature_read_error(&init_order, stmt, type_checker) {
+                errors.push(err);
+            }
             if let Err(err) = stmt.type_check(type_checker) {
                 errors.push(err);
                 // The failed statement returned through the `?` that would have
@@ -1349,6 +1355,27 @@ impl Program {
         }
         names
     }
+}
+
+/// Refuses a top-level statement whose call reaches a binding declared below it.
+///
+/// The third use-before-definition case (`stmt::init_order` has the other two
+/// and the limits of this one): the direct read was already refused and a
+/// function body reading a later binding is ordinary, but a top-level statement
+/// that *calls* such a function ran it too early and got `nil`.
+fn premature_read_error(
+    init_order: &crate::stmt::init_order::InitOrder,
+    stmt: &Stmt,
+    type_checker: &TypeChecker,
+) -> Result<()> {
+    let Some((binding, callee)) = init_order.premature_read(stmt, type_checker.pending_top_level()) else {
+        return Ok(());
+    };
+    Err(anyhow!(format!(
+        "`{callee}` reads `{binding}`, which is declared further down — the top level runs in \
+         order, so `{binding}` is still nil here and `{callee}` would answer with it. Move the \
+         declaration of `{binding}` above this line"
+    )))
 }
 
 fn pattern_names(pattern: &Pattern) -> crate::compat::collections::HashSet<String> {
