@@ -744,3 +744,28 @@ VM 的做法是把 `TypedList::Int` 就地拓宽成 `Mixed`;原生的 `Vec<i64>`
 
 门禁:`differential_maps` 的 `widened_after_a_typed_literal`、
 `widened_from_an_empty_literal`。
+
+## 21. 静态上只可能 raise 的操作:发 raise 还是回落(2026-08-06 裁决)
+
+`let xs = [1]; xs[5].len();` —— `xs[5]` 的静态类型是元素类型 `Int`,`len()` 作用在整数
+上只可能 raise。VM 报 "`len()` works on a String, List, Map, Set, Bytes or Slice, got …";
+原生侧 `Opcode::Len` 的 `_` 分支答 `TypeMismatch`,整个模块回落。
+
+仓库里有一条相反方向的先例:`SetIndex` 上的 Float 键 —— "no map carrier accepts one,
+so the store can only raise. Emitting the raise keeps the rest of the program native —
+refusing sent the whole thing back to the VM to produce the same error."
+
+**这里不照做。** 差别在消息的份数:
+
+- Float 键那处是**一句**固定文本,复制一份、两端各写一次是可控的。
+- 类型错误是**每个方法一族**:`len` / `push` / `slice` / `sort` / … 每个都有自己的措辞,
+  还带被拒类型的渲染。复制它们等于把"被捕获的错误消息就是 stdout"(见
+  docs/semantics.md 的两端逐字裁决)这条约束铺到几十处,每一处都会漂。
+- 回落这条路产生的是 **VM 自己**那句消息,按构造就是对的,永远不会漂。
+
+而收益是负的:这个形状的程序执行到那一行就死,"其余部分留在原生"没有意义 —— 与
+Float 键不同,那条可以在一个正常程序里被数据触发。覆盖率门禁 60/60,语料里也没有程序
+命中这条。
+
+所以规矩是:**只可能 raise 的操作,当它的消息是固定一句时发 raise,当它属于一个按类型
+措辞的族时回落。** 前者省下的是程序其余部分的速度,后者省下的是两端消息不一致。

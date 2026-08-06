@@ -133,7 +133,14 @@ pub enum Stmt {
         span: Option<Span>,
     },
     /// break;
-    /// `defer <statement>` — run it when the function leaves, whichever way.
+    /// `defer <statement>` — run it when the function *returns*, on every
+    /// return path, in reverse order.
+    ///
+    /// **Not** when a raise unwinds past it. This comment used to say "whichever
+    /// way", which the rewrite below cannot deliver and which
+    /// [`crate::stmt::defer`] contradicts in the same words two files away — see
+    /// there for the two measured attempts at the raise path and why each was
+    /// reverted.
     ///
     /// Gone by the time anything but the parser sees it: a pass rewrites each
     /// function's body so the deferred statements appear before every `return`
