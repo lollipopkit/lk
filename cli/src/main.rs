@@ -1255,6 +1255,12 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         .into_iter()
         .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    // A package dependency is a `.lk` file like any other, and the binding it
+    // produces is the same shape a file import produces — so it bundles the
+    // same way. It did not, and the workspace example was the whole sweep's
+    // one fallback: every program that reaches for a dependency ran on the
+    // Tier 0 VM bundle, about 3x slower, with nothing said.
+    queue.extend(package_import_modules(source, &artifact.imports)?);
     if queue.is_empty() {
         return Ok(BundleOutcome::Nothing);
     }
@@ -1854,6 +1860,46 @@ fn collect_renamed_file_items(imports: &[lk_core::stmt::ImportStmt], out: &mut V
             }
         }
     }
+}
+
+/// The package dependencies an artifact imports, as `(binding, entry file)`.
+///
+/// The file half of this question is [`file_import_paths`]; this is the other
+/// half of the same one. Only the two *whole-module* spellings are answered —
+/// `use dep;` and `use dep as name;` — because those are the ones whose
+/// binding is a module object the lowering already knows how to resolve
+/// through a bundle. An item or namespace import of a package module keeps
+/// the path it had.
+#[cfg(feature = "aot")]
+fn package_import_modules(
+    source: &Path,
+    imports: &[lk_core::stmt::ImportStmt],
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    use lk_core::stmt::ImportStmt;
+
+    let wanted: Vec<(&str, &str)> = imports
+        .iter()
+        .filter_map(|import| match import {
+            ImportStmt::Module { module } => Some((module.as_str(), module.as_str())),
+            ImportStmt::ModuleAlias { module, alias } => Some((alias.as_str(), module.as_str())),
+            _ => None,
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Discovery walks up for an `Lk.toml`, so a program with only stdlib
+    // imports pays one stat of its own directory and stops.
+    let Some(graph) = PackageGraph::discover(source)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (binding, module) in wanted {
+        if let Some(found) = graph.modules.iter().find(|candidate| candidate.name == module) {
+            out.push((binding.to_string(), found.root.clone()));
+        }
+    }
+    Ok(out)
 }
 
 /// The file imports (`use "path"` in any of its forms) a module declares.

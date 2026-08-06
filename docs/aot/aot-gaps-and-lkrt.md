@@ -872,3 +872,21 @@ main();
 反向验过:去掉预压,它红。
 
 geomean 0.987x。
+
+## §25 包依赖也进 bundle(2026-08-06)
+
+`examples/lk-example-workspace/apps/demo/src/main.lk` 是 VM/原生扫描里**唯一**的回落。
+它 `use mathlib;`(一个工作区依赖)然后调 `mathlib.double(n)`;bundler 只认**文件**导入
+(`use "./m.lk"`),包导入不进队,于是那次调用落到 `lower_module`,而它只认 stdlib ——
+整程序退到 Tier 0 的 VM bundle,约 3 倍慢,没有任何提示。
+
+包依赖就是一个 `.lk` 文件,它产生的绑定与文件导入同形,所以按同一条路走:
+
+1. `package_import_modules`(CLI):`PackageGraph::discover` 把 `use dep;` / `use dep as n;`
+   解析成 `(绑定名, 入口文件)`,和文件导入一起入队。只答这两种**整模块**拼写 —— 它们的
+   绑定是一个模块对象,降低那侧已经知道怎么穿过 bundle 解析。
+2. `ImportEnv::build`(降低):`ImportStmt::Module` / `ModuleAlias` 先查 bundle,查不到才
+   按 stdlib 模块对象绑定。缺这一步时 bundle 建好了却没人查。
+
+扫描从 `identical=61 diverged=1 fallback=1` 变成 `identical=62 diverged=1 fallback=0`,
+门禁期望值同步更新(`scripts/vm_native_sweep.sh`、`docs/testing.md`)。

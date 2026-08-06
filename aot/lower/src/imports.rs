@@ -64,7 +64,13 @@ impl ImportEnv {
         for import in imports {
             match import {
                 ImportStmt::ModuleAlias { module, alias } => {
-                    env.module_aliases.insert(alias.clone(), module.clone());
+                    // `use dep as name;` — the bundle is keyed by the binding
+                    // the CLI queued it under, which is the alias.
+                    if let Some(b) = bundle_by_path(alias) {
+                        env.file_namespaces.insert(alias.clone(), b);
+                    } else {
+                        env.module_aliases.insert(alias.clone(), module.clone());
+                    }
                 }
                 ImportStmt::Namespace { alias, source } => match source {
                     ImportSource::Module(module) => {
@@ -137,7 +143,17 @@ impl ImportEnv {
                 // therefore lowered natively whether or not the file imported
                 // it, while the VM refused the unimported spelling.
                 ImportStmt::Module { module } => {
-                    env.module_aliases.insert(module.clone(), module.clone());
+                    // A *package* dependency arrives here under its own name
+                    // and is bundled under that name, so the same lookup a
+                    // file import gets applies before the stdlib reading does.
+                    // Without it the bundle was built and never consulted, and
+                    // the call fell to `lower_module`, which knows stdlib only
+                    // — the workspace example was the sweep's one fallback.
+                    if let Some(b) = bundle_by_path(module) {
+                        env.file_namespaces.insert(module.clone(), b);
+                    } else {
+                        env.module_aliases.insert(module.clone(), module.clone());
+                    }
                 }
             }
         }
