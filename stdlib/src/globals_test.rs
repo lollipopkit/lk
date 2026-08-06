@@ -107,6 +107,37 @@ mod tests {
         }
     }
 
+    /// Which channel operations are reachable **without** `use chan;`.
+    ///
+    /// `docs/concurrency.md` claimed every operation had both spellings — the
+    /// bare global and `chan.…` — and that was false for six of the nine:
+    /// `close`, `is_closed`, `len`, `capacity`, `try_send` and `try_recv` are
+    /// module-only. The claim survived because nothing pinned the set; a doc
+    /// sentence is not a gate.
+    ///
+    /// The split is deliberate rather than incidental — see the doc — so this
+    /// pins **both** halves: the five that must be there, and the six that must
+    /// not. Adding one is a language change, and this is where it gets decided.
+    #[test]
+    fn the_bare_channel_globals_are_the_go_shaped_core_and_nothing_else() {
+        let mut registry = module::ModuleRegistry::new();
+        crate::register_stdlib_globals(&mut registry);
+
+        for name in ["chan", "send", "recv", "spawn"] {
+            assert!(
+                registry.get_runtime_builtin(name).is_some(),
+                "`{name}` is part of the bare surface"
+            );
+        }
+        for name in ["close", "is_closed", "len", "capacity", "try_send", "try_recv"] {
+            assert!(
+                registry.get_runtime_builtin(name).is_none(),
+                "`{name}` is reachable only as `chan.{name}` — adding a bare global is a language \
+                 change, and `docs/concurrency.md` documents why these six are module-only"
+            );
+        }
+    }
+
     #[test]
     fn test_global_assertions_execute_without_use() -> Result<()> {
         let source = r#"

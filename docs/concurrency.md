@@ -46,9 +46,25 @@ ch.close(c);            // Go close: buffered values stay receivable
 ch.is_closed(c); ch.len(c); ch.capacity(c);   // capacity = what was asked for
 ```
 
-Every operation has both spellings — the bare global and `chan.…` — because
-`use chan;` shadows the `chan` global, and a module missing its blocking half
-would send you back to unqualified names.
+**The module spelling is the complete one.** All nine operations are on
+`chan.…`; the bare globals are only the Go-shaped core:
+
+| operation | bare global | `chan.…` |
+| --- | --- | --- |
+| construct | `chan(n)` | `chan.new(n)` |
+| blocking send / recv | `send(c, v)` / `recv(c)` | `chan.send` / `chan.recv` |
+| `try_send` / `try_recv` | — | yes |
+| `close` / `is_closed` | — | yes |
+| `len` / `capacity` | — | yes |
+
+This sentence used to claim every operation had both spellings, which was
+false for six of the nine — see `stdlib::globals_test`, which now pins the set.
+The six are module-only on purpose: `close`, `len` and `capacity` are names a
+program is likely to want for itself, and taking them as globals buys nothing,
+because the module spelling reaches every operation. The blocking pair is the
+exception because it was the one *missing* half — before it existed,
+`use chan;` shadowed the `chan` global and left no way to send at all without
+falling back to unqualified names.
 
 Failure semantics follow the v2 error model (see `docs/semantics.md`):
 errors **raise** and are caught with try/catch — there are no `[ok, value]`
