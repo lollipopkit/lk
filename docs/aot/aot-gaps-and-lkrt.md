@@ -882,11 +882,13 @@ geomean 0.987x。
 
 包依赖就是一个 `.lk` 文件,它产生的绑定与文件导入同形,所以按同一条路走:
 
-1. `package_import_modules`(CLI):`PackageGraph::discover` 把 `use dep;` / `use dep as n;`
-   解析成 `(绑定名, 入口文件)`,和文件导入一起入队。只答这两种**整模块**拼写 —— 它们的
-   绑定是一个模块对象,降低那侧已经知道怎么穿过 bundle 解析。
-2. `ImportEnv::build`(降低):`ImportStmt::Module` / `ModuleAlias` 先查 bundle,查不到才
-   按 stdlib 模块对象绑定。缺这一步时 bundle 建好了却没人查。
+1. `package_import_modules`(CLI):`PackageGraph::discover` 把每一种指向包的拼写解析成
+   `(绑定名, 入口文件)`,和文件导入一起入队。四种拼写都答:`use dep;`、`use dep as n;`、
+   `use { item } from dep;`、`use * as ns from dep;` —— 后两种没有自己的模块对象绑定,
+   所以 bundle 按**模块名**做键,与降低那侧查它的方式一致。
+2. `ImportEnv::build`(降低):四条臂都先查 bundle,查不到才按 stdlib 的读法绑定 ——
+   `Module` / `ModuleAlias` / `Namespace` 绑成文件命名空间,`Items` 把条目绑成合并后的
+   函数下标(与文件那条分支同款,含 `S$new` 回退)。缺这一步时 bundle 建好了却没人查。
 
 扫描从 `identical=61 diverged=1 fallback=1` 变成 `identical=62 diverged=1 fallback=0`,
 门禁期望值同步更新(`scripts/vm_native_sweep.sh`、`docs/testing.md`)。

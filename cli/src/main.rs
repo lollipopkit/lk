@@ -1865,11 +1865,9 @@ fn collect_renamed_file_items(imports: &[lk_core::stmt::ImportStmt], out: &mut V
 /// The package dependencies an artifact imports, as `(binding, entry file)`.
 ///
 /// The file half of this question is [`file_import_paths`]; this is the other
-/// half of the same one. Only the two *whole-module* spellings are answered —
-/// `use dep;` and `use dep as name;` — because those are the ones whose
-/// binding is a module object the lowering already knows how to resolve
-/// through a bundle. An item or namespace import of a package module keeps
-/// the path it had.
+/// half of the same one, and it answers every spelling that names a package:
+/// `use dep;`, `use dep as name;`, `use { item } from dep;` and
+/// `use * as ns from dep;`.
 #[cfg(feature = "aot")]
 fn package_import_modules(
     source: &Path,
@@ -1882,6 +1880,17 @@ fn package_import_modules(
         .filter_map(|import| match import {
             ImportStmt::Module { module } => Some((module.as_str(), module.as_str())),
             ImportStmt::ModuleAlias { module, alias } => Some((alias.as_str(), module.as_str())),
+            // An item or namespace import has no module-object binding of its
+            // own, so the bundle is keyed by the module's name — which is what
+            // the lowering looks it up by for these two spellings.
+            ImportStmt::Items {
+                source: lk_core::stmt::ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: lk_core::stmt::ImportSource::Module(module),
+                ..
+            } => Some((module.as_str(), module.as_str())),
             _ => None,
         })
         .collect();

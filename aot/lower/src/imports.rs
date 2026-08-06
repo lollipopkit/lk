@@ -74,7 +74,14 @@ impl ImportEnv {
                 }
                 ImportStmt::Namespace { alias, source } => match source {
                     ImportSource::Module(module) => {
-                        env.module_aliases.insert(alias.clone(), module.clone());
+                        // A bundled *package* module answers here the way a
+                        // bundled file does; a stdlib module has no bundle and
+                        // keeps the module-object binding.
+                        if let Some(b) = bundle_by_path(module) {
+                            env.file_namespaces.insert(alias.clone(), b);
+                        } else {
+                            env.module_aliases.insert(alias.clone(), module.clone());
+                        }
                     }
                     ImportSource::File(path) => {
                         if let Some(b) = bundle_by_path(path) {
@@ -87,7 +94,19 @@ impl ImportEnv {
                         let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
                         match source {
                             ImportSource::Module(module) => {
-                                env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                                // Same rule as the file branch below when the
+                                // module is a bundled package: the item is a
+                                // merged function, not a member read off a
+                                // module object.
+                                let ctor = lk_core::stmt::struct_ctors::constructor_name(&item.name);
+                                if let Some(fidx) = bundle_by_path(module)
+                                    .and_then(|b| bundles[b].fns.get(&item.name).or_else(|| bundles[b].fns.get(&ctor)))
+                                    .copied()
+                                {
+                                    env.file_items.insert(bound, fidx);
+                                } else {
+                                    env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                                }
                             }
                             // Functions only, and that is now the whole of it:
                             // a renamed *constant* never reaches here, because
