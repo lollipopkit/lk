@@ -793,3 +793,52 @@ CLI 的 AOT bundler 把 dep 的 `type_info.impls` 重编号后并进了 merged a
 `use { P } from "geo"` 此前在 AOT 侧绑不到任何东西(`bundles[b].fns` 里只有
 `P$new`,没有 `P`),整个程序回落到 Tier 0,反而打对了。补上 `$new` 回退之后
 它开始原生降低,也就开始踩这条。
+
+## 23. 类型化列表的拓宽:VM 就地变 `Mixed`,原生 raise(2026-08-06 实测)
+
+```lk
+fn sink(v: Any) -> Int { v.push(7); return 0; }
+fn main() -> Int {
+    let a: List<Int> = [1];
+    let s: List<String> = ["q"];
+    sink(a); sink(s);
+    println("${a} ${s}");
+    return 0;
+}
+main();
+// VM: [1,7] ["q",7]        native: Error: runtime type error
+```
+
+**VM 对,原生错。** 判据是逐类探出来的,不是读实现读出来的:
+
+| 写法 | VM | native |
+| --- | --- | --- |
+| `s.push(7)`(字面量,`s: List<String>`) | 检查期拒(#194) | 同 |
+| `let v: Any = 7; s.push(v)` | `["q",7]` | `["q",7]` |
+| 单一载体流进 `sink(v: Any)` | `["q",7]` | 回落 |
+| **两种载体**流进同一个 `sink(v: Any)` | `["q",7]` | **raise** |
+
+第二行说明"拓宽"就是这门语言的运行时规矩,所以第四行是原生侧的缺陷。
+
+链条:`dyn.list_push` → `lklist::typed_list_push`,它用 `dyn_as_i64` /
+`as_f64` / `as_str` 转换元素,不合型就 `raise_str("runtime type error")`。VM 的
+`TypedList` 则就地拓宽成 `Mixed`,所有别名都看得见。
+
+### 四条便宜的路都实测否掉了
+
+1. **降低期一律拒绝 `Ty::Dyn` 接收者的 push**。覆盖率仍 60/60,扫描仍
+   `identical=61`,分歧变回落 —— 但打掉了
+   `clif_differential_test::a_boxed_typed_list_is_the_same_list` 的
+   `writes_cross_the_box_both_ways`(`c[0].push(9)`,推入类型匹配、本来正确)。
+2. **精确的静态规则**。要区分 `c[0]`(`List<Int>`)和 `sink` 的 `v`(`Any`),
+   需要接收者的 **LK 静态类型**,而 AOT 只看到 `Ty::Dyn`;编译器在 `ListPush`
+   处没有元素类型的 fact,加一条要动 artifact 版本。
+3. **装箱时重建成 `Vec<LkDyn>`**。回到 §"类型化列表装箱是重建"修掉的那条,
+   同样打掉 `writes_cross_the_box_both_ways`。
+4. **lkrt 里就地拓宽**。句柄是 `*mut Vec<i64>`,而每个别名持有自己那份 tag;
+   要让拓宽对所有别名可见,tag 必须在**对象里**而不在 `LkDyn` 副本里 ——
+   那就是表示层改造本身。
+
+所以修法唯一:让类型化列表的载荷能改 kind 而句柄保持有效(三个
+`DYN_TLIST_*` tag 已经存在,缺的是那层间接和 lkrt 里 29 处读点)。任何修法
+必须保住 `writes_cross_the_box_both_ways`。

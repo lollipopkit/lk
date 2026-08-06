@@ -15,6 +15,23 @@ website/dist/
 website/src/wasm/pkg/.gitignore
 
 lk-lsp-debug.log
+
+# `lk compile foo.lk` writes the executable as `foo` — no extension, so no
+# suffix pattern reaches it. Two 20MB binaries got committed this way
+# (`examples/syntax/{closure,struct_trait}`, in commits about unrelated
+# things), because running the compiler on an example dirties the tree and
+# `git add -A` then takes it.
+#
+# Every file the repository actually tracks under these two trees has an
+# extension, so "no dot" *is* the compiled-artifact shape here. The
+# directories have to be re-included first: git cannot re-include a file
+# whose parent directory is excluded.
+examples/**/*
+!examples/**/
+!examples/**/*.*
+bench/**/*
+!bench/**/
+!bench/**/*.*
 main
 
 lua-5.5.0/

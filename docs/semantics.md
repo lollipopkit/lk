@@ -1535,8 +1535,19 @@ fn adds(xs: List<String>, s: String) -> Int { xs.push(s); return xs.len(); }
 let xs = mk();  add(xs, 2);           // 单独看:两端一致
 let ss: List<String> = [];
 println(try { "${adds(ss, "a")}" } catch e { "c" });
-println("${xs} ${ss}");               // VM: [1,2] ["a"]   native: [1,2] []
+println("${xs} ${ss}");
 ```
+
+**这个复现已经过期(2026-08-06 复核)**:它当时答 `[1,2] []`(原生看不见
+被调方的写),现在**回落** —— 形参格不再 join 成 `Dyn`,而是冲突并拒绝降低
+(`in \`adds\`: an operand at pc 0 is a str where a i64 is required`)。
+显式写 `fn add(xs: List<Any>, …)` 那条也关上了:#184 让可变容器不变,
+`List<Int>` 不再能传进 `List<Any>`。
+
+重建那条 ABI 调用**仍在发**(语料里 8 个文件命中 `list_h.*_to_dyn`),所以
+表示层的问题照旧;换掉的只是它露头的形状。现在露头的是**拓宽**:两种载体
+流进同一个 `Any` 形参再 push,VM 就地拓宽答对、原生 raise。最小复现和四条
+被实测否掉的便宜修法见 `docs/aot/aot-gaps-and-lkrt.md` §23。
 
 **这条已经证明不能在格上绕过。** 试过把"元素类型只是猜的空 `[]`"在进 try 区域时
 物化成 Dyn 列表:`ss` 修好了,`xs` 反而坏了 —— 新的 `ListDyn` 观测和原有的

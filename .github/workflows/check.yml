@@ -32,6 +32,19 @@ jobs:
         # wall-clock measurements, which contention breaks in both directions —
         # min-of-5 per side was not enough. Same treatment, same reason.
         run: cargo test -p lk-core --lib -- --ignored --test-threads=1
+      - name: no build artifacts in the example trees
+        # `lk compile foo.lk` writes `foo` — extensionless, so no suffix
+        # pattern in `.gitignore` reaches it and `git add -A` after a compile
+        # takes it. Two 20MB binaries reached `main` that way, inside commits
+        # about unrelated things. `.gitignore` now excludes extensionless files
+        # under these trees; this catches a `git add -f` past it.
+        run: |
+          found=$(git ls-files examples bench | grep -v '\.' || true)
+          if [ -n "$found" ]; then
+            echo "::error::tracked files with no extension under examples/ or bench/ — build artifacts?"
+            echo "$found"
+            exit 1
+          fi
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
