@@ -16,7 +16,7 @@ use crate::{
 
 use alloc::sync::Arc;
 
-use super::{ConstHeapValue, GlobalSlot, NativeEntry, free_vars::collect_function_free_vars};
+use super::{ConstHeapValue, GlobalSlot, free_vars::collect_function_free_vars};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortCircuitKind {
@@ -730,17 +730,6 @@ pub(super) fn global_slots_from_names(names: &HashMap<String, u32>) -> Vec<Globa
         out.push(slot.expect("dense global slot"));
     }
     out
-}
-
-pub(super) fn collect_native_names(natives: &[NativeEntry]) -> Result<HashMap<String, u32>> {
-    let mut names = HashMap::new();
-    for (index, native) in natives.iter().enumerate() {
-        let index = u32::try_from(index).map_err(|_| anyhow!("Compiler native index overflow"))?;
-        if names.insert(native.name.clone(), index).is_some() {
-            bail!("Compiler duplicate native `{}`", native.name);
-        }
-    }
-    Ok(names)
 }
 
 /// Narrow a register number to the 8 bits an instruction has for it.

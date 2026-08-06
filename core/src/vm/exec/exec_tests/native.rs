@@ -170,7 +170,6 @@ fn execute_module_calls_runtime_callable_from_heap() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -452,7 +451,6 @@ fn execute_module_uses_global_slot_fact_for_get_and_set() {
     );
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![
             GlobalSlot { name: "unused".into() },
             GlobalSlot { name: "answer".into() },
@@ -497,7 +495,6 @@ fn execute_module_set_global_move_fact_consumes_source_register() {
     );
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -531,7 +528,6 @@ fn execute_module_set_global_without_move_fact_clones_source_register() {
     };
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -558,7 +554,6 @@ fn execute_module_falls_back_to_instr_global_slot_without_fact() {
     };
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "answer".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -584,7 +579,6 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -609,7 +603,6 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -642,7 +635,6 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -678,7 +670,6 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -716,7 +707,6 @@ fn runtime_callable_error_keeps_shared_module_state() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "counter".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -765,7 +755,6 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: vec![crate::vm::GlobalSlot {
             name: "native_alloc_then_error".into(),
         }],
@@ -815,7 +804,6 @@ fn direct_runtime_callable_restores_shared_state_stack_top() {
     };
     let module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),

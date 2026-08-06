@@ -326,8 +326,7 @@ fn compiler_runs_direct_function_with_string_method() {
         return price("pro", 49, 8);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"]).expect("compile");
+    let module = Compiler::compile_module_with_globals(&program, ["__lk_call_method"]).expect("compile");
     let entry = module.entry_function().expect("entry");
     assert!(
         entry.code.iter().any(|instr| instr.opcode() == Opcode::CallDirect),
@@ -678,8 +677,7 @@ fn compiler_lowers_map_get_module_call_to_get_index() {
         return map.get(hist, key);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -702,7 +700,7 @@ fn compiler_errors_on_map_get_missing_receiver_in_call() {
         return id(map.get("x"));
         "#,
     );
-    let err = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"])
+    let err = Compiler::compile_module_with_globals(&program, ["map"])
         .expect_err("map.get missing receiver must not lower as method get");
 
     assert!(
@@ -785,8 +783,7 @@ fn compiler_folds_const_map_get_literal_key() {
         return map.get(hist, "answer");
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -847,8 +844,7 @@ fn compiler_hoists_loop_const_map_get_folded_scalar_values() {
         return total;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
     let admin_loads = entry
         .code
@@ -920,8 +916,7 @@ fn compiler_does_not_fold_const_map_get_after_mutation() {
         return map.get(hist, "answer");
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -982,8 +977,7 @@ fn compiler_does_not_fold_loop_local_mutated_empty_map_get() {
         return total;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -1007,8 +1001,7 @@ fn compiler_lowers_math_floor_of_int_to_identity() {
         return math.floor(x + 2);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(

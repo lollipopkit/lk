@@ -79,7 +79,7 @@ pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -
 /// A plain program has none: everything it did not declare itself came from an
 /// import. The REPL is the exception — its `xs` from an earlier line arrives as
 /// a context global, and without this it compiles `xs.len()` as a module-member
-/// read (see `Compiler::compile_module_with_natives_and_globals_and_data`).
+/// read (see `Compiler::compile_module_with_globals_and_data`).
 pub fn compile_program_module_with_ctx_and_data_globals<S: AsRef<str>>(
     program: &Program,
     ctx: &mut VmContext,
@@ -94,9 +94,8 @@ pub fn compile_program_module_with_ctx_and_data_globals<S: AsRef<str>>(
         external_globals.push(name.clone());
     }
 
-    let mut module = Compiler::compile_module_with_natives_and_globals_and_data(
+    let mut module = Compiler::compile_module_with_globals_and_data(
         program,
-        Vec::new(),
         external_globals,
         data_globals.iter().map(|name| name.as_ref()),
     )?;

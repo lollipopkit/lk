@@ -72,9 +72,6 @@ pub struct ModuleArtifact {
 
 impl ModuleArtifact {
     pub fn new(imports: Vec<ImportStmt>, module: &Module) -> Result<Self> {
-        if !module.natives.is_empty() {
-            bail!("Module artifact cannot encode inline native entries");
-        }
         Ok(Self {
             format: "lk.module".to_string(),
             version: MODULE_ARTIFACT_VERSION,
@@ -190,7 +187,6 @@ impl ModuleData {
             type_info: self.type_info,
             type_scope: self.type_scope,
             functions,
-            natives: Vec::new(),
             globals: {
                 let mut globals = Vec::with_capacity(self.globals.len());
                 for name in self.globals {

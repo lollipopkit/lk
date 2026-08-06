@@ -15,7 +15,7 @@ fn artifact(source: &str) -> ModuleArtifact {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), externals).expect("compile");
+    let module = Compiler::compile_module_with_globals(&program, externals).expect("compile");
     ModuleArtifact::new(Vec::new(), &module).expect("artifact")
 }
 

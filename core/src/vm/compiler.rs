@@ -45,7 +45,7 @@ use crate::{
     val::{FunctionNamedParamType, LiteralVal, RuntimeMapKey, ShortStr, Type},
 };
 
-use super::{ConstHeapValue, ConstRuntimeValue, Function, GlobalSlot, Instr, Module, NativeEntry, Opcode};
+use super::{ConstHeapValue, ConstRuntimeValue, Function, GlobalSlot, Instr, Module, Opcode};
 use crate::vm::analysis::{
     PerfCallTargetKind, PerfContainerBuildFact, PerfGlobalFact, PerfKeyFact, PerfRegisterFact, PerfStringIntKeyFact,
     PerfValueKind,
@@ -1696,10 +1696,6 @@ pub fn compile_module(program: &Program) -> Result<Module> {
     Compiler::compile_module(program)
 }
 
-pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>) -> Result<Module> {
-    Compiler::compile_module_with_natives(program, natives)
-}
-
 pub fn compile_source(source: &str) -> Result<Function> {
     Compiler::compile_source(source)
 }
@@ -1754,8 +1750,4 @@ fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<LoopSnapshotVar
 
 pub fn compile_source_module(source: &str) -> Result<Module> {
     Compiler::compile_source_module(source)
-}
-
-pub fn compile_source_module_with_natives(source: &str, natives: Vec<NativeEntry>) -> Result<Module> {
-    Compiler::compile_source_module_with_natives(source, natives)
 }

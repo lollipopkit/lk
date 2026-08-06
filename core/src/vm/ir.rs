@@ -17,8 +17,6 @@ use crate::{
     vm::analysis::PerformanceFacts,
 };
 
-use super::runtime::NativeEntry;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalSlot {
     pub name: Arc<str>,
@@ -838,7 +836,6 @@ pub struct Function {
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
-    pub natives: Vec<NativeEntry>,
     pub globals: Vec<GlobalSlot>,
     pub entry: u32,
     /// Static `trait`/`impl` declarations (see [`super::TypeInfo`]). Produced
@@ -855,7 +852,6 @@ impl Module {
     pub fn single(function: Function) -> Self {
         Self {
             functions: vec![function],
-            natives: Vec::new(),
             globals: Vec::new(),
             entry: 0,
             type_info: super::TypeInfo::default(),
@@ -866,10 +862,6 @@ impl Module {
     #[inline]
     pub fn entry_function(&self) -> Option<&Function> {
         self.functions.get(self.entry as usize)
-    }
-
-    pub fn native_index(&self, name: &str) -> Option<usize> {
-        self.natives.iter().position(|native| native.name == name)
     }
 }
 
@@ -895,12 +887,6 @@ pub fn disassemble_module(module: &Module) -> String {
             let _ = writeln!(out, "  g{slot} {}", global.name);
         }
     }
-    if !module.natives.is_empty() {
-        let _ = writeln!(out, ".natives");
-        for (slot, native) in module.natives.iter().enumerate() {
-            let _ = writeln!(out, "  n{slot} {} arity={}", native.name, native.arity);
-        }
-    }
     for (index, function) in module.functions.iter().enumerate() {
         let _ = writeln!(out, ".fn {index}");
         out.push_str(&disassemble_function(function));
@@ -911,7 +897,6 @@ pub fn disassemble_module(module: &Module) -> String {
 #[cfg(test)]
 mod tests {
     use crate::util::fast_map::fast_hash_map_new;
-    use crate::{val::RuntimeVal, vm::NativeFunction};
 
     use super::*;
 
@@ -1142,11 +1127,6 @@ mod tests {
     fn disassembles_module_metadata() {
         let module = Module {
             functions: vec![Function::default()],
-            natives: vec![NativeEntry {
-                name: "native_add".to_string(),
-                arity: 2,
-                function: NativeFunction::Plain(|_, _runtime| Ok(RuntimeVal::Nil)),
-            }],
             globals: vec![GlobalSlot {
                 name: Arc::<str>::from("answer"),
             }],
@@ -1159,7 +1139,6 @@ mod tests {
 
         assert!(text.contains(".module entry=0"));
         assert!(text.contains("g0 answer"));
-        assert!(text.contains("n0 native_add arity=2"));
         assert!(text.contains(".fn 0"));
     }
 }

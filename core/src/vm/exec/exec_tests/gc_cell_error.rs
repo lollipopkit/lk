@@ -64,7 +64,6 @@ fn execute_loads_and_stores_upval_cell_values() {
     };
     let module = Module {
         functions: vec![function],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -106,7 +105,6 @@ fn execute_store_cell_clones_source_without_move_fact() {
     };
     let module = Module {
         functions: vec![function],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -151,7 +149,6 @@ fn execute_store_cell_move_fact_consumes_source_register() {
     };
     let module = Module {
         functions: vec![function],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -382,7 +379,6 @@ fn execute_caller_handler_catches_raise_from_callee() {
     };
     let module = Module {
         functions: vec![caller, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -435,7 +431,6 @@ fn execute_callee_return_unwinds_its_try_handlers_before_next_call() {
     };
     let module = Module {
         functions: vec![caller, returns_inside_try, raises_without_handler],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),

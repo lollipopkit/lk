@@ -12,12 +12,12 @@ use crate::{
 };
 
 use super::{
-    CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, NativeEntry,
-    collect_function_inline_bodies, collect_function_machine_returns, collect_function_names,
-    collect_function_signatures, collect_function_visible_let_names, collect_global_names_with_external,
-    collect_impl_method_names, collect_native_names, collect_struct_field_machine_widths,
-    collect_top_level_data_global_names, collect_top_level_machine_widths, export_name_from_attributes,
-    extern_name_from_attributes, function_frame_params, global_slots_from_names, item_without_attributes,
+    CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, collect_function_inline_bodies,
+    collect_function_machine_returns, collect_function_names, collect_function_signatures,
+    collect_function_visible_let_names, collect_global_names_with_external, collect_impl_method_names,
+    collect_struct_field_machine_widths, collect_top_level_data_global_names, collect_top_level_machine_widths,
+    export_name_from_attributes, extern_name_from_attributes, function_frame_params, global_slots_from_names,
+    item_without_attributes,
 };
 
 impl Compiler {
@@ -35,31 +35,18 @@ impl Compiler {
     }
 
     pub fn compile_module(program: &Program) -> Result<Module> {
-        Self::compile_module_with_natives(program, Vec::new())
+        Self::compile_module_with_globals(program, core::iter::empty::<&str>())
     }
 
-    pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>) -> Result<Module> {
-        Self::compile_module_with_natives_and_globals(program, natives, core::iter::empty::<&str>())
-    }
-
-    pub fn compile_module_with_natives_and_globals<I, S>(
-        program: &Program,
-        natives: Vec<NativeEntry>,
-        external_globals: I,
-    ) -> Result<Module>
+    pub fn compile_module_with_globals<I, S>(program: &Program, external_globals: I) -> Result<Module>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Self::compile_module_with_natives_and_globals_and_data(
-            program,
-            natives,
-            external_globals,
-            core::iter::empty::<&str>(),
-        )
+        Self::compile_module_with_globals_and_data(program, external_globals, core::iter::empty::<&str>())
     }
 
-    /// As [`Self::compile_module_with_natives_and_globals`], with the subset of
+    /// As [`Self::compile_module_with_globals`], with the subset of
     /// `external_globals` that hold *user data* rather than imported module
     /// objects.
     ///
@@ -68,9 +55,8 @@ impl Compiler {
     /// global indistinguishable from `math` without being told. Getting it
     /// wrong is not a missed optimisation: `xs.len()` compiles to an index read
     /// keyed by the string `"len"` and fails at run time.
-    pub fn compile_module_with_natives_and_globals_and_data<I, S, D, T>(
+    pub fn compile_module_with_globals_and_data<I, S, D, T>(
         program: &Program,
-        natives: Vec<NativeEntry>,
         external_globals: I,
         external_data_globals: D,
     ) -> Result<Module>
@@ -87,7 +73,7 @@ impl Compiler {
         let function_names = Rc::new(collect_function_names(program)?);
         let function_signatures = Rc::new(collect_function_signatures(program)?);
         let function_bodies = Rc::new(collect_function_inline_bodies(program)?);
-        let native_names = Rc::new(collect_native_names(&natives)?);
+        let native_names = Rc::new(HashMap::new());
         let global_names = Rc::new(collect_global_names_with_external(program, external_globals)?);
         let user_let_globals = Rc::new(collect_function_visible_let_names(program));
         let mut data_globals = collect_top_level_data_global_names(program);
@@ -99,7 +85,6 @@ impl Compiler {
         let global_widths = Rc::new(collect_top_level_machine_widths(program));
         let mut module = Module {
             functions: vec![Function::default(); function_names.len() + 1],
-            natives,
             globals: global_slots_from_names(&global_names),
             entry: 0,
             type_info: crate::vm::TypeInfo::default(),
@@ -217,12 +202,8 @@ impl Compiler {
     }
 
     pub fn compile_source_module(source: &str) -> Result<Module> {
-        Self::compile_source_module_with_natives(source, Vec::new())
-    }
-
-    pub fn compile_source_module_with_natives(source: &str, natives: Vec<NativeEntry>) -> Result<Module> {
         let program = parse_program_source(source, ParseOptions::default())?;
-        Self::compile_module_with_natives(&program, natives)
+        Self::compile_module(&program)
     }
 
     pub(super) fn with_names(

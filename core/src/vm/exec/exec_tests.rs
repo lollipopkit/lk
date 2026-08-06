@@ -26,9 +26,10 @@ mod native;
 /// `CallableValue::RuntimeNative` — `VmContext::install_runtime_builtin` puts
 /// it there, and the compiler resolves the name to a global slot the loader
 /// seeds. Several tests in here instead built a `Module` with an inline
-/// `NativeEntry` and a `LoadNative` instruction, which no binary can produce:
-/// every production caller of `compile_module_with_natives*` passes an empty
-/// table, so `LoadNative` is never emitted outside these tests.
+/// `NativeEntry` and a `LoadNative` instruction, which no binary could produce:
+/// every production caller passed an empty table. The opcode is gone
+/// (artifact version 17) and so is the per-module table it read
+/// (2026-08-06) — this helper is the only route left, which is the point.
 ///
 /// The hand-built route cannot be pointed at an installed native either —
 /// `execute_module_with_globals_and_ctx` does not seed the module's global

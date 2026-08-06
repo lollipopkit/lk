@@ -712,8 +712,7 @@ fn compiler_lowers_int_math_floor_directly_into_destination() {
         return mid;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     let mid = function
@@ -757,8 +756,7 @@ fn compiler_midpoint_floor_preserves_current_int_division_semantics() {
         return math.floor((lo + hi) / 2);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     assert!(
@@ -784,8 +782,7 @@ fn compiler_lowers_map_get_directly_into_destination() {
         return value;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     let get = function

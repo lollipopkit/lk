@@ -34,7 +34,6 @@ fn execute_module_calls_closure_function() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -90,7 +89,6 @@ fn execute_module_uses_call_shape_fact_for_call_window() {
     );
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -135,7 +133,6 @@ fn execute_module_caches_call_shape_without_static_fact() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -193,7 +190,6 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -256,7 +252,6 @@ fn execute_module_calls_closure_with_captured_value() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -313,7 +308,6 @@ fn execute_module_reuses_shared_stack_for_repeated_closure_calls() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -380,7 +374,6 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: vec![
             GlobalSlot { name: "f".into() },
             GlobalSlot {
