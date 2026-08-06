@@ -1473,3 +1473,69 @@ fn a_struct_too_wide_to_construct_says_so() {
     // The register message named the wrong thing entirely.
     assert!(!stderr.contains("split the body into smaller functions"), "{stderr}");
 }
+
+/// A package dependency bundles like a file import, in every spelling that
+/// names one.
+///
+/// Before, the bundler queued file imports only, so a call into a dependency
+/// fell to the stdlib-only module lowering and the whole program ran on the
+/// Tier 0 VM bundle — about 3x slower, with nothing said. The sweep pins the
+/// `use dep;` spelling through the workspace example; the other three have no
+/// corpus program, and each is a separate arm of the binding table.
+#[test]
+fn a_package_dependency_lowers_natively_in_every_import_spelling() {
+    let dir = unique_tmp_dir("pkg_bundle_spellings");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "Lk.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[dependencies]\nmathlib = { path = \"mathlib\" }\n",
+    );
+    create_dir_all(dir.join("mathlib/src")).expect("create dep dir");
+    write_file(
+        &dir.join("mathlib"),
+        "Lk.toml",
+        "[package]\nname = \"mathlib\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    );
+    write_file(
+        &dir.join("mathlib/src"),
+        "mod.lk",
+        "fn double(n: Int) -> Int {\n    return n * 2;\n}\n",
+    );
+    create_dir_all(dir.join("src")).expect("create src dir");
+
+    for source in [
+        "use mathlib;\nprintln(mathlib.double(7));\n",
+        "use mathlib as ml;\nprintln(ml.double(7));\n",
+        "use { double } from mathlib;\nprintln(double(7));\n",
+        "use * as m from mathlib;\nprintln(m.double(7));\n",
+    ] {
+        write_file(&dir.join("src"), "main.lk", source);
+        // Strict: no fallback, no hybrid bridge — "compiles" means "lowered".
+        let compiled = run_cli(&dir, ["compile", "src/main.lk"])
+            .env("LK_AOT_NO_FALLBACK", "1")
+            .env("LK_AOT_HYBRID", "0")
+            .output()
+            .expect("spawn compile");
+        assert!(
+            compiled.status.success(),
+            "{source} did not lower: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+
+        let native = Command::new(dir.join("src/main"))
+            .current_dir(&dir)
+            .output()
+            .expect("run the native binary");
+        let vm = run_cli(&dir, ["src/main.lk"])
+            .env("LK_FORCE_VM", "1")
+            .output()
+            .expect("run under the VM");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            String::from_utf8_lossy(&vm.stdout),
+            "{source}: the two executors disagree"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout).trim(), "14", "{source}");
+    }
+}
