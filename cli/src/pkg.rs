@@ -140,7 +140,7 @@ fn fetch_dependencies(only: Option<String>) -> anyhow::Result<()> {
         let source = spec
             .git_url()
             .ok_or_else(|| anyhow::anyhow!("dependency '{name}' has no git source"))?;
-        let dir = cache_dir_for_source(&source);
+        let dir = cache_dir_for_source(&source)?;
         // Named here: `git failed with status exit status: 128` says which
         // *process* failed, not which dependency — and with several of them the
         // reader has to guess. git's own message above already explains the
@@ -251,6 +251,9 @@ fn print_package_tree() -> anyhow::Result<()> {
 fn check_package() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("read current directory")?;
     let graph = PackageGraph::discover(&cwd)?.ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
+    if let Some(package) = &graph.manifest.package {
+        lk_core::package::validate_package_section(package)?;
+    }
     graph.validate_macro_distribution()?;
     if graph.missing.is_empty() {
         println!("package check ok");

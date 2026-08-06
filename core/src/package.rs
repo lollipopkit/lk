@@ -25,7 +25,7 @@ pub fn macro_module_root(base_dir: &std::path::Path, name: &str) -> Result<Optio
             .map(|module| module.root)
     }))
 }
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 // The centralized signing registry (server / publish / keyring / signed
@@ -489,9 +489,9 @@ impl PackageGraph {
                 from_path = true;
                 self.root.join(path)
             } else if let Some(locked) = locked.get(&name) {
-                cache_dir_for_source(&locked.source)
+                cache_dir_for_source(&locked.source)?
             } else if let Some(url) = spec.git_url() {
-                cache_dir_for_source(&url)
+                cache_dir_for_source(&url)?
             } else {
                 self.missing.push(MissingDependency {
                     name,
@@ -589,7 +589,83 @@ pub fn github_url(repo: &str) -> String {
     }
 }
 
-pub fn cache_dir_for_source(source: &str) -> PathBuf {
+/// Where a git dependency is cloned: `~/.lk/git/` plus the source URL's own
+/// shape, so two dependencies from one host share a prefix and a reader can
+/// find a clone by eye.
+///
+/// **A `..` component is refused, not skipped.** The path is built from a
+/// string in `Lk.toml` (or, worse, in `Lk.lock`, which a dependency can
+/// contribute to), and `PathBuf::push("..")` walks *up* — so
+/// `git = "https://example.com/../../../../../../tmp/x"` had `git clone`
+/// writing to `/tmp/x`, outside the cache root entirely. Measured, with git's
+/// own message naming the escaped path.
+///
+/// Refusing rather than dropping the component: two different sources must not
+/// collapse onto one cache directory, and a source nobody meant to write is
+/// worth saying out loud. `.` and empty segments are dropped, because those
+/// *are* the same path.
+/// The one edition this language has.
+///
+/// A list rather than a constant because the *shape* of the check is what
+/// matters: when a second edition exists, the manifest field starts meaning
+/// something and this is where it is decided.
+const KNOWN_EDITIONS: &[&str] = &["2026"];
+
+/// Checks the three `[package]` fields that were written and never read.
+///
+/// `edition` is emitted by `lk pkg init` and read by **nothing** — `"1999"`,
+/// `"banana"` and a missing field were all "package check ok". `version` had no
+/// reader either, so `version = "not-a-version"` passed. And `name` was
+/// unconstrained: `name = "../evil"` and `name = ""` both passed, while the
+/// name is what `use <name>;` has to spell and what a workspace member is
+/// looked up by.
+///
+/// Checked here rather than at load: this is the command whose job is to answer
+/// "is this package well-formed", and a decorative field being wrong should not
+/// stop a program that does not read it from running.
+pub fn validate_package_section(package: &PackageSection) -> Result<()> {
+    let name = package.name.as_str();
+    if name.is_empty() {
+        bail!("`[package] name` is empty — it is the name `use <name>;` spells");
+    }
+    let head_ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let rest_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !head_ok || !rest_ok {
+        bail!(
+            "`[package] name = \"{name}\"` is not a name this language can spell — a package name \
+             is an identifier (letters, digits, `_`, `-`, not starting with a digit), because \
+             `use <name>;` has to lex"
+        );
+    }
+    if let Some(version) = &package.version
+        && !is_semver(version)
+    {
+        bail!("`[package] version = \"{version}\"` is not a version — write `major.minor.patch`");
+    }
+    if let Some(edition) = &package.edition
+        && !KNOWN_EDITIONS.contains(&edition.as_str())
+    {
+        bail!(
+            "`[package] edition = \"{edition}\"` is not an edition this build knows — {}",
+            KNOWN_EDITIONS.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `major.minor.patch`, with the optional `-pre` and `+build` tails.
+///
+/// Deliberately not a semver crate: the whole question here is whether someone
+/// typed a version or a sentence, and a dependency for that is not worth it.
+fn is_semver(version: &str) -> bool {
+    let core = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = core.split('.');
+    let numeric =
+        |part: Option<&str>| part.is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    numeric(parts.next()) && numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+}
+
+pub fn cache_dir_for_source(source: &str) -> Result<PathBuf> {
     let mut root = lk_home().join("git");
     let normalized = source
         .trim_end_matches(".git")
@@ -597,10 +673,19 @@ pub fn cache_dir_for_source(source: &str) -> PathBuf {
         .trim_start_matches("http://")
         .trim_start_matches("git@")
         .replace(':', "/");
-    for part in normalized.split('/').filter(|part| !part.is_empty()) {
+    for part in normalized.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            bail!(
+                "dependency source `{source}` has a `..` path segment — the clone directory is \
+                 built from the source, and that would put it outside the package cache"
+            );
+        }
         root.push(part);
     }
-    root
+    Ok(root)
 }
 
 fn resolve_proc_macro_command(manifest_dir: &Path, command: &str) -> PathBuf {
@@ -862,6 +947,63 @@ mod tests {
         let graph = PackageGraph::discover(root)?.unwrap();
         graph.validate_macro_distribution()?;
         Ok(())
+    }
+
+    /// The clone directory is built from the source string, so a `..` in it
+    /// walks out of the cache.
+    ///
+    /// Measured before the guard: `git = "https://example.com/../../../../../../tmp/x"`
+    /// had git report `Cloning into '/home/…/.lk/git/example.com/../../../../../../tmp/x'`
+    /// — outside `~/.lk/git` entirely. A source with a clonable remote and a
+    /// `..` (a local path or `file://` remote) lands the checkout there.
+    ///
+    /// Refused rather than dropped: dropping would collapse two different
+    /// sources onto one directory.
+    #[test]
+    fn a_source_with_a_dotdot_segment_cannot_escape_the_cache() {
+        let error = cache_dir_for_source("https://example.com/../../../tmp/x")
+            .expect_err("`..` walks out of the cache root")
+            .to_string();
+        assert!(error.contains("`..` path segment"), "{error}");
+
+        // The shapes that must keep working, including the empty segments a
+        // scheme leaves behind and a `.` that means nothing.
+        let ok = cache_dir_for_source("https://github.com/owner/repo.git").expect("an ordinary source");
+        assert!(ok.ends_with("git/github.com/owner/repo"), "{}", ok.display());
+        let ssh = cache_dir_for_source("git@github.com:owner/repo.git").expect("an ssh source");
+        assert_eq!(ok, ssh, "the two spellings of one repository share a cache directory");
+        let dotted = cache_dir_for_source("https://example.com/./a").expect("a `.` segment is the same path");
+        assert!(dotted.ends_with("git/example.com/a"), "{}", dotted.display());
+    }
+
+    /// The three `[package]` fields that were written and never read.
+    #[test]
+    fn the_package_section_is_checked() {
+        let section = |name: &str, version: Option<&str>, edition: Option<&str>| PackageSection {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            edition: edition.map(str::to_string),
+            ..PackageSection::default()
+        };
+
+        validate_package_section(&section("pk", Some("0.1.0"), Some("2026"))).expect("an ordinary package");
+        validate_package_section(&section("pk", Some("1.2.3-rc.1+build5"), None)).expect("a pre-release version");
+        validate_package_section(&section("pk", None, None)).expect("both fields are optional");
+
+        for (name, version, edition, needle) in [
+            ("../evil", Some("0.1.0"), None, "is not a name"),
+            ("", Some("0.1.0"), None, "is empty"),
+            ("9pk", Some("0.1.0"), None, "is not a name"),
+            ("pk", Some("not-a-version"), None, "is not a version"),
+            ("pk", Some("1.2"), None, "is not a version"),
+            ("pk", Some("0.1.0"), Some("1999"), "is not an edition"),
+            ("pk", Some("0.1.0"), Some("banana"), "is not an edition"),
+        ] {
+            let error = validate_package_section(&section(name, version, edition))
+                .expect_err("refused")
+                .to_string();
+            assert!(error.contains(needle), "{name}/{version:?}/{edition:?}: {error}");
+        }
     }
 
     #[test]

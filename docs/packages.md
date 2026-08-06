@@ -239,3 +239,35 @@ return util.answer();
 - `lk pkg update [name]` re-resolves one or all dependencies.
 - `lk pkg check` validates package graph and macro provider distribution metadata.
 - `lk pkg tree` prints resolved package modules.
+
+## `[package]` 的三个字段是被校验的,缓存目录不会被 `..` 走出去(2026-08-06 裁决)
+
+`lk pkg check` 之前对 `[package]` 一句话都不说:
+
+| 写法 | 改前 | 改后 |
+| --- | --- | --- |
+| `edition = "1999"` / `"banana"` | package check ok | 拒绝 |
+| `version = "not-a-version"` | package check ok | 拒绝 |
+| `name = "../evil"` / `""` / `"9pk"` | package check ok | 拒绝 |
+
+`edition` 由 `lk pkg init` 写出来,而**没有任何代码读它**;`version` 同样没有
+读者。名字则是 `use <name>;` 要拼出来的东西,所以它必须是个标识符(字母、
+数字、`_`、`-`,不以数字开头)。校验放在 `pkg check` 而不是加载时:这条命令的
+职责就是回答"这个包是否规整",而一个没人读的装饰字段写错了,不该拦住一个不读
+它的程序运行。
+
+版本按 `major.minor.patch` 判,允许 `-pre` 和 `+build` 尾巴;不引 semver 依赖,
+因为这里要分辨的只是"写了个版本"还是"写了句话"。
+
+### 缓存目录
+
+`~/.lk/git/` 之下按 source URL 的形状分层,而那个字符串来自 `Lk.toml`(更糟的
+是也可能来自 `Lk.lock`)。逐段 `push` 且不过滤 `..`,于是
+
+    git = "https://example.com/../../../../../../tmp/x"
+
+让 git 报 `Cloning into '/home/…/.lk/git/example.com/../../../../../../tmp/x'`
+—— 已经在缓存根之外。远端只要可克隆(本地路径或 `file://`)就落地。
+
+`..` **拒绝**而不是丢弃:丢弃会让两个不同的 source 塌到同一个缓存目录上。空段
+和 `.` 照旧丢弃 —— 那两个本来就是同一个路径。
