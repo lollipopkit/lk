@@ -157,9 +157,19 @@ impl Stmt {
                 // pre-flight command, passed a program that could not run and
                 // said nothing. Trait defaults are already copied in by
                 // `stmt::trait_defaults`, so "present" is the whole question.
-                if let Some(trait_name) = trait_name
-                    && let Some(trait_def) = type_checker.registry().get_trait(trait_name)
-                {
+                if let Some(trait_name) = trait_name {
+                    // An impl of a trait that does not exist. The target type
+                    // half is checked just above; this half used to slip
+                    // through a `let Some(…)` that simply skipped the whole
+                    // conformance check, so the program failed at run time
+                    // with "Trait 'X' not found" and `lk check` said nothing.
+                    let Some(trait_def) = type_checker.registry().get_trait(trait_name).cloned() else {
+                        return Err(anyhow!(format!(
+                            "Trait '{trait_name}' not found — an impl names the trait it implements, and \
+                             a type's own methods are written as `impl {} {{ … }}` with no trait",
+                            target_type.display()
+                        )));
+                    };
                     let declared: Vec<(String, crate::val::Type)> = trait_def
                         .methods
                         .iter()
@@ -1212,6 +1222,39 @@ impl Program {
         }
     }
 
+    /// A trait declared twice, and a trait declaring one method twice.
+    ///
+    /// A program-level pass for the same reason the method-collision one is:
+    /// the question is about the *set* of declarations, and by the time the
+    /// ordered walk runs, `predeclare_type_declarations` has already
+    /// registered the first `trait T` — so the registry cannot tell a
+    /// duplicate from a declaration meeting itself.
+    ///
+    /// Both mistakes replace something in silence. A second `trait T` replaces
+    /// the first, and every impl written against the first is then measured
+    /// against a trait it never saw; a repeated method name inside one trait
+    /// leaves a signature no impl is measured against at all. Two top-level
+    /// `fn`s of one name were already refused, and so were two `struct`s.
+    fn check_trait_declarations(&self) -> Result<()> {
+        let mut seen: Vec<&str> = Vec::new();
+        for stmt in &self.statements {
+            let Stmt::Trait { name, methods, .. } = item_of(stmt) else {
+                continue;
+            };
+            if seen.contains(&name.as_str()) {
+                return Err(anyhow!(format!(
+                    "trait '{name}' is declared twice — the second declaration would replace the first, \
+                     and every impl written against it"
+                )));
+            }
+            seen.push(name);
+            if let Some(dup) = first_repeat(methods.iter().map(|(m, _)| m.as_str())) {
+                return Err(anyhow!(format!("trait '{name}' declares the method '{dup}' twice")));
+            }
+        }
+        Ok(())
+    }
+
     /// Every `impl` method name, checked for the two collisions the language
     /// resolved silently by taking the last one.
     ///
@@ -1320,6 +1363,7 @@ impl Program {
 
     /// Type-checks a whole program.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        self.check_trait_declarations()?;
         self.check_method_name_collisions()?;
         self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
@@ -1360,6 +1404,9 @@ impl Program {
     pub fn type_check_collecting(&self, type_checker: &mut TypeChecker) -> Vec<anyhow::Error> {
         // Collected like any other, so the LSP reports it and keeps going.
         let mut collision = Vec::new();
+        if let Err(err) = self.check_trait_declarations() {
+            collision.push(err);
+        }
         if let Err(err) = self.check_method_name_collisions() {
             collision.push(err);
         }

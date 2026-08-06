@@ -1214,4 +1214,30 @@ mod tests {
         check_program("fn g(a: Int, { b: Int? = 1 }) -> Int { return a; }\nprintln(g(1, b: 2));\n")
             .expect("a declared named parameter is accepted");
     }
+    /// The three declaration-level rules a `trait` was missing.
+    ///
+    /// `fn` and `struct` are both refused when declared twice, and an impl's
+    /// *target type* is checked for existence — the trait half of the same
+    /// line was not, because it sat behind a `let Some(…)` that skipped the
+    /// whole conformance check when the lookup missed. All three failed only
+    /// at run time, or (the repeated method) not at all.
+    #[test]
+    fn a_trait_declaration_is_checked_like_the_others() {
+        for src in [
+            // The trait an impl names has to exist.
+            "struct S { x: Int }\nimpl Nope for S { fn m(self) -> Int { return 1; } }\n",
+            // Declared twice: the second would replace the first, and every
+            // impl written against it.
+            "trait T { fn m(self) -> Int; }\ntrait T { fn n(self) -> Int; }\n",
+            // One method declared twice inside it.
+            "trait T { fn m(self) -> Int; fn m(self) -> Int; }\n",
+        ] {
+            assert!(check_program(src).is_err(), "should be refused: {src}");
+        }
+
+        check_program(
+            "trait T { fn m(self) -> Int; }\nstruct S { x: Int }\nimpl T for S { fn m(self) -> Int { return 1; } }\nprintln(S { x: 1 }.m());\n",
+        )
+        .expect("an ordinary trait and impl are accepted");
+    }
 }
