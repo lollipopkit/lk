@@ -68,6 +68,55 @@ pub enum Pattern {
         inclusive: bool,
     },
 }
+
+/// The first name a binder declares twice, if any.
+///
+/// A construct that binds one name twice can never read the first binding: the
+/// second shadows it before anything runs, so `fn f(a: Int, a: Int)` ignores
+/// its first argument and `[a, a]` matches *any* two elements rather than two
+/// equal ones — the reading somebody arrives with from a language whose
+/// patterns are non-linear.
+///
+/// `Or` alternatives are walked one at a time on purpose: `A(x) | B(x)` binds
+/// the same name in every arm deliberately, and that is the only way an `Or`
+/// binds anything at all.
+pub(crate) fn duplicate_binding(pattern: &Pattern) -> Option<String> {
+    fn note(name: &str, seen: &mut Vec<String>) -> Option<String> {
+        if seen.iter().any(|s| s == name) {
+            return Some(name.to_string());
+        }
+        seen.push(name.to_string());
+        None
+    }
+
+    fn walk(pattern: &Pattern, seen: &mut Vec<String>) -> Option<String> {
+        match pattern {
+            Pattern::Variable(name) => note(name, seen),
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => None,
+            Pattern::List { patterns, rest } => {
+                for p in patterns {
+                    if let Some(dup) = walk(p, seen) {
+                        return Some(dup);
+                    }
+                }
+                rest.as_ref().and_then(|r| note(r, seen))
+            }
+            Pattern::Map { patterns, rest } => {
+                for (_key, p) in patterns {
+                    if let Some(dup) = walk(p, seen) {
+                        return Some(dup);
+                    }
+                }
+                rest.as_ref().and_then(|r| note(r, seen))
+            }
+            Pattern::Or(alts) => alts.iter().find_map(|alt| walk(alt, &mut seen.clone())),
+            Pattern::Guard { pattern, .. } => walk(pattern, seen),
+        }
+    }
+
+    walk(pattern, &mut Vec::new())
+}
+
 impl Pattern {
     /// Whether this pattern matches every value, with no guard to make it
     /// conditional.

@@ -1127,4 +1127,41 @@ mod tests {
             "unexpected message: {err}"
         );
     }
+    /// Every position that binds a name refuses to bind one twice.
+    ///
+    /// A construct that binds one name twice can never read the first
+    /// binding, so `fn f(a: Int, a: Int)` ignores the argument passed for its
+    /// first parameter and `[a, a]` matches *any* two elements rather than two
+    /// equal ones — the reading somebody arrives with from a language whose
+    /// patterns are non-linear. All seven positions accepted it and let the
+    /// later binding win in silence.
+    ///
+    /// The negative half is asserted with it, because the rule is per binder,
+    /// not per scope: re-binding a name in a *later* statement is ordinary,
+    /// and an `Or` pattern binds the same name in each of its alternatives by
+    /// design.
+    #[test]
+    fn no_binder_declares_one_name_twice() {
+        for src in [
+            "fn f(a: Int, a: Int) -> Int { return a; }\nprintln(f(1, 2));\n",
+            "struct P { x: Int, x: Int }\n",
+            "let f = |a: Int, a: Int| a;\nprintln(f(1, 2));\n",
+            "let [a, a] = [1, 2];\nprintln(a);\n",
+            "let t = [1, 2];\nmatch t { [a, a] => { println(a); } _ => { println(0); } }\n",
+            "let ps = [[1, 2]];\nfor [a, a] in ps { println(a); }\n",
+            "struct Q { x: Int }\nimpl Q { fn g(self, a: Int, a: Int) -> Int { return a; } }\n",
+            "let m = {\"k\": 1};\nif let {\"k\": v, \"j\": v} = m { println(v); }\n",
+        ] {
+            assert!(check_program(src).is_err(), "should be refused: {src}");
+        }
+
+        for src in [
+            "let a = 1;\nlet a = 2;\nprintln(a);\n",
+            "fn f(a: Int, b: Int) -> Int { return a + b; }\nprintln(f(1, 2));\n",
+            "let t = 1;\nmatch t { 1 | 2 => { println(t); } _ => { println(0); } }\n",
+            "let ps = [[1, 2]];\nfor [a, b] in ps { println(a + b); }\n",
+        ] {
+            check_program(src).unwrap_or_else(|e| panic!("should be accepted: {src}: {e}"));
+        }
+    }
 }

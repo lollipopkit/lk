@@ -8,12 +8,29 @@ use anyhow::Result;
 impl TypeChecker {
     /// Public helper: add variable types introduced by a pattern given the value type
     pub fn add_bindings_for_pattern(&mut self, pattern: &Pattern, value_type: &Type) -> Result<()> {
+        self.reject_duplicate_bindings(pattern)?;
         let bindings = self.collect_bindings_for_pattern(pattern, value_type)?;
         for (name, ty) in bindings {
             self.add_local_type(name, ty);
         }
         // Validate any guards embedded in the pattern
         self.check_pattern_guards(pattern, value_type)?;
+        Ok(())
+    }
+
+    /// Refuse a pattern that binds one name twice.
+    ///
+    /// Separate from [`Self::add_bindings_for_pattern`] because `if let` and
+    /// `while let` deliberately discard *that* result — a pattern the matched
+    /// type cannot produce is what those constructs test at run time — and a
+    /// repeated name is not that: no value makes it right.
+    pub fn reject_duplicate_bindings(&self, pattern: &Pattern) -> Result<()> {
+        if let Some(name) = crate::expr::duplicate_binding(pattern) {
+            return Err(anyhow::anyhow!(alloc::format!(
+                "`{name}` is bound twice by one pattern — the second binding shadows the first before \
+                 anything can read it, so a repeated name matches any value rather than an equal one"
+            )));
+        }
         Ok(())
     }
 

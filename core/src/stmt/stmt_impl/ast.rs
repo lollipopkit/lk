@@ -35,6 +35,35 @@ pub enum ForPattern {
     Object(Vec<(String, ForPattern)>),
 }
 
+/// The first name a `for` pattern binds twice, if any.
+///
+/// The `for` twin of [`crate::expr::duplicate_binding`] — a separate walk only
+/// because the loop header has its own pattern type.
+pub(crate) fn duplicate_for_binding(pattern: &ForPattern) -> Option<String> {
+    fn note(name: &str, seen: &mut Vec<String>) -> Option<String> {
+        if seen.iter().any(|s| s == name) {
+            return Some(name.to_string());
+        }
+        seen.push(name.to_string());
+        None
+    }
+
+    fn walk(pattern: &ForPattern, seen: &mut Vec<String>) -> Option<String> {
+        match pattern {
+            ForPattern::Variable(name) => note(name, seen),
+            ForPattern::Ignore => None,
+            ForPattern::Tuple(patterns) => patterns.iter().find_map(|p| walk(p, seen)),
+            ForPattern::Array { patterns, rest } => patterns
+                .iter()
+                .find_map(|p| walk(p, seen))
+                .or_else(|| rest.as_ref().and_then(|r| note(r, seen))),
+            ForPattern::Object(entries) => entries.iter().find_map(|(_k, p)| walk(p, seen)),
+        }
+    }
+
+    walk(pattern, &mut Vec::new())
+}
+
 /// A named parameter, as a function declares it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedParamDecl {

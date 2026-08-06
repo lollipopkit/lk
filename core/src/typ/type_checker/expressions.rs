@@ -2465,6 +2465,24 @@ impl TypeChecker {
         body: &Expr,
         expected_params: &[Type],
     ) -> Result<Type> {
+        // A lambda's parameter list is a binder like a `fn`'s: a repeated name
+        // leaves an argument every call site still has to pass and nothing can
+        // read.
+        let mut seen: Vec<&str> = Vec::with_capacity(params.len());
+        for param in params {
+            if seen.contains(&param.as_str()) {
+                return Err(Self::type_err(
+                    &alloc::format!(
+                        "`{param}` is declared twice in this lambda's parameters — the second one shadows \
+                     the first, so nothing can read the argument passed for it"
+                    ),
+                    None,
+                    None,
+                    None,
+                ));
+            }
+            seen.push(param);
+        }
         // What the closure *says* wins over what the context expects, which
         // wins over a fresh variable. A declaration is the author stating the
         // type; a context is an inference about it.

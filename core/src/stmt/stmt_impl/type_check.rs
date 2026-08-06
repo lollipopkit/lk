@@ -64,6 +64,12 @@ impl Stmt {
                 Ok(())
             }
             Stmt::Struct { name, fields } => {
+                // The declaration's own binder: two fields of one name leave a
+                // field nothing can ever address, and the literal that fills
+                // "both" satisfies the requirement once.
+                if let Some(dup) = first_repeat(fields.iter().map(|(k, _)| k.as_str())) {
+                    return Err(anyhow!(format!("struct '{name}' declares the field '{dup}' twice")));
+                }
                 // Register struct in registry for subsequent checks
                 let mut fm = HashMap::new();
                 let mut missing: Vec<String> = Vec::new();
@@ -179,6 +185,7 @@ impl Stmt {
                 span,
                 is_const,
             } => {
+                type_checker.reject_duplicate_bindings(pattern)?;
                 if let Some(annotation) = type_annotation {
                     type_checker.check_type_annotation(annotation, "this binding")?;
                 }
@@ -436,6 +443,15 @@ impl Stmt {
                     return Err(anyhow!(format!(
                         "a function cannot be declared inside another: move `{name}` to the top level, \
                          or bind a closure with `let {name} = |…| …;` if it needs the enclosing scope"
+                    )));
+                }
+                // A parameter list is a binder like any other: a repeated name
+                // means the argument passed for the first one can never be
+                // read, and every call site still has to pass it.
+                if let Some(dup) = first_repeat(params.iter().map(String::as_str)) {
+                    return Err(anyhow!(format!(
+                        "`{dup}` is declared twice in the parameters of `{name}` — the second one shadows \
+                         the first, so nothing can read the argument passed for it"
                     )));
                 }
                 type_checker.push_scope();
@@ -803,8 +819,10 @@ impl Stmt {
                 // The pattern binds into the `then` arm only.
                 type_checker.push_scope();
 
-                // Binds the pattern variables and rejects a pattern the
-                // matched type cannot produce.
+                // A repeated name is refused; a pattern the matched type
+                // cannot produce is not, because testing that is what this
+                // construct is for.
+                type_checker.reject_duplicate_bindings(pattern)?;
                 type_checker.add_bindings_for_pattern(pattern, &value_type).ok();
 
                 then_stmt.type_check(type_checker)?;
@@ -830,8 +848,10 @@ impl Stmt {
                 // The pattern binds into the body only.
                 type_checker.push_scope();
 
-                // Binds the pattern variables and rejects a pattern the
-                // matched type cannot produce.
+                // A repeated name is refused; a pattern the matched type
+                // cannot produce is not, because testing that is what this
+                // construct is for.
+                type_checker.reject_duplicate_bindings(pattern)?;
                 type_checker.add_bindings_for_pattern(pattern, &value_type).ok();
 
                 body.type_check(type_checker)?;
@@ -954,6 +974,12 @@ impl Stmt {
 
     /// Binds a `for` pattern's variables to the element type.
     fn add_pattern_types(pattern: &ForPattern, iter_type: &Type, type_checker: &mut TypeChecker) -> Result<()> {
+        if let Some(name) = crate::stmt::stmt_impl::ast::duplicate_for_binding(pattern) {
+            return Err(anyhow!(format!(
+                "`{name}` is bound twice by one loop pattern — the second binding shadows the first, \
+                 so a repeated name matches any element rather than an equal one"
+            )));
+        }
         match pattern {
             ForPattern::Variable(name) => {
                 let var_type = match iter_type {
@@ -1037,6 +1063,22 @@ impl Stmt {
         }
         Ok(())
     }
+}
+
+/// The first name a list of binders repeats.
+///
+/// The list twin of [`crate::expr::duplicate_binding`], for the binders that
+/// are a sequence of names rather than a pattern: a parameter list, a struct's
+/// fields.
+fn first_repeat<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if seen.contains(&name) {
+            return Some(name.to_string());
+        }
+        seen.push(name);
+    }
+    None
 }
 
 impl Program {
