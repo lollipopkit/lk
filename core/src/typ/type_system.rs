@@ -50,6 +50,18 @@ pub struct TypeRegistry {
     /// Struct definitions
     structs: HashMap<String, StructDef>,
 
+    /// Names among `structs` that came from **another module**, not from the
+    /// program being checked.
+    ///
+    /// The two are registered into one table on purpose — an imported type's
+    /// fields have to be known to check `m.P { x: 1 }` — but a *bare* `P { … }`
+    /// is a different question: it names a type declared here, and building one
+    /// for a name that is only imported produced a value that renders `P{x:4}`
+    /// and reports `typeof` `P` while carrying none of `P`'s methods (the
+    /// runtime stamps the *constructing* module's `TypeScope`, and the method
+    /// table is keyed by the declaring one). So the table says which is which.
+    imported_structs: crate::compat::collections::HashSet<String>,
+
     /// Trait definitions
     traits: HashMap<String, TraitDef>,
 
@@ -75,9 +87,23 @@ impl TypeRegistry {
         self.type_aliases.get(name)
     }
 
-    /// Register a struct definition
+    /// Register a struct the program being checked declares.
     pub fn register_struct(&mut self, s: StructDef) {
+        // A local declaration wins over an imported name of the same spelling:
+        // imports are seeded first, and this is what un-marks the entry.
+        self.imported_structs.remove(&s.name);
         self.structs.insert(s.name.clone(), s);
+    }
+
+    /// Register a struct **another module** declares.
+    pub fn register_imported_struct(&mut self, s: StructDef) {
+        self.imported_structs.insert(s.name.clone());
+        self.structs.insert(s.name.clone(), s);
+    }
+
+    /// Whether `name` is known only because another module declares it.
+    pub fn is_imported_struct(&self, name: &str) -> bool {
+        self.imported_structs.contains(name)
     }
 
     /// Get struct definition by name

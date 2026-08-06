@@ -169,7 +169,7 @@ fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
                     .iter()
                     .map(|(field, ty)| (field.clone(), ty.clone().unwrap_or(Type::Any)))
                     .collect();
-                checker.registry_mut().register_struct(StructDef {
+                checker.registry_mut().register_imported_struct(StructDef {
                     name: name.clone(),
                     fields,
                 });

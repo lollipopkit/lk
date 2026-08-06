@@ -536,6 +536,23 @@ impl TypeChecker {
                         Some(expr.clone()),
                     ));
                 }
+                // Known, but only because another module declares it. Building
+                // it here stamps *this* module's `TypeScope`, so the result
+                // renders the same and answers the same `typeof` while having
+                // none of the type's methods — the error then surfaces at the
+                // call site ("has no method …"), far from the construction. The
+                // two spellings that carry the declaring module's identity both
+                // work, so the answer is to name one of them.
+                if self.registry.is_imported_struct(name) {
+                    return Err(Self::type_err(
+                        &alloc::format!(
+                            "`{name}` is declared in another module, so a bare `{name} {{ … }}` here                              would build a different type that happens to share the name — it would                              have none of `{name}`'s methods. Write `m.{name} {{ … }}` (through the                              module), or call a constructor that module exports"
+                        ),
+                        None,
+                        None,
+                        Some(expr.clone()),
+                    ));
+                }
                 if let Some(sd) = self.registry.get_struct(name) {
                     let schema = sd.fields.clone();
                     // Provided -> check existence and type

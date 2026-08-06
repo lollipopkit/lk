@@ -692,6 +692,45 @@ mod tests {
         assert!(message.contains("m.Nope"), "{message}");
     }
 
+    /// A type another module declares is not constructible by its bare name.
+    ///
+    /// It used to build a value that renders `P{x:4}` and answers `typeof` `P`
+    /// while carrying none of `P`'s methods: the runtime stamps the
+    /// *constructing* module's `TypeScope` and the method table is keyed by the
+    /// declaring one, so the two are different identities that share a name.
+    /// The failure surfaced at the call site — "P has no method 'norm'" — far
+    /// from the construction. The spellings that do carry the declaring
+    /// module's identity (`m.P { … }`, or a constructor it exports) both work.
+    #[test]
+    fn a_type_from_another_module_is_not_constructible_by_its_bare_name() {
+        let imported = || crate::typ::StructDef {
+            name: "P".to_string(),
+            fields: [("x".to_string(), Type::Int)].into_iter().collect(),
+        };
+
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        let program =
+            crate::syntax::parse_program_source("let p = P { x: 4 };", Default::default()).expect("parse program");
+        let message = program
+            .type_check(&mut checker)
+            .expect_err("a bare imported name is refused")
+            .to_string();
+        assert!(message.contains("is declared in another module"), "{message}");
+        assert!(message.contains("m.P"), "{message}");
+
+        // A local declaration of the same name wins — imports are seeded first,
+        // and registering the local one un-marks the entry.
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        let program =
+            crate::syntax::parse_program_source("struct P { x: Int }\nlet p = P { x: 4 };", Default::default())
+                .expect("parse program");
+        program
+            .type_check(&mut checker)
+            .expect("declared here, so it is this module's");
+    }
+
     /// A store into a container is checked against what the container's type
     /// declares it holds — through every spelling of a store.
     ///
