@@ -860,17 +860,32 @@ impl TypeChecker {
                     instantiated_return = sig.return_type.clone();
                     // Check positional arity
                     if sig.positional.len() != pos_types.len() {
-                        return Err(Self::type_err(
-                            &format!(
+                        // A positional parameter passed by name is the shape
+                        // somebody arrives with from Python, Swift or Kotlin.
+                        // Reported as a count, it read as "you passed none" —
+                        // true, and no help at all. Named parameters here are
+                        // the ones declared in the trailing `{ … }` block.
+                        let by_name: Vec<&str> = named_types
+                            .iter()
+                            .map(|(n, _)| n.as_str())
+                            .filter(|n| sig.named.iter().all(|declared| declared.name != **n))
+                            .collect();
+                        let message = if by_name.is_empty() {
+                            format!(
                                 "Function '{}' expects {} positional args, got {}",
                                 name,
                                 sig.positional.len(),
                                 pos_types.len()
-                            ),
-                            None,
-                            None,
-                            None,
-                        ));
+                            )
+                        } else {
+                            format!(
+                                "Function \'{}\' has no named parameter `{}` — a positional parameter is passed by position, \
+                                and a named one is declared in a trailing `{{ … }}` block, as in `fn f(a: Int, {{ b: Int? = 1 }})`",
+                                name,
+                                by_name.join("`, `")
+                            )
+                        };
+                        return Err(Self::type_err(&message, None, None, None));
                     }
                     // Constrain positional types, and at the same time read
                     // this instance's variables off the arguments.

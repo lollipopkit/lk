@@ -1190,4 +1190,28 @@ mod tests {
         )
         .expect("a matching signature is accepted");
     }
+    /// A positional parameter passed by name says so.
+    ///
+    /// `f(a: 1, b: 2)` is what somebody arrives with from Python, Swift or
+    /// Kotlin. LK has named parameters — declared in a trailing `{ … }` block
+    /// — and positional ones are positional, so the call is an error; it was
+    /// reported as "expects 2 positional args, got 0", which is true and no
+    /// help at all.
+    #[test]
+    fn a_positional_parameter_passed_by_name_is_named_as_such() {
+        let error = check_program("fn f(a: Int, b: Int) -> Int { return a - b; }\nprintln(f(b: 1, a: 5));\n")
+            .expect_err("positional parameters are not passed by name")
+            .to_string();
+        assert!(error.contains("no named parameter"), "{error}");
+        assert!(error.contains("trailing"), "{error}");
+
+        // The count message stays for the shape it was written for, and a real
+        // named parameter still works.
+        let error = check_program("fn f(a: Int, b: Int) -> Int { return a - b; }\nprintln(f(1));\n")
+            .expect_err("one argument is not two")
+            .to_string();
+        assert!(!error.contains("no named parameter"), "{error}");
+        check_program("fn g(a: Int, { b: Int? = 1 }) -> Int { return a; }\nprintln(g(1, b: 2));\n")
+            .expect("a declared named parameter is accepted");
+    }
 }
