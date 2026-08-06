@@ -309,3 +309,49 @@ fn check_accepts_what_the_executors_accept_and_strict_is_opt_in() -> Result<(), 
 
     Ok(())
 }
+
+/// A syntax error is reported **once**.
+///
+/// `lk check` printed it twice — once through `diagnostic::parse_error` with
+/// its caret snippet, and once more because the same error was then *returned*
+/// for the caller to print. `lk FILE` prints and exits, which is the shape the
+/// other two sites in that function already had.
+#[test]
+fn a_syntax_error_is_reported_once() -> Result<(), Box<dyn Error>> {
+    let dir = tempdir()?;
+    let script_path = dir.path().join("bad_syntax.lk");
+    fs::write(&script_path, "let x = ;\n")?;
+
+    let mut cmd = Command::cargo_bin("lk")?;
+    cmd.args(["check", script_path.to_str().unwrap()]);
+    let output = cmd.output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let occurrences = stderr.matches("Expected expression").count();
+    assert_eq!(occurrences, 1, "reported {occurrences} times:\n{stderr}");
+
+    Ok(())
+}
+
+/// `export fn` is named rather than left to "Unexpected tokens at end".
+///
+/// `export` means two things in this language — `export macro_rules!` and the
+/// `#[export]` attribute — and neither is what somebody who read the macro
+/// documentation writes when they want a function out of a module. A function
+/// needs no export at all. The old message pointed at `export` and said
+/// "(found Fn)", naming neither.
+#[test]
+fn export_before_a_declaration_is_named() -> Result<(), Box<dyn Error>> {
+    for declaration in ["fn f() { return 1; }", "struct S { x: Int }", "const C = 1;"] {
+        let dir = tempdir()?;
+        let script_path = dir.path().join("exported.lk");
+        fs::write(&script_path, format!("export {declaration}\n"))?;
+
+        let mut cmd = Command::cargo_bin("lk")?;
+        cmd.args(["check", script_path.to_str().unwrap()]);
+        cmd.assert()
+            .failure()
+            .stderr(predicate::str::contains("`export` applies to `macro_rules!` only"));
+    }
+
+    Ok(())
+}

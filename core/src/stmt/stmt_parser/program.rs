@@ -229,6 +229,39 @@ impl<'a> StmtParser<'a> {
             Token::Fn => self.parse_function_stmt(),
             Token::LBrace => self.parse_block_stmt(),
             Token::Id(id) => {
+                // The one mis-spelling worth naming here, for the same reason
+                // `type_syntax::function_type_hint` names `fn(Int) -> Int`:
+                // somebody who read the macro documentation writes `export fn`,
+                // and what they got back was "Unexpected tokens at end (found
+                // Fn)" pointing at `export` — a message that names neither what
+                // `export` is nor that a function does not need it. This
+                // repository's own fixtures write `export fn` in four places
+                // (`macro_system/proc_deps.rs`), which only never showed
+                // because those tests hash the file instead of parsing it.
+                if id == "export"
+                    && let Some(next) = self.peek_ahead(1)
+                    && matches!(
+                        next,
+                        Token::Fn
+                            | Token::Struct
+                            | Token::Const
+                            | Token::Let
+                            | Token::Trait
+                            | Token::Impl
+                            | Token::Type
+                    )
+                {
+                    let message = "`export` applies to `macro_rules!` only \
+                        (`export macro_rules! name { … }`). A top-level `fn`, `struct`, `const` or \
+                        `type` needs no export — it is already importable with \
+                        `use { name } from module;`. For a native symbol name, the spelling is the \
+                        attribute `#[export]`";
+                    // Plain, with no span of its own: the caller re-wraps a
+                    // statement error into a `ParseError` carrying the current
+                    // token's span, and attaching one here made the rendered
+                    // line read `… at 1:1-7 at 1:1-7`.
+                    return Err(anyhow!(message));
+                }
                 // The short declaration `id := expr` is tried first, so it is
                 // not read as the label `id:`.
                 if self.peek_ahead(1) == Some(&Token::Colon) && self.peek_ahead(2) == Some(&Token::Assign) {

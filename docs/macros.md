@@ -156,7 +156,10 @@ use { pkg_macro } from some_package;            // 包导入(Lk.toml 依赖)
 use * as m from macros;                          // 命名空间导入:m::vec![1, 2]
 ```
 
-- 定义处需 `export macro_rules! name { ... }` 才可被导入;
+- 定义处需 `export macro_rules! name { ... }` 才可被导入;`export` **只**用在这里
+  (另一个含义是属性 `#[export]`,给原生链接命名符号)。顶层的 `fn` / `struct` /
+  `const` / `type` **不需要**导出,直接 `use { name } from module;` 就能拿到 ——
+  写成 `export fn` 会被点名拒绝,消息里说明这三种含义;
   `pub use { name } from "path";`(可 `as` 改名)做再导出。
 - **内建 `macros` 模块**(`core/src/macro_system/imports.rs`
   `BUILTIN_MACRO_SOURCE`)提供 8 个宏:`vec!`、`assert!`、`assert_eq!`、

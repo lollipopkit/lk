@@ -735,10 +735,15 @@ fn expand_macro_file(path: &Path, trace: bool, deps: bool, origins: bool, featur
     // Deduplicate features preserving first-occurrence order.
     let mut seen = std::collections::HashSet::new();
     options.macro_features = features.into_iter().filter(|f| seen.insert(f.clone())).collect();
-    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
-        diagnostic::parse_error(&parse_err, &input);
-        anyhow::anyhow!(parse_err.to_string())
-    })?;
+    // Printed and exited — see `run_type_check` for why returning it prints
+    // the same line twice.
+    let expanded = match expand_program_source(&input, options) {
+        Ok(expanded) => expanded,
+        Err(parse_err) => {
+            diagnostic::parse_error(&parse_err, &input);
+            std::process::exit(1);
+        }
+    };
     if trace {
         for step in &expanded.source.trace {
             println!(
@@ -898,10 +903,18 @@ fn json_span(span: &lk_core::token::Span) -> JsonSpan {
 fn run_type_check(path: &Path, strict: bool) -> anyhow::Result<()> {
     let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
     let options = parse_options_for_file(path)?;
-    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
-        diagnostic::parse_error(&parse_err, &input);
-        anyhow::anyhow!(parse_err.to_string())
-    })?;
+    // Printed *and* exited, not printed and returned: returning it makes the
+    // caller print the same line a second time, so `lk check` answered every
+    // syntax error twice — once with its caret snippet and once bare. The two
+    // sites below in this function already do it this way, and so does
+    // `lk FILE`.
+    let expanded = match expand_program_source(&input, options) {
+        Ok(expanded) => expanded,
+        Err(parse_err) => {
+            diagnostic::parse_error(&parse_err, &input);
+            std::process::exit(1);
+        }
+    };
     ensure_stdlib_signatures();
     let mut checker = if strict {
         TypeChecker::new_strict()
