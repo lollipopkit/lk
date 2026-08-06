@@ -1,5 +1,42 @@
 #[cfg(test)]
 mod tests {
+    /// The keyword somebody arrives with from another language gets named.
+    ///
+    /// `function f() { … }`, `def f(): …`, `func f() int { … }` and `elif`
+    /// each reported "Unexpected tokens at end" pointing at the word itself —
+    /// a message that names neither the mistake nor the spelling that works,
+    /// for the word that is the first thing anybody types. Same reason
+    /// `export fn` (#201) and `let mut` are named.
+    ///
+    /// The negative half matters as much: these are ordinary identifiers, so
+    /// a variable or a function actually called `def` must be unaffected.
+    #[test]
+    fn a_function_keyword_from_another_language_is_named() {
+        for (source, expected) in [
+            ("function f() { return 1; }\n", "the keyword is `fn`"),
+            ("def f(): return 1\n", "the keyword is `fn`"),
+            ("func f() -> Int { return 1; }\n", "the keyword is `fn`"),
+            (
+                "let a = 1;\nif a > 0 { println(1); } elif a < 0 { println(2); }\n",
+                "`else if`",
+            ),
+            ("let f = (x) => x + 1;\n", "`|x| x + 1`"),
+        ] {
+            let error = crate::syntax::parse_program_source(source, Default::default())
+                .expect_err("this is a syntax error")
+                .to_string();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+
+        for source in [
+            "let function = 1;\nprintln(function);\n",
+            "fn def(x: Int) -> Int { return x; }\nprintln(def(1));\n",
+            "let func = |x: Int| x + 1;\nprintln(func(1));\n",
+        ] {
+            crate::syntax::parse_program_source(source, Default::default()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+
     /// A header expression's leftover tokens used to be dropped in silence.
     ///
     /// `if a = 2 { … }` as the *last* statement of a file went through the

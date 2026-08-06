@@ -97,6 +97,13 @@ fn leftover_token_message(token: &Token) -> alloc::string::String {
             "`=` assigns, and an assignment in LK is a statement rather than an expression — a comparison is `==`",
         );
     }
+    // The other arrival from another language: `=>` heads a lambda in JS and
+    // an arm in Rust's `match`; here it is neither spelling.
+    if matches!(token, Token::Arrow) {
+        return alloc::string::String::from(
+            "`=>` is not an operator in LK — a lambda is `|x| x + 1`, and a `match` arm is `pattern => { … }`",
+        );
+    }
     // Plain wording: `err` appends the token itself, so naming it here would
     // print it twice.
     alloc::string::String::from("Unexpected tokens at end")

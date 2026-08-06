@@ -261,6 +261,27 @@ impl<'a> StmtParser<'a> {
                 // repository's own fixtures write `export fn` in four places
                 // (`macro_system/proc_deps.rs`), which only never showed
                 // because those tests hash the file instead of parsing it.
+                // The same reason, for the keyword somebody arrives with from
+                // another language. Each of these produced "Unexpected tokens
+                // at end" pointing at the word itself, which names neither the
+                // mistake nor the spelling that works — and the word is the
+                // first thing anybody types.
+                if let Some(Token::Id(name)) = self.peek_ahead(1)
+                    && matches!(id.as_str(), "function" | "func" | "def" | "fun")
+                {
+                    let message = alloc::format!(
+                        "`{id}` does not declare a function in LK — the keyword is `fn`, as in \
+                         `fn {name}(x: Int) -> Int {{ … }}`"
+                    );
+                    return Err(anyhow!(message));
+                }
+                // `elif` is Python's; a chain here is `else if`, and the word
+                // lexes as an ordinary identifier so nothing else reports it.
+                if id == "elif" {
+                    return Err(anyhow!(
+                        "`elif` is not a keyword in LK — chain the branches with `else if`".to_string()
+                    ));
+                }
                 if id == "export"
                     && let Some(next) = self.peek_ahead(1)
                     && matches!(
