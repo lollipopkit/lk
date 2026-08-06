@@ -1,4 +1,5 @@
 mod builtin_method_sig;
+pub(crate) mod declared_signature;
 /// Cross-file signatures. `std` only: it reads the imported file, and a target
 /// without a filesystem has no file imports to resolve.
 #[cfg(feature = "std")]

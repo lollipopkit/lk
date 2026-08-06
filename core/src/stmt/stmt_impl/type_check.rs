@@ -1218,11 +1218,59 @@ impl Program {
         Ok(())
     }
 
+    /// Register every `impl` method's *stated* signature before the walk.
+    ///
+    /// `fn` and `struct` are hoisted (the two pre-passes above), so source
+    /// order does not apply to them. `impl` was not: a method reaches the
+    /// checker by being type-*checked*, which happens in statement order, so a
+    /// call above the `impl` block found nothing —
+    ///
+    /// ```lk
+    /// struct P { x: Int }
+    /// let p = P { x: 1 };
+    /// println(p.m());                                  // `P has no method 'm'`
+    /// impl P { fn m(self) -> Int { return self.x; } }
+    /// ```
+    ///
+    /// — while moving the `impl` two lines up made the same program check. The
+    /// same file's *imported* twin was already handled (`typ::imports`'s
+    /// `seed_impl_methods`), which is how the asymmetry stayed invisible: an
+    /// impl one `use` away worked and one three lines down did not.
+    ///
+    /// Read from the declaration, never inferred — an unannotated parameter is
+    /// `Any`, exactly as `predeclare_function_signatures` leaves it. The
+    /// ordered walk replaces each entry with the inferred signature when it
+    /// reaches the definition, so this only ever makes a method *visible*
+    /// earlier; it cannot tighten one.
+    fn predeclare_impl_method_signatures(&self, type_checker: &mut TypeChecker) {
+        for stmt in &self.statements {
+            let Stmt::Impl {
+                target_type, methods, ..
+            } = item_of(stmt)
+            else {
+                continue;
+            };
+            let self_ty = type_checker.resolve_aliases(target_type);
+            for method in methods {
+                let Stmt::Function { name, .. } = item_of(method) else {
+                    continue;
+                };
+                let Some((_, function_type)) = crate::typ::declared_signature::signature_of_stmt(item_of(method))
+                else {
+                    continue;
+                };
+                type_checker.add_method_sig(&self_ty, name, function_type);
+            }
+        }
+    }
+
     /// Type-checks a whole program.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         self.check_method_name_collisions()?;
         self.predeclare_type_declarations(type_checker);
         self.predeclare_function_signatures(type_checker);
+        // After the type declarations: an impl target may name an alias.
+        self.predeclare_impl_method_signatures(type_checker);
         type_checker.set_pending_top_level(self.top_level_binding_names());
 
         // Both modes defer: constraints are solved once, at the end, instead of

@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 
 use crate::stmt::{ImportSource, ImportStmt, Program, Stmt};
 use crate::syntax::{ParseOptions, parse_program_source};
-use crate::typ::{FunctionSig, NamedParamSig, TypeChecker};
+use crate::typ::declared_signature::signature_of_stmt;
+use crate::typ::{FunctionSig, TypeChecker};
 use crate::typ::{StructDef, TraitDef, TypeAlias};
-use crate::val::{FunctionNamedParamType, Type};
+use crate::val::Type;
 
 /// Registers a signature for every function `program` imports from a file.
 ///
@@ -249,56 +250,4 @@ fn signature_of(program: &Program, name: &str) -> Option<(FunctionSig, Type)> {
         return signature_of_stmt(item_of(stmt));
     }
     None
-}
-
-/// The stated signature of one `fn` declaration, wherever it stands — top level
-/// or inside an `impl`, where the receiver is simply its first parameter.
-fn signature_of_stmt(stmt: &Stmt) -> Option<(FunctionSig, Type)> {
-    let Stmt::Function {
-        params,
-        param_types,
-        named_params,
-        return_type,
-        ..
-    } = stmt
-    else {
-        return None;
-    };
-    let positional: Vec<Type> = (0..params.len())
-        .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
-        .collect();
-    let annotated: Vec<bool> = (0..params.len())
-        .map(|i| param_types.get(i).cloned().flatten().is_some())
-        .collect();
-    let named: Vec<NamedParamSig> = named_params
-        .iter()
-        .map(|param| NamedParamSig {
-            name: param.name.clone(),
-            ty: param.type_annotation.clone().unwrap_or(Type::Any),
-            has_default: param.default.is_some(),
-        })
-        .collect();
-    let returns = return_type.clone().unwrap_or(Type::Any);
-    let named_annotations: Vec<FunctionNamedParamType> = named
-        .iter()
-        .map(|param| FunctionNamedParamType {
-            name: param.name.clone(),
-            ty: param.ty.clone(),
-            has_default: param.has_default,
-        })
-        .collect();
-    let function_type = Type::Function {
-        params: positional.clone(),
-        named_params: named_annotations,
-        return_type: Box::new(returns.clone()),
-    };
-    Some((
-        FunctionSig {
-            positional,
-            named,
-            return_type: Some(returns),
-            annotated,
-        },
-        function_type,
-    ))
 }

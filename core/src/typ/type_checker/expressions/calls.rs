@@ -532,6 +532,28 @@ impl TypeChecker {
                     None,
                 ));
             }
+            // A scalar is knowable for the opposite reason: its built-in
+            // method surface is *empty*. `1.abs()`, `1.5.round()`, `x.len()`
+            // on an Int, `v.to_string()` on anything — every one of them is
+            // "no method", always. So the only way a name on a scalar can
+            // resolve is a user `impl Int { … }` or `impl Trait for Float`,
+            // and both were tried above (they resolve regardless of where the
+            // `impl` sits relative to the call). Reaching here means nothing
+            // answers it.
+            //
+            // `receiver_kind` covers List/Bytes/Slice/Map/Set/Str only, so
+            // these four fell straight through to `Any`: `lk check` passed
+            // `let v = 1; v.nope();` and the VM said "Int has no method
+            // 'nope'" — the same mistake, caught at check time on a String and
+            // at run time on an Int.
+            if matches!(resolved_receiver, Type::Int | Type::Float | Type::Bool | Type::Nil) {
+                return Err(Self::type_err(
+                    &format!("{} has no method '{method}'", resolved_receiver.display()),
+                    None,
+                    Some(resolved_receiver),
+                    None,
+                ));
+            }
             // A declared struct is as knowable as a container, and it was the
             // one shape left unchecked: `p.nonexistent()` type-checked and then
             // raised at run time. The receiver has to be a struct the registry

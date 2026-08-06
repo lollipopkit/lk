@@ -2330,3 +2330,43 @@ lkrt 那份把**两个无序视图合成第三个**,也就是三种不同的顺�
   不允许只改一侧实现使测试变绿。
 - 退出机制(exit 1 vs SIGABRT)如未来需要统一,属于语言决策,需同时改本表、
   差分 harness 的宽容逻辑(`success()` 对比)与 CLI 文档。
+
+## 标量没有内建方法,而声明的可见性不看位置(2026-08-06 裁决)
+
+    let v = 1;
+    println(v.nope());
+    改前 → lk check 过,运行时报 "Int has no method 'nope'"
+    改后 → 类型错误(带位置)
+
+Int / Float / Bool / Nil 的内建方法集是**空的** —— `abs` / `sqrt` / `round` /
+`len` / `to_string`,逐个探过,全是 "no method"。所以一个标量接收者上的名字只
+可能由用户的 `impl Int { … }` 或 `impl Trait for Float` 解析,而那条路在检查器
+里先试。走到"没有签名"这一步就是真的没有。
+
+之前放过它的原因:`BuiltinReceiverKind` 只有 List / Bytes / Slice / Map / Set /
+Str 六个,`receiver_kind` 对标量答 None,那条"已知接收者上没有这个方法就是错"
+的规矩够不到;后面的容器兜底对标量也一律不答,最后落到 `Any`。同一个错误因此
+在 `String` 上是检查期错误、在 `Int` 上要等到运行时。
+
+**Map 仍然豁免**,而且是对的:map 的条目就是它的字段,`m.score(1)` 可以是一次
+普通的属性调用,而 map 的类型里没有它有哪些键这件事。
+
+### `impl` 也被提升了
+
+查这条时发现的另一半:`fn` 和 `struct` 都被预扫提升(声明写在使用之后照样能用),
+唯独 `impl` 是按语句顺序读的 —— 一个方法是靠"被类型检查"才为检查器所知的。于是
+
+```lk
+struct P { x: Int }
+let p = P { x: 1 };
+println(p.m());                                  // 改前:P has no method 'm'
+impl P { fn m(self) -> Int { return self.x; } }
+```
+
+把 `impl` 往上挪两行就过。而**导入**的 `impl` 早就有预扫(`typ::imports` 的
+`seed_impl_methods`),所以一个 `use` 之外的 impl 能用、三行之下的不能用 ——
+这个不对称也正是它一直没被发现的原因。
+
+现在三种声明同一条规矩:签名从**声明**读(未标注的参数是 `Any`),预扫只让方法
+更早**可见**,不会收紧任何东西;有序遍历走到定义处时再用推断出的签名覆盖。元数
+之类的校验因此从上方也照样生效。

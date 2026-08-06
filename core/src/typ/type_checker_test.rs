@@ -773,6 +773,73 @@ mod tests {
         assert!(message.contains("struct 'P'"), "{message}");
     }
 
+    /// A method a scalar does not have is a *check-time* error, like it already
+    /// was on a String or a List.
+    ///
+    /// Int, Float, Bool and Nil have **no** built-in methods at all — `abs`,
+    /// `sqrt`, `round`, `len`, `to_string`, every one of them answers "no
+    /// method" at run time. But `receiver_kind` only knows the six container
+    /// kinds, so a scalar receiver fell through to `Any` and `lk check` passed
+    /// `let v = 1; v.nope();` — the same mistake, caught at check time on a
+    /// `String` and at run time on an `Int`.
+    ///
+    /// A Map stays exempt on purpose: its entries *are* its fields, so
+    /// `m.score(1)` may be an ordinary property call and nothing in the type
+    /// says which keys exist.
+    #[test]
+    fn a_method_a_scalar_does_not_have_is_refused_at_check_time() {
+        for (receiver, name) in [("1", "Int"), ("1.5", "Float"), ("true", "Bool"), ("nil", "Nil")] {
+            let message = check_program(&alloc::format!("let v = {receiver};\nprintln(v.nope());\n"))
+                .expect_err("a scalar has no methods of its own")
+                .to_string();
+            assert!(
+                message.contains(&alloc::format!("{name} has no method 'nope'")),
+                "{message}"
+            );
+        }
+
+        // A user `impl` is what makes the name resolvable, and it does so
+        // wherever it sits — including below the call.
+        check_program("impl Int { fn double(self) -> Int { return self * 2; } }\nprintln((5).double());\n")
+            .expect("an impl above the call");
+        check_program("println((5).double());\nimpl Int { fn double(self) -> Int { return self * 2; } }\n")
+            .expect("an impl below the call");
+
+        // A map keeps answering: its keys are not in its type.
+        check_program("let m = {\"a\": 1};\nlet f = m.whatever();\n").expect("a map's entries are its fields");
+    }
+
+    /// `impl` is hoisted like `fn` and `struct`, so a method call may stand
+    /// above the block that declares it.
+    ///
+    /// It was the one declaration form the checker read in source order: a
+    /// method becomes known by being type-*checked*, and that walk is ordered.
+    /// The imported twin was already pre-scanned (`typ::imports`), which is how
+    /// the asymmetry hid — an impl one `use` away worked, one three lines down
+    /// did not.
+    #[test]
+    fn an_impl_is_visible_above_the_block_that_declares_it() {
+        check_program(
+            "struct P { x: Int }\n\
+             let p = P { x: 1 };\n\
+             println(p.m());\n\
+             impl P { fn m(self) -> Int { return self.x; } }\n",
+        )
+        .expect("an impl below its call site");
+
+        // Hoisting makes it *visible*, not unchecked: the declared arity still
+        // applies from above.
+        let message = check_program(
+            "struct P { x: Int }\n\
+             let p = P { x: 1 };\n\
+             println(p.m(1, 2));\n\
+             impl P { fn m(self) -> Int { return self.x; } }\n",
+        )
+        .expect_err("the declared arity applies from above too")
+        .to_string();
+        assert!(message.contains("Method expects 0 arguments"), "{message}");
+    }
+
     /// A store into a container is checked against what the container's type
     /// declares it holds — through every spelling of a store.
     ///
