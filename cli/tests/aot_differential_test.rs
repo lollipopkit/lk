@@ -523,6 +523,12 @@ fn differential_strings() {
                 "in_operator_on_an_erased_container",
                 "fn has(h: Any, n: Any) -> Bool {\n  return n in h;\n}\nprintln(has(\"abc\", \"b\"));\nprintln(has(\"abc\", \"z\"));\nprintln(has([1, 2], 2));\nprintln(has([1, 2], 9));\nprintln(has({\"k\": 1}, \"k\"));\nreturn 0;\n",
             ),
+            // The other two container operators followed it too: list
+            // removal and map merge. Four siblings, one rule.
+            new(
+                "remove_and_merge_with_an_erased_operand",
+                "fn rm(xs: Any) -> Int {\n  println(xs - [1]);\n  return 0;\n}\nfn mg(m: Any) -> Int {\n  println(m + {\"b\": 2});\n  return 0;\n}\nrm([1, 2]);\nmg({\"a\": 1});\nreturn 0;\n",
+            ),
             // Concatenation followed the same rule as `in`, and refused the
             // same erased operand.
             new(

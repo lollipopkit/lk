@@ -1500,6 +1500,12 @@ impl TypeChecker {
                 let value = self.wider_of(left_value.as_ref(), right_value.as_ref());
                 Ok(Type::Map(Box::new(key), Box::new(value)))
             }
+            // One erased operand, same rule as `in` and list concatenation:
+            // `Any` is a container until it runs. Neither key nor value type
+            // is known, so the result is the widest map.
+            (Type::Map(_, _), Type::Any) | (Type::Any, Type::Map(_, _)) | (Type::Any, Type::Any) => {
+                Ok(Type::Map(Box::new(Type::Any), Box::new(Type::Any)))
+            }
             (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
                 "map merge requires both operands to be maps",
                 Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
@@ -1542,6 +1548,10 @@ impl TypeChecker {
     ) -> Result<Type> {
         match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
             (Type::List(left_inner), Type::List(_)) => Ok(Type::List(left_inner)),
+            // Same rule again. The known side's element type does not survive
+            // an erased operand, so the result is the widest list.
+            (Type::List(inner), Type::Any) => Ok(Type::List(inner)),
+            (Type::Any, Type::List(_)) | (Type::Any, Type::Any) => Ok(Type::List(Box::new(Type::Any))),
             (Type::List(_), other) | (other, Type::List(_)) => Err(Self::type_err(
                 "list removal requires both operands to be lists",
                 Some(Type::List(Box::new(Type::Any))),

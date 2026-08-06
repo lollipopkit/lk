@@ -2527,8 +2527,9 @@ raise 在原生侧是 `longjmp` 离开,不是 `return`,这次改写看不见它�
            Type Error: List concatenation requires both operands to be lists
     改后 → 两端都答,两端都完整原生
 
-`Any` 上的索引读、索引写、`len()`、`for-in`、方法分发、`push` 一直都收;只有 `in` 和
-容器 `+` 这两个二元运算符拒。`Any` 的含义是"运行时才检查",而两个执行器在运行时都
+`Any` 上的索引读、索引写、`len()`、`for-in`、方法分发、`push`、相等、`<`、`slice`、
+`sort`、`join`、`delete` 一直都收;拒的是四个容器二元运算符:`in`、列表 `+`、列表 `-`、
+map `+`。`Any` 的含义是"运行时才检查",而两个执行器在运行时都
 一直有答案 —— 拒绝发生在检查器,不在语言里。
 
 这条与 `in` 那条臂此前几次放宽是同一条队列:`Tuple` 与 `String` 曾经"别处都是容器、
