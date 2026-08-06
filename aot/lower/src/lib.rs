@@ -175,6 +175,7 @@ pub fn lower_bundled(
         force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
         dyn_literals: std::collections::HashSet::new(),
+        dyn_params: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
@@ -274,6 +275,7 @@ pub fn lower_bundled(
                 // middle renumbers every later one into comparing the wrong
                 // thing — silently, and a silent convergence is a miscompile.
                 sig.param_structs.clone(),
+                sig.dyn_params.len(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -282,25 +284,6 @@ pub fn lower_bundled(
             // the converged flags of the last fixpoint pass.
             sig.specialized.iter_mut().for_each(|flag| *flag = false);
             sig.plain_called.iter_mut().for_each(|flag| *flag = false);
-            // Parameter observations are call-site facts too, and the first
-            // pass's are made from *provisional* types: a callee's return type
-            // is still at its `I64` default until its body has been lowered
-            // once. Recording those poisons the join, which is monotonic:
-            //
-            //     fn mk() -> List<Int> { return [1]; }
-            //     fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }
-            //     add(mk(), 2)
-            //
-            // pass 1 saw `mk()` as `I64`, pass 2 saw the real `list<i64>`, the
-            // two joined to `Dyn`, and `add` took a boxed argument forever —
-            // from a fact that was never true of the program. A boxed typed
-            // list is a *copy* (`list_h.i64_to_dyn` rebuilds it), so the push
-            // was lost: a wrong answer, not a fallback.
-            //
-            // `ret_known` already exists for exactly this hazard on the HOF
-            // re-route path; the parameter lattice never got it. Skipping the
-            // whole first pass is the same rule applied here, and it costs
-            // nothing: pass 1's *output* is discarded either way.
             // The first pass's observations are made from *provisional* types —
             // a callee's return type is still its `I64` default until its body
             // has been lowered once — and the parameter lattice joins
@@ -364,6 +347,9 @@ pub fn lower_bundled(
                     // the phi pre-typed Dyn).
                     Err(Unsupported::DynLoopPhi { block, slot }) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    Err(Unsupported::ParamCarrierContradicted { param }) => {
+                        sig.dyn_params.insert((fi as u32, param));
                     }
                     Err(Unsupported::LiteralElemTypeContradicted { pcs }) => {
                         for pc in pcs {
@@ -438,7 +424,8 @@ pub fn lower_bundled(
                         .sum::<usize>()
                 && snapshot.12 == sig.try_body_param_tys
                 && snapshot.13 == sig.try_body_rebound
-                && snapshot.14 == sig.param_structs;
+                && snapshot.14 == sig.param_structs
+                && snapshot.15 == sig.dyn_params.len();
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
@@ -557,18 +544,35 @@ pub fn lower_bundled(
     // it makes is one the first pass could not have made either — and a loop
     // here would be a loop over a fixed point.
     let (mut globals, mut functions, failures) = {
-        let retriable: Vec<(usize, usize, usize)> = failures
+        enum Retriable {
+            LoopPhi(usize, usize),
+            ParamCarrier(u8),
+        }
+        let retriable: Vec<(usize, Retriable)> = failures
             .iter()
             .filter_map(|(fi, err)| match err {
-                Unsupported::DynLoopPhi { block, slot } => Some((*fi, *block, *slot)),
+                Unsupported::DynLoopPhi { block, slot } => Some((*fi, Retriable::LoopPhi(*block, *slot))),
+                // A push that widens a parameter's carrier is discovered only
+                // here: the fixpoint wipes its parameter observations once, so
+                // a callee reached only through a call site's observation is
+                // lowered against the `I64` default in every pass and never
+                // sees the typed carrier its caller passes.
+                Unsupported::ParamCarrierContradicted { param } => Some((*fi, Retriable::ParamCarrier(*param))),
                 _ => None,
             })
             .collect();
         if retriable.is_empty() {
             (globals, functions, failures)
         } else {
-            for (fi, block, slot) in retriable {
-                sig.dyn_loop_phis.insert((fi as u32, block, slot));
+            for (fi, what) in retriable {
+                match what {
+                    Retriable::LoopPhi(block, slot) => {
+                        sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    Retriable::ParamCarrier(param) => {
+                        sig.dyn_params.insert((fi as u32, param));
+                    }
+                }
             }
             refine_signatures(&mut sig, &mut funcs, &mut reachable);
             final_pass(&mut sig, &reachable, &funcs)

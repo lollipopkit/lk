@@ -342,6 +342,20 @@ fn differential_lists() {
     run_differential(
         "lists",
         &[
+            // The same rule across a call: the callee widens a *parameter*,
+            // and only the caller can build the list that way. Two shapes,
+            // because they are discovered differently — a parameter two call
+            // sites disagree about is erased to Dyn and the caller has to be
+            // pessimistic, while a parameter a single call site pins keeps its
+            // typed carrier and the callee is the one that reports the push.
+            new(
+                "a_callee_widens_a_shared_parameter",
+                "fn widen(xs: Any) -> Int {\n  xs.push(\"z\");\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(widen(a));\nprintln(widen(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "a_callee_widens_its_only_caller_s_list",
+                "fn widen(xs: Any) -> Int {\n  xs.push(\"z\");\n  return xs.len();\n}\nlet a = [1, 2];\nprintln(widen(a));\nprintln(a);\nreturn 0;\n",
+            ),
             // A list literal whose element type a later push contradicts is
             // built as a Dyn list from the start — the same fixpoint retry an
             // empty `[]` already used. The VM widens the carrier in place;

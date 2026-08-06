@@ -106,6 +106,14 @@ pub(crate) struct SigInfer {
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.
     pub(crate) dyn_literals: std::collections::HashSet<(u32, usize)>,
+    /// `(function, parameter register)` pairs whose list argument must be
+    /// built as a Dyn list by every caller, because the callee pushes an
+    /// element the typed carrier cannot hold.
+    ///
+    /// The demand travels *up*: a callee cannot fix its own parameter (the
+    /// allocation belongs to the caller, and the caller's other aliases read
+    /// it), so the carrier has to be decided at the literal.
+    pub(crate) dyn_params: std::collections::HashSet<(u32, u8)>,
     /// Loop-header phis discovered to merge heterogeneous boxable types
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.

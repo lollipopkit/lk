@@ -852,7 +852,17 @@ pub(super) fn lower(
             // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
             // A push whose value type contradicts a guessed empty-`[]`
             // element type retries the literal as a Dyn list (fixpoint).
-            let guess_wrong = |ssa: &Ssa| carrier_contradicted(ssa, handle, list_ty);
+            // The literal to rebuild is in *this* function when the receiver
+            // traces to one; a receiver that is a bare parameter has none, and
+            // the demand travels to the call sites instead.
+            let param_reg = u16::from(instr.a()) < func.param_count;
+            let guess_wrong = |ssa: &Ssa| {
+                carrier_contradicted(ssa, handle, list_ty).or(if param_reg {
+                    Some(Unsupported::ParamCarrierContradicted { param: instr.a() })
+                } else {
+                    None
+                })
+            };
             match list_ty {
                 Ty::ListI64 => {
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
@@ -1762,7 +1772,7 @@ pub(super) fn lower(
 /// correctly typed `ListStr` elsewhere in the function must keep its typed
 /// lowering — `join` and friends have no Dyn arm). If shape-filtering leaves
 /// nothing, over-mark all: that costs typed-ness, never correctness.
-fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> Option<Unsupported> {
+pub(crate) fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> Option<Unsupported> {
     if ssa.literal_carrier.is_empty() {
         return None;
     }

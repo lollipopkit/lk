@@ -603,6 +603,29 @@ pub(crate) fn lower_user_call(
         // scalar-context unwrap abort.
         let (aval, aty) = ssa.read(arg_reg, block, pc)?;
         let want = sig.observe_param(callee_idx, i, aty, ssa.struct_types.get(&aval).map(String::as_str));
+        // A typed list reaching an erased parameter has to be built Dyn.
+        //
+        // `want` is `Dyn` here because two call sites disagreed on the
+        // carrier, so the callee sees the list only through its tag and a
+        // `push` goes to `dyn.list_push`. That push may widen — and a
+        // `Vec<i64>` cannot become a `Vec<LkDyn>` after the fact, because the
+        // caller's aliases read the old allocation. The VM widens the carrier
+        // in place, so the only representation both backends can agree on is
+        // a Dyn list from the literal onward. Same retry channel as a
+        // contradicted `[]`: the fixpoint rebuilds the literal and this call
+        // site then passes a `ListDyn`, which does not re-trigger.
+        //
+        // Two ways to learn that: `want` is `Dyn` (two call sites disagreed on
+        // the carrier, so the callee pushes through `dyn.list_push` and the
+        // widening is invisible to it at compile time), or the callee was
+        // lowered once and reported the push itself (`dyn_params`), which is
+        // the monomorphic case a single call site produces.
+        if matches!(aty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr)
+            && (want == Ty::Dyn || sig.dyn_params.contains(&(callee_idx as u32, i as u8)))
+            && let Some(unsupported) = crate::inst::container::carrier_contradicted(ssa, aval, aty)
+        {
+            return Err(unsupported);
+        }
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }

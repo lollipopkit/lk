@@ -115,6 +115,16 @@ pub enum Unsupported {
     LiteralElemTypeContradicted {
         pcs: Vec<usize>,
     },
+    /// A push into a *parameter* widened its carrier, and this function built
+    /// no literal to blame: retriable — the fixpoint records the parameter and
+    /// every call site then builds its list argument as a Dyn list.
+    ///
+    /// The caller is where the fix has to land: a `Vec<i64>` cannot become a
+    /// `Vec<LkDyn>` after the fact, so the carrier has to be decided at the
+    /// literal. `param` is the parameter's register (`r0..r(n-1)` at entry).
+    ParamCarrierContradicted {
+        param: u8,
+    },
     /// A loop-header phi merged heterogeneous boxable types: retriable —
     /// the fixpoint re-lowers the function with this phi pre-typed `Dyn`
     /// (its body then consumes it through the Dyn arms from the start).
@@ -201,6 +211,9 @@ impl Unsupported {
                  — storing one in a container, or otherwise using it where a value is required, \
                  has no native form yet"
             ),
+            Unsupported::ParamCarrierContradicted { param } => {
+                format!("a push into parameter r{param} widens its carrier, which only the caller can build")
+            }
             Unsupported::OperandType { pc, want, got } => {
                 format!("an operand at pc {pc} is a {got} where a {want} is required")
             }
