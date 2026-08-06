@@ -2495,3 +2495,26 @@ VM 的那条 halt(`list index N out of bounds`)。写入落到标签背后的载
 
 代价是拿类型化换正确性:流进这类形参的容器失去类型化载体。实测 AOT 覆盖仍是 60/60,
 VM/原生扫描 identical=61,perf 1.034x(噪声带内)—— 这条形状不在任何基准的热路径上。
+
+## `defer` 在 return 上跑,在 raise 上不跑(2026-07-30 裁决,2026-08-06 记录)
+
+    fn a() -> Int { defer { println("a"); } error("boom"); return 0; }
+    fn b() -> Int { defer { println("b"); } return a(); }
+    println(try { b() } catch e { -1 });
+    → -1(两端一致,"a" 与 "b" 都不打印)
+
+`defer` 是一次 AST 改写,不是运行期机制:它把释放语句复制到每个 `return` 之前,
+在解析器之后、类型检查器与两个编译器之前完成,下游看不到 `Stmt::Defer`。
+raise 在原生侧是 `longjmp` 离开,不是 `return`,这次改写看不见它。
+
+这条不是遗漏。关掉它的做法(把函数体包进 `try`,在 `catch` 里跑释放再重抛)**建过
+两次,两次都被实测退回**:第一次让函数体里每个被赋值的寄存器都变成 try 区域的输出格,
+`examples/syntax/defer.lk` 当场失去原生降低;第二次的阻碍是返回值的接线(整个函数的
+`return` 都在被包的体内时,它自己没有 `Exit::Ret`,返回类型丢失)。理由与测量在
+`core/src/stmt/defer.rs` 的模块注释和 `docs/aot/aot-gaps-and-lkrt.md` §17。
+
+在缺口关掉之前:**必须活过 raise 的资源用 `try`/`catch`,不用 `defer`。**
+
+另一条同源的限制:`defer` 只能出现在函数体的顶层,不能在 `if`、循环或嵌套块里。
+顶层的文本顺序就是执行顺序,所以"写在这个 `return` 上面的每个 `defer`"恰好就是
+"已经跑过的每个 `defer`";分支里的 `defer` 需要运行期跟踪,那正是这里不做的机制。
