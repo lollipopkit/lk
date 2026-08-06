@@ -62,6 +62,23 @@ pub struct TypeRegistry {
     /// table is keyed by the declaring one). So the table says which is which.
     imported_structs: crate::compat::collections::HashSet<String>,
 
+    /// Imported structs a bare `P { … }` may still build: the ones brought in
+    /// **by name** (`use { P } from "m"`), keyed by the name they are bound
+    /// under and holding the name the declaring module gave them.
+    ///
+    /// That import binds `P` to the constructor the declaring module generates
+    /// beside the type (`stmt::struct_ctors`), so the literal has something to
+    /// call and the object is built by `m` — identity, field order and dispatch
+    /// all right. A type merely *visible* through a namespace import
+    /// (`use "m"`) binds no such name, so there the literal has to be written
+    /// `m.P { … }`.
+    ///
+    /// The two names differ under `use { P as Q } from "m"`: the schema, the
+    /// methods and the value's own `typeof` are all `P`'s, and only the
+    /// spelling at the construction site is `Q` — so a literal written `Q` is
+    /// checked, and answers, as a `P`.
+    constructible_imports: HashMap<String, String>,
+
     /// Trait definitions
     traits: HashMap<String, TraitDef>,
 
@@ -90,8 +107,13 @@ impl TypeRegistry {
     /// Register a struct the program being checked declares.
     pub fn register_struct(&mut self, s: StructDef) {
         // A local declaration wins over an imported name of the same spelling:
-        // imports are seeded first, and this is what un-marks the entry.
+        // imports are seeded first, and this is what un-marks the entry. Both
+        // tables, and for the same reason — under an alias the constructible
+        // entry is keyed by the *bound* name, so `use { P as Q }` beside a
+        // local `struct Q` left `Q { … }` checked against `P`'s schema while
+        // the compiler (which prefers the local `Q$new`) built the local one.
         self.imported_structs.remove(&s.name);
+        self.constructible_imports.remove(&s.name);
         self.structs.insert(s.name.clone(), s);
     }
 
@@ -104,6 +126,19 @@ impl TypeRegistry {
     /// Whether `name` is known only because another module declares it.
     pub fn is_imported_struct(&self, name: &str) -> bool {
         self.imported_structs.contains(name)
+    }
+
+    /// Marks an imported struct as brought in by name, so a bare literal builds
+    /// it through the declaring module's constructor. `bound` is the name this
+    /// file writes; `declared` is the name its module gave it.
+    pub fn mark_constructible_import(&mut self, bound: &str, declared: &str) {
+        self.constructible_imports
+            .insert(bound.to_string(), declared.to_string());
+    }
+
+    /// The declaring module's name for a type a bare `bound { … }` may build.
+    pub fn constructible_import_target(&self, bound: &str) -> Option<&str> {
+        self.constructible_imports.get(bound).map(String::as_str)
     }
 
     /// Get struct definition by name

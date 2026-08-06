@@ -389,14 +389,24 @@ fn runtime_export_field(module: &RuntimeExport, name: &str) -> Result<RuntimeExp
     if let Some(value) = map.get_str(name) {
         return Ok(RuntimeExport::new(value, module.shared_state(), module.shared_module()));
     }
-    // A module's exports are *values*. A `struct` or `trait` declaration is not
-    // one, so a name that looks like a type gets the reason rather than a bare
-    // lookup failure — it is the most common way to land here.
+    // A type: bind the constructor the declaring module generates beside it
+    // (`crate::stmt::struct_ctors`), which is an ordinary top-level `fn` and so
+    // an ordinary export. Binding *that* is what makes the imported name build
+    // the declaring module's type rather than a same-named one — the call runs
+    // in `m`, so the scope, the field order and trait dispatch are all right,
+    // exactly as `m.P { … }` already is.
+    //
+    // It used to refuse here, with a message that said an imported type "cannot
+    // be named or constructed directly" — which `m.P { … }` had been doing all
+    // along.
+    if let Some(ctor) = map.get_str(&crate::stmt::struct_ctors::constructor_name(name)) {
+        return Ok(RuntimeExport::new(ctor, module.shared_state(), module.shared_module()));
+    }
     if name.starts_with(char::is_uppercase) {
         return Err(anyhow!(
-            "'{name}' is not an export of this module. A module exports values, and a `struct` or \
-             `trait` declaration is not one — an imported type cannot be named or constructed \
-             directly. Export a constructor function instead."
+            "'{name}' is not an export of this module — no value and no type by that name. A \
+             `trait` has no constructor to bind, so it cannot be imported as a name; a `struct` \
+             can, and this module declares neither."
         ));
     }
     Err(anyhow!("'{}' is not an export of this module", name))

@@ -98,9 +98,19 @@ impl ImportEnv {
                             // `collect_renamed_file_items` in the CLI's
                             // bundler, which is where the fold learns the other
                             // name.
+                            // A `struct S` is bound through the constructor the
+                            // declaring module generates beside it (`S$new`),
+                            // which is what the VM's import resolution binds
+                            // too — the type itself is not a value. Without
+                            // this fallback `use { P } from "geo"` bound
+                            // nothing and every read of `P` refused to lower,
+                            // while the same type reached as `geo.P { … }`
+                            // lowered fine: that spelling desugars to
+                            // `geo.P$new(…)` and finds the function by name.
                             ImportSource::File(path) => {
+                                let ctor = lk_core::stmt::struct_ctors::constructor_name(&item.name);
                                 if let Some(fidx) = bundle_by_path(path)
-                                    .and_then(|b| bundles[b].fns.get(&item.name))
+                                    .and_then(|b| bundles[b].fns.get(&item.name).or_else(|| bundles[b].fns.get(&ctor)))
                                     .copied()
                                 {
                                     env.file_items.insert(bound, fidx);

@@ -178,6 +178,22 @@ impl Compiler {
     /// through a scratch register that is handed straight back. Same shape as the
     /// list and map literals next door.
     pub(super) fn lower_struct_literal(&mut self, name: &str, fields: &[(String, Box<Expr>)]) -> Result<u16> {
+        // A type this module does not declare, imported by name: build it
+        // through the constructor the *declaring* module generates beside it
+        // (`stmt::struct_ctors`), which the import bound under this name. The
+        // call runs there, so the object carries that module's `TypeScope` and
+        // its methods dispatch — `NewObject` here would stamp *this* module's
+        // scope and produce a same-named type with no methods.
+        //
+        // Recognised by what the compiler already knows: a local `struct S`
+        // always brings a local `S$new`, so its absence plus a bound global of
+        // this name is exactly the imported case. The checker has already
+        // refused every other way to reach here (`is_constructible_import`).
+        let constructor = crate::stmt::struct_ctors::constructor_name(name);
+        if !self.function_names.contains_key(&constructor) && self.global_names.contains_key(name) {
+            let args: Vec<(String, Box<Expr>)> = fields.to_vec();
+            return self.lower_dynamic_named_arg_call(&Expr::Var(name.to_string()), &[], &args);
+        }
         let len = fields.len();
         // `1 + 2 * window` for the window itself, one more for `dst`, and every
         // register must still be nameable in 8 bits.

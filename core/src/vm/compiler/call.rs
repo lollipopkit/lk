@@ -760,7 +760,7 @@ impl Compiler {
         self.lower_signature_named_call(function_name, &signature, positional, &provided)
     }
 
-    fn lower_dynamic_named_arg_call(
+    pub(super) fn lower_dynamic_named_arg_call(
         &mut self,
         callee: &Expr,
         positional: &[Box<Expr>],

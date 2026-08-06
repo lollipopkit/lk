@@ -515,6 +515,14 @@ impl TypeChecker {
             Expr::List(items) => self.check_list(items),
             Expr::Map(pairs) => self.check_map(pairs),
             Expr::StructLiteral { name, fields } => {
+                // Imported by name, so the literal builds the declaring
+                // module's type through the constructor that import bound. The
+                // rest of this arm is then the ordinary local-struct check
+                // against *that* type: its schema, and its name as the result,
+                // which is what `use { P as Q } from "m"` needs — the value is
+                // a `P`, and only the spelling here is `Q`.
+                let declared = self.registry.constructible_import_target(name).map(String::from);
+                let name = declared.as_deref().unwrap_or(name);
                 // A name nothing declares is refused rather than built.
                 //
                 // Accepting it produced a *value*: `Nope { a: 1 }` answered
@@ -529,7 +537,11 @@ impl TypeChecker {
                 if self.registry.get_struct(name).is_none() {
                     return Err(Self::type_err(
                         &alloc::format!(
-                            "no type named `{name}` is declared here — a struct literal names a type,                              and this module declares none by that name. A type from another module is                              reached through its module (`m.{name} {{ … }}`) or through a constructor                              that module exports"
+                            "no type named `{name}` is declared here — a struct literal names a type, \
+                             and this module declares none by that name. A type from another module \
+                             is reached through its module (`m.{name} {{ … }}`), by importing it by \
+                             name (`use {{ {name} }} from \"m\";`), or through a constructor that \
+                             module exports"
                         ),
                         None,
                         None,
@@ -543,10 +555,15 @@ impl TypeChecker {
                 // call site ("has no method …"), far from the construction. The
                 // two spellings that carry the declaring module's identity both
                 // work, so the answer is to name one of them.
-                if self.registry.is_imported_struct(name) {
+                if self.registry.is_imported_struct(name) && declared.is_none() {
                     return Err(Self::type_err(
                         &alloc::format!(
-                            "`{name}` is declared in another module, so a bare `{name} {{ … }}` here                              would build a different type that happens to share the name — it would                              have none of `{name}`'s methods. Write `m.{name} {{ … }}` (through the                              module), or call a constructor that module exports"
+                            "`{name}` is declared in another module and this file only sees it \
+                             through its namespace, so a bare `{name} {{ … }}` here would build a \
+                             different type that happens to share the name — it would have none of \
+                             `{name}`'s methods. Write `m.{name} {{ … }}`, or import the type by \
+                             name (`use {{ {name} }} from \"m\";`), which binds the constructor \
+                             that module generates beside it"
                         ),
                         None,
                         None,
@@ -595,7 +612,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                Ok(Type::Named(name.clone()))
+                Ok(Type::Named(name.to_string()))
             }
 
             // Access operations

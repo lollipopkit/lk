@@ -47,6 +47,12 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                 seed_impl_methods(&dep, checker);
                 for item in items {
                     let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    // A type imported by name is constructible by that name:
+                    // the import binds the declaring module's generated
+                    // constructor, so `P { … }` has something to call.
+                    if checker.registry().get_struct(&item.name).is_some() {
+                        checker.registry_mut().mark_constructible_import(&bound, &item.name);
+                    }
                     if let Some((signature, function_type)) = signature_of(&dep, &item.name) {
                         checker.add_function_sig(bound.clone(), signature);
                         checker.add_local_type(bound, function_type);

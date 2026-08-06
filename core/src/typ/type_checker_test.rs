@@ -729,6 +729,48 @@ mod tests {
         program
             .type_check(&mut checker)
             .expect("declared here, so it is this module's");
+
+        // Imported *by name*, the literal is accepted: the import binds the
+        // constructor the declaring module generates, so the object it builds
+        // carries that module's identity. Its schema is still the declaring
+        // module's — an undeclared field is refused.
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        checker.registry_mut().mark_constructible_import("P", "P");
+        let program =
+            crate::syntax::parse_program_source("let p = P { x: 4 };", Default::default()).expect("parse program");
+        program.type_check(&mut checker).expect("imported by name, so bound");
+
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        checker.registry_mut().mark_constructible_import("P", "P");
+        let program =
+            crate::syntax::parse_program_source("let p = P { y: 4 };", Default::default()).expect("parse program");
+        let message = program
+            .type_check(&mut checker)
+            .expect_err("the declaring module's schema still applies")
+            .to_string();
+        assert!(message.contains("Unknown field 'y'"), "{message}");
+
+        // Under an alias the two names differ: the literal is written `Q`, and
+        // everything about it — schema, error wording, result type — is `P`'s.
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        checker.registry_mut().mark_constructible_import("Q", "P");
+        let program =
+            crate::syntax::parse_program_source("let q: P = Q { x: 4 };", Default::default()).expect("parse program");
+        program.type_check(&mut checker).expect("an alias for an imported type");
+
+        let mut checker = TypeChecker::new();
+        checker.registry_mut().register_imported_struct(imported());
+        checker.registry_mut().mark_constructible_import("Q", "P");
+        let program =
+            crate::syntax::parse_program_source("let q = Q { y: 4 };", Default::default()).expect("parse program");
+        let message = program
+            .type_check(&mut checker)
+            .expect_err("the declaring module's schema still applies")
+            .to_string();
+        assert!(message.contains("struct 'P'"), "{message}");
     }
 
     /// A store into a container is checked against what the container's type
