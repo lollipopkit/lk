@@ -1,31 +1,37 @@
 #[cfg(test)]
 mod tests {
-    /// Deeply nested *statements* used to abort the process.
+    /// Deeply nested statements used to abort the process.
     ///
-    /// The parser bounded expression nesting (`ast::parser::MAX_EXPR_DEPTH`)
-    /// and nothing bounded statements, so `if { if { … } }` parsed fine and the
-    /// **type checker** — walking the same tree one Rust frame per level — ran
-    /// out of stack. A debug `lk check` on 170 levels printed
-    /// `fatal runtime error: stack overflow` and exited 134: no line, no
-    /// message, and on bare metal no guard page to trap it either.
+    /// Two parsers, one budget. `if c { … }` alternates between the statement
+    /// parser and the expression parser, and each crossing used to build a
+    /// sub-parser starting back at depth zero, so neither counter ever
+    /// accumulated — 400 levels walked straight off a libtest thread's 2MiB
+    /// stack (`fatal runtime error: stack overflow`, exit 134: no line, no
+    /// message, and on bare metal no guard page to trap it either).
     ///
-    /// Two assertions, because either alone is satisfiable by a mistake: the
-    /// depth that a program may reach is accepted, and one past it is a *syntax
-    /// error* rather than an abort.
-    /// Deeply nested *statements* used to abort the process.
-    ///
-    /// The parser bounded expression nesting (`ast::parser::MAX_EXPR_DEPTH`)
-    /// and nothing bounded statements, so `if { if { … } }` parsed fine and the
-    /// **type checker** — walking the same tree one Rust frame per level — ran
-    /// out of stack. A debug `lk check` on 170 levels printed
-    /// `fatal runtime error: stack overflow` and exited 134: no line, no
-    /// message, and on bare metal no guard page to trap it either.
-    ///
-    /// Two assertions, because either alone is satisfiable by a mistake: the
-    /// depth a program may reach is accepted, and one past it is a *syntax
-    /// error* rather than an abort.
+    /// Three assertions, because no two of them are satisfiable by one
+    /// mistake: the depth a program may reach is accepted; one past the bound
+    /// is a *syntax error*; and so is a depth far past it, which is the case a
+    /// per-parser budget got wrong.
     #[test]
     fn deeply_nested_statements_error_instead_of_overflowing_the_stack() {
+        // Two shapes, because they are refused by different halves of the one
+        // budget: `if` carries a condition, so its nest is refused by the
+        // expression parser, while a bare block has no expression in it at all
+        // and is refused by the statement parser.
+        fn nested_blocks(levels: usize) -> String {
+            let mut src = String::from("fn main() -> Int {\n");
+            for _ in 0..levels {
+                src.push_str("{\n");
+            }
+            src.push_str("println(1);\n");
+            for _ in 0..levels {
+                src.push_str("}\n");
+            }
+            src.push_str("return 0;\n}\n");
+            src
+        }
+
         fn nested(levels: usize) -> String {
             let mut src = String::from("fn main() -> Int {\n");
             for _ in 0..levels {
@@ -39,16 +45,33 @@ mod tests {
             src
         }
 
-        // One source level costs two parse frames (the construct, and the block
-        // it takes as a body), so the source bound is half the constant.
-        let source_levels = crate::stmt::stmt_parser::MAX_STMT_DEPTH / 2;
-        crate::syntax::parse_program_source(&nested(source_levels - 1), Default::default())
-            .expect("a program may nest this deep");
+        // Not a formula: a source level costs a little over two frames of
+        // budget (the construct, the block it takes as a body, and the
+        // crossings between the two parsers), so where exactly the bound lands
+        // is measured. The deepest brace nesting in this repository's own `.lk`
+        // corpus, counting the `fn`/`impl`/`struct` levels, is 6.
+        // A quarter of the budget, which is comfortably inside it either way:
+        // one source level costs a little over two frames, so the deepest
+        // accepted nest is 30 levels at the `std` value and 7 at bare metal's.
+        let real_code = crate::ast::parser::MAX_PARSE_DEPTH / 4;
+        crate::syntax::parse_program_source(&nested(real_code), Default::default())
+            .expect("a program may nest deeper than anything real code does");
 
-        let error = crate::syntax::parse_program_source(&nested(source_levels), Default::default())
-            .expect_err("one past the bound is refused, not aborted")
-            .to_string();
-        assert!(error.contains("statement nesting too deep"), "{error}");
+        // The last of these is also the regression test for the *time* it
+        // takes: the speculative tail-expression parse used to swallow the
+        // failure and let the statement path retry, doubling the work at every
+        // level, and 256 levels did not finish in five minutes.
+        // The whole budget, which is past the bound for either shape: a bare
+        // block spends one frame per level and an `if` a little over two.
+        let past_the_bound = crate::ast::parser::MAX_PARSE_DEPTH;
+        for levels in [past_the_bound, past_the_bound * 8] {
+            for source in [nested(levels), nested_blocks(levels)] {
+                let error = crate::syntax::parse_program_source(&source, Default::default())
+                    .expect_err("past the bound is refused, not aborted")
+                    .to_string();
+                assert!(error.contains("nesting too deep"), "{levels} levels: {error}");
+            }
+        }
     }
 
     #[cfg(not(feature = "std"))]

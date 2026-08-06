@@ -1,7 +1,7 @@
 use super::StmtParser;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::{ast::Parser as ExprParser, expr::Expr, stmt::Stmt, token::Token};
+use crate::{expr::Expr, stmt::Stmt, token::Token};
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
@@ -162,13 +162,8 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected expression")));
         }
 
-        let expr_tokens = &self.tokens[start_pos..end_pos];
         let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
-        let mut expr_parser = if let Some(spans) = expr_spans {
-            ExprParser::new_with_spans(expr_tokens, spans)
-        } else {
-            ExprParser::new(expr_tokens)
-        };
+        let mut expr_parser = self.expr_parser(&self.tokens[start_pos..end_pos], expr_spans);
         let expr = expr_parser.parse()?;
 
         self.pos = end_pos;

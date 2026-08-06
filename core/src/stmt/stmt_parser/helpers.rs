@@ -10,6 +10,21 @@ use crate::{
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
+    /// An expression parser over a token sub-slice that continues *this*
+    /// parser's nesting budget.
+    ///
+    /// Statement and expression nesting interleave — `if c { if c { … } }`
+    /// alternates between the two parsers — so starting each crossing back at
+    /// zero would leave the combined nesting unbounded, one slice at a time.
+    pub(crate) fn expr_parser<'b>(&self, tokens: &'b [Token], spans: Option<&'b [Span]>) -> ExprParser<'b> {
+        let mut parser = match spans {
+            Some(spans) => ExprParser::new_with_spans(tokens, spans),
+            None => ExprParser::new(tokens),
+        };
+        parser.depth = self.depth;
+        parser
+    }
+
     pub(super) fn eof(&self) -> bool {
         self.pos >= self.len
     }
@@ -381,13 +396,8 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected expression for default value")));
         }
 
-        let expr_tokens = &self.tokens[start_pos..end_pos];
         let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
-        let mut expr_parser = if let Some(spans) = expr_spans {
-            ExprParser::new_with_spans(expr_tokens, spans)
-        } else {
-            ExprParser::new(expr_tokens)
-        };
+        let mut expr_parser = self.expr_parser(&self.tokens[start_pos..end_pos], expr_spans);
         let expr = expr_parser.parse()?;
         self.pos = end_pos;
         Ok(expr)

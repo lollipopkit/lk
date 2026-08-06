@@ -26,7 +26,7 @@ pub struct Parser<'a> {
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
     /// nested instances don't shadow each other's synthesized locals.
     pub(super) desugar_counter: usize,
-    /// Live nesting depth of `parse_expr`, bounded by [`MAX_EXPR_DEPTH`].
+    /// Live nesting depth of `parse_expr`, bounded by [`MAX_PARSE_DEPTH`].
     ///
     /// Expression parsing is recursive descent, so nesting depth in the source
     /// is Rust stack depth. Without a bound, `((((…1…))))` overflows the stack
@@ -34,26 +34,56 @@ pub struct Parser<'a> {
     /// host that abort is at least clean (the guard page traps); on bare metal
     /// there is no guard page, so the same input silently walks off the stack
     /// into whatever is below it.
-    pub(super) depth: usize,
+    pub(crate) depth: usize,
 }
 
-/// Cap on expression nesting depth (see [`Parser::depth`]).
+/// Cap on source nesting depth, shared by the expression and statement
+/// parsers (see [`Parser::depth`] and `StmtParser::depth`).
 ///
 /// Hand-written code does not approach this — the bound exists to turn a
 /// pathological or hostile input into a syntax error instead of an abort.
 ///
-/// The value is set from measurement, not taste. One level of *source* nesting
-/// costs about 18KiB of debug stack, because it unwinds the whole precedence
-/// chain (`conditional` → `nullish` → `or` → … → `postfix` → `primary` →
-/// `paren`) rather than one frame. A debug `lk check` (8MiB main stack) aborts
-/// somewhere between 400 and 500 levels; a libtest thread only gets 2MiB, so
-/// its ceiling is nearer 110. 64 sits under that with room to spare and is
-/// still far past anything real code nests to.
+/// One budget, not two. `if c { if c { … } }` alternates between the two
+/// parsers, so a per-parser budget bounds neither: each crossing would hand
+/// the next level a fresh allowance and the combined nesting would be
+/// unbounded. Both parsers count into the same budget and seed it across
+/// every crossing.
+///
+/// The value is set from measurement, not taste. One level of *source*
+/// nesting costs about 18KiB of debug stack in a plain expression, because it
+/// unwinds the whole precedence chain (`conditional` → `nullish` → `or` → …
+/// → `postfix` → `primary` → `paren`) rather than one frame; a level that
+/// crosses into the statement parser and back (`if`, `match`, a block) costs
+/// several times that. The smallest stack this has to survive is a libtest
+/// thread's 2MiB, which is where the cap is measured — `deeply_nested_*` in
+/// `stmt_test.rs` and `ast_test.rs` are that measurement, and they abort the
+/// whole test process rather than fail if the cap is ever raised past it.
 #[cfg(feature = "std")]
-pub(super) const MAX_EXPR_DEPTH: usize = 64;
+pub(crate) const MAX_PARSE_DEPTH: usize = 64;
 /// An MCU stack is kilobytes, not megabytes, so bare metal gets a tighter cap.
 #[cfg(not(feature = "std"))]
-pub(super) const MAX_EXPR_DEPTH: usize = 16;
+pub(crate) const MAX_PARSE_DEPTH: usize = 16;
+
+/// Nesting-budget exhaustion, kept distinguishable from an ordinary syntax
+/// error.
+///
+/// A speculative parse treats a syntax error as "not this shape" and lets the
+/// next candidate retry the same tokens — `try { … } catch e { }` is refused
+/// by the expression parser and accepted by the statement parser, so that
+/// retry is load-bearing. Budget exhaustion is not shape information: every
+/// candidate fails it, and retrying each of them at every level doubles the
+/// work per level. 256 nested `if`s did not finish in five minutes while the
+/// two were indistinguishable.
+#[derive(Debug)]
+pub(crate) struct NestingTooDeep;
+
+impl core::fmt::Display for NestingTooDeep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "nesting too deep")
+    }
+}
+
+impl core::error::Error for NestingTooDeep {}
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
@@ -348,15 +378,15 @@ impl<'a> Parser<'a> {
         Ok(exp.fold_constants())
     }
 
-    /// Runs `parse` one level deeper, refusing to go past [`MAX_EXPR_DEPTH`].
+    /// Runs `parse` one level deeper, refusing to go past [`MAX_PARSE_DEPTH`].
     ///
     /// Every recursive descent that can nest without bound has to go through
     /// here, not just `parse_expr`: prefix operators recurse into themselves
     /// (`!!!…x`) and `match` arms recurse into `parse_conditional` directly,
     /// so bounding only `parse_expr` left both able to overflow the stack.
     fn deeper<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        if self.depth >= MAX_EXPR_DEPTH {
-            return Err(anyhow!(self.err("Expression nesting too deep")));
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(anyhow::Error::new(NestingTooDeep).context(self.err("Expression nesting too deep")));
         }
         self.depth += 1;
         // Decremented on the error path too — a bounded parse that fails must

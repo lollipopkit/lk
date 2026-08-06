@@ -280,7 +280,10 @@ impl<'a> Parser<'a> {
         if !matches!(inner.last(), Some(Token::Semicolon)) {
             inner.push(Token::Semicolon);
         }
+        // Continues this parser's nesting budget: a block body is still
+        // nesting even though the statement parser gets its own counter.
         let mut stmt_parser = StmtParser::new(&inner);
+        stmt_parser.depth = self.depth;
         let program = stmt_parser.parse_program()?;
         let mut statements = program.statements;
         if tail == BlockTail::Return

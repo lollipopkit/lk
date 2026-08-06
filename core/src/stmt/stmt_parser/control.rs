@@ -2,7 +2,6 @@ use super::StmtParser;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    ast::Parser as ExprParser,
     expr::Expr,
     stmt::{ForPattern, Stmt},
     token::Token,
@@ -183,15 +182,16 @@ impl<'a> StmtParser<'a> {
     /// how much it consumed, so a `None` costs nothing: the caller is exactly
     /// where it was.
     fn try_parse_tail_expression_stmt(&mut self, keyword_pos: usize) -> Result<Option<Stmt>> {
-        let tokens = &self.tokens[keyword_pos..];
         let spans = self.token_spans.map(|spans| &spans[keyword_pos..]);
-        let mut parser = if let Some(spans) = spans {
-            ExprParser::new_with_spans(tokens, spans)
-        } else {
-            ExprParser::new(tokens)
-        };
-        let Ok((expr, consumed)) = parser.parse_prefix() else {
-            return Ok(None);
+        let mut parser = self.expr_parser(&self.tokens[keyword_pos..], spans);
+        let (expr, consumed) = match parser.parse_prefix() {
+            Ok(parsed) => parsed,
+            // A syntax error is shape information: these tokens may still be a
+            // statement, and `try { … } catch e { }` is exactly that. Budget
+            // exhaustion is not — the statement path would fail it too, and
+            // retrying at every level doubles the work per level.
+            Err(err) if err.downcast_ref::<crate::ast::parser::NestingTooDeep>().is_some() => return Err(err),
+            Err(_) => return Ok(None),
         };
         // Only when it is the *last* thing here: that is a block's tail, where
         // the value is what the block evaluates to. Anywhere else it is a

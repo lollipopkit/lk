@@ -187,7 +187,7 @@ impl<'a> StmtParser<'a> {
             && assign_pos >= start + 3
             && self.tokens.get(assign_pos - 1) == Some(&Token::RBracket)
         {
-            let mut parser = ExprParser::new(&self.tokens[start + 2..assign_pos - 1]);
+            let mut parser = self.expr_parser(&self.tokens[start + 2..assign_pos - 1], None);
             parser.parse()?
         } else if self.tokens.get(start + 1) == Some(&Token::Dot) {
             match self.tokens.get(start + 2) {

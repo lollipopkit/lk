@@ -213,13 +213,13 @@ impl<'a> StmtParser<'a> {
         if self.eof() {
             return Ok(Stmt::Empty);
         }
-        if self.depth >= super::MAX_STMT_DEPTH {
-            // Halved for the reader: the counter's unit is a parse frame,
-            // and a level of source nesting is two of them.
-            return Err(anyhow!(self.err(&alloc::format!(
-                "statement nesting too deep (more than {} levels)",
-                super::MAX_STMT_DEPTH / 2
-            ))));
+        if self.depth >= crate::ast::parser::MAX_PARSE_DEPTH {
+            return Err(
+                anyhow::Error::new(crate::ast::parser::NestingTooDeep).context(self.err(&alloc::format!(
+                    "nesting too deep (more than {} levels)",
+                    crate::ast::parser::MAX_PARSE_DEPTH
+                ))),
+            );
         }
         self.depth += 1;
         // Decremented on the error path too, like the expression parser's:
