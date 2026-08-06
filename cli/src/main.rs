@@ -1629,6 +1629,37 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // a dispatch key. The VM keeps them apart by `TypeScope`, so this
         // refuses rather than resolving, by the rule the rest of this bundler
         // follows.
+        // The dep's `struct` declarations come across for the same reason, and
+        // they are what gives a type its *runtime* identity: `trait_env_prescan`
+        // hands every declared struct a type id, and the id is how the native
+        // display finds the type's name and field order. Without this an
+        // imported struct got no id, so `NewObject` skipped `obj_mark` and
+        // `println(geo.P { x: 4 })` rendered the carrier — `{"x":4}` — where
+        // the VM prints `P{x:4}`. A wrong answer, not a fallback, because the
+        // rest of the shape lowered fine.
+        //
+        // Same-name refusal as the impls below, and for the same reason: two
+        // bundled modules declaring `P` are two types to the VM and one id
+        // here.
+        for decl in &dep.module.type_info.structs {
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .structs
+                .iter()
+                .find(|other| other.name == decl.name)
+            {
+                if existing.fields != decl.fields {
+                    anyhow::bail!(
+                        "bundled import '{import_path}': type `{}` is declared in more than one module — \
+                         the VM keeps them apart by declaring module, the bundle cannot",
+                        decl.name
+                    );
+                }
+                continue;
+            }
+            merged.module.type_info.structs.push(decl.clone());
+        }
         for decl in &dep.module.type_info.impls {
             let mut rewritten = decl.clone();
             for method in &mut rewritten.methods {
@@ -1647,7 +1678,8 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 && existing.methods != rewritten.methods
             {
                 anyhow::bail!(
-                    "bundled import '{import_path}': type `{}` is implemented in more than one module —                      the VM keeps them apart by declaring module, the bundle cannot",
+                    "bundled import '{import_path}': type `{}` is implemented in more than one module — \
+                     the VM keeps them apart by declaring module, the bundle cannot",
                     rewritten.type_name
                 );
             }

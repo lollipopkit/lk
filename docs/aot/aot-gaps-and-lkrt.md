@@ -769,3 +769,27 @@ Float 键不同,那条可以在一个正常程序里被数据触发。覆盖率�
 
 所以规矩是:**只可能 raise 的操作,当它的消息是固定一句时发 raise,当它属于一个按类型
 措辞的族时回落。** 前者省下的是程序其余部分的速度,后者省下的是两端消息不一致。
+
+## 22. bundler 要合并的不只是 `impl`,还有 `struct` 声明(2026-08-06)
+
+`use "geo"; println(geo.P { x: 4 })` 原生打 `{"x":4}`,VM 打 `P{x:4}`。
+
+链条:`trait_env_prescan` 给**每个已声明的 struct** 发一个 type id,`NewObject`
+只在有 id 时发 `map_h.obj_mark`,而 lkrt 的显示靠这个标记去查类型名与字段序。
+CLI 的 AOT bundler 把 dep 的 `type_info.impls` 重编号后并进了 merged artifact
+(§见 `cli/src/main.rs` 里那段注释:没有它,跨模块方法调用整段掉出原生子集),
+却没有并 `type_info.structs`。于是导入来的类型拿不到 id,标记不发,显示退回
+到载体本身 —— 一个 str-dyn map。
+
+方法分发看不出来:它读的是编译期的 `ssa.struct_types`,那条路从 `NewObject`
+的类型名常量拿名字,与运行时标记无关。所以 `a.norm()` 一直是对的,只有输出
+是错的,而且只在类型声明在另一个文件时。**没有任何测试覆盖"跨文件构造 +
+显示"这一格**,尽管跨文件构造和跨文件方法调用各自都有测试。
+
+合并规则与 `impls` 那条一致:同名而字段不同则拒绝编译。VM 按 `TypeScope` 把
+两个同名类型分得开,bundle 只有一张 id 表,分不开。
+
+同一天的相邻改动让这条从"命名空间写法独有"变成"两种写法都会踩":
+`use { P } from "geo"` 此前在 AOT 侧绑不到任何东西(`bundles[b].fns` 里只有
+`P$new`,没有 `P`),整个程序回落到 Tier 0,反而打对了。补上 `$new` 回退之后
+它开始原生降低,也就开始踩这条。
