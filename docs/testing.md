@@ -97,6 +97,17 @@ A failure prints the seed and the full generated program, so reproduction is
 `LSP latency budgets` 这一步单独、单线程跑。墙钟断言是性能门禁,这个仓库的性能门禁
 本来就单独跑(`bench/run_workload_bench.sh`)。
 
+**第四条(2026-08-06 补):比值型断言比预算型更脆,取最小值不够。**
+`compiling_many_functions_stays_linear` 不设预算,它比的是"输入翻倍、耗时不能翻
+三倍",本来正是为了躲开墙钟。但它是**两个**测量的比值,两边各取五次最小值仍然会
+被竞争打穿 —— 一边碰上快样本、另一边没碰上,比值就炸,而两边的最小值各自都是干净
+的。它在 2026-08-05 已经因此红过一次并加了 min-of-5;2026-08-06 在
+`cargo test --workspace --all-features` 与一个 `cargo clippy` 抢核时又红了(那次
+0.68s,单独跑 0.17s),之后单独连过八次,其中四次还并行着三个构建。
+
+所以这条也 `#[ignore]`,由 `check.yml` 的 `Compiler scaling budget` 单独单线程跑。
+判据:**只要断言里出现墙钟,不管是预算还是比值,就不进正确性套。**
+
 配套两条:
 
 - 把**观测值和日期**写在预算旁边(`// Observed 3.3ms (debug, 2026-08-01).`),

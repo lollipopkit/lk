@@ -25,6 +25,29 @@
 哪个模块(决定 `Reject` 还是 `SameModule`)。那是把值/VM 边界重新设计一遍,
 不是搬一下代码。
 
+### 实测(2026-08-06):不走类型擦除
+
+`val/` 提到 `vm` 类型的地方总共 **5 处**:三处在同一个函数里(`heap.rs` 的 GC
+边遍历),另两处是测试辅助。值层真正需要一个 runtime callable 提供的东西也就
+这么多 —— 遍历 `Closure.captures`(它自己的数据),以及在标记循环之后调
+`RuntimeCallable::collect_garbage()`(那是**另一个**堆,所以才推迟到循环外)。
+trait 会很小。
+
+代价落在哪里才是关键。`callable_target` 前面有 `PerfCallTargetKind` 内联缓存,
+存在的目的就是跳过那个 enum match;把 enum 的载荷换成 `Arc<dyn …>`,等于在那
+里加一次虚表跳转加一次 downcast。用 `lk coverage --runtime` 量到的、真正走这条
+路的调用占比:
+
+| 程序 | 调用总数 | 经过 `CallableValue` |
+| --- | --- | --- |
+| `bench/workloads_business_algorithms.lk` | 228 186 | 62 |
+| `examples/stdlib/stream_demo.lk` | 34 | 34 |
+
+第二行是决定性的:一个写成裸全局的 stdlib 调用**就是**这条路,所以"冷"是算术
+基准的性质,不是这门语言的性质。为了满足一条分层规矩把有类型的分派擦成
+downcast,并不更优雅,而它换来的 crate 拆分目前没有人在兑现。**保持现状。**
+将来真要拆,要照着上面那张表设计,而不是照着那 5 个引用点。
+
 ## 已经修掉的(5 → 2)
 
 - `token_lexeme` 移进 `token`:它是 `Token` 的属性,住在 `macro_system` 里害得

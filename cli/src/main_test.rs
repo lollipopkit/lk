@@ -68,7 +68,10 @@ mod tests {
     fn test_vm_profile_line_contains_benchmark_fields() {
         let line = vm_profile_line(VmRuntimeMetrics {
             opcode_steps: 11,
-            call_ops: 2,
+            call_ops: 9,
+            native_call_ops: 2,
+            exact_call_ops: 3,
+            method_call_ops: 1,
             branch_ops: 3,
             typed_branch_ops: 4,
             container_ops: 5,
@@ -83,7 +86,12 @@ mod tests {
 
         assert!(line.starts_with("VM profile: "));
         assert!(line.contains("opcode_steps=11"));
-        assert!(line.contains("calls=2"));
+        assert!(line.contains("calls=9"));
+        // The breakdown, and the remainder that makes the parts add up: 2 + 3
+        // + 1 classified out of 9, so 3 calls the executor did not classify.
+        // Without the remainder a reader cannot tell "none of these kinds" from
+        // "this build does not measure it".
+        assert!(line.contains("call_kinds=native:2,exact:3,method:1,other:3"), "{line}");
         assert!(line.contains("branches=3"));
         assert!(line.contains("typed_branches=4"));
         assert!(line.contains("containers=5"));

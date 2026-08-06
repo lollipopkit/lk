@@ -221,7 +221,9 @@ fn ci_builds_exactly_the_modules_that_exist() {
     let gone: Vec<&String> = named.iter().filter(|name| !available.contains(name)).collect();
     assert!(
         gone.is_empty(),
-        "check.yml builds `lk-stdlib-{{{gone:?}}}` on thumbv7em, and no such crate exists any          more. CI fails on the first push with a message about the crate rather than about the          list it came from"
+        "check.yml builds `lk-stdlib-{{{gone:?}}}` on thumbv7em, and no such crate exists any \
+         more. CI fails on the first push with a message about the crate rather than about \
+         the list it came from"
     );
 }
 

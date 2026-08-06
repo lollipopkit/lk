@@ -320,12 +320,13 @@ fn vm_profile_report() -> String {
 
 fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
     format!(
-        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} register_writes={}",
+        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} call_kinds={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} register_writes={}",
         metrics.opcode_steps,
         top_opcode_profile(&metrics),
         top_register_write_source_profile(&metrics),
         top_index_key_profile(&metrics),
         metrics.call_ops,
+        call_kind_profile(&metrics),
         metrics.branch_ops,
         metrics.typed_branch_ops,
         metrics.container_ops,
@@ -334,6 +335,47 @@ fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
         metrics.string_ops,
         metrics.register_writes,
     )
+}
+
+/// The call total split by what the call site dispatched to.
+///
+/// `call_ops` alone cannot answer the question the counter exists for — where
+/// call cost goes — because the four kinds have nothing in common: an `exact`
+/// call is a direct index into the function table, a `method` call is a
+/// devirtualized table lookup, and a `native` call is the only one that reads a
+/// heap `CallableValue`. On the arithmetic-heavy benchmark the split is 62
+/// native against 228k total; on a stdlib-call-heavy program it is 34 of 34.
+/// One number cannot say both.
+///
+/// The breakdown was already being collected, and `lk coverage --runtime`
+/// already printed it — this line dropped it. Same measurement, two surfaces,
+/// one of them lossy.
+fn call_kind_profile(metrics: &VmRuntimeMetrics) -> String {
+    let kinds = [
+        ("native", metrics.native_call_ops),
+        ("closure", metrics.closure_call_ops),
+        ("exact", metrics.exact_call_ops),
+        ("named", metrics.named_call_ops),
+        ("method", metrics.method_call_ops),
+    ];
+    let named: u64 = kinds.iter().map(|(_, count)| count).sum();
+    let mut parts: Vec<String> = kinds
+        .iter()
+        .filter(|(_, count)| *count != 0)
+        .map(|(name, count)| format!("{name}:{count}"))
+        .collect();
+    // A call the executor could not classify is still a call. Naming the
+    // remainder keeps the parts summing to `calls=`, so a reader can tell
+    // "none of these" from "not measured".
+    if let Some(rest) = metrics.call_ops.checked_sub(named)
+        && rest != 0
+    {
+        parts.push(format!("other:{rest}"));
+    }
+    if parts.is_empty() {
+        return "none".to_string();
+    }
+    parts.join(",")
 }
 
 fn top_index_key_profile(metrics: &VmRuntimeMetrics) -> String {

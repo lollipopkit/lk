@@ -1435,7 +1435,25 @@ fn a_call_above_its_definition_still_knows_the_signature() {
 /// the input and the work must not quadruple. The bound is generous (3x for a
 /// 2x input) because a real machine has noise and allocation is not free — it
 /// fails on quadratic (which is 4x) and passes on linear.
+///
+/// **`#[ignore]`d, and run alone in CI** (`.github/workflows/check.yml`, the
+/// same treatment `lsp/tests/perf_latency_test.rs` got). Min-of-5 was the first
+/// attempt at making it survive `cargo test --workspace --all-features`, and it
+/// was not enough: the assertion is a *ratio of two* wall-clock measurements,
+/// so a lucky-fast `small` against an unlucky-slow `large` blows it up even
+/// when both minima are clean. It failed a workspace run again on 2026-08-06
+/// (that run took 0.68s against 0.17s on its own — the suite was sharing cores
+/// with a `cargo clippy`), and passed eight times in a row alone, including
+/// four with three parallel builds running.
+///
+/// A gate that fails for reasons the change did not cause teaches people to
+/// re-run it, which is worse than no gate. Run it with:
+///
+/// ```sh
+/// cargo test -p lk-core --lib -- --ignored --test-threads=1 compiling_many_functions
+/// ```
 #[test]
+#[ignore = "wall-clock ratio: runs alone in CI, see the doc comment"]
 fn compiling_many_functions_stays_linear() {
     fn source(n: usize) -> String {
         let mut out = String::new();

@@ -27,6 +27,11 @@ jobs:
         # ~1.2ms and once failed a workspace run at 11.99ms against its 10ms
         # budget. They are `#[ignore]`d for that reason — see the module doc.
         run: cargo test -p lk-lsp --test perf_latency_test -- --ignored --test-threads=1
+      - name: Compiler scaling budget
+        # `compiling_many_functions_stays_linear` asserts a *ratio* of two
+        # wall-clock measurements, which contention breaks in both directions —
+        # min-of-5 per side was not enough. Same treatment, same reason.
+        run: cargo test -p lk-core --lib -- --ignored --test-threads=1
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
