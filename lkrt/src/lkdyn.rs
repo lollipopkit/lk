@@ -1364,6 +1364,9 @@ pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
         return i64::from(dyn_list_values(v).iter().any(|&e| contains_eq(e, needle)));
     }
     match v.tag {
+        // A string's members are its substrings, which is what the unboxed
+        // spelling answers; it was the one carrier `in` did not reach here.
+        DYN_STR => unsafe { crate::lkstr::lkrt_str_contains(v.payload as *const c_char, lkrt_dyn_as_str(needle)) },
         DYN_SET => unsafe { crate::lkset::lkrt_lkset_has(v.payload as *mut c_void, needle) },
         DYN_SLICE => {
             // SAFETY: a `DYN_SLICE` payload is a live window handle.

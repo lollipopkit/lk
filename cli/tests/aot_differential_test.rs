@@ -508,6 +508,27 @@ fn differential_strings() {
     run_differential(
         "strings",
         &[
+            // `needle in text` is `text.contains(needle)`. The method
+            // spelling lowered and the operator sent the whole program back to
+            // the VM, which is a 3x slowdown with no message.
+            new(
+                "in_operator_on_a_string",
+                "let s = \"abc\";\nprintln(\"b\" in s);\nprintln(\"z\" in s);\nfn f(t: String) -> Bool {\n  return \"c\" in t;\n}\nprintln(f(s));\nreturn 0;\n",
+            ),
+            // An erased container is a container: `in` refused an `Any`
+            // operand while indexing, `len`, iteration, method dispatch and
+            // `push` all took one. Three carriers behind one `Dyn`, so the
+            // runtime is what picks.
+            new(
+                "in_operator_on_an_erased_container",
+                "fn has(h: Any, n: Any) -> Bool {\n  return n in h;\n}\nprintln(has(\"abc\", \"b\"));\nprintln(has(\"abc\", \"z\"));\nprintln(has([1, 2], 2));\nprintln(has([1, 2], 9));\nprintln(has({\"k\": 1}, \"k\"));\nreturn 0;\n",
+            ),
+            // Concatenation followed the same rule as `in`, and refused the
+            // same erased operand.
+            new(
+                "concat_with_an_erased_operand",
+                "fn app(xs: Any) -> Int {\n  println(xs + [7]);\n  return 0;\n}\napp([1, 2]);\napp([1.5, 2.5]);\nreturn 0;\n",
+            ),
             new("const_ret", "return \"hello\";\n"),
             new("eq", "return \"hi\" == \"hi\";\n"),
             new("ne", "return \"hi\" != \"ho\";\n"),

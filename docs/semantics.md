@@ -2518,3 +2518,26 @@ raise 在原生侧是 `longjmp` 离开,不是 `return`,这次改写看不见它�
 另一条同源的限制:`defer` 只能出现在函数体的顶层,不能在 `if`、循环或嵌套块里。
 顶层的文本顺序就是执行顺序,所以"写在这个 `return` 上面的每个 `defer`"恰好就是
 "已经跑过的每个 `defer`";分支里的 `defer` 需要运行期跟踪,那正是这里不做的机制。
+
+## 擦掉类型的容器仍然是容器(2026-08-06 裁决)
+
+    fn has(h: Any, n: Any) -> Bool { return n in h; }
+    fn app(xs: Any) -> Int { println(xs + [7]); return 0; }
+    改前 → Type Error: 'in' operator requires container type (expected List<Any>, got Any)
+           Type Error: List concatenation requires both operands to be lists
+    改后 → 两端都答,两端都完整原生
+
+`Any` 上的索引读、索引写、`len()`、`for-in`、方法分发、`push` 一直都收;只有 `in` 和
+容器 `+` 这两个二元运算符拒。`Any` 的含义是"运行时才检查",而两个执行器在运行时都
+一直有答案 —— 拒绝发生在检查器,不在语言里。
+
+这条与 `in` 那条臂此前几次放宽是同一条队列:`Tuple` 与 `String` 曾经"别处都是容器、
+只有这里不是",`Bytes` 与 `Slice<T>` 是随后两个(见 #185)。`Any` 是最后一个。
+
+### 附带查到的一条:`"b" in "abc"` 根本没有原生降低
+
+同一次探测发现的,与上面那条无关:字符串作为 `in` 右侧的形状,检查器收、VM 答,而
+**任何拼写都不原生降低**,整程序回落到 VM(约 3 倍慢,没有任何提示)。而它的方法拼写
+`s.contains("b")` 一直降得下去 —— 又是"同一个操作两种拼写只降一种"。现在两种拼写共用
+`str.contains`;`dyn.contains` 也补上了缺的 `DYN_STR` 载体(它此前覆盖 map / list / set /
+slice / bytes,独缺字符串)。

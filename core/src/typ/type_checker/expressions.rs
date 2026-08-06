@@ -1318,8 +1318,15 @@ impl TypeChecker {
             // `len`, both iterate, and `Bytes` even has a `contains` method —
             // `in` was the one place they were not containers. The VM had no
             // arm for either either, so this is not a checker-only relaxation.
+            // `Any` is the next one in that same queue, and the last: it
+            // indexes, has a `len`, iterates, dispatches methods and takes a
+            // `push` — `in` was the one place an erased container was not a
+            // container. What `Any` means is "checked when it runs", and both
+            // executors do check it there.
             BinOp::In => match self.resolve_aliases(&right_type) {
-                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) | Type::String => Ok(Type::Bool),
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) | Type::String | Type::Any => {
+                    Ok(Type::Bool)
+                }
                 Type::Named(name) if name == "Bytes" => Ok(Type::Bool),
                 Type::Generic { name, .. } if name == "Slice" => Ok(Type::Bool),
                 other => Err(Self::type_err(
@@ -1593,6 +1600,12 @@ impl TypeChecker {
                     Type::Any
                 };
                 Ok(Type::List(Box::new(elem_ty)))
+            }
+            // One erased operand is the same rule `in` follows: `Any` is a
+            // container until it runs. The element type is unknown, so the
+            // result is the widest list rather than the known side's.
+            (Type::List(_), Type::Any) | (Type::Any, Type::List(_)) | (Type::Any, Type::Any) => {
+                Ok(Type::List(Box::new(Type::Any)))
             }
             (Type::List(_), other) => Err(Self::type_err(
                 "List concatenation requires both operands to be lists",

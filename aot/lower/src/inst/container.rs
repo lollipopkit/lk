@@ -1552,6 +1552,33 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
+            // `needle in text` is `text.contains(needle)` — the same
+            // operation, and the method spelling already lowered while the
+            // operator sent the whole program back to the VM.
+            if list_ty == Ty::Str {
+                let needle = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("str", "contains"),
+                    args: vec![handle, needle],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             if list_ty == Ty::ListDyn || list_ty == Ty::MapStrDyn {
                 let raw = ssa.new_val();
                 if list_ty == Ty::ListDyn {
