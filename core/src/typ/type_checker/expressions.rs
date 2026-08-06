@@ -515,7 +515,27 @@ impl TypeChecker {
             Expr::List(items) => self.check_list(items),
             Expr::Map(pairs) => self.check_map(pairs),
             Expr::StructLiteral { name, fields } => {
-                // If struct is known, enforce field presence and types; otherwise, accept as named type
+                // A name nothing declares is refused rather than built.
+                //
+                // Accepting it produced a *value*: `Nope { a: 1 }` answered
+                // `Nope{a:1}`, and `P { x: 4 }` for a `P` declared in an
+                // imported module answered something that renders `P{x:4}` and
+                // reports `typeof` `P` while having none of `P`'s methods —
+                // the error then surfaced at the call site as "P has no method
+                // 'norm'", far from the construction. A struct literal carries
+                // its type's identity or it is not that type; the two spellings
+                // that *do* carry it (`geo.P { … }` and a constructor the
+                // module exports) both answer 16 for `p.norm()`.
+                if self.registry.get_struct(name).is_none() {
+                    return Err(Self::type_err(
+                        &alloc::format!(
+                            "no type named `{name}` is declared here — a struct literal names a type,                              and this module declares none by that name. A type from another module is                              reached through its module (`m.{name} {{ … }}`) or through a constructor                              that module exports"
+                        ),
+                        None,
+                        None,
+                        Some(expr.clone()),
+                    ));
+                }
                 if let Some(sd) = self.registry.get_struct(name) {
                     let schema = sd.fields.clone();
                     // Provided -> check existence and type

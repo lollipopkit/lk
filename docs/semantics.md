@@ -1859,6 +1859,30 @@ println(typeof(xs[2]));   // 改前 VM: Int,native: Float
     xs.push("a");
     → MIR lowering: an operand at pc 3 is a str where a i64 is required
 
+## 结构体字面量命名的是一个**已声明**的类型(2026-08-06 裁决)
+
+    let p = Nope { a: 1 };
+    改前 → Nope{a:1}          改后 → 类型错误
+
+检查器那句注释就是当时的全部规矩:"If struct is known, enforce field presence and
+types; **otherwise, accept as named type**"。于是拼错一个类型名不报错,答一个值。
+
+这条同时是另一个形状的一半:从别的模块导入的类型,写成裸 `P { x: 4 }` 时构造出来的是
+**残缺的** P ——
+
+| 构造写法 | typeof | impl 方法 |
+| --- | --- | --- |
+| 裸 `P { x: 4 }` | `P` | **没有** |
+| `geo.P { x: 4 }` | `P` | 有 |
+| 模块导出的构造函数 | `P` | 有 |
+
+根因是 `NewObject` 盖的类型出身是**当前执行模块**的 `TypeScope`,而方法表按定义方的
+scope 建 —— 两个身份,名字碰巧一样。用户在调用点看到 "P has no method 'norm'",离构造
+处很远。
+
+裸名字这一半现在拒了(名字在本模块没有声明就是错),导入类型那一半还在:检查器的结构体
+注册表分不清"本模块声明"与"被 `seed_imports` 带进来的",要区分得给注册项记来源。见任务表。
+
 ## 时长不能是负数,四个入口一条规矩(2026-08-05 裁决)
 
     use time;

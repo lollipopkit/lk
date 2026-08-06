@@ -671,6 +671,27 @@ mod tests {
     ///
     /// The unifier had both directions in one arm all along, so this was also
     /// the two of them disagreeing.
+    /// A struct literal names a type, and a name nothing declares is refused.
+    ///
+    /// It used to be accepted "as a named type": `Nope { a: 1 }` answered
+    /// `Nope{a:1}` — a typo that produced a value. The checker's own comment
+    /// said so ("otherwise, accept as named type"), which is the whole of the
+    /// rule it was following.
+    #[test]
+    fn a_struct_literal_names_a_declared_type() {
+        check_program("let p = Nope { a: 1 };").expect_err("nothing declares Nope");
+        check_program("struct P { x: Int }\nlet p = P { x: 1 };").expect("declared here");
+        // Order does not matter: a top-level declaration is visible before the
+        // line it is written on, the same rule `let` shadowing follows.
+        check_program("let p = P { x: 1 };\nstruct P { x: Int }").expect("declared later");
+        // The message says where a type from another module is reached.
+        let message = check_program("let p = Nope { a: 1 };")
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("no type named `Nope` is declared here"), "{message}");
+        assert!(message.contains("m.Nope"), "{message}");
+    }
+
     /// A store into a container is checked against what the container's type
     /// declares it holds — through every spelling of a store.
     ///
