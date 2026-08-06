@@ -18,6 +18,61 @@ use crate::{
     startup_trace,
 };
 
+/// What an input would have defined, had it succeeded.
+///
+/// Only a declaring input is worth saying "nothing was defined" about: `g()`
+/// failing defines nothing either way. And only a *body-bearing* declaration
+/// gets the second sentence — for `let q = Q { b: 1 };` the reason is simply
+/// that the input failed, and the rule about bodies would be a wrong
+/// explanation rather than an unhelpful one.
+///
+/// Re-parses, which only happens on the error path — and the input is known to
+/// parse, because a parse failure returns before this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputDeclares {
+    Nothing,
+    /// A `let` / `:=` / type declaration: a name, no body.
+    AName,
+    /// A `fn` or `impl`: a body, compiled against what the session has *now*.
+    ABody,
+}
+
+fn input_declares(source: &str) -> InputDeclares {
+    use lk_core::stmt::Stmt;
+    fn unwrap_attributes(stmt: &Stmt) -> &Stmt {
+        match stmt {
+            Stmt::Attributed { item, .. } => unwrap_attributes(item),
+            other => other,
+        }
+    }
+    let Ok(program) = parse_program_source(source, ParseOptions::default()) else {
+        return InputDeclares::Nothing;
+    };
+    let mut declares = InputDeclares::Nothing;
+    for stmt in &program.statements {
+        match unwrap_attributes(stmt) {
+            // A `struct S` brings a generated `fn S$new` with it
+            // (`stmt::struct_ctors`), and that body reads nothing but its own
+            // parameters — it cannot fail for a name the session lacks. Judging
+            // by the *source* declaration keeps `struct Q { … }` out of the
+            // body case.
+            Stmt::Function { name, .. } if lk_core::stmt::struct_ctors::constructed_struct_name(name).is_some() => {
+                declares = InputDeclares::AName;
+            }
+            Stmt::Function { .. } | Stmt::Impl { .. } => return InputDeclares::ABody,
+            Stmt::Struct { .. }
+            | Stmt::Trait { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Let { .. }
+            | Stmt::Define { .. } => {
+                declares = InputDeclares::AName;
+            }
+            _ => {}
+        }
+    }
+    declares
+}
+
 pub(crate) enum ReplInput {
     Submit(String),
     Continue,
@@ -108,7 +163,39 @@ impl ReplSession {
                     println!("{}", result.display_first_return());
                 }
             }
-            Err(e) => diagnostic::error(&e),
+            Err(e) => {
+                diagnostic::error(&e);
+                let declares = input_declares(final_src);
+                if declares != InputDeclares::Nothing {
+                    // The input takes effect whole or not at all: the session's
+                    // state is only updated after `execute_program` returns.
+                    // Without saying so, a failed `fn` definition produces two
+                    // errors one line apart with nothing connecting them —
+                    //
+                    //     > fn g() -> Int { return LATER; }
+                    //     Error: undefined name `LATER`
+                    //     > g()
+                    //     Error: undefined function `g`
+                    //
+                    // and the second reads as a second, unrelated bug.
+                    //
+                    // The rule it explains: a body is compiled when the line is
+                    // entered, so it can only read names that already exist. In
+                    // a file the whole program is compiled at once, so a body
+                    // there may read a binding declared below it. Making the
+                    // REPL match would mean compiling a read of a name that may
+                    // never be bound and answering nil for it — the silent
+                    // wrong answer `stmt::init_order` exists to refuse.
+                    eprint!("  nothing from this input was defined");
+                    if declares == InputDeclares::ABody {
+                        eprint!(
+                            " — a body is compiled as you enter it, so it can only read names the \
+                             session already has"
+                        );
+                    }
+                    eprintln!(".");
+                }
+            }
         }
         ReplStep::Continue
     }
@@ -334,6 +421,34 @@ fn run_fallback(session: &mut ReplSession) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed input defines nothing, and only a body-bearing declaration
+    /// gets told *why* it could not see the name.
+    ///
+    /// The confusing shape was two unrelated-looking errors one line apart:
+    /// `fn g() -> Int { return LATER; }` fails, and then `g()` on the next line
+    /// fails with "undefined function `g`" — because the definition never took.
+    #[test]
+    fn only_a_declaring_input_reports_that_nothing_was_defined() {
+        assert_eq!(input_declares("g()"), InputDeclares::Nothing);
+        assert_eq!(input_declares("1 + 1"), InputDeclares::Nothing);
+        assert_eq!(input_declares("let q = 1;"), InputDeclares::AName);
+        assert_eq!(input_declares("struct Q { a: Int }"), InputDeclares::AName);
+        assert_eq!(input_declares("type N = Int;"), InputDeclares::AName);
+        assert_eq!(input_declares("fn g() -> Int { return 1; }"), InputDeclares::ABody);
+        assert_eq!(
+            input_declares("impl Q { fn m(self) -> Int { return 1; } }"),
+            InputDeclares::ABody
+        );
+        // A body anywhere in the input wins: that is the one that can fail for
+        // a reason the reader cannot see.
+        assert_eq!(
+            input_declares("let a = 1;\nfn g() -> Int { return a; }"),
+            InputDeclares::ABody
+        );
+        // Unparseable input is reported by the parser, not here.
+        assert_eq!(input_declares("fn ("), InputDeclares::Nothing);
+    }
 
     #[test]
     fn multiline_detects_unclosed_delimiters() {
