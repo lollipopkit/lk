@@ -142,8 +142,8 @@ pub struct StructDecl {
 }
 
 impl TypeInfo {
-    /// Whether the module declared no traits or impls — the common case, kept
-    /// cheap so callers can skip work entirely.
+    /// Whether the module declared no traits, impls or structs — the common
+    /// case, kept cheap so callers can skip work entirely.
     pub fn is_empty(&self) -> bool {
         self.traits.is_empty() && self.impls.is_empty() && self.structs.is_empty()
     }

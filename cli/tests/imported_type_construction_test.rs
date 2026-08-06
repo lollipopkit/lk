@@ -34,7 +34,9 @@ fn with_geo(dir: &std::path::Path) {
         dir.join("geo.lk"),
         "struct P { x: Int }\n\
          impl P { fn norm(self) -> Int { return self.x * self.x; } }\n\
-         trait Shape { fn area(self) -> Int; }\n",
+         trait Shape { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Shape for Sq { fn area(self) -> Int { return self.s * self.s; } }\n",
     )
     .expect("write geo");
 }
@@ -152,6 +154,12 @@ fn the_two_backends_agree_on_a_struct_declared_in_another_file() {
             "item",
             "use { P } from \"geo\";\n\
              fn main() -> Int { let a = P { x: 4 }; println(a); println(typeof(a)); println(a.norm()); return 0; }\n\
+             main();\n",
+        ),
+        (
+            "trait_impl",
+            "use \"geo\";\n\
+             fn main() -> Int { let a = geo.Sq { s: 3 }; println(a); println(a.area()); return 0; }\n\
              main();\n",
         ),
         (

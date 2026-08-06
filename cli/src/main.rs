@@ -1629,6 +1629,33 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // a dispatch key. The VM keeps them apart by `TypeScope`, so this
         // refuses rather than resolving, by the rule the rest of this bundler
         // follows.
+        // A `trait` the dep declares comes across too. Nothing in the AOT
+        // pipeline reads `type_info.traits` — dispatch is devirtualized from
+        // `impls` — but leaving it out produced a *module* whose impls name
+        // traits it does not declare, and `register_module_types` refuses that
+        // outright ("Trait 'Area' not found") the moment any consumer runs the
+        // merged artifact with a type checker attached. An artifact that is
+        // internally inconsistent is a trap for the next consumer, not a
+        // saving.
+        for decl in &dep.module.type_info.traits {
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .traits
+                .iter()
+                .find(|other| other.name == decl.name)
+            {
+                if existing.methods != decl.methods {
+                    anyhow::bail!(
+                        "bundled import '{import_path}': trait `{}` is declared in more than one module — \
+                         the VM keeps them apart by declaring module, the bundle cannot",
+                        decl.name
+                    );
+                }
+                continue;
+            }
+            merged.module.type_info.traits.push(decl.clone());
+        }
         // The dep's `struct` declarations come across for the same reason, and
         // they are what gives a type its *runtime* identity: `trait_env_prescan`
         // hands every declared struct a type id, and the id is how the native
