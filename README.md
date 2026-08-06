@@ -153,7 +153,6 @@ assert_eq!(result.display_first_return(), "true");
 - Inspect macro expansion: `lk macro expand FILE` (`--trace`, `--deps`, `--origins`; see [docs/macros.md](docs/macros.md))
 - Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
-Note: command-line argument paths must be sanitized relative paths.
 
 ### Editor Support
 

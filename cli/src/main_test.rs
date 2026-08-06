@@ -2,38 +2,31 @@ mod tests {
     use crate::*;
     use lk_core::vm::VmRuntimeMetrics;
 
+    /// A CLI path argument is taken as written, `..` included.
+    ///
+    /// There used to be a `sanitize_path` refusing any `..`, and four tests
+    /// pinning it — including one asserting that `/etc/passwd` **is** allowed.
+    /// The two halves say the guard stopped nothing: anything `..` reaches, an
+    /// absolute path reaches too, and every caller is an argument the person
+    /// running the command typed. What it did stop was `lk ../script.lk` from a
+    /// subdirectory.
     #[test]
-    fn test_sanitize_path_allows_simple_relative() {
-        let p = sanitize_path("foo/bar.lk").expect("relative path should be allowed");
-        assert_eq!(p, PathBuf::from("foo/bar.lk"));
+    fn a_path_argument_is_taken_as_written() {
+        for raw in ["foo/bar.lk", "../bar.lk", "foo/../bar.lk", "/etc/passwd"] {
+            assert_eq!(parse_path_arg(raw), Ok(PathBuf::from(raw)), "{raw}");
+        }
     }
 
+    /// `lk compile ../bar.lk` compiles `../bar.lk`.
+    ///
+    /// This asserted the opposite until the `..` guard came out — see
+    /// `a_path_argument_is_taken_as_written`.
     #[test]
-    fn test_sanitize_path_rejects_parent_dir() {
-        let err = sanitize_path("foo/../bar.lk").unwrap_err();
-        assert!(err.to_string().contains("Parent directory components"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_sanitize_path_allows_absolute_unix() {
-        let p = sanitize_path("/etc/passwd").expect("absolute path should be allowed");
-        assert_eq!(p, PathBuf::from("/etc/passwd"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_sanitize_path_allows_absolute_windows() {
-        let p = sanitize_path(r"C:\\Windows").expect("absolute path should be allowed");
-        assert_eq!(p, PathBuf::from(r"C:\\Windows"));
-    }
-
-    #[test]
-    fn test_cli_args_rejects_parent_dir_in_compile() {
-        let args = CliArgs::try_parse_from(["lk", "compile", "foo/../bar.lk"]).expect("should parse");
+    fn test_cli_args_accepts_parent_dir_in_compile() {
+        let args = CliArgs::try_parse_from(["lk", "compile", "../bar.lk"]).expect("should parse");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let err = split_compile_args(&positional).expect_err("should reject parent dirs");
-            assert!(err.to_string().contains("Parent directory components"));
+            let (_, file, _) = split_compile_args(&positional).expect("a path is a path");
+            assert_eq!(file, PathBuf::from("../bar.lk"));
         } else {
             panic!("expected compile command");
         }

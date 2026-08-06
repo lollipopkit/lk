@@ -663,20 +663,38 @@ fn test_compile_struct_constructs_to_module_artifact() {
     );
 }
 
+/// `..` in a path argument is a path, not an attack.
+///
+/// This asserted the opposite: a `sanitize_path` refused every `..`, while
+/// letting an **absolute** path through — so it stopped nothing (anything `..`
+/// reaches, `/…` reaches) and refused `lk compile ../x.lk` from a
+/// subdirectory. Now the only failure left is the honest one: the file is not
+/// there.
 #[test]
-fn test_compile_rejects_parent_directory_argument() {
+fn compile_takes_a_parent_directory_argument_as_a_path() {
     let dir = unique_tmp_dir("compile_parent");
     ensure_clean_dir(&dir);
+    let nested = dir.join("nested");
+    create_dir_all(&nested).expect("nested dir");
+    write_file(&dir, "escape.lk", "return 7;\n");
 
-    let out = run_cli(&dir, ["compile", "../escape.lk"])
+    let out = run_cli(&nested, ["compile", "bytecode", "../escape.lk"])
         .output()
         .expect("spawn compile with parent dir");
+    assert!(
+        out.status.success(),
+        "compiling `../escape.lk` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // And a `..` that really is not there fails for that reason, not for its
+    // shape.
+    let out = run_cli(&nested, ["compile", "bytecode", "../nope.lk"])
+        .output()
+        .expect("spawn compile with a missing parent-dir file");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Parent directory components"),
-        "expected sanitize error, got: {stderr}"
-    );
+    assert!(stderr.contains("Failed to read file"), "{stderr}");
 }
 
 #[test]

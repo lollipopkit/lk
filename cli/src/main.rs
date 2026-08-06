@@ -52,7 +52,7 @@ use coverage::run_coverage_report;
 use fmt::run_fmt;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
-use paths::{expand_program_file, parse_options_for_file, parse_sanitized_path, sanitize_path, split_compile_args};
+use paths::{expand_program_file, parse_options_for_file, parse_path_arg, split_compile_args};
 use pkg::run_pkg_command;
 
 #[derive(Debug, Parser)]
@@ -70,7 +70,7 @@ struct CliArgs {
     command: Option<Commands>,
 
     /// If no subcommand, treat as a source file to execute (statements only)
-    #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+    #[arg(value_name = "FILE", value_parser = parse_path_arg)]
     file: Option<PathBuf>,
 }
 
@@ -112,7 +112,7 @@ enum Commands {
     /// Type-check a source file without executing it.
     Check {
         /// Source file to type-check
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Also require every function's parameters and return type to resolve
         /// to something other than `Any`.
@@ -130,7 +130,7 @@ enum Commands {
     /// `--check` reports without writing.
     Fmt {
         /// Files or directories to format. Defaults to the whole project.
-        #[arg(value_name = "PATH", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "PATH", value_parser = parse_path_arg)]
         paths: Vec<PathBuf>,
         /// Do not write; exit non-zero if any file is not already formatted.
         #[arg(long)]
@@ -140,17 +140,17 @@ enum Commands {
     /// that embeds the program and the VM (100% coverage; runs the VM at launch).
     Bundle {
         /// Source file to bundle
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Output executable path (default: the source path without its
         /// extension, as `lk compile` does)
-        #[arg(short, long, value_name = "OUT", value_parser = parse_sanitized_path)]
+        #[arg(short, long, value_name = "OUT", value_parser = parse_path_arg)]
         output: Option<PathBuf>,
     },
     /// Report VM coverage for a source file.
     Coverage {
         /// Source file to inspect
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Print disassembled VM functions after static coverage
         #[arg(long)]
@@ -176,7 +176,7 @@ enum MacroCommand {
     /// Expand macros in a source file and print the resulting LK token stream.
     Expand {
         /// Source file to expand
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Print expansion trace entries before expanded source
         #[arg(long)]
@@ -506,12 +506,6 @@ fn main() -> anyhow::Result<()> {
                 let output_arg_given = output_arg.is_some();
                 #[cfg(feature = "aot")]
                 let output = output_arg
-                    .map(|p| {
-                        sanitize_path(p.to_string_lossy().as_ref()).inspect_err(|e| {
-                            diagnostic::error(e);
-                        })
-                    })
-                    .transpose()?
                     // A package build the user did not name a file for: the
                     // output belongs at the package root, not inside `src/`.
                     .or(implicit_output.clone());
@@ -609,9 +603,7 @@ fn main() -> anyhow::Result<()> {
     }
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
-    let safe = sanitize_path(file.to_string_lossy().as_ref()).inspect_err(|e| {
-        diagnostic::error(e);
-    })?;
+    let safe = file;
     let src_path_str = safe.to_string_lossy().to_string();
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
 
