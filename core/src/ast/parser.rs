@@ -19,8 +19,8 @@ use support::BlockTail;
 
 pub struct Parser<'a> {
     tokens: &'a [Token],
-    pos: usize,
-    len: usize,
+    pub(crate) pos: usize,
+    pub(crate) len: usize,
     token_spans: Option<&'a [Span]>,
     prefix_mode: bool,
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
@@ -84,6 +84,23 @@ impl core::fmt::Display for NestingTooDeep {
 }
 
 impl core::error::Error for NestingTooDeep {}
+
+/// What an expression's unconsumed tail means.
+///
+/// The generic wording says only that something is left over. One token gets
+/// its own sentence: `=` is the `==` slip, and it is the reason this check
+/// matters — a header that dropped its tail parsed `if a = 2 { … }` as
+/// `if a { … }`, type-checked, and ran with the assignment gone.
+fn leftover_token_message(token: &Token) -> alloc::string::String {
+    if matches!(token, Token::Assign) {
+        return alloc::string::String::from(
+            "`=` assigns, and an assignment in LK is a statement rather than an expression — a comparison is `==`",
+        );
+    }
+    // Plain wording: `err` appends the token itself, so naming it here would
+    // print it twice.
+    alloc::string::String::from("Unexpected tokens at end")
+}
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
@@ -305,7 +322,8 @@ impl<'a> Parser<'a> {
         let exp = self.parse_expr()?;
 
         if !self.eof() {
-            return Err(anyhow!(self.err("Unexpected tokens at end")));
+            let msg = leftover_token_message(&self.tokens[self.pos]);
+            return Err(anyhow!(self.err(&msg)));
         }
 
         // All sub-expressions parsed, apply constant folding optimization
@@ -1423,6 +1441,21 @@ impl<'a> Parser<'a> {
             self.sub_parser(value_tokens)
         };
         let value = Box::new(sub.parse_expr()?);
+        // Everything up to the `{` has to *be* the expression. The sub-parser
+        // stops at the first token it cannot continue with, and its leftovers
+        // used to be dropped without a word: `if a = 2 { … }` parsed as
+        // `if a { … }`, type-checked, and ran with the assignment gone —
+        // exactly the `=`-for-`==` slip, turned into a silent wrong answer.
+        //
+        // Statement position never had this: it parses the condition through
+        // the ordinary path, which does check what it did not consume. Only a
+        // *tail* `if`/`match` reaches here, so the shape was accepted at the
+        // end of a file and rejected one line earlier.
+        if sub.pos < sub.len {
+            self.pos = start_pos + sub.pos;
+            let msg = leftover_token_message(&sub.tokens[sub.pos]);
+            return Err(anyhow!(self.err(&msg)));
+        }
         self.pos = i;
 
         if self.eof() || self.tokens[self.pos] != Token::LBrace {

@@ -164,6 +164,9 @@ impl<'a> StmtParser<'a> {
 
         let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
         let mut expr_parser = self.expr_parser(&self.tokens[start_pos..end_pos], expr_spans);
+        // `parse` (not `parse_expr`) is what rejects a tail this slice's
+        // expression did not consume, which is how `if a = 2 { … }` is refused
+        // on this path.
         let expr = expr_parser.parse()?;
 
         self.pos = end_pos;

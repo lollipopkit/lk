@@ -1,5 +1,43 @@
 #[cfg(test)]
 mod tests {
+    /// A header expression's leftover tokens used to be dropped in silence.
+    ///
+    /// `if a = 2 { … }` as the *last* statement of a file went through the
+    /// tail-expression path, whose sub-parser stops at the first token it
+    /// cannot continue with and whose leftovers nothing checked. The program
+    /// parsed as `if a { … }`, type-checked, and ran with the assignment gone
+    /// — the `=`-for-`==` slip, accepted as a wrong answer. One statement
+    /// earlier the same line was a syntax error, because that path parses the
+    /// condition with `Parser::parse`, which does check.
+    ///
+    /// Both halves are asserted: the shape is refused wherever it appears, and
+    /// the refusal names `==` rather than only reporting a stray token.
+    #[test]
+    fn an_assignment_in_a_condition_is_refused_and_named() {
+        let shapes = [
+            "let a = 1;\nif a = 2 { println(1); }\n",
+            "let a = 1;\nif a = 2 { println(1); }\nprintln(a);\n",
+            "fn f() -> Int {\n  let a = 1;\n  if a = 2 { println(1); }\n  return a;\n}\n",
+            "let a = 1;\nwhile a = 2 { break; }\n",
+        ];
+        for source in shapes {
+            let error = crate::syntax::parse_program_source(source, Default::default())
+                .expect_err("an assignment cannot be a condition")
+                .to_string();
+            assert!(error.contains("`==`"), "{source}: {error}");
+        }
+
+        // The negative half: a condition that *is* an expression still parses,
+        // including the one whose header ends in a call.
+        for source in [
+            "let a = 1;\nif a > 0 { println(1); }\n",
+            "let xs = [1];\nif xs.len() > 0 { println(1); }\n",
+            "let a = 1;\nmatch a { _ => { println(1); } }\n",
+        ] {
+            crate::syntax::parse_program_source(source, Default::default()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+
     /// Deeply nested statements used to abort the process.
     ///
     /// Two parsers, one budget. `if c { … }` alternates between the statement

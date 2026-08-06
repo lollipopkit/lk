@@ -2542,3 +2542,26 @@ map `+`。`Any` 的含义是"运行时才检查",而两个执行器在运行时�
 `s.contains("b")` 一直降得下去 —— 又是"同一个操作两种拼写只降一种"。现在两种拼写共用
 `str.contains`;`dyn.contains` 也补上了缺的 `DYN_STR` 载体(它此前覆盖 map / list / set /
 slice / bytes,独缺字符串)。
+
+## 条件里的赋值是语法错,不是被丢掉的 token(2026-08-06 裁决)
+
+    let a = 1;
+    if a = 2 { println(1); }
+    改前 → 通过检查,运行打印 1;编译出来的是 `if a { println(1); }`,常量 `2` 不在字节码里
+    改后 → Syntax error: `=` assigns, and an assignment in LK is a statement rather than
+           an expression — a comparison is `==`
+
+赋值在 LK 里是语句,不是表达式(`let b = (a = 1);` 一直是语法错)。但**头部表达式**的
+解析有两条路,只有一条查剩余:
+
+| 路径 | 何时走 | 剩余 token |
+| --- | --- | --- |
+| 语句侧(`if`/`while`/`for` 的条件) | 一般情况 | `Parser::parse` 自带检查,报错 |
+| 表达式侧(`parse_header_expr_before_brace`) | 尾位置的 `if` / `match` | 调的是 `parse_expr`,**不查** |
+
+于是同一行代码,在文件最后一条时被接受并静默改写语义,往后挪一条就是语法错。这是
+`=` 误写成 `==` 这个最常见的手滑,变成了错答案。
+
+两处现在共用一条规矩:`{` 之前的全部 token 就是那个表达式,没消费完就报错。消息也
+统一,并给 `=` 单独一句 —— 与 `export fn`(#201)同样的理由:人人会犯的错拼要被点名,
+而不是只说"有个多余的 token"。
