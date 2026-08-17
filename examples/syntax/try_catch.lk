@@ -122,4 +122,35 @@ fn accumulate(step: Int) -> Int {
 assert(accumulate(0) == 10);
 assert(accumulate(3) == 13);
 
+// A `try` whose region reads a value that occupies *two* machine registers:
+// a `Maybe` (a list's loop variable is one — the element read is bounds
+// checked) and a boxed `Dyn`. The region's inputs travel through a buffer of
+// machine words, so those cross as two words and are put back together inside.
+// Unwrapping at the boundary would have been wrong, which the absent case here
+// is the witness for: it aborts, where the body only asked `?? default`.
+fn tally(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { error("negative"); }
+            total = total + v;
+        } catch e {
+            total = total + 1;
+        }
+    }
+    return total;
+}
+assert(tally([10, 20, 30]) == 60);
+assert(tally([10, 0 - 5, 30]) == 41);
+
+fn defaulted(present: Bool) -> Int {
+    let lookup = {"a": 7};
+    let found = if present { lookup["a"] } else { lookup["missing"] };
+    let out = 0;
+    try { out = found ?? 42; } catch e { out = 0 - 1; }
+    return out;
+}
+assert(defaulted(true) == 7);
+assert(defaulted(false) == 42);
+
 println("try/catch: ok");

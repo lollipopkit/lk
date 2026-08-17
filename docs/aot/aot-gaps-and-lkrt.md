@@ -992,3 +992,33 @@ snapshot 永不收敛,预算耗尽 —— `examples/syntax/closure.lk` 直接不
 
 门禁:六批随机语料(约 1340 个含 `try` 的程序)0 处分歧;coverage 60/60;十个 fuzz
 种子;`examples/syntax/try_catch.lk` 把这两处静默错答各钉了一条。
+
+## §28 双寄存器载体按两个字过 region 边界(2026-08-18)
+
+`try` 写在 `for x in <一个 list>` 里面,整程序回落 —— 而这是最普通不过的形状,随手写的
+第一个探针就是它。原因:list 的循环变量是**载体**(元素读是带边界检查的,类型是
+`Maybe`;异构 list 则是 `Dyn`),而 region 的入参走 trampoline 的 `long long` 缓冲区,
+`crosses_as_word` 对两寄存器的类型答"不能"。
+
+两条看起来能走的路都是错的:
+
+- **在边界上 unwrap**:`UnwrapMaybeX` 在缺失时 abort,而 body 可能只写了 `x ?? default`
+  —— 那就把一个会答 42 的程序变成 abort。`examples/syntax/try_catch.lk` 的
+  `defaulted(false)` 就是这个见证。
+- **装箱成 `Dyn` 过去**:`Dyn` 自己也是两寄存器。
+
+正确做法是按它本来的样子过去:**一个载体占两个寄存器,就走两个字**,到对面再拼回来
+(`Inst::CarrierWord` / `Inst::CarrierFromParts`)。两条指令都取**裸的两半**而不是用
+`MaybeValue`/`MaybePresent` 这类**解释**性的访问器 —— 要活着过去的是比特,而且"取两半、
+按同样顺序放回去"这件事**不可能把约定搞反**,也就没有约定要维护。`MaybeF64` 的值半边是
+`f64`,按位 bitcast 进出。
+
+`crosses_as_two_words` 写成没有 `_` 臂的 match:漏一个类型会被劈成不存在的两半,多一个
+会让 body 多绑一个参数。预算按 2 计。
+
+顺带把"过不去"的诊断从 "an operand at pc N has a type outside the natively lowerable
+subset" 改成指名道姓的 `OperandType`(`is a dyn where a machine word is required`)——
+是哪个类型过不去,本来就是这个答案的全部内容。
+
+**注意**:`for s in ["ab","cde"]`(字符串 list 的循环)仍然回落,那是**先于**这条的缺口
+——不带 `try` 也一样回落,查的时候别记到这条头上。

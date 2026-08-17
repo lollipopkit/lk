@@ -31,7 +31,9 @@ use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId as ClifFuncId, Linkage, Module, ModuleError};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId};
+use lk_aot_mir::{
+    CarrierHalf, CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId,
+};
 
 /// Size of one `LkHybridArg` (`#[repr(C)] { i8 tag, i64 value }`): the `i64`
 /// forces 8-byte alignment, so the tag byte at offset 0 is padded and the value
@@ -1163,6 +1165,33 @@ impl Lower {
                     value
                 };
                 self.set1(*dst, value);
+            }
+            // One raw half of a two-register carrier, as an `i64` word. A
+            // `MaybeF64`'s value half is an `f64`; its *bits* are what has to
+            // cross, so it is bitcast rather than converted.
+            Inst::CarrierWord { dst, src, half } => {
+                let (lo, hi) = self.two(*src)?;
+                let word = match half {
+                    CarrierHalf::Lo => lo,
+                    CarrierHalf::Hi => hi,
+                };
+                let word = if b.func.dfg.value_type(word) == types::F64 {
+                    b.ins().bitcast(types::I64, MemFlagsData::new(), word)
+                } else {
+                    word
+                };
+                self.set1(*dst, word);
+            }
+            // And back: the two words in the order they were taken.
+            Inst::CarrierFromParts { dst, lo, hi, ty } => {
+                let lo = self.v(*lo)?;
+                let hi = self.v(*hi)?;
+                let lo = if matches!(ty, Ty::MaybeF64) {
+                    b.ins().bitcast(types::F64, MemFlagsData::new(), lo)
+                } else {
+                    lo
+                };
+                self.set2(*dst, lo, hi);
             }
             // Wrap a plain scalar into a present carrier `{value, 1}`. A `Bool`
             // source is `I8`; widen it to the carrier's `I64` value component.

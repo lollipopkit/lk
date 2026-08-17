@@ -165,6 +165,22 @@ pub enum Const {
     Nil,
 }
 
+/// Which register of a two-register carrier [`Inst::CarrierWord`] extracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarrierHalf {
+    Lo,
+    Hi,
+}
+
+impl CarrierHalf {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Lo => "lo",
+            Self::Hi => "hi",
+        }
+    }
+}
+
 /// A single SSA instruction: it defines at most one value (`dst`) from its inputs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inst {
@@ -454,6 +470,34 @@ pub enum Inst {
     /// `dst = {src, 1}` — wraps a plain scalar into a present `Maybe` carrier
     /// (the dual of [`Inst::MaybeValue`] for mixed phi edges).
     MaybeWrap { dst: ValueId, src: ValueId, maybe_ty: Ty },
+    /// One half of a two-register carrier (`Dyn`, the four `Maybe`s), as a raw
+    /// `I64` word — `half` selects which.
+    ///
+    /// What such a value needs to cross a boundary that carries *machine
+    /// words*: it occupies two registers, so it travels as two and is put back
+    /// together by [`Inst::CarrierFromParts`]. The `try`-region trampoline is
+    /// that boundary, and without this a `try` inside `for x in <a list>` did
+    /// not compile at all — a list's loop variable is a carrier — and there was
+    /// no correct way to make it one word. Unwrapping a `Maybe` aborts when
+    /// absent, and the body may only have asked `x ?? default`.
+    ///
+    /// Raw halves rather than the typed accessors (`MaybeValue`/`MaybePresent`
+    /// and the `dyn.as_*` family): those *interpret*, and what has to survive a
+    /// round trip is the bits. Deliberately blind to which half means what —
+    /// taking both and putting them back in the same order cannot get the
+    /// convention wrong, and there is no convention to keep in step.
+    CarrierWord {
+        dst: ValueId,
+        src: ValueId,
+        half: CarrierHalf,
+    },
+    /// The inverse: rebuild a `ty`-typed carrier from its two words.
+    CarrierFromParts {
+        dst: ValueId,
+        lo: ValueId,
+        hi: ValueId,
+        ty: Ty,
+    },
     /// `dst = select cond, then_v, else_v` over values of type `ty`.
     Select {
         dst: ValueId,
@@ -1005,6 +1049,12 @@ fn render_inst(inst: &Inst) -> String {
         Inst::MaybeValue { dst, src, maybe_ty } => {
             format!("{} = maybe.value<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
         }
+        Inst::CarrierWord { dst, src, half } => {
+            format!("{} = carrier.{} {}", v(*dst), half.name(), v(*src))
+        }
+        Inst::CarrierFromParts { dst, lo, hi, ty } => {
+            format!("{} = carrier.parts.{} {}, {}", v(*dst), ty_name(*ty), v(*lo), v(*hi))
+        }
         Inst::MaybeWrap { dst, src, maybe_ty } => {
             format!("{} = maybe.wrap<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
         }
@@ -1068,6 +1118,8 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MapGetMaybeI64F64 { dst, .. }
         | Inst::MaybeValue { dst, .. }
         | Inst::MaybeWrap { dst, .. }
+        | Inst::CarrierWord { dst, .. }
+        | Inst::CarrierFromParts { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::SymbolAddr { dst, .. } | Inst::TryRegionCall { dst, .. } | Inst::VolatileLoad { dst, .. } => Some(*dst),
@@ -1130,6 +1182,8 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::CallFn { args, .. }
         | Inst::CallExtern { args, .. }
         | Inst::CallVm { args, .. } => args.clone(),
+        Inst::CarrierWord { src, .. } => vec![*src],
+        Inst::CarrierFromParts { lo, hi, .. } => vec![*lo, *hi],
         Inst::TraitDispatch { self_arg, args, .. } => {
             let mut operands = vec![*self_arg];
             operands.extend(args.iter().copied());

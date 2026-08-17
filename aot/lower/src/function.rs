@@ -276,6 +276,44 @@ fn mirror_cells(
     Ok(())
 }
 
+/// Whether this type occupies **two** machine registers.
+///
+/// `Dyn` is `{tag, payload}` and each `Maybe` is `{value, present}`. Everything
+/// else in the type set is one word or is not a value at all. A carrier crosses
+/// the `try`-region boundary as two words rather than one
+/// (`Inst::CarrierWord`), which is the only correct way to move it through a
+/// buffer of `long long`s: the alternatives are to unwrap it — which aborts
+/// when a `Maybe` is absent, where the body may only have asked
+/// `x ?? default` — or to refuse, which is what it used to do.
+///
+/// Exhaustive on purpose. A type missing from the two-register side would be
+/// split into halves that do not exist; one wrongly on it would cross as two
+/// words the body then binds as one parameter too many.
+fn crosses_as_two_words(ty: Ty) -> bool {
+    match ty {
+        Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => true,
+        Ty::I64
+        | Ty::F64
+        | Ty::Bool
+        | Ty::Str
+        | Ty::Nil
+        | Ty::Cell
+        | Ty::ListDyn
+        | Ty::ListI64
+        | Ty::ListF64
+        | Ty::ListStr
+        | Ty::SliceI64
+        | Ty::MapStrDyn
+        | Ty::MapStrI64
+        | Ty::MapI64I64
+        | Ty::MapStrF64
+        | Ty::MapI64F64
+        | Ty::MapStrBool
+        | Ty::Set
+        | Ty::Bytes => false,
+    }
+}
+
 /// How many machine words the `try`-region trampoline's arity switch covers
 /// (`lkrt/src/try_trampoline.c`), mirrored from the codegen constant of the
 /// same name — the lowering refuses a region past it so codegen never has to.
@@ -616,7 +654,11 @@ pub(crate) fn lower_function(
                     .iter()
                     .map(|reg| match sig.try_body_lambdas.get(&(body_index, *reg)) {
                         Some(identity) => identity.captures as usize,
-                        None => 1,
+                        // A carrier crosses as two words.
+                        None => match sig.try_body_param_tys.get(&(body_index, *reg)) {
+                            Some(ty) if crosses_as_two_words(*ty) => 2,
+                            _ => 1,
+                        },
                     })
                     .sum()
             })
@@ -845,6 +887,8 @@ pub(crate) fn lower_function(
     // register of its own: the closure ref already names the float value, so
     // only the bitcast producing it is outstanding.
     let mut entry_bitcasts: Vec<(ValueId, ValueId)> = Vec::new();
+    // Carriers to reassemble at entry, from the two words they crossed as.
+    let mut entry_carriers: Vec<(ValueId, ValueId, ValueId, Ty)> = Vec::new();
     // Upvalue-cell inputs, bound here in `try_params` order (so the caller's
     // argument layout is matched) and wired into `capture_params` below, once
     // that exists — `inst::global` reads and writes a `CellParam` backed by a
@@ -894,6 +938,17 @@ pub(crate) fn lower_function(
             .get(&(func_index, reg))
             .copied()
             .unwrap_or(Ty::I64);
+        // The two words a carrier crossed as, fused back into one.
+        if crosses_as_two_words(ty) {
+            let lo = ssa.new_val();
+            fn_params.push((lo, Ty::I64));
+            let hi = ssa.new_val();
+            fn_params.push((hi, Ty::I64));
+            let carrier = ssa.new_val();
+            entry_carriers.push((carrier, lo, hi, ty));
+            ssa.current_def[0][reg as usize] = Some((carrier, ty));
+            continue;
+        }
         let pv = ssa.new_val();
         // An `F64` input is declared `I64` and read back out of those bits at
         // entry: the trampoline calls this body through a `(long long, …)`
@@ -1040,6 +1095,9 @@ pub(crate) fn lower_function(
             }
             for &(dst, bits) in &entry_bitcasts {
                 insts.push(Inst::BitsToFloat { dst, src: bits });
+            }
+            for &(dst, lo, hi, ty) in &entry_carriers {
+                insts.push(Inst::CarrierFromParts { dst, lo, hi, ty });
             }
         }
         // The entry describes every declared struct to the runtime before any
@@ -1326,14 +1384,35 @@ pub(crate) fn lower_function(
                         continue;
                     }
                     let (v, ty) = ssa.read(reg, bi, start)?;
+                    // A two-register carrier crosses as its two raw words, put
+                    // back together by the body (`Inst::CarrierFromParts`).
+                    if crosses_as_two_words(ty) {
+                        let mut word = |half| {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::CarrierWord { dst, src: v, half });
+                            dst
+                        };
+                        let lo = word(lk_aot_mir::CarrierHalf::Lo);
+                        let hi = word(lk_aot_mir::CarrierHalf::Hi);
+                        sig.try_body_param_tys.insert((body, reg), ty);
+                        input_words[index] = Some(vec![lo, hi]);
+                        continue;
+                    }
                     if crosses_as_word(ty) {
                         sig.try_body_param_tys.insert((body, reg), ty);
                         input_words[index] = Some(vec![v]);
                     } else {
-                        // Not a word: the honest failure is the body rejecting
-                        // when it reads it, which is what `I64` produces.
+                        // Not a word and not a carrier this knows how to split.
+                        // Named, rather than reported as "some operand": which
+                        // *type* could not cross is the whole content of the
+                        // answer, and it is what a reader needs to know whether
+                        // to widen this rule or to change the program.
                         sig.try_body_param_tys.remove(&(body, reg));
-                        input_words[index] = Some(vec![ssa.read_typed(reg, bi, Ty::I64, start)?]);
+                        return Err(Unsupported::OperandType {
+                            pc: start,
+                            want: "machine word",
+                            got: lk_aot_mir::ty_name(ty),
+                        });
                     }
                 }
                 for (index, &reg) in region_params.iter().enumerate() {

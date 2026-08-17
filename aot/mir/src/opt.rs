@@ -623,6 +623,9 @@ fn is_removable(inst: &Inst) -> bool {
         // A `Maybe` unwrap aborts when the element was absent — dropping it
         // would turn the VM's halt into a silent continue.
         Inst::UnwrapMaybeI64 { .. } | Inst::UnwrapMaybeF64 { .. } | Inst::UnwrapMaybeStr { .. } => false,
+        // Pure: they only take apart and put back together values they were
+        // handed.
+        Inst::CarrierWord { .. } | Inst::CarrierFromParts { .. } => true,
         // Calls stay even when `Pure`: an unused aborting call (`socket.addr`
         // with a bad port) is observable precisely by aborting.
         Inst::Call { .. }
@@ -667,6 +670,8 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::UnwrapMaybeStr { src, .. }
         | Inst::GlobalSet { src, .. } => vec![src],
         Inst::Call { args, .. } | Inst::CallFn { args, .. } | Inst::CallVm { args, .. } => args.iter_mut().collect(),
+        Inst::CarrierWord { src, .. } => vec![src],
+        Inst::CarrierFromParts { lo, hi, .. } => vec![lo, hi],
         Inst::TraitDispatch { self_arg, .. } => vec![self_arg],
         Inst::ListGetMaybe { handle, index, .. }
         | Inst::SliceGetMaybe { handle, index, .. }
