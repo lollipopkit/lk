@@ -320,20 +320,13 @@ pub(crate) fn lower_user_call(
                     sig.conflict = true;
                     return Err(Unsupported::TypeMismatch { pc });
                 }
-                let clone = sig.param_obs.len() as u32;
                 let env_total: usize = identity.iter().flatten().map(|id| id.captures as usize).sum();
-                sig.param_obs.push(vec![
-                    None;
-                    funcs[callee_idx].param_count as usize
-                        + env_total
-                        + funcs[callee_idx].capture_count as usize
-                ]);
-                sig.ret_types.push(sig.ret_types[callee_idx]);
-                sig.ret_known
-                    .push(sig.ret_known.get(callee_idx).copied().unwrap_or(false));
-                sig.ret_closures.push(None);
-                sig.ret_closure_poisoned.push(false);
-                sig.lambda_params.push(identity.clone());
+                let arity =
+                    funcs[callee_idx].param_count as usize + env_total + funcs[callee_idx].capture_count as usize;
+                let ret_known = sig.ret_known.get(callee_idx).copied().unwrap_or(false);
+                let clone = sig.push_function(vec![None; arity], sig.ret_types[callee_idx]);
+                sig.ret_known[clone as usize] = ret_known;
+                sig.lambda_params[clone as usize] = identity.clone();
                 sig.specializations.insert(key, clone);
                 sig.pending_clones.push(callee_idx as u32);
                 clone as usize

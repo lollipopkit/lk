@@ -129,3 +129,20 @@ let m = {};
 try { m[f] = 1; } catch e { refused = "{}".format(e); }
 assert(refused == "Function cannot be a map key or set member: only nil, Bool, Int and String can");
 assert(m.len() == 0);
+
+// A list HOF whose callback is a *value* rather than a lambda written at the
+// call. The typed fold takes a compiled address, which only exists when the
+// lowering can say which lambda the register names; a callback read out of a
+// container or handed in as a parameter is a closure, and the same three folds
+// run through it.
+let ops = [|x| x + 1, |x| x * 10];
+assert([1, 2, 3].map(ops[0]) == [2, 3, 4]);
+assert([1, 2, 3].map(ops[1]) == [10, 20, 30]);
+assert([1, 2, 3, 4].filter(ops[0]) == [1, 2, 3, 4]);
+assert(["ab", "cd"].map(ops[0]) == ["ab1", "cd1"]);
+
+fn apply_all(xs, f) { return xs.map(f); }
+assert(apply_all([5, 6], ops[1]) == [50, 60]);
+
+fn fold_with(xs, f) { return xs.reduce(0, f); }
+assert(fold_with([1, 2, 3], |a, b| a + b) == 6);

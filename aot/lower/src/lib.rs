@@ -244,9 +244,7 @@ pub fn lower_bundled(
             let body_index = funcs.len() as u32;
             funcs.push(body);
             reachable.push(true);
-            sig.param_obs.push(Vec::new());
-            sig.ret_types.push(Ty::Nil);
-            sig.ret_known.push(true);
+            debug_assert_eq!(body_index, sig.push_function(Vec::new(), Ty::Nil));
             sig.try_bodies.insert((scanning as u32, region.begin_pc), body_index);
             if region.body_returns {
                 sig.try_body_returns.insert(body_index);
@@ -378,15 +376,10 @@ pub fn lower_bundled(
                     Err(Unsupported::ReferenceAsValue { lambda: Some(orig), .. })
                         if !sig.value_lambdas.contains_key(&orig) && (orig as usize) < funcs.len() =>
                     {
-                        let clone = sig.param_obs.len() as u32;
                         let arity =
                             funcs[orig as usize].param_count as usize + funcs[orig as usize].capture_count as usize;
-                        sig.param_obs.push(vec![Some(Ty::Dyn); arity]);
-                        sig.ret_types.push(Ty::Dyn);
-                        sig.ret_known.push(true);
-                        sig.ret_closures.push(None);
-                        sig.ret_closure_poisoned.push(true);
-                        sig.lambda_params.push(Vec::new());
+                        let clone = sig.push_function(vec![Some(Ty::Dyn); arity], Ty::Dyn);
+                        sig.ret_closure_poisoned[clone as usize] = true;
                         sig.dyn_rets.insert(clone);
                         sig.value_lambda_bodies.insert(clone);
                         sig.value_lambdas.insert(orig, clone);

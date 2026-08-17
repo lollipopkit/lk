@@ -900,6 +900,12 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_map_fn", lkrt_lklist_dyn_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "dyn_filter_fn", lkrt_lklist_dyn_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "dyn_reduce_fn", lkrt_lklist_dyn_reduce_fn, WritesHost, [Ptr, DynVal, Ptr], DynVal, Borrowed);
+            // The same three folds with the callback as a *closure value* — a
+            // callback the lowering cannot name, because it came out of a
+            // container or a parameter.
+            ("list_h", "dyn_map_closure", lkrt_lklist_dyn_map_closure, WritesHost, [Ptr, DynVal], Ptr, Constructs);
+            ("list_h", "dyn_filter_closure", lkrt_lklist_dyn_filter_closure, WritesHost, [Ptr, DynVal], Ptr, Constructs);
+            ("list_h", "dyn_reduce_closure", lkrt_lklist_dyn_reduce_closure, WritesHost, [Ptr, DynVal, DynVal], DynVal, Borrowed);
             ("list_h", "str_map_fn", lkrt_lklist_str_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "str_filter_fn", lkrt_lklist_str_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "i64_unique", lkrt_lklist_i64_unique, WritesHost, [Ptr], Ptr, Constructs);

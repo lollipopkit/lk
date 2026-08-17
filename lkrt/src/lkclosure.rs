@@ -93,8 +93,10 @@ pub unsafe extern "C" fn lkrt_closure_arity(callee: LkDyn) -> i64 {
 /// `lkrt_spawn_args_new` (ownership moves here), or null for no arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_closure_call(callee: LkDyn, args_block: *mut c_void) -> LkDyn {
+    // Checked before the block is taken apart, so calling a non-callable says
+    // so rather than first consuming arguments it will never pass.
     // SAFETY: as documented.
-    let closure = unsafe { closure_of(callee) };
+    unsafe { closure_of(callee) };
     let mut args: Vec<LkDyn> = if args_block.is_null() {
         Vec::new()
     } else {
@@ -102,6 +104,21 @@ pub unsafe extern "C" fn lkrt_closure_call(callee: LkDyn, args_block: *mut c_voi
         let block = *unsafe { Box::from_raw(args_block as *mut Vec<OwnedVal>) };
         block.iter().map(materialize).collect()
     };
+    // SAFETY: as documented.
+    unsafe { call_with(callee, &mut args) }
+}
+
+/// The call itself, once the arguments are in a `Vec`.
+///
+/// Split out so a caller that already has the arguments — the list HOFs with a
+/// closure callback — does not have to allocate an argument *block* just to
+/// have this function take it apart again.
+///
+/// # Safety
+/// `callee` must be a `DYN_CLOSURE` value.
+pub(crate) unsafe fn call_with(callee: LkDyn, args: &mut Vec<LkDyn>) -> LkDyn {
+    // SAFETY: as documented.
+    let closure = unsafe { closure_of(callee) };
     if args.len() as i64 != closure.params {
         crate::panic::raise_str("closure called with the wrong number of arguments");
     }

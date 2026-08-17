@@ -1827,12 +1827,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_chain(a: *mut c_void, b: *mut c_void) -
 /// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "C" fn(LkDyn) -> LkDyn) -> *mut c_void {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -1857,12 +1851,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
     handle: *mut c_void,
     p: extern "C" fn(LkDyn) -> bool,
 ) -> *mut c_void {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -1890,12 +1878,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     init: LkDyn,
     f: extern "C" fn(LkDyn, LkDyn) -> LkDyn,
 ) -> LkDyn {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -1908,6 +1890,80 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
             break;
         };
         acc = f(acc, value);
+    }
+    acc
+}
+
+/// `xs.map(f)` where `f` is a closure *value* rather than a compiled address.
+///
+/// The three `*_fn` helpers above take a raw function pointer, which is only
+/// available when the lowering knows which lambda the callback register names.
+/// A callback read out of a container or passed through a parameter is a
+/// `DYN_CLOSURE`, and these three are the same folds called through it.
+///
+/// # Safety
+/// `handle` must be a live dyn-list handle (or null); `callee` a `DYN_CLOSURE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_map_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
+    // Indexed, re-dereferencing the handle each step, for the reason the `*_fn`
+    // helpers document: the callback re-enters generated code.
+    let len = dyn_slice(handle).len();
+    let mut mapped: Vec<LkDyn> = Vec::with_capacity(len);
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        mapped.push(unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![value]) });
+    }
+    arena_handle(mapped)
+}
+
+/// `xs.filter(p)` with a closure value.
+///
+/// The predicate's result is judged the way the interpreter judges it
+/// (`core_methods::list_filter`): a `Bool` is itself, `nil` is false, anything
+/// else is true. The `*_fn` path cannot do that — it demands a `Bool`-returning
+/// callback at compile time — but a closure's return type is not known here.
+///
+/// # Safety
+/// As [`lkrt_lklist_dyn_map_closure`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_filter_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
+    let len = dyn_slice(handle).len();
+    let mut kept: Vec<LkDyn> = Vec::new();
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        let verdict = unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![value]) };
+        let keep = match verdict.tag {
+            DYN_BOOL => verdict.payload != 0,
+            DYN_NIL => false,
+            _ => true,
+        };
+        if keep {
+            kept.push(value);
+        }
+    }
+    arena_handle(kept)
+}
+
+/// `xs.reduce(init, f)` with a closure value.
+///
+/// # Safety
+/// As [`lkrt_lklist_dyn_map_closure`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_closure(handle: *mut c_void, init: LkDyn, callee: LkDyn) -> LkDyn {
+    let len = dyn_slice(handle).len();
+    let mut acc = init;
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        acc = unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![acc, value]) };
     }
     acc
 }

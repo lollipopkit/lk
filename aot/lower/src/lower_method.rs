@@ -526,10 +526,34 @@ pub(crate) fn lower_list_hof_k(
     let dyn_list_of = |ssa: &mut Ssa, insts: &mut Vec<Inst>, receiver: ValueId| -> Result<ValueId, Unsupported> {
         to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)
     };
+    // A callback that is an ordinary value: not a lambda the lowering can name,
+    // but a `DYN_CLOSURE` at run time — `xs.map(fs[0])`, or a callback that
+    // arrived as a parameter. Same folds, called through the closure.
+    let closure_at = |ssa: &mut Ssa, insts: &mut Vec<Inst>, reg: u8| -> Option<ValueId> {
+        match crate::convert::read_scalar(ssa, insts, reg, block, pc) {
+            Ok((v, Ty::Dyn)) => Some(v),
+            _ => None,
+        }
+    };
     match (name, argc) {
         ("map" | "filter", 1) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(1)) else {
-                return Ok(None);
+                let Some(callee) = closure_at(ssa, insts, base.wrapping_add(1)) else {
+                    return Ok(None);
+                };
+                let list = dyn_list_of(ssa, insts, receiver)?;
+                let hof = if name == "filter" {
+                    "dyn_filter_closure"
+                } else {
+                    "dyn_map_closure"
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", hof),
+                    args: vec![list, callee],
+                });
+                return Ok(Some((dst, Ty::ListDyn)));
             };
             if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 1 {
                 return Err(Unsupported::Opcode {
@@ -625,7 +649,19 @@ pub(crate) fn lower_list_hof_k(
         }
         ("reduce", 2) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(2)) else {
-                return Ok(None);
+                let Some(callee) = closure_at(ssa, insts, base.wrapping_add(2)) else {
+                    return Ok(None);
+                };
+                let (init_raw, init_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                let list = dyn_list_of(ssa, insts, receiver)?;
+                let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", "dyn_reduce_closure"),
+                    args: vec![list, init, callee],
+                });
+                return Ok(Some((dst, Ty::Dyn)));
             };
             if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 2 {
                 return Err(Unsupported::Opcode {

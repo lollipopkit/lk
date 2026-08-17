@@ -153,4 +153,19 @@ fn defaulted(present: Bool) -> Int {
 assert(defaulted(true) == 7);
 assert(defaulted(false) == 42);
 
+// A region in the module does not change what the rest of it compiles to.
+// It did once: outlining a `try` body appends a function, and the tables that
+// answer "what does parameter *k* of function *n* hold" are parallel arrays
+// indexed by function. Outlining pushed to some of them and not the others, so
+// every later entry was recorded under the previous function's index — and a
+// lambda handed to a function stopped being erased for the whole module.
+fn apply_to(xs: List<Int>, f: (Int) -> Int) -> List<Int> {
+    return xs.map(f);
+}
+fn fold_with(xs: List<Int>, f: (Int, Int) -> Int) -> Int {
+    return xs.reduce(0, f);
+}
+assert(apply_to([1, 2, 3], |x| x + 1) == [2, 3, 4]);
+assert(fold_with([1, 2, 3], |a, b| a + b) == 6);
+
 println("try/catch: ok");

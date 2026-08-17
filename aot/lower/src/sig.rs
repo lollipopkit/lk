@@ -315,6 +315,46 @@ pub(crate) struct SigInfer {
 }
 
 impl SigInfer {
+    /// Appends one function's worth of state to **every** per-function table,
+    /// returning its index.
+    ///
+    /// These tables are parallel arrays indexed by function, and the working
+    /// function list grows in three places: `try`-body outlining, a
+    /// lambda-argument specialization, and a closure-value clone. Each pushed
+    /// to the subset it happened to care about, and the subsets differed — so
+    /// after a single outlined `try` body, `lambda_params.len()` was one short
+    /// of `param_obs.len()` and a specialization's entry landed under the
+    /// *previous* function's index. The visible symptom was that
+    /// `fn ap(xs, f) { return xs.map(f); }` stopped lowering as soon as the
+    /// module contained a `try` anywhere, because the erased lambda parameter
+    /// was recorded for somebody else.
+    pub(crate) fn push_function(&mut self, params: Vec<Option<Ty>>, ret: Ty) -> u32 {
+        let index = self.param_obs.len() as u32;
+        self.param_obs.push(params);
+        self.ret_types.push(ret);
+        self.ret_known.push(true);
+        self.lambda_params.push(Vec::new());
+        self.specialized.push(false);
+        self.plain_called.push(false);
+        self.ret_closures.push(None);
+        self.ret_closure_poisoned.push(false);
+        debug_assert!(
+            [
+                self.ret_types.len(),
+                self.ret_known.len(),
+                self.lambda_params.len(),
+                self.specialized.len(),
+                self.plain_called.len(),
+                self.ret_closures.len(),
+                self.ret_closure_poisoned.len(),
+            ]
+            .iter()
+            .all(|&len| len == self.param_obs.len()),
+            "per-function tables must stay parallel"
+        );
+        index
+    }
+
     /// The type a parameter is believed to hold.
     ///
     /// An unobserved parameter defaults to `I64` rather than `Dyn`. `Dyn`

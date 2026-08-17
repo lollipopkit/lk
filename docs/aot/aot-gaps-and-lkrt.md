@@ -1321,3 +1321,35 @@ fs[0] == fs[1]      // 解释器 true,编译后 false
 
 带类型载体的 map **不**走这个函数(键是拆箱存的),所以另加了 `dyn.as_key_i64` / `dyn.as_key_str`
 两个 ABI:先按键的可用性拒绝、再拆箱。`m[|x| x] = 1` 原来答"runtime type error"。
+
+## §38 回调是值时的三个 fold(2026-08-18)
+
+`list_h.dyn_map_fn` 等三个 helper 收的是**函数地址**,只有降级时知道寄存器命名哪个 lambda 才有。
+`xs.map(fs[0])`、以及回调从参数进来的写法,拿到的是 `DYN_CLOSURE`,于是加了对应的
+`dyn_map_closure` / `dyn_filter_closure` / `dyn_reduce_closure`。
+
+filter 的判定按解释器来(`core_methods::list_filter`):`Bool` 取自身、`nil` 为假、其余为真。
+`*_fn` 那条路做不到这件事——它在编译期就要求回调返回 `Bool`——而闭包的返回类型这里不知道。
+
+`lkrt_closure_call` 拆成"取参数块"和"调用"两步(`call_with`),这三个 fold 每个元素只造一个
+`Vec`,不再为了让同一个函数马上拆开而先造一个参数块。
+
+## §39 按函数索引的表必须一起增长(2026-08-18,**影响面最大的一个**)
+
+`SigInfer` 里有八张按函数索引的并行数组(`param_obs` / `ret_types` / `ret_known` /
+`lambda_params` / `specialized` / `plain_called` / `ret_closures` / `ret_closure_poisoned`)。
+`funcs` 在三个地方增长:`try` 体外联、lambda 实参特化、闭包值克隆。三处各自 push 自己关心的
+那几张,**集合不同**:外联只 push 前三张。
+
+于是模块里只要有一个 `try`,`lambda_params.len()` 就比 `param_obs.len()` 少,
+而特化用的是 `let clone = sig.param_obs.len()`——`lambda_params.push(identity)` 落在了
+`clone - 1` 上,记到了别人头上。可观察到的现象:
+
+```lk
+try { … } catch e { … }
+fn ap(xs, f) { return xs.map(f); }
+ap([1, 2], |x| x + 1)        // 模块里有 try,这一行就不再原生化
+```
+
+现在只有 `SigInfer::push_function` 一个入口,一次给八张表各追加一格,并 `debug_assert!` 长度一致。
+教训与 snapshot 元组那条相同:**并行结构的增长点必须只有一个**,否则漏掉一处是静默的。
