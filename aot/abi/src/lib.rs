@@ -733,6 +733,10 @@ macro_rules! for_each_abi_fn {
             ("dyn", "cast_to_i64", lkrt_dyn_cast_to_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
+            // The same two conversions for a *map key*, which refuse a type no
+            // map can key by name instead of with the generic type error.
+            ("dyn", "as_key_i64", lkrt_dyn_as_key_i64, ReadsHost, [DynVal], I64);
+            ("dyn", "as_key_str", lkrt_dyn_as_key_str, ReadsHost, [DynVal], StrPtr);
             // Deliberately `Retained`: this returns the *existing* handle held
             // inside the boxed value (`v.payload`), not a fresh one — treating
             // it as a constructor would let the pass free someone else's list.

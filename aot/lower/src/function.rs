@@ -327,6 +327,21 @@ const LK_TRY_MAX_ARGS: usize = 8;
 /// a fixpoint discovery like every other — the body has already been lowered
 /// once with this register as a plain word, so the answer only takes effect on
 /// the pass after it is written down.
+/// The recorded identity of a region input, when it still applies.
+///
+/// [`lambda_region_input`] writes the map once and it stays written, which is
+/// what makes the plumbing on the two sides of the boundary agree. It stops
+/// applying when the same lambda later turns out to be used as a *value*: it is
+/// then built at its definition (`inst/call.rs::bind_lambda`), so the parent's
+/// register holds a closure handle and the input is an ordinary word. Without
+/// this the two facts contradicted each other and the fixpoint could not
+/// resolve it — the body kept asking for a value the discovery arm had already
+/// granted, and the program stopped lowering for good.
+pub(crate) fn try_body_lambda(sig: &SigInfer, body: u32, reg: u8) -> Option<LambdaIdentity> {
+    let identity = sig.try_body_lambdas.get(&(body, reg)).copied()?;
+    (!sig.value_lambdas.contains_key(&identity.fidx)).then_some(identity)
+}
+
 fn lambda_region_input(ssa: &mut Ssa, sig: &mut SigInfer, body: u32, reg: u8, block: usize) -> Option<LambdaIdentity> {
     let identity = match ssa.builtin_ref_at(reg, block)? {
         GlobalRef::Lambda(fidx) => LambdaIdentity { fidx, captures: 0 },
@@ -652,7 +667,7 @@ pub(crate) fn lower_function(
             .map(|params| {
                 params
                     .iter()
-                    .map(|reg| match sig.try_body_lambdas.get(&(body_index, *reg)) {
+                    .map(|reg| match try_body_lambda(sig, body_index, *reg) {
                         Some(identity) => identity.captures as usize,
                         // A carrier crosses as two words.
                         None => match sig.try_body_param_tys.get(&(body_index, *reg)) {
@@ -906,7 +921,7 @@ pub(crate) fn lower_function(
         // down, so the register is seeded with the reference and only the
         // environment is bound — one parameter per capture, in capture order,
         // which is the order the caller pushed them.
-        if let Some(identity) = sig.try_body_lambdas.get(&(func_index, reg)).copied() {
+        if let Some(identity) = try_body_lambda(sig, func_index, reg) {
             let mut caps = Vec::with_capacity(identity.captures as usize);
             for k in 0..identity.captures {
                 let ety = sig
@@ -1440,7 +1455,7 @@ pub(crate) fn lower_function(
                     }
                 }
                 for (index, &reg) in region_params.iter().enumerate() {
-                    let Some(identity) = sig.try_body_lambdas.get(&(body, reg)).copied() else {
+                    let Some(identity) = try_body_lambda(sig, body, reg) else {
                         continue;
                     };
                     let mut env = Vec::new();

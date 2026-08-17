@@ -824,6 +824,7 @@ pub(crate) fn materialize_closure(
         dst: code,
         value: Const::FnAddr(FuncId(body)),
     });
+    let env_is_empty = env.is_none();
     let env_ptr = match env {
         Some(block_v) => block_v,
         None => {
@@ -854,6 +855,10 @@ pub(crate) fn materialize_closure(
         callee: AbiRef::new("rt", "closure_new"),
         args: vec![code, env_ptr, params, index],
     });
+    ssa.closure_values.insert(dst);
+    if env_is_empty {
+        ssa.closure_fidx.insert(dst, fidx);
+    }
     Ok(Some((dst, Ty::Dyn)))
 }
 

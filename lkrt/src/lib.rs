@@ -172,10 +172,10 @@ pub use lkclosure::{lkrt_closure_arity, lkrt_closure_call, lkrt_closure_call_pro
 pub use lkdyn::lkrt_dyn_from_typed_map;
 pub use lkdyn::{
     DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, lkrt_dyn_add, lkrt_dyn_as_bool,
-    lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_list, lkrt_dyn_as_map, lkrt_dyn_as_slice, lkrt_dyn_as_str,
-    lkrt_dyn_cast_to_i64, lkrt_dyn_display, lkrt_dyn_display_quoted, lkrt_dyn_div, lkrt_dyn_eq, lkrt_dyn_field,
-    lkrt_dyn_from_bool, lkrt_dyn_from_bytes, lkrt_dyn_from_f64, lkrt_dyn_from_i64, lkrt_dyn_from_list,
-    lkrt_dyn_from_map, lkrt_dyn_from_maybe_bool, lkrt_dyn_from_maybe_f64, lkrt_dyn_from_maybe_i64,
+    lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_key_i64, lkrt_dyn_as_key_str, lkrt_dyn_as_list, lkrt_dyn_as_map,
+    lkrt_dyn_as_slice, lkrt_dyn_as_str, lkrt_dyn_cast_to_i64, lkrt_dyn_display, lkrt_dyn_display_quoted, lkrt_dyn_div,
+    lkrt_dyn_eq, lkrt_dyn_field, lkrt_dyn_from_bool, lkrt_dyn_from_bytes, lkrt_dyn_from_f64, lkrt_dyn_from_i64,
+    lkrt_dyn_from_list, lkrt_dyn_from_map, lkrt_dyn_from_maybe_bool, lkrt_dyn_from_maybe_f64, lkrt_dyn_from_maybe_i64,
     lkrt_dyn_from_maybe_str, lkrt_dyn_from_nil, lkrt_dyn_from_set, lkrt_dyn_from_slice, lkrt_dyn_from_str, lkrt_dyn_ge,
     lkrt_dyn_get, lkrt_dyn_gt, lkrt_dyn_index, lkrt_dyn_index_set, lkrt_dyn_le, lkrt_dyn_len_of, lkrt_dyn_lt,
     lkrt_dyn_map_delete, lkrt_dyn_map_has, lkrt_dyn_map_keys, lkrt_dyn_map_pairs, lkrt_dyn_map_values,

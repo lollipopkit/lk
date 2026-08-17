@@ -1109,7 +1109,7 @@ pub(super) fn lower(
             // `index_string_at`); the Dyn carrier holds the nil itself.
             // (`for ch in "abc"` desugars to exactly this indexed read.)
             if list_ty == Ty::Str {
-                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+                let key = read_map_key(ssa, insts, instr.c(), block, Ty::I64, pc)?;
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
@@ -1122,7 +1122,7 @@ pub(super) fn lower(
             // Mixed-value map indexed by string key: same accessor as
             // `GetFieldK` (missing key = Nil-tag Dyn).
             if list_ty == Ty::MapStrDyn {
-                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
+                let key = read_map_key(ssa, insts, instr.c(), block, Ty::Str, pc)?;
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
@@ -1137,7 +1137,7 @@ pub(super) fn lower(
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
                 // A `Maybe` key (`freq[xs[i]]`) unwraps first (absent aborts —
                 // the scalar-context rule).
-                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
+                let key = read_map_key(ssa, insts, instr.c(), block, Ty::Str, pc)?;
                 let dst = ssa.new_val();
                 let maybe_ty = match list_ty {
                     Ty::MapStrF64 => {
@@ -1159,7 +1159,14 @@ pub(super) fn lower(
             // Lists / int-keyed maps index with an `I64` (a `Maybe` index —
             // `xs[ys[j]]` — unwraps first, a boxed one goes through the tag
             // check).
-            let index_val = read_index_scalar(ssa, insts, instr.c(), block, pc)?;
+            // An int-keyed map's index is a *key*, and a key of a type no map
+            // can hold is refused by name rather than with the generic type
+            // error a list's index gives.
+            let index_val = if matches!(list_ty, Ty::MapI64I64 | Ty::MapI64F64) {
+                read_map_key(ssa, insts, instr.c(), block, Ty::I64, pc)?
+            } else {
+                read_index_scalar(ssa, insts, instr.c(), block, pc)?
+            };
             // Fast path: a **provably in-range** access (constant list of known
             // length indexed by a constant in `[0, len)`) is a clean scalar `at`.
             let const_in_range = match (ssa.list_len.get(&handle), ssa.const_int.get(&index_val)) {
@@ -1351,7 +1358,7 @@ pub(super) fn lower(
             // the Dyn carrier existed but nothing could be put into it, so the
             // retry below would have had nowhere to land.
             if list_ty == Ty::MapStrDyn {
-                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
+                let key = read_map_key(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
                 insts.push(Inst::Call {
@@ -1362,7 +1369,7 @@ pub(super) fn lower(
                 return Ok(());
             }
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
-                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
+                let key = read_map_key(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let (set_fn, value) = match (list_ty, cty) {
                     (Ty::MapStrI64, Ty::I64) => ("str_i64_set", cv),
@@ -1389,7 +1396,11 @@ pub(super) fn lower(
             // A boxed index unboxes through the tag check, as it does on the
             // read side: a store from a loop over a list has exactly the same
             // shape as a load.
-            let index = read_index_scalar(ssa, insts, instr.b(), block, pc)?;
+            let index = if matches!(list_ty, Ty::MapI64I64 | Ty::MapI64F64) {
+                read_map_key(ssa, insts, instr.b(), block, Ty::I64, pc)?
+            } else {
+                read_index_scalar(ssa, insts, instr.b(), block, pc)?
+            };
             match list_ty {
                 Ty::ListI64 => {
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
@@ -1737,7 +1748,7 @@ pub(super) fn lower(
             }
             // Int-keyed maps: same present-bit test with an `I64` key.
             if matches!(list_ty, Ty::MapI64I64 | Ty::MapI64F64) {
-                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+                let key = read_map_key(ssa, insts, instr.b(), block, Ty::I64, pc)?;
                 let maybe = ssa.new_val();
                 let maybe_ty = if list_ty == Ty::MapI64F64 {
                     insts.push(Inst::MapGetMaybeI64F64 {

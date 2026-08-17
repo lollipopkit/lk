@@ -97,3 +97,35 @@ assert(wrapped[0](2) == 30);
 assert(wrapped[1](2) == 2);
 
 println("closure value: all assertions passed");
+
+// A closure is one object with however many names. `==` and `in` both compare
+// by reference, so two lambdas written the same way are two closures and an
+// alias is not. Compiled, that holds because a lambda the program passes around
+// is built *once*, where it is written — building one per use answered `false`
+// to every line here.
+let f = |x| x + 1;
+let g = f;
+let h = |x| x + 1;
+assert(f == g);
+assert(!(f == h));
+
+let fs = [f, f, h];
+assert(fs[0] == fs[1]);
+assert(fs.contains(f));
+assert(fs.contains(h));
+
+// And a capturing one, whose environment is copied into the closure: still one
+// object, so the copy does not make a second identity.
+let n = 2;
+let scaled = |x| x * n;
+let alias = scaled;
+assert(scaled == alias);
+assert([scaled].contains(alias));
+
+// A callable is not a map key. The refusal names the type, which is the whole
+// point of the sentence — "runtime type error" was the compiled answer.
+let refused = "";
+let m = {};
+try { m[f] = 1; } catch e { refused = "{}".format(e); }
+assert(refused == "Function cannot be a map key or set member: only nil, Bool, Int and String can");
+assert(m.len() == 0);

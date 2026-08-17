@@ -126,15 +126,62 @@ pub(crate) fn read_typed_scalar(
     want: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
+    read_typed_scalar_as(ssa, insts, reg, block, want, KeyUse::Value, pc)
+}
+
+/// What a [`read_typed_scalar_as`] unbox is *for*, which decides what it says
+/// when the box holds the wrong thing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyUse {
+    /// Any ordinary use: the generic runtime type error.
+    Value,
+    /// A map key or set member: a type no map can key is refused by name, the
+    /// wording the interpreter and the boxed-map path both use.
+    MapKey,
+}
+
+/// [`read_typed_scalar`] that also unboxes a *map key* into the carrier's key
+/// type, which a typed carrier needs because it stores the key unboxed and so
+/// never reaches `vm_mirror::key_from_dyn`.
+pub(crate) fn read_map_key(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    reg: u8,
+    block: usize,
+    want: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    read_typed_scalar_as(ssa, insts, reg, block, want, KeyUse::MapKey, pc)
+}
+
+fn read_typed_scalar_as(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    reg: u8,
+    block: usize,
+    want: Ty,
+    key_use: KeyUse,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
     let (v, ty) = read_scalar(ssa, insts, reg, block, pc)?;
     if ty == want {
         return Ok(v);
     }
-    let unbox = match (ty, want) {
-        (Ty::Dyn, Ty::I64) => "as_i64",
-        (Ty::Dyn, Ty::F64) => "as_f64",
-        (Ty::Dyn, Ty::Bool) => "as_bool",
-        (Ty::Dyn, Ty::Str) => "as_str",
+    // A closure is never a scalar, so unboxing one is not a lowering — it is a
+    // guess that raises at run time. Refused here so the caller can widen
+    // whatever it was going to store the closure in (`inst::container`'s
+    // `keep_discovery`). A map *key* is left alone: there the runtime answers,
+    // and it answers with the interpreter's own sentence.
+    if key_use == KeyUse::Value && ssa.closure_values.contains(&v) {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let unbox = match (ty, want, key_use) {
+        (Ty::Dyn, Ty::I64, KeyUse::MapKey) => "as_key_i64",
+        (Ty::Dyn, Ty::Str, KeyUse::MapKey) => "as_key_str",
+        (Ty::Dyn, Ty::I64, _) => "as_i64",
+        (Ty::Dyn, Ty::F64, _) => "as_f64",
+        (Ty::Dyn, Ty::Bool, _) => "as_bool",
+        (Ty::Dyn, Ty::Str, _) => "as_str",
         _ => {
             return Err(Unsupported::OperandType {
                 pc,

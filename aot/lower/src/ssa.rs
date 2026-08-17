@@ -222,6 +222,26 @@ pub(crate) struct Ssa {
     pub(crate) dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
     /// Container-literal pcs forced to a Dyn carrier by a fixpoint retry.
     pub(crate) dyn_literal_pcs: std::collections::HashSet<usize>,
+    /// SSA values that hold a **closure**, built by
+    /// `lower_call::materialize_closure`.
+    ///
+    /// A closure is a `Dyn` like any other as far as the type lattice goes, and
+    /// that is not enough: `dyn.as_i64` is a legitimate lowering for a boxed
+    /// value the checker proved is an `Int`, and a nonsense one for a closure.
+    /// The consumers that unbox into a scalar ask this before they do
+    /// (`convert::read_typed_scalar`), so a lambda pushed into a guessed `[]`
+    /// widens the literal instead of compiling to an unbox that raises on the
+    /// one value the list was built to hold.
+    pub(crate) closure_values: std::collections::HashSet<ValueId>,
+    /// A closure value with an *empty* environment → the function it names.
+    ///
+    /// The same fact `GlobalRef::Lambda` carries, kept across the point where
+    /// the reference becomes a value. The list HOFs' typed fast paths ask which
+    /// function a callback register names, and a capture-free lambda still
+    /// answers that after it has been built — without this, a lambda used as a
+    /// value *anywhere* dropped every `xs.map(f)` in the module to the generic
+    /// path, which has no lowering for it at all.
+    pub(crate) closure_fidx: std::collections::HashMap<ValueId, u32>,
     /// A container literal's handle → `(its pc, the carrier it was built with)`.
     ///
     /// The carrier is a *judgement about what goes in*, and a later store can
@@ -316,6 +336,8 @@ impl Ssa {
             const_int: std::collections::HashMap::new(),
             dyn_loop_slots: std::collections::HashSet::new(),
             dyn_literal_pcs: std::collections::HashSet::new(),
+            closure_values: std::collections::HashSet::new(),
+            closure_fidx: std::collections::HashMap::new(),
             literal_carrier: std::collections::HashMap::new(),
             range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),

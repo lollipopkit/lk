@@ -863,6 +863,44 @@ pub extern "C" fn lkrt_dyn_mod(a: LkDyn, b: LkDyn) -> LkDyn {
 
 // ── Equality / ordering ────────────────────────────────────────────────
 
+/// [`lkrt_dyn_as_i64`] / [`lkrt_dyn_as_str`] for a value used as a **map key**.
+///
+/// A key of a type no map can hold is refused by name — the interpreter's
+/// wording, which `vm_mirror::key_from_dyn` also raises for a boxed map. A
+/// typed carrier does not go through that function (it stores the key
+/// unboxed), so without these two it answered the generic "runtime type error"
+/// for `m[|x| x] = 1`.
+fn reject_non_key(v: LkDyn) {
+    match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_STR => {}
+        DYN_F64 => crate::panic::raise_str("Float cannot be a map key or set member"),
+        _ => crate::panic::raise_str(&alloc::format!(
+            "{} cannot be a map key or set member: only nil, Bool, Int and String can",
+            kind_name_of(v)
+        )),
+    }
+}
+
+/// An `Int`-carrier map's key.
+///
+/// # Safety
+/// As [`lkrt_dyn_as_i64`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_as_key_i64(v: LkDyn) -> i64 {
+    reject_non_key(v);
+    lkrt_dyn_as_i64(v)
+}
+
+/// A `String`-carrier map's key.
+///
+/// # Safety
+/// As [`lkrt_dyn_as_str`]: the returned pointer borrows `v`'s payload.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_as_key_str(v: LkDyn) -> *const c_char {
+    reject_non_key(v);
+    lkrt_dyn_as_str(v)
+}
+
 /// VM equality: Int/Float compare numerically across tags (`1 == 1.0`),
 /// strings by content, lists elementwise; distinct non-numeric tags are
 /// simply unequal (not an error).
@@ -968,6 +1006,12 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
         DYN_BYTES => unsafe {
             crate::lkbytes::lkrt_lkbytes_eq(a.payload as *mut c_void, b.payload as *mut c_void) != 0
         },
+        // By reference, which is the VM's rule for a callable: `let g = f`
+        // makes one closure two names, and two lambdas written the same way
+        // are two closures. Structural equality would call the second pair
+        // equal. Native lowering keeps that rule by building a lambda used as
+        // a value *once*, at its definition (`inst/call.rs::bind_lambda`).
+        DYN_CLOSURE => a.payload == b.payload,
         _ => false,
     }
 }
@@ -1691,7 +1735,10 @@ pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
             }
         }
         // Every heap carrier compares by handle, not just the two that had a
-        // tag when this was written.
+        // tag when this was written — so this is the *default*, and the list
+        // is of what is excluded. Enumerating the included tags instead is
+        // what left `Set`, `Bytes`, windows and typed maps out for as long as
+        // they existed, and then `Function` after them.
         //
         // `_ => false` meant a `Set`, a `Bytes`, a window or a typed map was
         // **never** in any list, however the program got it there:
@@ -1710,10 +1757,8 @@ pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
         //
         // `DYN_RAW` stays out: it parks a handle that is not a value, and
         // reading one as a value is a loud failure by design.
-        DYN_LIST | DYN_MAP | DYN_SET | DYN_BYTES | DYN_SLICE => a.payload == b.payload,
-        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => a.payload == b.payload,
-        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => a.payload == b.payload,
-        _ => false,
+        DYN_RAW => false,
+        _ => a.payload == b.payload,
     }
 }
 

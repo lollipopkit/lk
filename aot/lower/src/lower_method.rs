@@ -497,9 +497,14 @@ pub(crate) fn lower_list_hof_k(
     block: usize,
     pc: usize,
 ) -> Result<Option<Reg>, Unsupported> {
+    // Either spelling of "this register names a capture-free lambda": the
+    // compile-time reference, or the closure value it becomes once the program
+    // also uses it as a value (`Ssa::closure_fidx`).
     let lambda_at = |ssa: &Ssa, reg: u8| match ssa.builtin_regs.get(&(block, reg)) {
         Some(GlobalRef::Lambda(fidx)) => Some(*fidx as usize),
-        _ => None,
+        _ => ssa
+            .peek(reg, block)
+            .and_then(|(v, _)| ssa.closure_fidx.get(&v).map(|&fidx| fidx as usize)),
     };
     let elem = match receiver_ty {
         Ty::ListI64 => Ty::I64,

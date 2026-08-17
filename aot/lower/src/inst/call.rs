@@ -70,8 +70,17 @@ pub(super) fn lower(
             let fidx = instr.b() as usize;
             let callee = funcs.get(fidx).ok_or(Unsupported::BadConst { pc })?;
             if callee.capture_count == 0 {
-                ssa.bind_ref(block, instr.a(), GlobalRef::Lambda(fidx as u32));
-                return Ok(());
+                return bind_lambda(
+                    ssa,
+                    insts,
+                    sig,
+                    funcs,
+                    cap_ctx,
+                    GlobalRef::Lambda(fidx as u32),
+                    instr.a(),
+                    block,
+                    pc,
+                );
             }
             let mut captures = Vec::with_capacity(callee.capture_count as usize);
             for k in 0..callee.capture_count {
@@ -119,7 +128,7 @@ pub(super) fn lower(
             } else {
                 GlobalRef::Closure(fidx as u32, captures)
             };
-            ssa.bind_ref(block, instr.a(), global_ref);
+            return bind_lambda(ssa, insts, sig, funcs, cap_ctx, global_ref, instr.a(), block, pc);
         }
         // `abx(CallNamed, call_base, (named_count << 7) | positional_count)`:
         // the callee sits at `call_base`, the positional arguments follow it,
@@ -441,5 +450,44 @@ pub(super) fn lower(
         }
         op => return Err(Unsupported::Opcode { pc, op }),
     }
+    Ok(())
+}
+
+/// Binds what `MakeClosure` produced to its destination register.
+///
+/// Normally that is the compile-time reference, which is what lets a call to it
+/// devirtualize. A lambda the program also uses *as a value* is built here
+/// instead, once, and the register holds the closure handle from then on.
+///
+/// Doing it at the definition rather than at each use is what makes identity
+/// hold: the VM's closure compares by reference, so `let g = f; f == g` is true
+/// and `[f, f]`'s two elements are one object. Materializing per use answered
+/// `false` to both. The cost is that this lambda's calls stop devirtualizing —
+/// paid only by lambdas the program actually passes around, since
+/// `SigInfer::value_lambdas` is populated by the fixpoint's first attempt to
+/// read one as a value.
+#[allow(clippy::too_many_arguments)]
+fn bind_lambda(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    global_ref: GlobalRef,
+    dst: u8,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let fidx = match &global_ref {
+        GlobalRef::Lambda(fidx) | GlobalRef::Closure(fidx, _) => *fidx,
+        _ => u32::MAX,
+    };
+    if sig.value_lambdas.contains_key(&fidx)
+        && let Some(value) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &global_ref, block, pc)?
+    {
+        ssa.write(dst, block, value);
+        return Ok(());
+    }
+    ssa.bind_ref(block, dst, global_ref);
     Ok(())
 }

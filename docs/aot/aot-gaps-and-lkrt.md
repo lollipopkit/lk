@@ -1277,3 +1277,47 @@ callable **递归物化成值**。
 
 教训:**一个功能"十个形状全过"不代表它对**,它只代表那十个形状对。新功能引入的**新组合维度**
 (这里是"捕获的东西本身是不是同类值")要单独列一遍,而不是等它出现在随机语料里。
+
+## §36 闭包的身份(2026-08-18)
+
+VM 里闭包按**引用**比较:`let g = f` 是同一个对象,写法相同的两个 lambda 是两个对象。
+把 lambda 在**每个使用点**现场物化(§32 的做法)会给每次读取造一个新句柄,于是
+
+```lk
+let f = |x| x + 1;
+let fs = [f, f];
+fs[0] == fs[1]      // 解释器 true,编译后 false
+```
+
+三处一起改才对:
+
+| 位置 | 改动 |
+| --- | --- |
+| `inst/call.rs::bind_lambda` | 一个被当作值使用的 lambda 在**定义点**物化一次(`sig.value_lambdas` 已经记录了这件事),寄存器从此持有句柄 |
+| `lkdyn.rs::dyn_eq_inner` | `DYN_CLOSURE` 按 payload 指针比较 |
+| `lkdyn.rs::contains_eq` | 把"按句柄比较"改成**默认**分支,只排除 `DYN_RAW`。原来是枚举包含的 tag,这正是 `Set`/`Bytes`/窗口/typed map 各自漏掉过一次的原因 |
+
+定义点物化的代价是这个 lambda 的调用不再去虚拟化,只有程序真的传递它时才付。
+
+三个连带的洞,都是"引用变成值"之后别处的判断依据没了:
+
+1. **列表 HOF 的快路径**要求寄存器里是 `GlobalRef::Lambda`。物化之后没有了,`xs.map(f)`
+   整个模块都掉到通用路径(而通用路径对它根本没有降级),`examples/general/sort_search.lk`
+   与 `examples/syntax/closure.lk` 一起从门禁里掉出来。补法是 `Ssa::closure_fidx`:
+   环境为空的闭包值记住它命名的函数,`lambda_at` 两种写法都认。
+2. **空 `[]` 的载体猜测**。`b.push(f)` 原本走的是"寄存器里是 lambda 引用"那一支,那一支会报
+   `LiteralElemTypeContradicted` 把字面量拓宽成 `dyn`。物化之后寄存器里是普通 `Dyn`,落到标量支,
+   `read_typed_scalar` 用 `dyn.as_i64` 把闭包**拆箱**了——程序照样编译链接,运行时在它唯一要存的
+   值上抛错。补法是 `Ssa::closure_values`:闭包值永远不是标量,拆箱请求直接拒,调用方据此拓宽。
+3. **`try` 区域的 lambda 输入**。`sig.try_body_lambdas` 是写一次就长期有效的表(两侧靠它对齐),
+   而同一个 lambda 后来变成值之后这条记录不再成立,两个事实互相矛盾,定点无法收敛——区域体一直
+   索要一个发现分支已经给过的值。`function.rs::try_body_lambda` 在读出时按 `value_lambdas` 过滤。
+
+## §37 不能做键的值要说清是什么(2026-08-18)
+
+`vm_mirror::key_from_dyn` 的兜底分支对所有非键 tag 都抛"Float cannot be a map key or set member",
+所以 `Set(["ab".bytes()])` 和 `Set([closure])` 都自称 Float。解释器有两句话:浮点一句,其余一句带类型名;
+`Set(...)` 与 `set.add()` 还各自加一个前缀。现在按解释器分:`key_from_dyn_in(v, context)`。
+
+带类型载体的 map **不**走这个函数(键是拆箱存的),所以另加了 `dyn.as_key_i64` / `dyn.as_key_str`
+两个 ABI:先按键的可用性拒绝、再拆箱。`m[|x| x] = 1` 原来答"runtime type error"。
