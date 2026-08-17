@@ -602,6 +602,14 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_bool_display", lkrt_lkmap_str_bool_display, WritesHost, [Ptr], StrPtr, Borrowed);
             ("map_h", "i64_i64_display", lkrt_lkmap_i64_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             ("map_h", "i64_i64_iter_pairs", lkrt_lkmap_i64_i64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            // `.keys()` / `.values()` on an *int*-keyed map. The string-keyed
+            // carriers have had these all along; without them `{1: 2}.keys()`
+            // was the one container question the native build could not answer,
+            // and it dropped the whole program to the VM.
+            ("map_h", "i64_i64_keys", lkrt_lkmap_i64_i64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_i64_values", lkrt_lkmap_i64_i64_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_keys", lkrt_lkmap_i64_f64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_values", lkrt_lkmap_i64_f64_values, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "i64_f64_iter_pairs", lkrt_lkmap_i64_f64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "i64_f64_display", lkrt_lkmap_i64_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // `{ ..rest }`: a fresh handle with one key removed (chained per key).

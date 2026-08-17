@@ -31,16 +31,13 @@ assert(built["mango"] == 30);
 built["quince"] = 7;
 assert(built.keys() == ["zebra", "apple", "mango", "kiwi", "pear", "fig", "quince"]);
 
-// Integer keys are ordered the same way. Iterated rather than asked for its
-// `.keys()`, which has no native lowering for an integer-keyed map yet — this
-// file is in the AOT coverage gate, so every line of it has to compile.
+// Integer keys are ordered the same way.
 let ints = {};
 ints[30] = 3;
 ints[10] = 1;
 ints[20] = 2;
-let seen = [];
-for pair in ints { seen.push(pair[0]); }
-assert(seen == [30, 10, 20]);
+assert(ints.keys() == [30, 10, 20]);
+assert(ints.values() == [3, 1, 2]);
 
 // Values follow the keys.
 assert(literal.values() == [1, 2, 3, 4, 5, 6]);

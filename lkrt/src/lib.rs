@@ -221,8 +221,9 @@ pub use lkmap::{
     lkrt_lkmap_str_i64_set, lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
 };
 pub use lkmap::{
-    lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_f64_iter_pairs, lkrt_lkmap_i64_i64_display,
-    lkrt_lkmap_i64_i64_iter_pairs, lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display, lkrt_lkmap_str_i64_display,
+    lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_f64_iter_pairs, lkrt_lkmap_i64_f64_keys, lkrt_lkmap_i64_f64_values,
+    lkrt_lkmap_i64_i64_display, lkrt_lkmap_i64_i64_iter_pairs, lkrt_lkmap_i64_i64_keys, lkrt_lkmap_i64_i64_values,
+    lkrt_lkmap_str_bool_display, lkrt_lkmap_str_f64_display, lkrt_lkmap_str_i64_display,
 };
 pub use lkmap::{
     lkrt_lkmap_str_bool_delete, lkrt_lkmap_str_bool_iter_pairs, lkrt_lkmap_str_bool_keys, lkrt_lkmap_str_bool_values,

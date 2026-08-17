@@ -1282,6 +1282,21 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Dyn)
         }
+        (Ty::MapI64I64 | Ty::MapI64F64, "keys" | "values", []) => {
+            let abi_name: &'static str = match (receiver_ty, name) {
+                (Ty::MapI64I64, "keys") => "i64_i64_keys",
+                (Ty::MapI64I64, _) => "i64_i64_values",
+                (_, "keys") => "i64_f64_keys",
+                _ => "i64_f64_values",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {
             let family = match receiver_ty {
                 Ty::MapStrI64 => "str_i64",

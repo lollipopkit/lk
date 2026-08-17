@@ -514,7 +514,7 @@ map_iter_family!(
 /// boxes the key with `boxed_str_key` — the key kind is the one thing the two
 /// families do not share.
 macro_rules! int_map_iter {
-    ($name:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
+    ($name:ident, $keys:ident, $values:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
         #[doc = $doc]
         /// # Safety
         /// `handle` must be a live map handle of the matching carrier.
@@ -529,17 +529,46 @@ macro_rules! int_map_iter {
                     .collect(),
             )
         }
+
+        #[doc = $doc]
+        /// `.keys()` — the keys, boxed as `Int`, in the map's own order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $keys(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            let keys: Vec<crate::lkdyn::LkDyn> = map.keys().map(|k| crate::lkdyn::lkrt_dyn_from_i64(k.0)).collect();
+            crate::state::arena_handle(keys)
+        }
+
+        #[doc = $doc]
+        /// `.values()` — the values, boxed, in the map's own order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $values(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            let values: Vec<crate::lkdyn::LkDyn> = map.values().map(|v| ($box_val)(v)).collect();
+            crate::state::arena_handle(values)
+        }
     };
 }
 
 int_map_iter!(
     lkrt_lkmap_i64_i64_iter_pairs,
+    lkrt_lkmap_i64_i64_keys,
+    lkrt_lkmap_i64_i64_values,
     I64I64Map,
     |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
     "`for pair in m` snapshot over `Map<i64, i64>`."
 );
 int_map_iter!(
     lkrt_lkmap_i64_f64_iter_pairs,
+    lkrt_lkmap_i64_f64_keys,
+    lkrt_lkmap_i64_f64_values,
     I64F64Map,
     |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
     "`for pair in m` snapshot over `Map<i64, f64>`."
