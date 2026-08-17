@@ -92,4 +92,41 @@ assert(8 >> 1 == 4);
 // A shift amount outside 0..63 is an error rather than a mask or a wrap —
 // the hardware would mask it to 63 and return a number nobody asked for.
 
+// Each of them has a compound assignment, on a name, an index and a field.
+// `&=`, `|=` and `^=` desugar to the same `__lk_bit_*` call `a = a & b` builds,
+// rather than becoming `BinOp` variants with a second lowering of their own.
+// `<<=` and `>>=` are three adjacent tokens, since the lexer never emits a
+// shift: `<<` is two `<`, so `<<=` is `<` then `<=`, and adjacency is what
+// separates them from `a < (b <= c)`.
+let bits = 0b1100;
+bits &= 0b1010;
+assert(bits == 0b1000);
+bits |= 0b0011;
+assert(bits == 0b1011);
+bits ^= 0b0001;
+assert(bits == 0b1010);
+bits <<= 2;
+assert(bits == 0b101000);
+bits >>= 3;
+assert(bits == 0b101);
+
+let counters = {"hits": 0b110};
+counters["hits"] ^= 0b011;
+assert(counters["hits"] == 0b101);
+counters["hits"] <<= 1;
+assert(counters["hits"] == 0b1010);
+
+struct Flags { mask: Int }
+let flags = Flags { mask: 0b1001 };
+flags.mask |= 0b0110;
+assert(flags.mask == 0b1111);
+flags.mask >>= 2;
+assert(flags.mask == 0b11);
+
+// And a comparison next to one, which is the shape adjacency has to keep apart.
+let lo = 1;
+let hi = 4;
+assert(lo < hi);
+assert(lo <= hi);
+
 println("operators: all assertions passed");

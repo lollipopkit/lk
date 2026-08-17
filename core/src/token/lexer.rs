@@ -41,6 +41,9 @@ pub enum Token {
     MulAssign,         // *=
     DivAssign,         // /=
     ModAssign,         // %=
+    BitAndAssign,      // &=
+    BitOrAssign,       // |=
+    BitXorAssign,      // ^=
     Nil,               // nil
     Eq,                // ==
     Ne,                // !=
@@ -1071,6 +1074,12 @@ impl Tokenizer {
                     let end = self.current_position();
                     self.push_with_span(Token::And, start, end);
                     Ok(())
+                } else if self.chars.get(self.idx + 1) == Some(&'=') {
+                    self.advance_char();
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitAndAssign, start, end);
+                    Ok(())
                 } else {
                     self.advance_char();
                     let end = self.current_position();
@@ -1109,6 +1118,10 @@ impl Tokenizer {
                         // Logical OR
                         self.push_with_span(Token::Or, start, end);
                     }
+                } else if self.idx < self.len && self.chars[self.idx] == '=' {
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitOrAssign, start, end);
                 } else {
                     // Single | for union types or closure start
                     let end = self.current_position();
@@ -1247,6 +1260,12 @@ impl Tokenizer {
             '^' => {
                 let start = self.current_position();
                 self.advance_char();
+                if self.idx < self.len && self.chars[self.idx] == '=' {
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitXorAssign, start, end);
+                    return Ok(());
+                }
                 let end = self.current_position();
                 self.push_with_span(Token::BitXor, start, end);
                 Ok(())
@@ -1384,6 +1403,9 @@ impl Tokenizer {
                 | Token::At
                 | Token::Assign
                 | Token::AddAssign
+                | Token::BitAndAssign
+                | Token::BitOrAssign
+                | Token::BitXorAssign
                 | Token::SubAssign
                 | Token::MulAssign
                 | Token::DivAssign

@@ -126,6 +126,44 @@ impl<'a> StmtParser<'a> {
         // `parse_statement` already matched the `Id`; step over it.
         self.pos += 1;
 
+        // The bitwise operators are not `BinOp`s — `a & b` is a call to the
+        // `__lk_bit_*` builtin, and giving them a second spelling in `BinOp`
+        // would mean a second lowering, a second type rule, and two places for
+        // them to disagree. So `a &= b` desugars to what `a = a & b` already
+        // parses to.
+        // `<<=` / `>>=` are three adjacent tokens, because the lexer never
+        // emits a shift: `<<` is two `<`, so `<<=` is `<` then `<=`. Adjacency
+        // is what tells them apart from `a < (b <= c)`, the same test
+        // `Parser::peek_shift` makes for the shifts themselves.
+        if let Some(builtin) = self.peek_shift_assign(self.pos) {
+            self.pos += 2;
+            let rhs = self.parse_expression()?;
+            self.expect_token(Token::Semicolon)?;
+            let value = Expr::Call(
+                builtin.to_string(),
+                vec![Box::new(Expr::Var(name.clone())), Box::new(rhs)],
+            );
+            return Ok(Stmt::Assign {
+                name,
+                value: Box::new(value),
+                span: self.current_span(),
+            });
+        }
+        if let Some(builtin) = bitwise_compound_builtin(&self.tokens[self.pos]) {
+            self.pos += 1;
+            let rhs = self.parse_expression()?;
+            self.expect_token(Token::Semicolon)?;
+            let value = Expr::Call(
+                builtin.to_string(),
+                vec![Box::new(Expr::Var(name.clone())), Box::new(rhs)],
+            );
+            return Ok(Stmt::Assign {
+                name,
+                value: Box::new(value),
+                span: self.current_span(),
+            });
+        }
+
         let op = match &self.tokens[self.pos] {
             Token::AddAssign => BinOp::Add,
             Token::SubAssign => BinOp::Sub,
@@ -169,8 +207,17 @@ impl<'a> StmtParser<'a> {
                 | Token::MulAssign
                 | Token::DivAssign
                 | Token::ModAssign
+                | Token::BitAndAssign
+                | Token::BitOrAssign
+                | Token::BitXorAssign
                     if bracket_depth == 0 =>
                 {
+                    assign_pos = Some(cursor);
+                    assign_op = Some(self.tokens[cursor].clone());
+                    break;
+                }
+                // `<<=` / `>>=`, which are two tokens (see `peek_shift_assign`).
+                Token::Lt | Token::Gt if bracket_depth == 0 && self.peek_shift_assign(cursor).is_some() => {
                     assign_pos = Some(cursor);
                     assign_op = Some(self.tokens[cursor].clone());
                     break;
@@ -203,7 +250,8 @@ impl<'a> StmtParser<'a> {
             return Ok(None);
         };
 
-        self.pos = assign_pos + 1;
+        let shift_assign = self.peek_shift_assign(assign_pos);
+        self.pos = assign_pos + if shift_assign.is_some() { 2 } else { 1 };
         let rhs = self.parse_expression()?;
         self.expect_token(Token::Semicolon)?;
 
@@ -215,7 +263,12 @@ impl<'a> StmtParser<'a> {
             Token::MulAssign => Expr::Bin(Box::new(current), BinOp::Mul, Box::new(rhs)),
             Token::DivAssign => Expr::Bin(Box::new(current), BinOp::Div, Box::new(rhs)),
             Token::ModAssign => Expr::Bin(Box::new(current), BinOp::Mod, Box::new(rhs)),
-            _ => unreachable!(),
+            token => {
+                let builtin = shift_assign
+                    .or_else(|| bitwise_compound_builtin(&token))
+                    .expect("assignment operator matched above");
+                Expr::Call(builtin.to_string(), vec![Box::new(current), Box::new(rhs)])
+            }
         };
 
         if self.tokens.get(start + 1) == Some(&Token::LBracket) && matches!(key, Expr::Literal(LiteralVal::Int(_))) {
@@ -294,5 +347,36 @@ impl<'a> StmtParser<'a> {
         self.expect_token(Token::Semicolon)?;
 
         Ok(Stmt::Return { value })
+    }
+}
+
+/// The `__lk_bit_*` builtin a bitwise compound assignment desugars to.
+fn bitwise_compound_builtin(token: &Token) -> Option<&'static str> {
+    match token {
+        Token::BitAndAssign => Some("__lk_bit_and"),
+        Token::BitOrAssign => Some("__lk_bit_or"),
+        Token::BitXorAssign => Some("__lk_bit_xor"),
+        _ => None,
+    }
+}
+
+impl<'a> super::StmtParser<'a> {
+    /// `<<=` / `>>=` at `at`, as the `__lk_shl` / `__lk_shr` builtin.
+    ///
+    /// Two tokens (`Lt Le` / `Gt Ge`) that have to be *adjacent* in the source:
+    /// `a < b <= c` is three tokens too, and only the spans tell them apart.
+    pub(crate) fn peek_shift_assign(&self, at: usize) -> Option<&'static str> {
+        let builtin = match (self.tokens.get(at)?, self.tokens.get(at + 1)?) {
+            (Token::Lt, Token::Le) => "__lk_shl",
+            (Token::Gt, Token::Ge) => "__lk_shr",
+            _ => return None,
+        };
+        if let Some(spans) = &self.token_spans
+            && let (Some(first), Some(second)) = (spans.get(at), spans.get(at + 1))
+            && first.end.offset != second.start.offset
+        {
+            return None;
+        }
+        Some(builtin)
     }
 }

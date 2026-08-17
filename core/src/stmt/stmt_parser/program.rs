@@ -323,7 +323,11 @@ impl<'a> StmtParser<'a> {
                         | Some(&Token::MulAssign)
                         | Some(&Token::DivAssign)
                         | Some(&Token::ModAssign)
-                ) {
+                        | Some(&Token::BitAndAssign)
+                        | Some(&Token::BitOrAssign)
+                        | Some(&Token::BitXorAssign)
+                ) || self.peek_shift_assign(self.pos + 1).is_some()
+                {
                     self.parse_compound_assign_stmt_with_id(id.clone())
                 } else if self.peek_ahead(1) == Some(&Token::Colon) {
                     // Label + statement (id: stmt) is not yet supported; treat as expression fallback
