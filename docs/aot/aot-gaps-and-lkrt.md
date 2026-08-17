@@ -1037,3 +1037,44 @@ subset" 改成指名道姓的 `OperandType`(`is a dyn where a machine word is re
 (`opcode CallDirect (at pc 2)`),而两段代码**各自单独**都能原生化 —— 是和文件里已有的
 `spawn` 段互相作用。覆盖率门禁要求 61/61,所以例子加在哪里不是随便的:**加完当场跑一次
 `AOT_COVERAGE_REQUIRE_FULL=1`**,别假设"能编译的两段拼起来还能编译"。
+
+## §30 闭包作为运行时值(2026-08-18 调查,**未落地** —— 有一个已知的错答)
+
+原生侧每一个闭包都是**编译期事实**:降低知道某个寄存器指的是哪个函数,于是调用去虚拟化、
+捕获变成隐藏的尾部实参。这覆盖了"建出来就调用"的闭包,也**只**覆盖那个。把闭包塞进 list、
+放进结构体字段、从分支里返回,都没有编译期答案,全部报
+`the closure in rN is a compile-time reference, not a runtime value`。
+
+十个常见形状里六个回落:list / map / 结构体字段 / 循环里 push / 从分支返回 / 返回一个
+包住参数闭包的闭包。能过的四个都是能**静态解析**的(擦除或特化)。
+
+### 设计(已验证可行)
+
+关键在于 `spawn` 已经证明了这条路:它按地址调用一个 lambda,而那个 lambda 的签名被降低
+**强制成全 `Dyn`**,所以一个 arity switch 能调到任何一个。闭包值就是同一件事,只是环境跟在
+指针旁边而不是当隐藏实参 —— 而追加环境的顺序**正好就是**原生签名已有的顺序(可见参数,
+然后捕获)。
+
+- **lkrt**:`DYN_CLOSURE` 标签 + `LkClosure { code, params, fn_index, env: Vec<OwnedVal> }`;
+  `closure_new` / `closure_call` / `closure_arity`。环境按 `OwnedVal` 深拷贝(闭包按定义
+  比建它的帧活得久),调用时再 materialize 进调用方 arena —— 和 goroutine 的快照同一套。
+  `fn_index` 只为了 display 能打出解释器那句 `<fn #3(1 captures)>`:两个索引是同一个数
+  (都是 `module.functions` 里的位置),而**值闭包不会是擦除克隆**,克隆是唯一被重编号的。
+- **发现是按需的**:`Unsupported::ReferenceAsValue` 带上 lambda 下标,定点收进
+  `SigInfer::value_lambdas` 并重试。只建不存的闭包因此继续去虚拟化,一分钱不多花。
+- **`param_ty` 对 value_lambda 一律答 `Dyn`**,参数和捕获都是。
+- **在定义点物化**(`MakeClosure` / `LoadFunction`),不是在每个读取点:寄存器从此持一个
+  普通 `Dyn`,list 字面量、结构体字段、间接调用都不需要知道这件事。
+- callee 是 `Dyn` 的 `Call` 走 `rt.closure_call`。
+
+### 为什么没落地
+
+`let fs = []; for i in 0..2 { fs.push(|| 7); } println(fs.len());` **编译通过但答
+`runtime error`**,VM 答 2。同样的 push 放在循环**外面**是对的;循环里 push 一个真正的
+`Dyn`(`src[0]`,src 是异构 list)也是对的 —— 所以既不是空 list 载体重试的既有机制坏了,
+也不是捕获的问题(无捕获的 `|| 7` 一样错)。是物化本身和循环的相互作用,原因未查明。
+
+一个会**静默答错**的形状比一个回落坏得多,所以这一整块回退了,只留下这份设计。复现文件:
+`let fs = []; for i in 0..2 { fs.push(|| 7); } println(fs.len());`。下次从这里查起:先确认
+`[]` 的载体在这条路径上到底被重试成了什么(`LK_AOT_DUMP_MIR=1`),再看 `closure_new` 的
+结果是不是真的以 `Ty::Dyn` 进的 push。
