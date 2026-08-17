@@ -18,6 +18,13 @@ pub(super) fn lower(
     let entry = ctx.entry;
     let capture_params = ctx.capture_params;
     let ctx_func_index = ctx.func_index;
+    // Where an onward capture (`ClosureCapture::CellParam`) reads from: this
+    // function's own hidden trailing parameters.
+    let cap_ctx = CaptureCtx {
+        params: capture_params,
+        index: ctx_func_index,
+        param_count: func.param_count as usize,
+    };
     match instr.opcode() {
         Opcode::CallMethodK => {
             lower_method_call_k(ssa, insts, globals, func, funcs, entry, sig, instr, block, pc)?;
@@ -36,6 +43,7 @@ pub(super) fn lower(
                 funcs,
                 entry,
                 sig,
+                cap_ctx,
                 callee_idx,
                 instr.a(),
                 instr.c() as usize,
@@ -168,10 +176,32 @@ pub(super) fn lower(
             let base = instr.a();
             match ssa.builtin_ref_at(base, block) {
                 Some(GlobalRef::Builtin(Builtin::TryCall)) => {
-                    lower_try_call(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                    lower_try_call(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        cap_ctx,
+                        base,
+                        instr.c() as usize,
+                        block,
+                        pc,
+                    )?;
                 }
                 Some(GlobalRef::Builtin(Builtin::Spawn)) => {
-                    lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                    lower_spawn(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        cap_ctx,
+                        base,
+                        instr.c() as usize,
+                        block,
+                        pc,
+                    )?;
                 }
                 Some(GlobalRef::Builtin(Builtin::MergeFields)) => {
                     lower_merge_fields(ssa, insts, base, instr.c() as usize, block, pc)?;
@@ -278,6 +308,7 @@ pub(super) fn lower(
                         funcs,
                         entry,
                         sig,
+                        cap_ctx,
                         fidx as usize,
                         base,
                         instr.c() as usize,
@@ -291,6 +322,7 @@ pub(super) fn lower(
                 // (the VM's shared-mutable-cell semantics) and is appended as
                 // a hidden trailing argument.
                 Some(GlobalRef::Closure(fidx, captures)) => {
+                    let site = CaptureSite::new(cap_ctx, fidx, CaptureMode::Share, block, pc);
                     let mut resolved = Vec::with_capacity(captures.len());
                     // A capture the body *assigns* to travels as a runtime cell
                     // this call site seeds and reads back afterwards
@@ -298,8 +330,9 @@ pub(super) fn lower(
                     // passing as a plain value.
                     let mut writebacks: Vec<(u32, ValueId)> = Vec::new();
                     for (k, capture) in captures.iter().enumerate() {
-                        let (v, ty) = match capture {
-                            ClosureCapture::Cell(cid) => {
+                        let (v, ty) = match (site.resolve(ssa, insts, sig, capture, k)?, capture) {
+                            (Some(resolved), _) => resolved,
+                            (None, ClosureCapture::Cell(cid)) => {
                                 let slot = ssa.cell_slot(*cid);
                                 let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
                                 if sig.cell_captures.contains(&(fidx, k)) {
@@ -316,33 +349,7 @@ pub(super) fn lower(
                                     (cur, cur_ty)
                                 }
                             }
-                            // Captured onward from the enclosing closure. A
-                            // cell passes through by pointer — parent and child
-                            // share it, which is the VM's semantics — and if the
-                            // parent's capture is not a cell yet, the need for
-                            // one propagates up and this pass retries.
-                            ClosureCapture::CellParam(outer) => {
-                                let &(v, ty) = capture_params.get(*outer).ok_or(Unsupported::BadConst { pc })?;
-                                if ty != Ty::Cell {
-                                    let param_count = func.param_count as usize;
-                                    if sig.require_cell_capture(ctx_func_index as usize, param_count, *outer) {
-                                        return Err(Unsupported::TypeMismatch { pc });
-                                    }
-                                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-                                }
-                                (v, ty)
-                            }
-                            // A static reference: the slot exists only to keep the
-                            // ABI arity, so it carries a dead `0`.
-                            ClosureCapture::StaticRef => {
-                                let zero = ssa.new_val();
-                                insts.push(Inst::Const {
-                                    dst: zero,
-                                    value: Const::I64(0),
-                                });
-                                (zero, Ty::I64)
-                            }
-                            ClosureCapture::Value(v, ty) => (*v, *ty),
+                            (None, _) => unreachable!("only `Cell` is left to the call site"),
                         };
                         if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
                             return Err(Unsupported::TypeMismatch { pc });
@@ -355,6 +362,7 @@ pub(super) fn lower(
                         funcs,
                         entry,
                         sig,
+                        cap_ctx,
                         fidx as usize,
                         base,
                         instr.c() as usize,
@@ -384,6 +392,7 @@ pub(super) fn lower(
                         funcs,
                         entry,
                         sig,
+                        cap_ctx,
                         fidx as usize,
                         base,
                         instr.c() as usize,

@@ -128,4 +128,33 @@ assert(seen == 5);
 assert([1, 2, 3].map(|x| add_one(x)) == [2, 3, 4]);
 assert([1, 2, 3].filter(|x| add_one(x) > 2) == [2, 3]);
 
+// 13. The same onward capture, but handed to somebody else instead of called
+// where it was built. The inner lambda names `ledger` and `amount`, neither of
+// which is its own — the *outer* lambda holds them, so resolving them means
+// reading the enclosing closure's environment rather than a local cell.
+fn call_it(g: () -> Int) -> Int { return g(); }
+
+let running = 0;
+let post = |amount| {
+    let entry = || { running = running + amount; return running; };
+    return call_it(entry);
+};
+assert(post(4) == 4);
+assert(post(6) == 10);
+assert(running == 10);
+
+// And across an isolate boundary, where the capture is copied rather than
+// shared: the goroutine reads what `spawn` snapshotted and its writes stay
+// its own.
+use task;
+
+let readings = 7;
+let sample = |offset| {
+    let take = || { return readings + offset; };
+    return task.await(spawn(take));
+};
+assert(sample(1) == 8);
+assert(sample(2) == 9);
+assert(readings == 7);
+
 println("closure: all assertions passed");

@@ -13,6 +13,7 @@ pub(crate) fn lower_spawn(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     base: u8,
     argc: usize,
     block: usize,
@@ -57,33 +58,19 @@ pub(crate) fn lower_spawn(
             callee: AbiRef::new("rt", "spawn_args_new"),
             args: Vec::new(),
         });
+        let site = CaptureSite::new(cap_ctx, fidx as u32, CaptureMode::Snapshot, block, pc);
         for (k, capture) in caps.iter().enumerate() {
-            let (v, ty) = match capture {
-                ClosureCapture::Cell(cid) => {
+            // Isolate: every capture crosses as a private copy taken here, so a
+            // cell is read for its *content* rather than passed by pointer.
+            let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                Some(resolved) => resolved,
+                None => {
+                    let ClosureCapture::Cell(cid) = capture else {
+                        unreachable!("only `Cell` is left to the call site")
+                    };
                     let slot = ssa.cell_slot(*cid);
                     ssa.read_slot(slot, block, pc)?
                 }
-                // TODO(unsupported): captured onward from an enclosing closure. Only the
-                // ordinary closure call (`inst::call`) resolves these; `spawn`, a
-                // `try` region and an erased-closure environment refuse, so the
-                // program falls back rather than losing the write-back.
-                ClosureCapture::CellParam(_) => {
-                    return Err(Unsupported::CallShape {
-                        pc,
-                        reason: "a spawned callee must be a statically known function with scalar arguments",
-                    });
-                }
-                // A static reference: the slot exists only to keep the ABI arity,
-                // so it carries a dead `0`.
-                ClosureCapture::StaticRef => {
-                    let zero = ssa.new_val();
-                    insts.push(Inst::Const {
-                        dst: zero,
-                        value: Const::I64(0),
-                    });
-                    (zero, Ty::I64)
-                }
-                ClosureCapture::Value(v, ty) => (*v, *ty),
             };
             let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
@@ -258,6 +245,7 @@ pub(crate) fn lower_try_call(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     base: u8,
     argc: usize,
     block: usize,
@@ -292,11 +280,16 @@ pub(crate) fn lower_try_call(
     }
     let mut args = Vec::with_capacity(caps.len());
     let mut cell_writebacks: Vec<(u32, ValueId)> = Vec::new();
+    let site = CaptureSite::new(cap_ctx, fidx as u32, CaptureMode::Share, block, pc);
     for (k, capture) in caps.iter().enumerate() {
-        let (v, ty) = match capture {
-            ClosureCapture::Cell(cid) => {
+        let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+            Some(resolved) => resolved,
+            None => {
                 // Seed a runtime cell with the current content; the body
                 // mutates through it, the write-back below re-syncs.
+                let ClosureCapture::Cell(cid) = capture else {
+                    unreachable!("only `Cell` is left to the call site")
+                };
                 let slot = ssa.cell_slot(*cid);
                 let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
                 let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
@@ -309,27 +302,6 @@ pub(crate) fn lower_try_call(
                 cell_writebacks.push((*cid, cell));
                 (cell, Ty::Cell)
             }
-            // TODO(unsupported): captured onward from an enclosing closure. Only the
-            // ordinary closure call (`inst::call`) resolves these; `spawn`, a
-            // `try` region and an erased-closure environment refuse, so the
-            // program falls back rather than losing the write-back.
-            ClosureCapture::CellParam(_) => {
-                return Err(Unsupported::CallShape {
-                    pc,
-                    reason: "the protected call's callee or argument shape is outside the subset",
-                });
-            }
-            // A static reference: the slot exists only to keep the ABI arity,
-            // so it carries a dead `0`.
-            ClosureCapture::StaticRef => {
-                let zero = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: zero,
-                    value: Const::I64(0),
-                });
-                (zero, Ty::I64)
-            }
-            ClosureCapture::Value(v, ty) => (*v, *ty),
         };
         let want = sig.observe_param(fidx, k, ty, ssa.struct_types.get(&v).map(String::as_str));
         args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
@@ -378,6 +350,7 @@ pub(crate) fn lower_user_call(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     callee_idx: usize,
     dst_reg: u8,
     argc: usize,
@@ -555,40 +528,24 @@ pub(crate) fn lower_user_call(
             // Erased capturing closure: its environment (resolved to current
             // cell contents at this call site) travels as hidden trailing
             // arguments, in parameter order.
-            Some(_) => {
+            Some(LambdaIdentity { fidx: lambda, .. }) => {
                 let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(arg_reg, block) else {
                     return Err(Unsupported::CallShape {
                         pc,
                         reason: "the callee does not resolve to a statically known function",
                     });
                 };
-                for capture in &caps {
-                    let (v, ty) = match capture {
-                        ClosureCapture::Cell(cid) => {
+                let site = CaptureSite::new(cap_ctx, lambda, CaptureMode::Share, block, pc);
+                for (k, capture) in caps.iter().enumerate() {
+                    let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                        Some(resolved) => resolved,
+                        None => {
+                            let ClosureCapture::Cell(cid) = capture else {
+                                unreachable!("only `Cell` is left to the call site")
+                            };
                             let slot = ssa.cell_slot(*cid);
                             ssa.read_slot(slot, block, pc)?
                         }
-                        // TODO(unsupported): captured onward from an enclosing closure. Only the
-                        // ordinary closure call (`inst::call`) resolves these; `spawn`, a
-                        // `try` region and an erased-closure environment refuse, so the
-                        // program falls back rather than losing the write-back.
-                        ClosureCapture::CellParam(_) => {
-                            return Err(Unsupported::CallShape {
-                                pc,
-                                reason: "the callee does not resolve to a statically known function",
-                            });
-                        }
-                        // A static reference: the slot exists only to keep the ABI arity,
-                        // so it carries a dead `0`.
-                        ClosureCapture::StaticRef => {
-                            let zero = ssa.new_val();
-                            insts.push(Inst::Const {
-                                dst: zero,
-                                value: Const::I64(0),
-                            });
-                            (zero, Ty::I64)
-                        }
-                        ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
                     env_args.push((v, ty));
                 }

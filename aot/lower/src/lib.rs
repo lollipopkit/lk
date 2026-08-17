@@ -43,6 +43,7 @@ use lk_core::vm::{
     ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData,
 };
 
+mod capture;
 mod cfg;
 mod convert;
 mod dyn_box;
@@ -70,7 +71,7 @@ pub(crate) use self::imports::ImportEnv;
 pub use self::tables::{module_abi_row_paths, named_parameter_rows};
 pub use self::unsupported::Unsupported;
 pub(crate) use self::{
-    cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,
+    capture::*, cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,
     lower_module::*, ops::*, prescan::*, sig::*, ssa::*, tables::*, trait_env::*, vocab::*,
 };
 
