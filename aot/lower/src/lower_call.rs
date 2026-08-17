@@ -453,7 +453,11 @@ pub(crate) fn lower_user_call(
         // nullable carriers intact: they observe as `Dyn` and box, so the
         // callee receives nil as nil (VM call semantics) instead of the
         // scalar-context unwrap abort.
-        let (aval, aty) = ssa.read(arg_reg, block, pc)?;
+        // Through `read_value`: an argument that is a lambda the callee cannot
+        // erase — a struct constructor's field, say — becomes a closure value
+        // here. A lambda the callee *can* erase never reaches this line; the
+        // identity vector above took it.
+        let (aval, aty) = read_value(ssa, insts, sig, funcs, cap_ctx, arg_reg, block, pc)?;
         let want = sig.observe_param(callee_idx, i, aty, ssa.struct_types.get(&aval).map(String::as_str));
         // A typed container reaching an erased parameter has to be built Dyn.
         //
@@ -593,6 +597,7 @@ pub(crate) fn lower_named_call(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     callee_idx: usize,
     base: u8,
     positional_count: usize,
@@ -621,7 +626,11 @@ pub(crate) fn lower_named_call(
     // filled from whichever pair carries its name.
     let mut args: Vec<Option<(ValueId, Ty)>> = vec![None; param_count];
     for (i, slot) in args.iter_mut().enumerate().take(positional_count) {
-        *slot = Some(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        // Through `read_value`, so a lambda written as a field of a struct
+        // literal becomes a closure: `H { f: |x| x + 1 }` desugars to a named
+        // call, and this is where its arguments are read.
+        let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+        *slot = Some(read_value(ssa, insts, sig, funcs, cap_ctx, arg_reg, block, pc)?);
     }
     for pair in 0..named_count {
         let name_reg = base
@@ -643,7 +652,7 @@ pub(crate) fn lower_named_call(
         if args[slot].is_some() {
             return Err(reject());
         }
-        args[slot] = Some(ssa.read(value_reg, block, pc)?);
+        args[slot] = Some(read_value(ssa, insts, sig, funcs, cap_ctx, value_reg, block, pc)?);
     }
     let args = args.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
 

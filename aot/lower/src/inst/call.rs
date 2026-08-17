@@ -158,6 +158,7 @@ pub(super) fn lower(
                 funcs,
                 entry,
                 sig,
+                cap_ctx,
                 callee_idx,
                 base,
                 positional_count,

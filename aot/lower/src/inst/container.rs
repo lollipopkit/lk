@@ -191,7 +191,11 @@ pub(super) fn lower(
                 let key_reg = instr.b().wrapping_add((i * 2) as u8);
                 let val_reg = key_reg.wrapping_add(1);
                 let key = ssa.read(key_reg, block, pc)?;
-                let val = ssa.read(val_reg, block, pc)?;
+                // Through `read_value`: a lambda written as a map's value
+                // becomes a closure here, the same way it does in a list
+                // literal. A *key* cannot be one — a callable is not a map key
+                // in this language — so that read stays as it was.
+                let val = read_value(ssa, insts, sig, funcs, cap_ctx, val_reg, block, pc)?;
                 entries.push((key, val));
             }
             if entries.is_empty() {
@@ -808,7 +812,9 @@ pub(super) fn lower(
                 }
                 .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
                 let key_v = materialize_key(ssa, insts, globals, &key);
-                let (vv, vty) = ssa.read(value_reg, block, pc)?;
+                // Through `read_value`: a struct field written as a lambda
+                // becomes a closure here, like a list element or a map value.
+                let (vv, vty) = read_value(ssa, insts, sig, funcs, cap_ctx, value_reg, block, pc)?;
                 // `to_dyn_any`: a dynamically indexed field value arrives as
                 // a `Maybe` carrier and boxes through `from_maybe_*` (nil
                 // stays nil, like the VM's absent-element field value).

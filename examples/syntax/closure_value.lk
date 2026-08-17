@@ -45,4 +45,20 @@ let mixed = [|x| x, |x| x * factor];
 assert(mixed[0](7) == 7);
 assert(mixed[1](7) == 28);
 
+// As a map's value, and as a struct's field. Same rule, two more places a
+// value can be written: what comes back out is decided at run time, so what
+// goes in has to be a value.
+let handlers = {"inc": |x| x + 1, "double": |x| x * 2};
+let inc = handlers["inc"];
+let double = handlers["double"];
+assert(inc(4) == 5);
+assert(double(4) == 8);
+assert(handlers.len() == 2);
+
+struct Rule { apply: (Int) -> Int, weight: Int }
+let rule = Rule { apply: |x| x + 100, weight: 3 };
+let apply = rule.apply;
+assert(apply(1) == 101);
+assert(rule.weight == 3);
+
 println("closure value: all assertions passed");

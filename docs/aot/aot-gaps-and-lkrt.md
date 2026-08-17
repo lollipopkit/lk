@@ -1206,7 +1206,13 @@ MIR 可证),如果不是,那它走的是哪条路、那条路怎么读实参。
 再 materialize 进调用方 arena。`fn_index` 只为 display 与解释器一字不差
 (`<fn #3(1 captures)>`),而且带的是**原**下标 —— 克隆是这条流水线自己的记账,程序观察不到。
 
-十个形状六个原生化。剩下四个是诚实回落:map 值、结构体字段、以及"callee 是一个本身持闭包的
-参数"两种。门禁:coverage 62/62(新增 `examples/syntax/closure_value.lk`)、随机闭包语料
+**消费点是可以逐个接的,而且互不干扰(2026-08-18 续)。** 又接了三处:map 字面量的值、
+`NewObject` 的字段值、以及普通调用与具名调用的实参(结构体字面量 `H { f: |x| … }` 走的是
+后者)。于是十个形状里八个原生化。剩下两个不是"闭包"的问题,是**调用点的拼法**:
+`m["inc"](3)` 和 `h.f(2)` 走的是 `CallMethodK`(VM 有一条"属性里放着一个可调用值"的路),
+而 `let f = m["inc"]; f(3);` / `let g = h.f; g(2);` 两种写法现在都原生化。同一个语义两种拼法,
+一种快一种回落 —— 下一步就是把 `CallMethodK` 那条接到 `rt.closure_call`。
+
+*键*不走 `read_value`:可调用的东西不是这门语言的 map 键,那条读保持原样。门禁:coverage 62/62(新增 `examples/syntax/closure_value.lk`)、随机闭包语料
 350 个程序全原生 0 分歧、try 语料三批 0 分歧、容器惯用法 150/150、八个 fuzz 种子、
 workspace、clippy `--all-targets`、no_std。fuzzer 的生成器也加了这一类形状。
