@@ -380,6 +380,10 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
 /// `Object`, as was every list, map and set. Its own doc said a caller with the
 /// heap should use `HeapValue::type_name` — so the VM now does, and this is the
 /// mirror of *that*: the language's type name, one per kind.
+pub(crate) fn kind_name_of(v: LkDyn) -> String {
+    kind_name(v)
+}
+
 fn kind_name(v: LkDyn) -> String {
     // A marked struct instance answers the name it was *declared* with. The
     // mirrored function got this right and this one did not, so `typeof(p)` on

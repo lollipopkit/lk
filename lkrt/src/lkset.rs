@@ -35,7 +35,7 @@ use crate::lkdyn::LkDyn;
 // header said "iteration is not exposed (hash order)").
 //
 // One key type, one hash, and the order conformance test can then say something.
-use crate::vm_mirror::{RtKey, key_from_dyn, key_str, str_key};
+use crate::vm_mirror::{RtKey, key_from_dyn, key_from_dyn_in, key_str, str_key};
 
 type LkSet = FxSet<RtKey>;
 
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn lkrt_lkset_from_dyn_list(handle: *mut c_void) -> *mut c
         // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
         let items = unsafe { &*(handle as *mut Vec<LkDyn>) };
         for &item in items {
-            set.insert(key_from_dyn(item));
+            set.insert(key_from_dyn_in(item, "Set() item"));
         }
     }
     crate::state::arena_handle(set)
@@ -194,14 +194,7 @@ pub unsafe extern "C" fn lkrt_lkset_has(handle: *mut c_void, value: LkDyn) -> i6
 /// `handle` must be a live `Set` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkset_add(handle: *mut c_void, value: LkDyn) -> i64 {
-    // The VM prefixes the member error with the call: `set.add() value: Float
-    // cannot be a map key or set member`. A caught error is printed output, so
-    // the prefix is part of the answer.
-    let key = if matches!(value.tag, crate::lkdyn::DYN_F64) {
-        crate::panic::raise_str("set.add() value: Float cannot be a map key or set member")
-    } else {
-        key_from_dyn(value)
-    };
+    let key = key_from_dyn_in(value, "set.add() value");
     i64::from(set_mut(handle).insert(key))
 }
 

@@ -44,6 +44,28 @@ assert_eq(my_set.len(), 2);
 my_set.add("c");
 assert_eq(my_set.len(), 3);
 my_set.delete("a");
+
+// A member a set cannot hold says *what it is*, and says it the same way from
+// either end. The type checker turns most of these away — `Set([[1, 2]])` never
+// runs — so the ones that reach the runtime are the types it types as `Any`:
+// `Bytes`, and a function. The compiled build used to answer "Float" for both.
+let refused_bytes = "";
+try { Set(["ab".bytes()]); } catch e { refused_bytes = "{}".format(e); }
+assert(refused_bytes == "Set() item: Bytes cannot be a map key or set member: only nil, Bool, Int and String can");
+
+let refused_fn = "";
+try { Set([|x| x + 1]); } catch e { refused_fn = "{}".format(e); }
+assert(refused_fn == "Set() item: Function cannot be a map key or set member: only nil, Bool, Int and String can");
+
+// The type checker turns `my_set.add("zz".bytes())` away outright, whatever the
+// element type — so the add path's own wording is only reachable through a
+// parameter typed `Any`.
+fn add_member(s, v) { s.add(v); }
+let refused_add = "";
+try { add_member(my_set, "zz".bytes()); } catch e { refused_add = "{}".format(e); }
+assert(
+    refused_add == "set.add() value: Bytes cannot be a map key or set member: only nil, Bool, Int and String can"
+);
 assert(!my_set.contains("a"));
 
 // List methods remain available without importing a list module.

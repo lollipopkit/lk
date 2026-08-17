@@ -80,6 +80,13 @@ pub(crate) fn str_key(text: &str) -> RtKey {
 }
 
 pub(crate) fn key_from_dyn(v: LkDyn) -> RtKey {
+    key_from_dyn_in(v, "")
+}
+
+/// [`key_from_dyn`] with the call named, for the paths where the interpreter
+/// prefixes the refusal with it (`Set() item: …`, `set.add() value: …`). A
+/// caught error is printed output, so the prefix is part of the answer.
+pub(crate) fn key_from_dyn_in(v: LkDyn, context: &str) -> RtKey {
     match v.tag {
         DYN_NIL => RtKey::Nil,
         DYN_BOOL => RtKey::Bool(v.payload != 0),
@@ -94,10 +101,31 @@ pub(crate) fn key_from_dyn(v: LkDyn) -> RtKey {
             };
             str_key(text)
         }
-        // Float keys are the VM's loud "cannot be used as a key" error;
-        // container keys (heap-handle identity) are outside the subset. The
-        // wording is the VM's, because a caught error is printed output.
-        _ => crate::panic::raise_str("Float cannot be a map key or set member"),
+        // Everything else is the VM's loud "cannot be used as a key" error, and
+        // it has **two** wordings: a `Float` says only that, because the reason
+        // is the float itself (`0.0` and `-0.0` are equal and hash apart, and
+        // `NaN` is not equal to itself), while any other value names its type
+        // and lists what may be a key (`RuntimeMapKey::from_value`). One
+        // wording for both said `Float` about a `Bytes` and about a function —
+        // a caught error is printed output, so it was a wrong answer, not just
+        // a poor message.
+        crate::lkdyn::DYN_F64 => crate::panic::raise_str(&alloc::format!(
+            "{}Float cannot be a map key or set member",
+            prefix(context)
+        )),
+        _ => crate::panic::raise_str(&alloc::format!(
+            "{}{} cannot be a map key or set member: only nil, Bool, Int and String can",
+            prefix(context),
+            crate::lkdyn::kind_name_of(v)
+        )),
+    }
+}
+
+fn prefix(context: &str) -> alloc::string::String {
+    if context.is_empty() {
+        alloc::string::String::new()
+    } else {
+        alloc::format!("{context}: ")
     }
 }
 
