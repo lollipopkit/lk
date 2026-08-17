@@ -1074,7 +1074,41 @@ subset" 改成指名道姓的 `OperandType`(`is a dyn where a machine word is re
 `Dyn`(`src[0]`,src 是异构 list)也是对的 —— 所以既不是空 list 载体重试的既有机制坏了,
 也不是捕获的问题(无捕获的 `|| 7` 一样错)。是物化本身和循环的相互作用,原因未查明。
 
-一个会**静默答错**的形状比一个回落坏得多,所以这一整块回退了,只留下这份设计。复现文件:
-`let fs = []; for i in 0..2 { fs.push(|| 7); } println(fs.len());`。下次从这里查起:先确认
-`[]` 的载体在这条路径上到底被重试成了什么(`LK_AOT_DUMP_MIR=1`),再看 `closure_new` 的
-结果是不是真的以 `Ty::Dyn` 进的 push。
+一个会**静默答错**的形状比一个回落坏得多,所以这一整块回退了,只留下这份设计。
+
+### 2026-08-18 续:错答的原因查到了,另外两件事也量出来了
+
+**① 错答不在闭包,在 `ListPush`。** `LK_AOT_DUMP_MIR=1` 直接给出答案:
+
+```
+v0  = call list_h.i64_new()
+v11 = call rt.closure_new(...)
+v13 = call dyn.as_i64(v11)      // <-- 这里
+      call list_h.i64_push(v12, v13)
+```
+
+`[]` 的载体被猜成 `ListI64`,而往里 push 一个 `Dyn` **不会**触发载体重试 —— 因为
+`read_typed_scalar` 对 `(Dyn, I64)` 是**静默 unbox**(`dyn.as_i64`),读根本没失败,而
+`carrier_contradicted_here_or_at_callers` 只在读失败时才被问。`dyn.as_i64` 拿到任何非整数
+都会 raise,于是编译出来的程序答 `runtime type error`。
+
+这对**声明过**的 `List<Int>` 是对的(类型检查器已经保证了元素是 Int),对**猜出来**的 `[]`
+是错的。修法是在 `ListI64|ListF64|ListStr` 三个 push 臂里,读之前先问一次:值是 `Dyn` 且
+载体是猜的,就直接返回矛盾,让定点把字面量重建成 `Dyn` list;载体是声明的则答 `None`,
+照旧 unbox。改完那个复现立刻对了。
+
+**这个修**单独拿出来是**够不着的**:要触发它,需要"静态类型看起来是标量、运行时却是 `Dyn`"
+的值,而这正是闭包值才有的组合(静态类型是函数,运行时是 `Dyn`)。所以它必须和闭包值一起
+落地,不能单独提交 —— 一段无法触发的防御性检查配一段它自己证明不了的 bug 叙述,比没有更糟。
+
+**② 物化必须与编译期引用并存,不能替换它。** 「某个 lambda 会逃逸」是**函数**的属性,由它的
+某一个用法发现;但它**别的**用法可能恰好是能静态解析的那些,而那些要的是引用。把引用换成值
+让 `examples/syntax/closure.lk` 丢了降低:`xs.filter(|x| …)` 的类型化 HOF 路径读的是引用,
+换掉之后那条臂就没了。`ssa.write` 会清掉 `builtin_regs`,所以引用要在 write **之后**补回去。
+代价是每个逃逸 lambda 的构造点多一次可能没人用的 `closure_new`。
+
+**③ 两者都做之后仍有一个形状回落**(`closure.lk` 的 `process_list`:`an operand at pc 3
+has a type outside the subset`;同时 `[|x| x+1, |x| x*2]` 又变回报引用)。没查完。下次从
+这里起:并存之后 `read_slot` 是**先看 `current_def` 再看 `builtin_regs`**,同块内应当拿到值
+—— 所以要确认失败的那次读到底在哪个块,以及那个 list 字面量是不是走的 `LoadHeapConst`
+(常量堆里的函数引用)而不是 `MakeClosure`,后者根本不经过 `bind_callable`。
