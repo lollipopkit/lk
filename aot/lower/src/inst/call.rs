@@ -410,6 +410,25 @@ pub(super) fn lower(
                 {
                     lower_dyn_call(ssa, insts, base, instr.c() as usize, block, pc)?;
                 }
+                // The callee is a *capture* holding a closure value — the
+                // shape `fn twice(f) { return |x| f(f(x)); }` produces inside
+                // the returned closure, where `f` arrived as a `Dyn` capture
+                // parameter of the value form.
+                Some(GlobalRef::CellParam(k)) if matches!(cap_ctx.params.get(k), Some(&(_, Ty::Dyn | Ty::Cell))) => {
+                    let &(value, ty) = cap_ctx.params.get(k).expect("checked");
+                    let callee = if ty == Ty::Cell {
+                        let got = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(got),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![value],
+                        });
+                        (got, Ty::Dyn)
+                    } else {
+                        (value, ty)
+                    };
+                    lower_dyn_call_to(ssa, insts, callee, base, instr.c() as usize, block, pc)?;
+                }
                 Some(GlobalRef::Module(_))
                 | Some(GlobalRef::UserModule(_))
                 | Some(GlobalRef::ArgList(_))

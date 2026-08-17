@@ -725,6 +725,24 @@ pub(crate) fn materialize_closure(
         return Ok(None);
     };
     let callee = funcs.get(fidx as usize).ok_or(Unsupported::BadConst { pc })?;
+    // A lambda whose environment is *entirely* static references carries
+    // nothing at run time, so `MakeClosure` recorded it as a bare `Lambda`
+    // (`captures_all_static`) — correct for a call that resolves those
+    // references statically, and wrong for a value, whose clone still has that
+    // many capture parameters and nothing to fill them with. It read past the
+    // end of an empty environment and called whatever it found:
+    //
+    //     let add = |x| x + 1;
+    //     let fs = [|y| add(y) * 10];
+    //     fs[0](2)                      // 30 interpreted, "value is not callable" compiled
+    //
+    // So the environment is rebuilt from the references themselves, which the
+    // loop below then materializes one by one.
+    let captures = if captures.is_empty() && callee.capture_count > 0 {
+        vec![ClosureCapture::StaticRef; callee.capture_count as usize]
+    } else {
+        captures
+    };
     if callee.param_count as usize + captures.len() > LK_CLOSURE_MAX_ARGS {
         return Err(Unsupported::CallShape {
             pc,
@@ -744,6 +762,45 @@ pub(crate) fn materialize_closure(
         // crosses into it — the same snapshot a goroutine takes.
         let site = CaptureSite::new(cap_ctx, body, CaptureMode::Snapshot, block, pc);
         for (k, capture) in captures.iter().enumerate() {
+            // A capture whose whole meaning is a *callable reference* — the
+            // lambda captured another lambda, and the environment slot carries
+            // a dead `0` because the callee resolves it statically. A closure
+            // *value* cannot: nothing resolves its environment later, so the
+            // reference has to become a value too, recursively.
+            //
+            // Without this the slot really would carry the `0`, and calling the
+            // capture answered "value is not callable" for a function that
+            // exists. `fn twice(f) { return |x| f(f(x)); }` is the shape.
+            if matches!(capture, ClosureCapture::StaticRef) {
+                let Some(referenced) = sig.ref_captures.get(&(fidx, k)).cloned() else {
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "a closure value captures a callable this lowering cannot name",
+                    });
+                };
+                let Some((v, ty)) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &referenced, block, pc)?
+                else {
+                    // The referenced callable is not a value lambda *yet*: ask
+                    // for it the way every other consumer does, so the fixpoint
+                    // records the demand and the next pass finds it.
+                    return Err(Unsupported::ReferenceAsValue {
+                        pc,
+                        reg: 0,
+                        what: referenced.describe(),
+                        lambda: match referenced {
+                            GlobalRef::Lambda(f) | GlobalRef::Closure(f, _) | GlobalRef::UserFn(f) => Some(f),
+                            _ => None,
+                        },
+                    });
+                };
+                let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "spawn_args_push"),
+                    args: vec![block_v, boxed],
+                });
+                continue;
+            }
             let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
                 Some(resolved) => resolved,
                 None => {
@@ -810,16 +867,31 @@ pub(crate) fn lower_dyn_call(
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    // Through `read_scalar`, so a carrier unwraps first: a closure that came
+    // out of a list is a `Maybe`, and handing the carrier to the runtime made
+    // it answer "value is not callable" for a value that is one.
+    let callee = read_scalar(ssa, insts, base, block, pc)?;
+    lower_dyn_call_to(ssa, insts, callee, base, argc, block, pc)
+}
+
+/// [`lower_dyn_call`] with the callee already in hand — for the sites where the
+/// register names it rather than holding it, which a capture parameter does.
+pub(crate) fn lower_dyn_call_to(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    callee: Reg,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
     if argc > LK_CLOSURE_MAX_ARGS {
         return Err(Unsupported::CallShape {
             pc,
             reason: "a call through a closure value with this many arguments is past the runtime's arity switch",
         });
     }
-    // Through `read_scalar`, so a carrier unwraps first: a closure that came
-    // out of a list is a `Maybe`, and handing the carrier to the runtime made
-    // it answer "value is not callable" for a value that is one.
-    let (callee, callee_ty) = read_scalar(ssa, insts, base, block, pc)?;
+    let (callee, callee_ty) = callee;
     let callee = if callee_ty == Ty::Dyn {
         callee
     } else {

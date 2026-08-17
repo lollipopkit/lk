@@ -87,4 +87,13 @@ assert(pick(false)(5) == 10);
 let chosen = pick(true);
 assert(chosen(9) == 10);
 
+// A closure capturing *another closure*. Its environment is entirely static
+// references, which the compiler erases — correct for a call that resolves them
+// where it stands, and not enough for a value, whose environment has to hold
+// something at run time.
+let base = |x| x + 1;
+let wrapped = [|y| base(y) * 10, |y| base(y) - 1];
+assert(wrapped[0](2) == 30);
+assert(wrapped[1](2) == 2);
+
 println("closure value: all assertions passed");

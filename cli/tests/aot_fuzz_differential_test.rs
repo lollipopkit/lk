@@ -955,6 +955,15 @@ impl Generator {
             let _ = writeln!(out, "let {sum} = 0;");
             let _ = writeln!(out, "for f in {ops} {{ {sum} = {sum} + f({b}); }}");
             let _ = writeln!(out, "println({sum});");
+            // A closure capturing *another closure*: its environment is all
+            // static references, which the compiler erases entirely — and a
+            // value still needs one. That shipped answering "value is not
+            // callable" for a function that exists.
+            let base = self.fresh("cbase");
+            let wrap = self.fresh("cwrap");
+            let _ = writeln!(out, "let {base} = |x| x + {a};");
+            let _ = writeln!(out, "let {wrap} = [|y| {base}(y) * {b}];");
+            let _ = writeln!(out, "println({wrap}[0]({a}));");
         }
 
         let statements = 3 + self.rng.below(5);
