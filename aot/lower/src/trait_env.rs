@@ -1,3 +1,5 @@
+use lk_aot_mir::Ty;
+
 /// Trait/impl information the lowering needs, taken from the module's
 /// [`lk_core::vm::TypeInfo`] — the compiler's own record of what it compiled.
 ///
@@ -21,6 +23,16 @@ pub(crate) struct TraitEnv {
     /// the runtime can render a marked instance. Ordered by type id, so the
     /// emission order is fixed.
     pub(crate) struct_fields: Vec<(i64, String, Vec<String>)>,
+    /// `(struct name, field name)` → the field's **declared** type, for the
+    /// fields that have one.
+    ///
+    /// A field read is `map_h.str_dyn_get`, whose result is a boxed `Dyn`: the
+    /// storage is a string-keyed map and knows nothing about declarations. The
+    /// declaration does, and it is the only thing that does — without it
+    /// `p.count + 1` boxed both operands and called `dyn.add` for a field the
+    /// program said was an `Int`, and a loop variable fed from one could not
+    /// stay an integer at all.
+    pub(crate) struct_field_tys: std::collections::HashMap<(String, String), Ty>,
 }
 
 /// Method names the lowering may call **without** a `CallMethodK` naming them.
@@ -93,7 +105,20 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
     for decl in &module.type_info.structs {
         let next_id = env.type_ids.len() as i64 + 1;
         let tid = *env.type_ids.entry(decl.name.clone()).or_insert(next_id);
-        env.struct_fields.push((tid, decl.name.clone(), decl.fields.clone()));
+        env.struct_fields.push((
+            tid,
+            decl.name.clone(),
+            decl.fields.iter().map(|f| f.name.clone()).collect(),
+        ));
+        for field in &decl.fields {
+            let Some(text) = field.ty.as_deref() else {
+                continue;
+            };
+            let Some(ty) = lk_core::val::Type::parse(text).as_ref().and_then(declared_field_ty) else {
+                continue;
+            };
+            env.struct_field_tys.insert((decl.name.clone(), field.name.clone()), ty);
+        }
     }
     for decl in &module.type_info.impls {
         let next_id = env.type_ids.len() as i64 + 1;
@@ -107,4 +132,25 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
         }
     }
     env
+}
+
+/// The MIR type a declared field type unboxes to, when it is one this lowering
+/// can hold unboxed.
+///
+/// Scalars only, deliberately. A container field is a *handle* whose carrier
+/// the declaration does not pin (`List<Int>` may be any list representation),
+/// and unboxing one to a guessed carrier is how a wrong answer gets made; the
+/// boxed read those already do is correct.
+fn declared_field_ty(ty: &lk_core::val::Type) -> Option<Ty> {
+    use lk_core::val::Type;
+    match ty {
+        Type::Int => Some(Ty::I64),
+        Type::Float => Some(Ty::F64),
+        Type::String => Some(Ty::Str),
+        // `Bool` stays boxed. `dyn.as_bool` returns the ABI's `I64`, while MIR
+        // `Ty::Bool` is a one-bit value codegen `uextend`s — claiming the type
+        // without the comparison that produces it fails the Cranelift verifier.
+        // Narrowing it needs that conversion, which is a separate step.
+        _ => None,
+    }
 }

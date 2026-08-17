@@ -133,12 +133,29 @@ pub struct TypeInfo {
     pub structs: Vec<StructDecl>,
 }
 
-/// One `struct` declaration: its name and its field names, in order.
+/// One `struct` declaration: its name and its fields, in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StructDecl {
     pub name: String,
-    /// Field names, in declaration order.
-    pub fields: Vec<String>,
+    /// Fields in declaration order.
+    pub fields: Vec<StructFieldDecl>,
+}
+
+/// One field of a `struct`.
+///
+/// The *type* is carried alongside the name because a declared field type is
+/// the only thing that says what a field read produces. Without it every
+/// `p.count` was a boxed `Dyn` to native lowering however plainly the
+/// declaration said `count: Int` — so the arithmetic around it boxed too, and
+/// a loop variable fed from a field could not stay an integer at all.
+///
+/// A field with no annotation has `None`, which is the same `Any` it always
+/// was. The text is `Type::display()`, read back with `Type::parse` — the
+/// convention `TraitDecl` and `ImplDecl` already use.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StructFieldDecl {
+    pub name: String,
+    pub ty: Option<String>,
 }
 
 impl TypeInfo {
@@ -148,8 +165,8 @@ impl TypeInfo {
         self.traits.is_empty() && self.impls.is_empty() && self.structs.is_empty()
     }
 
-    /// The field order of a `struct` this module declares.
-    pub fn struct_fields(&self, name: &str) -> Option<&[String]> {
+    /// The fields of a `struct` this module declares, in declaration order.
+    pub fn struct_fields(&self, name: &str) -> Option<&[StructFieldDecl]> {
         self.structs
             .iter()
             .find(|decl| decl.name == name)

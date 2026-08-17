@@ -1374,3 +1374,26 @@ fn first() -> Int { return time[0]; }   // 有这一行就不原生化
 顺带 `let len = 42` 这类遮蔽内建函数名的写法也一起原生化了。
 
 语法扫描而不是"是否已观察到写入":同一趟里读可能先于写降级,按观察顺序回答会随趟次变化。
+
+## §41 字段的声明类型一直被扔掉(2026-08-18)
+
+`struct P { count: Int }` 的实例是一个字符串键 map,字段读是 `map_h.str_dyn_get`,结果是装箱的
+`Dyn`。声明说了 `Int`,而**没有任何东西把这句话带到降级这一层**——`StructDecl` 只存字段名。
+于是 `p.count + 1` 两边都装箱、走 `dyn.add`,`p.count >= 0` 走 `dyn.ge`。
+
+改动:`StructDecl.fields` 从 `Vec<String>` 变成 `Vec<StructFieldDecl>`(名字 + 声明类型文本,
+沿用 `TraitDecl` / `ImplDecl` 的 `Type::display()` 约定),artifact 版本 17 → 18。
+AOT 侧 `TraitEnv::struct_field_tys` 记 `(结构体名, 字段名) → Ty`,字段读之后按它拆箱。
+
+只拆**标量**(`Int` / `Float` / `String`)。容器字段的载体不是声明能钉住的(`List<Int>` 可以是
+任何一种列表表示),猜一个载体正是错答的来源。`Bool` 也留在外面:`dyn.as_bool` 返回 ABI 的 `I64`,
+而 MIR 的 `Ty::Bool` 是 codegen 会 `uextend` 的一位值,只改类型不加那次比较过不了 Cranelift 校验。
+
+结构体身份也跟着值走了两步:`Ssa::list_elem_struct` 记"这个列表的元素都是结构体 N",
+元素读把身份传给结果;`Ssa::inherit_provenance` 在 phi 处继承(此前只有猜测载体 `literal_carrier`
+有这个待遇,三张表现在在同一处继承,免得再加第四张时漏掉)。
+
+**仍然缺口**:循环头的 phi。Braun 算法里循环体在 header 封口**之前**降级,而 phi 的继承发生在
+封口时,所以 `while c >= 0 { c = nodes[c].next; }` 里读到的 `nodes` 是还没继承身份的 phi 参数。
+补它需要"创建时先继承、封口时校验、不符则报可重试的发现"这一套(与 `dyn_loop_phis` 同型),
+是单独一项。

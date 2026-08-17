@@ -136,6 +136,14 @@ pub(super) fn lower(
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
+                // Every element the same declared struct: the list remembers
+                // which, so an element read out of it is still that struct.
+                let elem_struct = elems.first().and_then(|&(v, _)| ssa.struct_types.get(&v).cloned());
+                if let Some(name) = elem_struct
+                    && elems.iter().all(|&(v, _)| ssa.struct_types.get(&v) == Some(&name))
+                {
+                    ssa.list_elem_struct.insert(handle, name);
+                }
                 ssa.write(instr.a(), block, (handle, Ty::ListDyn));
             } else if elems.is_empty() {
                 // An empty literal (`let flat = [];`) materializes as an
@@ -1102,7 +1110,14 @@ pub(super) fn lower(
                     callee: AbiRef::new("dyn", helper),
                     args: vec![handle, key],
                 });
-                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                // A member chain (`nodes[i].next`) reaches the field this way
+                // rather than through `GetFieldK`, so the declared-type
+                // narrowing has to be here too.
+                let (dst, result_ty) = match (helper, ssa.const_strs.get(&key).cloned()) {
+                    ("field", Some(name)) => unbox_declared_field(ssa, insts, sig, handle, &name, dst, Ty::Dyn, pc)?,
+                    _ => (dst, Ty::Dyn),
+                };
+                ssa.write(instr.a(), block, (dst, result_ty));
                 return Ok(());
             }
             // `s[i]` — single-char read, char-indexed, OOB = nil (the VM's
@@ -1211,6 +1226,11 @@ pub(super) fn lower(
                     callee: AbiRef::new("list_h", at_fn),
                     args: vec![handle, idx_v],
                 });
+                if elem_ty == Ty::Dyn
+                    && let Some(name) = ssa.list_elem_struct.get(&handle).cloned()
+                {
+                    ssa.struct_types.insert(dst, name);
+                }
                 ssa.write(instr.a(), block, (dst, elem_ty));
             } else {
                 // Dynamic / not-provably-in-range: the result is `Maybe<Int>` (VM:
@@ -1245,6 +1265,11 @@ pub(super) fn lower(
                             callee: AbiRef::new("list_h", "dyn_at"),
                             args: vec![handle, index_val],
                         });
+                        // An element of a list of one declared struct is that
+                        // struct, so `nodes[i].next` reads a declared field.
+                        if let Some(name) = ssa.list_elem_struct.get(&handle).cloned() {
+                            ssa.struct_types.insert(dst, name);
+                        }
                         ssa.write(instr.a(), block, (dst, Ty::Dyn));
                     }
                     Ty::ListI64 => {
@@ -1526,6 +1551,14 @@ pub(super) fn lower(
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
+            // A field of a *declared* struct has a declared type, and reading
+            // it through the string-keyed map gives a boxed `Dyn` that knows
+            // nothing about it. Unboxing here is what keeps `p.count + 1` an
+            // integer add instead of `dyn.add`, and what lets a loop variable
+            // fed from a field (`cur = nodes[cur].next`) stay an `I64` —
+            // without it the loop phi joined `I64` with `Dyn` and the whole
+            // walk fell back.
+            let (dst, result_ty) = unbox_declared_field(ssa, insts, sig, handle, key, dst, result_ty, pc)?;
             ssa.write(instr.a(), block, (dst, result_ty));
         }
         Opcode::SetFieldK => {
@@ -1937,4 +1970,47 @@ pub(crate) fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> O
         }
     };
     Some(Unsupported::LiteralElemTypeContradicted { pcs })
+}
+
+/// A declared struct field's read, narrowed to its declared scalar type.
+///
+/// Returns the input unchanged whenever the answer is not known: the receiver
+/// is not a value this lowering tracked to a declared struct, the field has no
+/// annotation, or its type is not one held unboxed. Nothing here guesses — an
+/// undeclared field stays the boxed `Dyn` it has always been.
+#[allow(clippy::too_many_arguments)]
+fn unbox_declared_field(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &SigInfer,
+    handle: ValueId,
+    field: &str,
+    dst: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if ty != Ty::Dyn {
+        return Ok((dst, ty));
+    }
+    let Some(struct_name) = ssa.struct_types.get(&handle).cloned() else {
+        return Ok((dst, ty));
+    };
+    let Some(&want) = sig.traits.struct_field_tys.get(&(struct_name, field.to_string())) else {
+        return Ok((dst, ty));
+    };
+    let unbox = match want {
+        Ty::I64 => "as_i64",
+        Ty::F64 => "as_f64",
+        Ty::Bool => "as_bool",
+        Ty::Str => "as_str",
+        _ => return Ok((dst, ty)),
+    };
+    let narrowed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(narrowed),
+        callee: AbiRef::new("dyn", unbox),
+        args: vec![dst],
+    });
+    let _ = pc;
+    Ok((narrowed, want))
 }

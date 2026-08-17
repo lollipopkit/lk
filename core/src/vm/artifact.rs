@@ -56,10 +56,15 @@ use super::{
 // consumer cannot read as an `Option`; a v15 consumer cannot read the `null` a
 // v16 producer writes. Neither direction degrades quietly, but the version says
 // so first.
-/// Bumped to 17 when `LoadNative` was removed and the opcodes above it were
-/// renumbered to close the hole — see `opcodes_are_contiguous` for why the hole
-/// could not simply be left.
-pub const MODULE_ARTIFACT_VERSION: u32 = 17;
+// Version 17: `LoadNative` was removed and the opcodes above it were renumbered
+// to close the hole — see `opcodes_are_contiguous` for why the hole could not
+// simply be left.
+/// Bumped to 18 when `StructDecl.fields` became `Vec<StructFieldDecl>` — a
+/// field's *declared type* travels with its name now, because that is the only
+/// thing that says what a field read produces. A v17 artifact encodes the
+/// fields as bare strings, which a v18 consumer cannot read as records, and the
+/// other direction is the same mismatch.
+pub const MODULE_ARTIFACT_VERSION: u32 = 18;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -517,7 +522,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 17);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 18);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

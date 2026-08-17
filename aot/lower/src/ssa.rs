@@ -302,6 +302,15 @@ pub(crate) struct Ssa {
     /// trait table through it; `Move` preserves the `ValueId`, so the entry
     /// follows the value across registers for free.
     pub(crate) struct_types: std::collections::HashMap<ValueId, String>,
+    /// A list handle → the declared struct **all** its elements are, when they
+    /// agree.
+    ///
+    /// The element-side twin of [`Self::struct_types`]. An array of records is
+    /// an ordinary shape, and without this the struct identity stopped at the
+    /// list: `nodes[i].next` read a field of something the lowering had no name
+    /// for, so the declared field type could not be applied and the read stayed
+    /// boxed.
+    pub(crate) list_elem_struct: std::collections::HashMap<ValueId, String>,
 }
 
 impl Ssa {
@@ -348,6 +357,7 @@ impl Ssa {
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
             struct_types: std::collections::HashMap::new(),
+            list_elem_struct: std::collections::HashMap::new(),
         }
     }
 
@@ -706,26 +716,7 @@ impl Ssa {
                 .iter()
                 .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
         {
-            // A guessed empty-`[]` handle read through a phi (loop/branch)
-            // keeps its provenance: every non-self edge must carry the same
-            // literal pc for the param to inherit it.
-            let mut guess: Option<(usize, Ty)> = None;
-            let mut all_guessed = true;
-            for &(_, v, _) in &incoming {
-                if v == param {
-                    continue;
-                }
-                match self.literal_carrier.get(&v) {
-                    Some(&g) if guess.is_none() || guess == Some(g) => guess = Some(g),
-                    _ => {
-                        all_guessed = false;
-                        break;
-                    }
-                }
-            }
-            if all_guessed && let Some(g) = guess {
-                self.literal_carrier.insert(param, g);
-            }
+            self.inherit_provenance(param, &incoming);
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {
                     v
@@ -783,6 +774,45 @@ impl Ssa {
             self.phis[block][phi_idx].operands.push((p, boxed));
         }
         Ok(())
+    }
+
+    /// What a phi inherits from its operands: the facts that are about *which
+    /// value this is*, not about its type.
+    ///
+    /// A phi is a new `ValueId`, so every side table keyed by one loses its
+    /// entry at a merge unless it is carried across. All three are carried the
+    /// same way — every non-self edge must agree — and they are carried in one
+    /// place so a fourth table cannot be added and forgotten. The guessed-`[]`
+    /// carrier had this; the struct identity did not, which is why a loop over
+    /// an array of records (`while c >= 0 { c = nodes[c].next; }`) lost the
+    /// declared field type at the loop header and stopped lowering.
+    fn inherit_provenance(&mut self, param: ValueId, incoming: &[(usize, ValueId, Ty)]) {
+        fn agreed<T: Clone + PartialEq>(
+            incoming: &[(usize, ValueId, Ty)],
+            param: ValueId,
+            get: impl Fn(ValueId) -> Option<T>,
+        ) -> Option<T> {
+            let mut agreed: Option<T> = None;
+            for &(_, v, _) in incoming {
+                if v == param {
+                    continue;
+                }
+                match get(v) {
+                    Some(found) if agreed.is_none() || agreed.as_ref() == Some(&found) => agreed = Some(found),
+                    _ => return None,
+                }
+            }
+            agreed
+        }
+        if let Some(carrier) = agreed(incoming, param, |v| self.literal_carrier.get(&v).copied()) {
+            self.literal_carrier.insert(param, carrier);
+        }
+        if let Some(name) = agreed(incoming, param, |v| self.struct_types.get(&v).cloned()) {
+            self.struct_types.insert(param, name);
+        }
+        if let Some(name) = agreed(incoming, param, |v| self.list_elem_struct.get(&v).cloned()) {
+            self.list_elem_struct.insert(param, name);
+        }
     }
 
     /// Emits the `dyn.from_*` boxing sequence for one phi edge into

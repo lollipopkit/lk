@@ -783,7 +783,7 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         .map(|decl| {
             decl.fields
                 .iter()
-                .map(|field| Arc::<str>::from(field.as_str()))
+                .map(|field| Arc::<str>::from(field.name.as_str()))
                 .collect()
         })
         .unwrap_or_else(|| Arc::from([] as [Arc<str>; 0]));

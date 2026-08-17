@@ -29,3 +29,33 @@ assert(bumped.apple == 99);
 assert(bumped.zebra == 1);
 
 return;
+
+// A field's declared type is what a read of it produces.
+//
+// The storage is a string-keyed map, so a field read is a boxed value and
+// knows nothing about the declaration — `p.count + 1` boxed both operands and
+// called the dynamic add for a field the program plainly said was an `Int`.
+// The declared type travels with the field name in the module's type info now,
+// so the read narrows to it and the arithmetic around it stays machine
+// arithmetic.
+struct Sample { at: Int, value: Float, sensor: String }
+
+fn newer(a: Sample, b: Sample) -> Int {
+    if a.at > b.at { return a.at; }
+    return b.at;
+}
+let first = Sample { at: 10, value: 1.5, sensor: "a" };
+let second = Sample { at: 4, value: 2.5, sensor: "b" };
+assert(newer(first, second) == 10);
+assert(first.value + second.value == 4.0);
+assert(first.sensor + second.sensor == "ab");
+
+// Through a list of them, which is where the identity used to stop: an element
+// read gave a value the lowering had no name for, so the declared field type
+// could not be applied to it.
+let readings = [first, second];
+assert(readings[0].at == 10);
+assert(readings[1].at + 1 == 5);
+let total = 0;
+for r in readings { total = total + r.at; }
+assert(total == 14);

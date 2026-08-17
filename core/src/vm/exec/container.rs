@@ -169,7 +169,7 @@ impl Executor {
             Some(decl) => decl
                 .fields
                 .iter()
-                .map(|field| Arc::<str>::from(field.as_str()))
+                .map(|field| Arc::<str>::from(field.name.as_str()))
                 .collect(),
             None => Arc::from([] as [Arc<str>; 0]),
         };

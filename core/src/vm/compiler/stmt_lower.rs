@@ -86,7 +86,13 @@ impl Compiler {
             Stmt::Struct { name, fields } => {
                 self.type_info.structs.push(crate::vm::StructDecl {
                     name: name.clone(),
-                    fields: fields.iter().map(|(field, _)| field.clone()).collect(),
+                    fields: fields
+                        .iter()
+                        .map(|(field, ty)| crate::vm::StructFieldDecl {
+                            name: field.clone(),
+                            ty: ty.as_ref().map(Type::display),
+                        })
+                        .collect(),
                 });
             }
             Stmt::Import(_) | Stmt::TypeAlias { .. } => {}
