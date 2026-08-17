@@ -813,12 +813,9 @@ pub(super) fn lower(
             for i in 0..instr.c() as usize {
                 let key_reg = instr.b().wrapping_add(1).wrapping_add((i * 2) as u8);
                 let value_reg = key_reg.wrapping_add(1);
-                let key = {
-                    let kv = ssa.read(key_reg, block, pc).ok().map(|(v, _)| v);
-                    kv.and_then(|v| ssa.const_strs.get(&v).cloned())
-                        .or_else(|| ssa.reg_const_str(key_reg, block))
-                }
-                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                let key = ssa
+                    .const_str_at(key_reg, block, pc)
+                    .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
                 let key_v = materialize_key(ssa, insts, globals, &key);
                 // Through `read_value`: a struct field written as a lambda
                 // becomes a closure here, like a list element or a map value.
@@ -977,11 +974,7 @@ pub(super) fn lower(
             // A constant-name member read on a bundled file module resolves
             // to the merged function (`fib.iterative` → direct call target).
             if let Some(GlobalRef::UserModule(bundle)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
-                let name = {
-                    let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
-                    key.and_then(|v| ssa.const_strs.get(&v).cloned())
-                        .or_else(|| ssa.reg_const_str(instr.c(), block))
-                };
+                let name = ssa.const_str_at(instr.c(), block, pc);
                 let fidx = name.and_then(|n| sig.imports.bundles.get(bundle).and_then(|b| b.fns.get(&n)).copied());
                 let Some(fidx) = fidx else {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -1016,11 +1009,7 @@ pub(super) fn lower(
                 _ => None,
             };
             if let Some(module) = module_ref {
-                let name = {
-                    let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
-                    key.and_then(|v| ssa.const_strs.get(&v).cloned())
-                        .or_else(|| ssa.reg_const_str(instr.c(), block))
-                };
+                let name = ssa.const_str_at(instr.c(), block, pc);
                 let Some(name) = name else {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                 };
@@ -1113,7 +1102,7 @@ pub(super) fn lower(
                 // A member chain (`nodes[i].next`) reaches the field this way
                 // rather than through `GetFieldK`, so the declared-type
                 // narrowing has to be here too.
-                let (dst, result_ty) = match (helper, ssa.const_strs.get(&key).cloned()) {
+                let (dst, result_ty) = match (helper, ssa.const_str_value(key)) {
                     ("field", Some(name)) => unbox_declared_field(ssa, insts, sig, handle, &name, dst, Ty::Dyn, pc)?,
                     _ => (dst, Ty::Dyn),
                 };

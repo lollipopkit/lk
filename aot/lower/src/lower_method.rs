@@ -15,12 +15,7 @@ pub(crate) fn lower_method_call(
 ) -> Result<(), Unsupported> {
     let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
     let name_reg = base.wrapping_add(2);
-    let name = {
-        let name_v = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
-        name_v
-            .and_then(|v| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-    };
+    let name = { ssa.const_str_at(name_reg, block, pc) };
     let Some(name) = name else {
         return Err(Unsupported::CallShape {
             pc,

@@ -196,12 +196,7 @@ pub(crate) fn lower_make_struct(
         });
     }
     let name_reg = base.wrapping_add(1);
-    let type_name = {
-        let nv = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
-        nv.and_then(|v| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-    }
-    .ok_or(Unsupported::CallShape {
+    let type_name = ssa.const_str_at(name_reg, block, pc).ok_or(Unsupported::CallShape {
         pc,
         reason: "a struct construction needs a constant type name and a map of fields",
     })?;
@@ -631,12 +626,7 @@ pub(crate) fn lower_named_call(
             .wrapping_add(positional_count as u8)
             .wrapping_add((pair * 2) as u8);
         let value_reg = name_reg.wrapping_add(1);
-        let name = ssa
-            .read(name_reg, block, pc)
-            .ok()
-            .and_then(|(v, _)| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-            .ok_or_else(reject)?;
+        let name = ssa.const_str_at(name_reg, block, pc).ok_or_else(reject)?;
         let slot = callee.param_names[declared_positional..]
             .iter()
             .position(|param| &**param == name.as_str())

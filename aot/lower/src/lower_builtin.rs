@@ -606,7 +606,7 @@ pub(crate) fn lower_builtin_call(
                 });
             }
             let (name_value, _) = ssa.read(base.wrapping_add(1), block, pc)?;
-            let Some(symbol) = ssa.const_strs.get(&name_value).cloned() else {
+            let Some(symbol) = ssa.const_str_value(name_value) else {
                 return Err(Unsupported::CallShape {
                     pc,
                     reason: "no native lowering for this builtin in this argument shape",

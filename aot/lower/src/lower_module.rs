@@ -584,12 +584,7 @@ pub(crate) fn lower_named_module_call(
             .wrapping_add(positional_count as u8)
             .wrapping_add((pair * 2) as u8);
         let value_reg = name_reg.wrapping_add(1);
-        let arg_name = ssa
-            .read(name_reg, block, pc)
-            .ok()
-            .and_then(|(v, _)| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-            .ok_or_else(reject)?;
+        let arg_name = ssa.const_str_at(name_reg, block, pc).ok_or_else(reject)?;
         // `row.leading`, not the call's positional count: a named-eligible
         // parameter may be written either way, so a call that passes some of
         // them positionally still needs the *declaration's* frame order. Adding

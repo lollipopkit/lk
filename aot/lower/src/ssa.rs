@@ -556,6 +556,21 @@ impl Ssa {
             .all(|&pred| self.collect_builtin_ref(reg, pred, visited, found))
     }
 
+    /// The compile-time string a **register** holds at `block`, by whichever
+    /// route answers.
+    ///
+    /// One accessor rather than the `const_strs.get(v).or_else(reg_const_str)`
+    /// pair that was written out at six call sites: a name a lowering needs at
+    /// compile time (a struct's type name, a named argument, a bundled
+    /// module's member, a map key) is the same question every time, and two of
+    /// the sites had only half of it.
+    pub(crate) fn const_str_at(&mut self, reg: u8, block: usize, pc: usize) -> Option<String> {
+        self.read(reg, block, pc)
+            .ok()
+            .and_then(|(v, _)| self.const_str_value(v))
+            .or_else(|| self.reg_const_str(reg, block))
+    }
+
     /// The compile-time string a *value* is, looking through a phi.
     ///
     /// [`Self::reg_const_str`] answers the same question from a register; this
