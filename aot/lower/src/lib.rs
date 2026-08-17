@@ -161,6 +161,7 @@ pub fn lower_bundled(
         try_body_param_tys: std::collections::HashMap::new(),
         try_body_lambdas: std::collections::HashMap::new(),
         try_body_cell_inputs: std::collections::HashSet::new(),
+        try_body_cell_input_tys: std::collections::HashMap::new(),
         try_body_lambda_env_tys: std::collections::HashMap::new(),
         try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
@@ -291,6 +292,7 @@ pub fn lower_bundled(
                 sig.try_body_lambda_env_tys.clone(),
                 sig.try_body_params.clone(),
                 sig.try_body_cell_inputs.clone(),
+                sig.try_body_cell_input_tys.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -461,7 +463,8 @@ pub fn lower_bundled(
                 && snapshot.16 == sig.try_body_lambdas
                 && snapshot.17 == sig.try_body_lambda_env_tys
                 && snapshot.18 == sig.try_body_params
-                && snapshot.19 == sig.try_body_cell_inputs;
+                && snapshot.19 == sig.try_body_cell_inputs
+                && snapshot.20 == sig.try_body_cell_input_tys;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
@@ -481,7 +484,8 @@ pub fn lower_bundled(
                 + sig.try_body_lambdas.len()
                 + sig.try_body_lambda_env_tys.len()
                 + sig.try_body_params.values().map(Vec::len).sum::<usize>()
-                + sig.try_body_cell_inputs.len();
+                + sig.try_body_cell_inputs.len()
+                + sig.try_body_cell_input_tys.len();
             if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
                 break;
             }

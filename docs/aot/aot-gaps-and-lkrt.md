@@ -933,7 +933,22 @@ capture 数展开。七个 input 加一个 return 的 body 编译、链接、然
 `SIGILL`。预算改成精确计数,codegen 侧再加一道 `LK_TRY_MAX_ARGS` 拒绝,于是那个
 `trap` 从构造上不可达。
 
-门禁:随机生成 836 个含 `try` 的程序(三批不同种子),176 个全原生,0 处分歧;
-fuzzer 加了嵌套 region + 闭包入参的形状;`examples/syntax/try_catch.lk` 把三种形状
-钉进覆盖率门禁。剩下的主要回落原因是 cell 读出来是 `Dyn`(`p0 % 5` 这类算术还没有
-Dyn 臂)和 body 里的 `for`(外联丢掉 `performance` facts),两条都是已知的、诚实的拒绝。
+**cell 入参是有类型的。** cell 本身是动态类型的,读出来是 `Dyn`,而 `Dyn` 算术没有
+降低 —— 于是"被捕获的变量在 region 里参与运算"这个最常见的形状还是回落
+(`if (p0 % 5 == 0)`,只因为函数里某个 lambda 提到了 `p0`)。父在建 cell 时把**内容
+类型**记下来(`try_body_cell_input_tys`),body 的读按那个类型 unbox,写的时候类型对不上
+就把这一项并到 `Dyn` 重试 —— 两端不可能对同一个 cell 持两种意见。三处 unbox
+(region 输出 cell、return channel、cell 入参的读)合成一个 `unbox_cell_value`,`Bool`
+的窄化不会在其中两处记得、第三处忘掉。
+
+这一步把原生化从 176/836 提到 306/919,同时**暴露了上一条留下的一个静默错答**:
+跨进 region 的闭包,它的 `Cell` 捕获原来是按值快照的,而 body 之后会通过自己的运行时
+cell 写同一个变量 —— `try { a = a * 2; a = clo(); }` 原生答 `3`,VM 答 `6`。改成:
+闭包的捕获若命中本 region 的 cell 入参,就**拿那个 cell**(`require_cell_capture` 把
+callee 的捕获钉成 `Ty::Cell`,收敛回路照旧)。为此 region 入参的 marshal 拆成两遍 ——
+先建 cell,再解析 lambda 环境 —— 每个入参的机器字按位置收集,最后按 `try_body_params`
+顺序摊平,所以布局仍然是 body 走的那个。
+
+门禁:随机生成 1688 个含 `try` 的程序(六批不同种子),0 处分歧;fuzzer 加了嵌套
+region + 闭包入参的形状;`examples/syntax/try_catch.lk` 把三种形状钉进覆盖率门禁。
+剩下的主要回落原因是 body 里的 `for`(外联丢掉 `performance` facts),是已知的、诚实的拒绝。

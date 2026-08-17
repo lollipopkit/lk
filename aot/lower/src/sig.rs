@@ -77,6 +77,16 @@ pub(crate) struct SigInfer {
     /// Region inputs the enclosing function holds as an *upvalue cell* — a
     /// variable some closure in it captured. See [`cell_region_input`].
     pub(crate) try_body_cell_inputs: std::collections::HashSet<(u32, u8)>,
+    /// What a cell input's *content* type is, as the caller saw it entering the
+    /// region.
+    ///
+    /// A cell is dynamically typed — reading one answers a `Dyn` — so without
+    /// this every use of a captured variable inside a region became `Dyn`
+    /// arithmetic, which has no lowering: `if (p0 % 5 == 0)` rejected for a `p0`
+    /// some lambda in the function happened to capture. The body unboxes to this
+    /// type instead, and a store of a *different* type joins the entry to `Dyn`
+    /// and retries, so the two ends cannot disagree about what the cell holds.
+    pub(crate) try_body_cell_input_tys: std::collections::HashMap<(u32, u8), Ty>,
     /// What type each of those environment words travels as, keyed by
     /// `(body, register, capture index)` — the [`SigInfer::try_body_param_tys`]
     /// of a lambda input, which needs one type per capture rather than one per

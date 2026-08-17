@@ -51,13 +51,23 @@ pub(super) fn lower(
                     // through the shared slot; a spawned goroutine reads its
                     // thread-private copy; by-value captures stay as-is.
                     if ty == Ty::Cell {
-                        let dst = ssa.new_val();
+                        let boxed = ssa.new_val();
                         insts.push(Inst::Call {
-                            dst: Some(dst),
+                            dst: Some(boxed),
                             callee: AbiRef::new("rt", "cell_get"),
                             args: vec![v],
                         });
-                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                        // A cell is dynamically typed, so a read answers `Dyn`
+                        // — unless the frame that made this one wrote down what
+                        // it holds, which a `try`-region cell input does. Then
+                        // the read comes back as that type and the body's
+                        // arithmetic on a captured variable lowers.
+                        let content = ssa.cellparam_content.get(&k).copied().unwrap_or(Ty::Dyn);
+                        let (value, ty) = match crate::unbox_cell_value(ssa, insts, boxed, content) {
+                            Some(value) if content != Ty::Dyn => (value, content),
+                            _ => (boxed, Ty::Dyn),
+                        };
+                        ssa.write(instr.a(), block, (value, ty));
                     } else if ssa.spawned_isolate {
                         let slot = ssa.cellparam_slot(k);
                         let (sv, sty) = ssa.read_slot(slot, block, pc)?;
@@ -132,6 +142,18 @@ pub(super) fn lower(
                     let &(cell, cty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
                     if cty == Ty::Cell {
                         let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                        // A store the reads would not agree with: the cell is
+                        // one object, so the two ends cannot hold two opinions
+                        // about it. Joining the entry to `Dyn` and retrying is
+                        // the same discovery loop the rest of this file uses —
+                        // the reads then come back boxed, as they always did.
+                        let content = ssa.cellparam_content.get(&k).copied().unwrap_or(Ty::Dyn);
+                        if content != Ty::Dyn && content != ty {
+                            if let Some(reg) = ssa.cellparam_reg(k) {
+                                sig.try_body_cell_input_tys.insert((ctx_func_index, reg), Ty::Dyn);
+                            }
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
                         let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
                         insts.push(Inst::Call {
                             dst: None,

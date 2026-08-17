@@ -175,6 +175,17 @@ pub(crate) struct Ssa {
     /// This function runs as a spawned goroutine (isolate): cell-capture
     /// writes go to the thread-private slots.
     pub(crate) spawned_isolate: bool,
+    /// What a capture parameter's runtime cell is agreed to hold, by capture
+    /// index and by the register that names it.
+    ///
+    /// Only a `try`-region cell input has one: a closure's own mutable capture
+    /// answers `Dyn`, which is what every cell read answered before. Keyed both
+    /// ways because the body asks by index (`LoadCellVal` on a `CellParam`) and
+    /// the enclosing frame asks by register (passing the same pointer one frame
+    /// further in).
+    pub(crate) cellparam_content: std::collections::HashMap<usize, Ty>,
+    cellparam_content_by_reg: std::collections::HashMap<u8, Ty>,
+    cellparam_reg: std::collections::HashMap<usize, u8>,
     pub(crate) preds: Vec<Vec<usize>>,
     pub(crate) current_def: Vec<Vec<Option<Reg>>>,
     /// Slots a block ends with *no* value in, whatever its predecessors say.
@@ -290,6 +301,9 @@ impl Ssa {
             slot_count,
             capture_slots: capture_count,
             spawned_isolate: false,
+            cellparam_content: std::collections::HashMap::new(),
+            cellparam_content_by_reg: std::collections::HashMap::new(),
+            cellparam_reg: std::collections::HashMap::new(),
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
             poisoned: vec![vec![None; slot_count]; total_blocks],
@@ -381,6 +395,24 @@ impl Ssa {
             self.current_def[block][reg as usize] = None;
             self.poisoned[block][reg as usize] = Some(body);
         }
+    }
+
+    /// Records what capture parameter `k`, reached through `reg`, holds.
+    pub(crate) fn set_cellparam_content_ty(&mut self, k: usize, reg: u8, ty: Ty) {
+        self.cellparam_content.insert(k, ty);
+        self.cellparam_content_by_reg.insert(reg, ty);
+        self.cellparam_reg.insert(k, reg);
+    }
+
+    /// Which register names capture parameter `k`, for a cell input — what the
+    /// agreement in [`SigInfer::try_body_cell_input_tys`] is keyed by.
+    pub(crate) fn cellparam_reg(&self, k: usize) -> Option<u8> {
+        self.cellparam_reg.get(&k).copied()
+    }
+
+    /// What the cell `reg` names holds, when this function knows.
+    pub(crate) fn cellparam_content_ty(&self, reg: u8) -> Option<Ty> {
+        self.cellparam_content_by_reg.get(&reg).copied()
     }
 
     /// The virtual slot holding cell `cid`'s content.

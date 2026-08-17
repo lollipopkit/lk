@@ -93,6 +93,45 @@ fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
     })
 }
 
+/// Takes a value of type `ty` back out of the boxed `Dyn` a cell holds.
+///
+/// One function for the three places that do it — the region's output cells,
+/// the return channel, and a cell *input*'s reads inside the body — so the
+/// `Bool` narrowing below cannot be remembered at two of them and forgotten at
+/// the third. `None` means the type has no readback and the caller rejects.
+pub(crate) fn unbox_cell_value(ssa: &mut Ssa, insts: &mut Vec<Inst>, boxed: ValueId, ty: Ty) -> Option<ValueId> {
+    match unbox_from_dyn(ty)? {
+        CellReadBack::Identity => Some(boxed),
+        CellReadBack::Unbox(module, name) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new(module, name),
+                args: vec![boxed],
+            });
+            // `dyn.as_bool` answers an `i64`; a `Bool` operand is narrower, and
+            // the Cranelift verifier rejects the wide value.
+            if ty != Ty::Bool {
+                return Some(raw);
+            }
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let narrow = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: narrow,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            Some(narrow)
+        }
+    }
+}
+
 /// The function a region's body became, or a rejection naming the region.
 fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32, Unsupported> {
     sig.try_bodies
@@ -301,6 +340,17 @@ struct LambdaEnvSite<'a> {
     body: u32,
     reg: u8,
     identity: LambdaIdentity,
+    /// The runtime cell each cell input of this region travels in, by cell id.
+    ///
+    /// A capture of the crossing closure that names one of them must get *that*
+    /// cell rather than a snapshot of its content: the body writes through it,
+    /// and the closure is called after those writes. `try { a = a * 2; a =
+    /// clo(); }`, with `clo` capturing `a`, read the value `a` had entering the
+    /// region and answered `3` where the VM answered `6`.
+    region_cells: &'a std::collections::HashMap<u32, ValueId>,
+    /// The lambda's own parameter count, which is where its capture slots begin
+    /// ([`SigInfer::require_cell_capture`] keys on it).
+    callee_param_count: usize,
 }
 
 /// Appends a lambda region input's environment to the region call's arguments.
@@ -324,6 +374,8 @@ fn try_lambda_env(
         body,
         reg,
         identity,
+        region_cells,
+        callee_param_count,
     } = site;
     if identity.captures == 0 {
         return Ok(());
@@ -342,19 +394,37 @@ fn try_lambda_env(
                 let ClosureCapture::Cell(cid) = capture else {
                     unreachable!("only `Cell` is left to the call site")
                 };
-                // A capture the closure *writes* would need the cell to travel
-                // and be read back — which is what the region's own cells do
-                // for registers, and there is no register here to hang one on.
-                if sig.cell_captures.contains(&(identity.fidx, k)) {
-                    return Err(Unsupported::TryRegion {
-                        pc,
-                        reason: "a closure crossing into the region assigns what it captured",
-                    });
+                // The body carries this very variable in a runtime cell, and it
+                // is called *after* the body has written through it: the closure
+                // gets the cell, not a copy of what it held on the way in. That
+                // means the callee's capture has to be a cell at every call
+                // site, which is a demand the fixpoint already knows how to
+                // propagate.
+                if let Some(&handle) = region_cells.get(cid) {
+                    if sig.require_cell_capture(identity.fidx as usize, callee_param_count, k) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    (handle, Ty::Cell)
+                } else {
+                    // Nothing in the region touches it, so its content at entry
+                    // is its content throughout — a snapshot is exact.
+                    //
+                    // A capture the closure *writes* is a different matter: the
+                    // cell would have to travel and be read back, and there is
+                    // no region cell to hang that on.
+                    if sig.cell_captures.contains(&(identity.fidx, k)) {
+                        return Err(Unsupported::TryRegion {
+                            pc,
+                            reason: "a closure crossing into the region assigns what it captured",
+                        });
+                    }
+                    ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
                 }
-                ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
             }
         };
-        if !crosses_as_word(ty) {
+        // A cell is a pointer, which is a word; `crosses_as_word` is about
+        // *values*, and answers no for it.
+        if ty != Ty::Cell && !crosses_as_word(ty) {
             return Err(Unsupported::TryRegion {
                 pc,
                 reason: "a closure crossing into the region captures a value wider than a machine word",
@@ -870,9 +940,20 @@ pub(crate) fn lower_function(
     // as capture parameters is what lets `LoadCellVal`/`StoreCellVal` reach them
     // through the arm that already knows how to read and write a runtime cell.
     for (reg, pv) in cell_input_params {
-        ssa.builtin_regs
-            .insert((0, reg), GlobalRef::CellParam(capture_params.len()));
+        let k = capture_params.len();
+        ssa.builtin_regs.insert((0, reg), GlobalRef::CellParam(k));
         capture_params.push((pv, Ty::Cell));
+        // What reads of this cell unbox to, and what a store into it must
+        // agree with. Unset (a closure's own capture) means `Dyn`, which is
+        // what a cell answered everywhere before this.
+        ssa.set_cellparam_content_ty(
+            k,
+            reg,
+            sig.try_body_cell_input_tys
+                .get(&(func_index, reg))
+                .copied()
+                .unwrap_or(Ty::Dyn),
+        );
     }
     let mut block_insts: Vec<Vec<Inst>> = vec![Vec::new(); total_blocks];
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
@@ -1127,18 +1208,36 @@ pub(crate) fn lower_function(
                 // values are still current. All `I64`: the trampoline passes
                 // machine words, and a body wanting something wider rejects
                 // when it reads it.
-                let mut call_args = Vec::new();
+                // Two passes, because a closure crossing the boundary may
+                // capture a variable that is *also* crossing as a cell: the
+                // cells are made first so the lambda can be handed the same
+                // object rather than a copy of what it held. Each input's words
+                // are collected positionally and flattened afterwards, so the
+                // argument order is still `try_body_params` order — which is
+                // what the body walks.
+                let region_params = sig.try_body_params.get(&body).cloned().unwrap_or_default();
+                let mut input_words: Vec<Option<Vec<ValueId>>> = vec![None; region_params.len()];
                 // Upvalue-cell inputs, resynced from their runtime cells after
                 // the call: the body may have written through one, and the
                 // parent's slot is the only place that write can land.
-                let mut cell_input_values: Vec<(u32, ValueId)> = Vec::new();
-                for &reg in sig.try_body_params.get(&body).cloned().unwrap_or_default().iter() {
+                let mut cell_input_values: Vec<(u32, ValueId, Ty)> = Vec::new();
+                let mut region_cells: std::collections::HashMap<u32, ValueId> = std::collections::HashMap::new();
+                for (index, &reg) in region_params.iter().enumerate() {
                     // A variable a closure captured: it lives in a slot behind a
                     // compile-time cell ref, so what crosses is a runtime cell
                     // seeded from that slot.
                     match cell_region_input(&mut ssa, sig, &capture_params, body, reg, bi) {
                         Some(CellInput::Slot(cid)) => {
                             let (cur, cur_ty) = ssa.read_slot(ssa.cell_slot(cid), bi, start)?;
+                            // The content type the body reads through, unless a
+                            // store inside it has already disagreed (which pins
+                            // the entry to `Dyn` — see `try_body_cell_input_tys`).
+                            let content = match sig.try_body_cell_input_tys.get(&(body, reg)) {
+                                Some(Ty::Dyn) => Ty::Dyn,
+                                _ if unbox_from_dyn(cur_ty).is_some() => cur_ty,
+                                _ => Ty::Dyn,
+                            };
+                            sig.try_body_cell_input_tys.insert((body, reg), content);
                             let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, cur, cur_ty, start)?;
                             let handle = ssa.new_val();
                             insts.push(Inst::Call {
@@ -1146,55 +1245,85 @@ pub(crate) fn lower_function(
                                 callee: AbiRef::new("rt", "cell_new"),
                                 args: vec![boxed],
                             });
-                            call_args.push(handle);
-                            cell_input_values.push((cid, handle));
+                            input_words[index] = Some(vec![handle]);
+                            region_cells.insert(cid, handle);
+                            cell_input_values.push((cid, handle, content));
                             continue;
                         }
                         Some(CellInput::Handle(handle)) => {
-                            call_args.push(handle);
+                            // The pointer is passed on unchanged, and so is what
+                            // it is agreed to hold: this frame reads the same
+                            // cell under the same type.
+                            let content = ssa
+                                .cellparam_content_ty(reg)
+                                .filter(|_| sig.try_body_cell_input_tys.get(&(body, reg)) != Some(&Ty::Dyn))
+                                .unwrap_or(Ty::Dyn);
+                            sig.try_body_cell_input_tys.insert((body, reg), content);
+                            input_words[index] = Some(vec![handle]);
+                            if let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(reg, bi) {
+                                region_cells.insert(cid, handle);
+                            }
                             continue;
                         }
                         None => {}
-                    }
-                    // A lambda the enclosing function holds as a compile-time
-                    // reference: there is no word to marshal, so the identity
-                    // crosses at compile time and only its environment travels.
-                    if let Some(identity) = lambda_region_input(&mut ssa, sig, body, reg, bi) {
-                        try_lambda_env(
-                            &mut ssa,
-                            &mut insts,
-                            sig,
-                            LambdaEnvSite {
-                                cap_ctx: CaptureCtx {
-                                    params: &capture_params,
-                                    index: func_index,
-                                    param_count,
-                                },
-                                body,
-                                reg,
-                                identity,
-                            },
-                            &mut call_args,
-                            bi,
-                            start,
-                        )?;
-                        continue;
                     }
                     // Read as whatever it is, then decide whether it can cross.
                     // Forcing `I64` here is what used to reject a body that
                     // merely *looked at* a list the parent owned — a handle is a
                     // machine word, and the buffer the trampoline marshals into
                     // is machine words.
+                    //
+                    // A lambda is neither, and is left to the second pass.
+                    if lambda_region_input(&mut ssa, sig, body, reg, bi).is_some() {
+                        continue;
+                    }
                     let (v, ty) = ssa.read(reg, bi, start)?;
                     if crosses_as_word(ty) {
                         sig.try_body_param_tys.insert((body, reg), ty);
-                        call_args.push(v);
+                        input_words[index] = Some(vec![v]);
                     } else {
                         // Not a word: the honest failure is the body rejecting
                         // when it reads it, which is what `I64` produces.
                         sig.try_body_param_tys.remove(&(body, reg));
-                        call_args.push(ssa.read_typed(reg, bi, Ty::I64, start)?);
+                        input_words[index] = Some(vec![ssa.read_typed(reg, bi, Ty::I64, start)?]);
                     }
+                }
+                for (index, &reg) in region_params.iter().enumerate() {
+                    let Some(identity) = sig.try_body_lambdas.get(&(body, reg)).copied() else {
+                        continue;
+                    };
+                    let mut env = Vec::new();
+                    try_lambda_env(
+                        &mut ssa,
+                        &mut insts,
+                        sig,
+                        LambdaEnvSite {
+                            cap_ctx: CaptureCtx {
+                                params: &capture_params,
+                                index: func_index,
+                                param_count,
+                            },
+                            body,
+                            reg,
+                            identity,
+                            region_cells: &region_cells,
+                            callee_param_count: funcs.get(identity.fidx as usize).map_or(0, |f| f.param_count as usize),
+                        },
+                        &mut env,
+                        bi,
+                        start,
+                    )?;
+                    input_words[index] = Some(env);
+                }
+                let mut call_args: Vec<ValueId> = Vec::new();
+                for words in input_words {
+                    let Some(words) = words else {
+                        return Err(Unsupported::TryRegion {
+                            pc: start,
+                            reason: "a region input resolved to nothing the trampoline can carry",
+                        });
+                    };
+                    call_args.extend(words);
                 }
                 // One cell per register the body assigns that this function
                 // already had. Seeded with the value it holds now, because a
@@ -1286,14 +1415,20 @@ pub(crate) fn lower_function(
                     args: call_args,
                 });
                 // The upvalue cells first, on the same principle.
-                for (cid, handle) in cell_input_values {
+                for (cid, handle, content) in cell_input_values {
                     let cur = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(cur),
                         callee: AbiRef::new("rt", "cell_get"),
                         args: vec![handle],
                     });
-                    ssa.write_slot(ssa.cell_slot(cid), bi, (cur, Ty::Dyn));
+                    // Read back under the same type the body read through, so
+                    // the parent's own later uses stay typed too.
+                    let (value, ty) = match unbox_cell_value(&mut ssa, &mut insts, cur, content) {
+                        Some(value) if content != Ty::Dyn => (value, content),
+                        _ => (cur, Ty::Dyn),
+                    };
+                    ssa.write_slot(ssa.cell_slot(cid), bi, (value, ty));
                 }
                 // Read every cell back, before the branch, so both edges see
                 // what the body managed to write — including a body that
@@ -1315,44 +1450,10 @@ pub(crate) fn lower_function(
                         callee: AbiRef::new("rt", "cell_get"),
                         args: vec![handle],
                     });
-                    let raw = match unbox_from_dyn(ty).expect("checked above") {
-                        CellReadBack::Identity => got,
-                        CellReadBack::Unbox(module, name) => {
-                            let raw = ssa.new_val();
-                            insts.push(Inst::Call {
-                                dst: Some(raw),
-                                callee: AbiRef::new(module, name),
-                                args: vec![got],
-                            });
-                            raw
-                        }
-                    };
-                    // `dyn.as_bool` answers an `i64`; the register holds a
-                    // `Bool`, which is a narrower machine type. Writing the
-                    // wide value back under the narrow type is what the
-                    // Cranelift verifier rejects — "arg has type i64, expected
-                    // i8" — so it is narrowed here.
                     // See `unbox_from_dyn`: a nil seed comes back as whatever
                     // the body boxed, which is a `Dyn`.
                     let ty = if ty == Ty::Nil { Ty::Dyn } else { ty };
-                    let value = if ty == Ty::Bool {
-                        let zero = ssa.new_val();
-                        insts.push(Inst::Const {
-                            dst: zero,
-                            value: Const::I64(0),
-                        });
-                        let narrowed = ssa.new_val();
-                        insts.push(Inst::Cmp {
-                            dst: narrowed,
-                            op: CmpOp::Ne,
-                            float: false,
-                            lhs: raw,
-                            rhs: zero,
-                        });
-                        narrowed
-                    } else {
-                        raw
-                    };
+                    let value = unbox_cell_value(&mut ssa, &mut insts, got, ty).expect("checked above");
                     ssa.write(reg, bi, (value, ty));
                 }
                 // Everything else the body wrote is gone: it was written in the
@@ -1980,49 +2081,18 @@ pub(crate) fn lower_function(
         }
         let returned_value = match ret {
             Ty::Nil => None,
-            Ty::Dyn => Some(boxed),
-            other => {
-                // The same unboxing table the output cells use; a type with no
-                // unboxer never got here, because the body's `return` had to box
-                // it in the first place.
-                let Some(read_back) = unbox_from_dyn(other) else {
+            // The same unboxing the output cells use; a type with no readback
+            // never got here, because the body's `return` had to box it in the
+            // first place.
+            other => match unbox_cell_value(&mut ssa, &mut ret_insts, boxed, other) {
+                Some(value) => Some(value),
+                None => {
                     return Err(Unsupported::TryRegion {
                         pc: 0,
                         reason: "the body returns a value that cannot be read back out of a cell",
                     });
-                };
-                match read_back {
-                    CellReadBack::Identity => Some(boxed),
-                    CellReadBack::Unbox(module, name) => {
-                        let raw = ssa.new_val();
-                        ret_insts.push(Inst::Call {
-                            dst: Some(raw),
-                            callee: AbiRef::new(module, name),
-                            args: vec![boxed],
-                        });
-                        // `dyn.as_bool` answers an `i64`; a `Bool` operand is
-                        // narrower, and the verifier rejects the wide value.
-                        if other == Ty::Bool {
-                            let zero = ssa.new_val();
-                            ret_insts.push(Inst::Const {
-                                dst: zero,
-                                value: Const::I64(0),
-                            });
-                            let narrow = ssa.new_val();
-                            ret_insts.push(Inst::Cmp {
-                                dst: narrow,
-                                op: CmpOp::Ne,
-                                float: false,
-                                lhs: raw,
-                                rhs: zero,
-                            });
-                            Some(narrow)
-                        } else {
-                            Some(raw)
-                        }
-                    }
                 }
-            }
+            },
         };
         mir_blocks.push(Block {
             id: BlockId(ret_block_ids[index]),
