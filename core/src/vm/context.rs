@@ -474,6 +474,7 @@ impl VmContext {
         self.install_runtime_builtin("port_out_u32", NativeFunction::Plain(core_port_out_u32), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
+        self.install_runtime_builtin("__lk_bit_xor", NativeFunction::Plain(core_bit_xor_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
         // Function pointers: the address of an exported function, and a call
         // through one. Native-only, like the rest of `hardware` — the VM
@@ -1217,6 +1218,19 @@ fn core_bit_or_builtin(
     ))
 }
 
+fn core_bit_xor_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_bit_xor(left, right) expects exactly 2 arguments"));
+    }
+    Ok(crate::val::RuntimeVal::Int(
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_xor")?
+            ^ bit_arg(args.get(1).expect("arity checked"), "__lk_bit_xor")?,
+    ))
+}
+
 /// The shift amount both shifts accept.
 ///
 /// Out of range is an error rather than a wrap or a zero. The hardware masks it
@@ -1618,6 +1632,7 @@ mod tests {
             "__lk_merge_fields",
             "__lk_bit_and",
             "__lk_bit_or",
+            "__lk_bit_xor",
             "__lk_bit_not",
         ] {
             let value = ctx

@@ -190,6 +190,7 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::And => "&&".to_string(),
         Token::Or => "||".to_string(),
         Token::BitAnd => "&".to_string(),
+        Token::BitXor => "^".to_string(),
         Token::BitNot => "~".to_string(),
         Token::Not => "!".to_string(),
         Token::Add => "+".to_string(),

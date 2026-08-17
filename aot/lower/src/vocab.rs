@@ -56,11 +56,12 @@ pub(crate) enum Builtin {
     /// `__lk_make_struct(name, fields)` — the struct-update desugar's
     /// object constructor: a fresh field copy + struct provenance.
     MakeStruct,
-    /// `__lk_bit_and(l, r)` / `__lk_bit_or(l, r)` / `__lk_bit_not(v)` — the
+    /// `__lk_bit_and(l, r)` / `__lk_bit_or(l, r)` / `__lk_bit_xor(l, r)` / `__lk_bit_not(v)` — the
     /// `&`/`|`/`~` operator desugars (Int-only in the VM; other argument
     /// types reject and fall back to its loud error).
     BitAnd,
     BitOr,
+    BitXor,
     BitNot,
     /// `__lk_shl(l, r)` / `__lk_shr(l, r)` — the `<<`/`>>` desugars. Unlike the
     /// other bitwise operators these do not lower to a machine instruction:

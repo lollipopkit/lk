@@ -52,6 +52,7 @@ pub enum Token {
     And,               // &&
     Or,                // ||
     BitAnd,            // &
+    BitXor,            // ^
     BitNot,            // ~
     Not,               // !
     Add,               // +
@@ -1243,6 +1244,13 @@ impl Tokenizer {
                 self.push_with_span(Token::BitNot, start, end);
                 Ok(())
             }
+            '^' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::BitXor, start, end);
+                Ok(())
+            }
             '>' => {
                 let start = self.current_position();
                 if self.expect(">=") {
@@ -1334,6 +1342,7 @@ impl Tokenizer {
                 | '#'
                 | '&'
                 | '|'
+                | '^'
                 | '~'
                 | '+'
                 | '-'
@@ -1389,6 +1398,7 @@ impl Tokenizer {
                 | Token::And
                 | Token::Or
                 | Token::BitAnd
+                | Token::BitXor
                 | Token::Not
                 | Token::Add
                 | Token::Sub

@@ -163,7 +163,7 @@ pub(crate) fn lower_builtin_call(
             ssa.write(base, block, (dst, Ty::I64));
             return Ok(());
         }
-        Builtin::BitAnd | Builtin::BitOr => {
+        Builtin::BitAnd | Builtin::BitOr | Builtin::BitXor => {
             if argc != 2 {
                 return Err(Unsupported::CallShape {
                     pc,
@@ -175,10 +175,10 @@ pub(crate) fn lower_builtin_call(
             let dst = ssa.new_val();
             insts.push(Inst::IntBin {
                 dst,
-                op: if matches!(builtin, Builtin::BitAnd) {
-                    IntBinOp::And
-                } else {
-                    IntBinOp::Or
+                op: match builtin {
+                    Builtin::BitAnd => IntBinOp::And,
+                    Builtin::BitOr => IntBinOp::Or,
+                    _ => IntBinOp::Xor,
                 },
                 lhs,
                 rhs,

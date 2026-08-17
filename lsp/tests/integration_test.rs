@@ -380,6 +380,7 @@ impl TestLanguageServer {
             T::Div => "Operator: /".to_string(),
             T::Mod => "Operator: %".to_string(),
             T::BitAnd => "Operator: &".to_string(),
+            T::BitXor => "Operator: ^".to_string(),
             T::BitNot => "Operator: ~".to_string(),
             T::Dot => "Accessor: .".to_string(),
             T::Colon => "Symbol: :".to_string(),

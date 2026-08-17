@@ -524,6 +524,7 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "__lk_make_struct" => Builtin::MakeStruct,
         "__lk_bit_and" => Builtin::BitAnd,
         "__lk_bit_or" => Builtin::BitOr,
+        "__lk_bit_xor" => Builtin::BitXor,
         "__lk_bit_not" => Builtin::BitNot,
         "__lk_shl" => Builtin::Shl,
         "__lk_shr" => Builtin::Shr,

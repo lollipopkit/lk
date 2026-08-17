@@ -93,7 +93,8 @@ fn is_continuation_lead(line: &[Token]) -> bool {
             | Token::Mul
             | Token::Div
             | Token::Mod
-            | Token::BitAnd,
+            | Token::BitAnd
+            | Token::BitXor,
         ) => true,
         Some(Token::Pipe) => !opens_lambda_params(&line[1..]),
         _ => false,

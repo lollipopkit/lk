@@ -33,6 +33,10 @@ module.exports = grammar({
     [$.parenthesized_expression, $._argument_list],
     [$.or_pattern],
     [$.or_pattern, $.guarded_pattern],
+    // `p if x | y`: the `|` is the guard's bitwise-or, not the or-pattern's
+    // separator — `parse_guard_pattern` parses the guard as a whole
+    // expression, so it consumes the `|` before `parse_or_pattern` sees it.
+    [$.binary_expression, $.guarded_pattern],
     [$.index_access, $.list_expression],
     [$.index_access, $.match_arm],
     [$.if_statement],
@@ -55,7 +59,7 @@ module.exports = grammar({
   ],
 
   precedences: $ => [
-    ['binary_or', 'binary_and', 'binary_comparison', 'binary_range', 'binary_add', 'binary_mul', 'binary_unary', 'binary_nullish', 'binary_ternary'],
+    ['binary_or', 'binary_and', 'binary_bit_or', 'binary_bit_xor', 'binary_bit_and', 'binary_comparison', 'binary_shift', 'binary_range', 'binary_add', 'binary_mul', 'binary_unary', 'binary_nullish', 'binary_ternary'],
   ],
 
   word: $ => $._word_identifier,
@@ -260,7 +264,7 @@ module.exports = grammar({
 
     // ── Unary ─────────────────────────────────────────────────────────
     unary_expression: $ => prec.left('binary_unary', seq(
-      field('operator', '!'),
+      field('operator', choice('!', '~')),
       field('operand', $._expression),
     )),
 
@@ -280,6 +284,15 @@ module.exports = grammar({
       prec.left('binary_comparison', seq(field('left', $._expression), field('operator', choice('==', '!=', '<', '>', '<=', '>=')), field('right', $._expression))),
       prec.left('binary_and', seq(field('left', $._expression), '&&', field('right', $._expression))),
       prec.left('binary_or', seq(field('left', $._expression), '||', field('right', $._expression))),
+      // Bitwise. Below comparison and above the logical operators, which is
+      // where the parser puts them (`parse_bit_or` → `parse_bit_xor` →
+      // `parse_bit_and` → `parse_cmp`). Shifts are two adjacent comparison
+      // tokens in the lexer, so `<<`/`>>` are written out here rather than
+      // being single tokens.
+      prec.left('binary_bit_or', seq(field('left', $._expression), field('operator', '|'), field('right', $._expression))),
+      prec.left('binary_bit_xor', seq(field('left', $._expression), field('operator', '^'), field('right', $._expression))),
+      prec.left('binary_bit_and', seq(field('left', $._expression), field('operator', '&'), field('right', $._expression))),
+      prec.left('binary_shift', seq(field('left', $._expression), field('operator', choice('<<', '>>')), field('right', $._expression))),
     ),
 
     // ── Nullish coalescing ────────────────────────────────────────────

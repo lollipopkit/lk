@@ -517,11 +517,27 @@ impl<'a> Parser<'a> {
 
     /// `expr | expr`
     fn parse_bit_or(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_bit_and()?;
+        let mut expr = self.parse_bit_xor()?;
         while !self.eof() && self.tokens[self.pos] == Token::Pipe {
             self.pos += 1;
-            let right = self.parse_bit_and()?;
+            let right = self.parse_bit_xor()?;
             expr = Self::builtin_call("__lk_bit_or", vec![expr, right]);
+        }
+        Ok(expr)
+    }
+
+    /// `expr ^ expr`
+    ///
+    /// Between `|` and `&`, as in C and Rust. It was the one bitwise operator
+    /// with no spelling: `&`, `|`, `<<`, `>>` and `~` were all there, and
+    /// `__lk_bit_xor` was already named in the type checker's arity table and
+    /// the VM compiler's builtin list — a name nothing could produce.
+    fn parse_bit_xor(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_bit_and()?;
+        while !self.eof() && self.tokens[self.pos] == Token::BitXor {
+            self.pos += 1;
+            let right = self.parse_bit_and()?;
+            expr = Self::builtin_call("__lk_bit_xor", vec![expr, right]);
         }
         Ok(expr)
     }
