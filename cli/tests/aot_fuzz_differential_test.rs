@@ -913,6 +913,27 @@ impl Generator {
             let _ = writeln!(out, "println({deferred}({arg}, {}));", self.rng.below(20) * 2 + 1);
             let _ = writeln!(out, "println({arg}.len());");
         }
+        // A `try` region with something in it other than a bare call: a
+        // *nested* region, and a closure built outside the region and called
+        // inside it. Both are outlined into functions of their own, so what
+        // crosses the boundary — a write from two frames in, a captured value
+        // that has no machine word — is decided by machinery no flat
+        // `try { f(); } catch` exercises. Both shapes shipped a silent wrong
+        // answer that every other gate passed.
+        if self.rng.chance(45) {
+            let probe = self.fresh("fn_tryshape");
+            let cap = self.rng.below(9) + 1;
+            let bump = self.rng.below(5) + 1;
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n                     let cap = {cap};\n                     let scaled = || -> Int {{ return p0 * cap; }};\n                     let plain = || -> Int {{ return {bump}; }};\n                     let out = 0;\n                     try {{\n                         try {{\n                             if (p0 % 3 == 0) {{ error(\"inner\"); }}\n                             out = scaled() + plain();\n                         }} catch e {{ out = 0 - 1; }}\n                         if (p0 % 5 == 0) {{ error(\"outer\"); }}\n                         out = out + plain();\n                     }} catch e {{ out = out - 100; }}\n                     return out;\n}}"
+            );
+            // Every combination of the two raise conditions, so neither edge
+            // of either region is left untaken.
+            for arg in [1u64, 3, 5, 15] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
 
         let statements = 3 + self.rng.below(5);
         for _ in 0..statements {

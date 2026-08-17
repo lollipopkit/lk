@@ -147,6 +147,228 @@ fn crosses_as_word(ty: Ty) -> bool {
     )
 }
 
+/// Writes every tracked register whose definition changed into the cell its
+/// caller allocated for it.
+///
+/// `before` is what those registers held at the last mirror, in `cell_handles`
+/// order. Asking the SSA what changed — rather than reading an opcode's `a`
+/// field — is what makes this correct for *any* producer of a definition: an
+/// ordinary instruction, and equally a nested region's write-back, which
+/// produces its definitions in the exit handling where no opcode is in sight.
+#[allow(clippy::too_many_arguments)]
+fn mirror_cells(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &SigInfer,
+    func_index: u32,
+    cell_handles: &[(u8, ValueId)],
+    before: &[Option<Reg>],
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    for (index, (reg, handle)) in cell_handles.iter().enumerate() {
+        let now = ssa.current_def[block][*reg as usize];
+        if now == before.get(index).copied().flatten() {
+            continue;
+        }
+        let Some((value, ty)) = now else { continue };
+        // Written immediately, not at the end of the body: a raise can happen
+        // in the next call, and the VM shows whatever was assigned before it.
+        // Storing only on the way out would lose exactly the writes a handler
+        // is most likely to look at.
+        // The cell's kind is the caller's, not this store's type: a raw handle
+        // written into a value cell is a loud failure at the read
+        // (`cell_get_raw` checks the tag), and a register the caller saw as
+        // `nil` gets a *value* cell however containery the body's assignment
+        // turns out to be.
+        if cell_is_raw(ty) && sig.try_body_raw_cells.contains(&(func_index, *reg)) {
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "cell_set_raw"),
+                args: vec![*handle, value],
+            });
+            continue;
+        }
+        // Into a value cell: boxing a typed *list* rebuilds it, so a mutation
+        // made after this store would not travel — reject rather than answer
+        // with a stale copy. Every other container boxes in place
+        // (`DYN_SET`/`DYN_BYTES`/`DYN_SLICE`/the typed map tags), so it carries
+        // whatever the body does to it.
+        if matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) {
+            return Err(Unsupported::TryRegion {
+                pc,
+                reason: "a nil-seeded register is assigned a typed list, which cannot be boxed in place",
+            });
+        }
+        let boxed = crate::dyn_box::to_dyn_any(ssa, insts, value, ty, pc)?;
+        insts.push(Inst::Call {
+            dst: None,
+            callee: AbiRef::new("rt", "cell_set"),
+            args: vec![*handle, boxed],
+        });
+    }
+    Ok(())
+}
+
+/// How many machine words the `try`-region trampoline's arity switch covers
+/// (`lkrt/src/try_trampoline.c`), mirrored from the codegen constant of the
+/// same name — the lowering refuses a region past it so codegen never has to.
+const LK_TRY_MAX_ARGS: usize = 8;
+
+/// The closure identity a region input names, when it is one.
+///
+/// Asked *before* the register is read, because reading it is what fails: a
+/// lambda is a compile-time `GlobalRef` with no SSA value behind it, and the
+/// generic reader reports that as `ReferenceAsValue`. Recording the identity is
+/// a fixpoint discovery like every other — the body has already been lowered
+/// once with this register as a plain word, so the answer only takes effect on
+/// the pass after it is written down.
+fn lambda_region_input(ssa: &mut Ssa, sig: &mut SigInfer, body: u32, reg: u8, block: usize) -> Option<LambdaIdentity> {
+    let identity = match ssa.builtin_ref_at(reg, block)? {
+        GlobalRef::Lambda(fidx) => LambdaIdentity { fidx, captures: 0 },
+        GlobalRef::Closure(fidx, caps) => LambdaIdentity {
+            fidx,
+            captures: caps.len() as u16,
+        },
+        // A module or a builtin is re-derived inside the body by its own
+        // `GetGlobal`; a cell is an input, but a different kind of one
+        // ([`cell_region_input`]).
+        _ => return None,
+    };
+    sig.try_body_lambdas.insert((body, reg), identity);
+    Some(identity)
+}
+
+/// The upvalue cell a region input names, when it is one.
+///
+/// A variable some closure captures is a *cell* — the register holds a
+/// `GlobalRef::Cell` and its content lives in a virtual slot — so a region that
+/// so much as reads one had no word to marshal and rejected on the body's
+/// `LoadCellVal`. That is not a rare shape: a function parameter mentioned by
+/// any lambda in the function is one, which is why the generated corpus of
+/// nested regions lowered two programs in a hundred and ninety-one.
+///
+/// It crosses as a **runtime** cell, the same object a closure's mutable
+/// capture crosses as: the caller seeds one from the slot, the body names it as
+/// a capture parameter (`inst::global` already reads and writes those through
+/// `rt.cell_get`/`rt.cell_set`), and the caller reads the slot back afterwards.
+/// So the body's writes are visible to the parent whether it returned or
+/// raised, which is the property the region's register cells exist for.
+fn cell_region_input(
+    ssa: &mut Ssa,
+    sig: &mut SigInfer,
+    capture_params: &[(ValueId, Ty)],
+    body: u32,
+    reg: u8,
+    block: usize,
+) -> Option<CellInput> {
+    let input = match ssa.builtin_ref_at(reg, block)? {
+        GlobalRef::Cell(cid) => {
+            // A cell holding a callable *reference* has no runtime content at
+            // all; the lambda path is the one that carries those.
+            if ssa.cell_refs.contains_key(&cid) {
+                return None;
+            }
+            CellInput::Slot(cid)
+        }
+        // This function is itself a region's body (or a closure), so it holds
+        // the cell as a pointer already: the region one frame in gets the same
+        // pointer, and all three frames name one cell.
+        GlobalRef::CellParam(k) => match capture_params.get(k) {
+            Some(&(handle, Ty::Cell)) => CellInput::Handle(handle),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    sig.try_body_cell_inputs.insert((body, reg));
+    Some(input)
+}
+
+/// Where the runtime cell a region input travels in comes from.
+enum CellInput {
+    /// A cell of the enclosing function: the caller makes the runtime cell from
+    /// its virtual slot and reads the slot back after the region.
+    Slot(u32),
+    /// A cell the enclosing function already holds a pointer to, because it is
+    /// itself a body or a closure. Passed on as is — there is one cell, so
+    /// there is nothing to resync.
+    Handle(ValueId),
+}
+
+/// Everything [`try_lambda_env`] needs about the one input it is marshaling.
+struct LambdaEnvSite<'a> {
+    cap_ctx: CaptureCtx<'a>,
+    body: u32,
+    reg: u8,
+    identity: LambdaIdentity,
+}
+
+/// Appends a lambda region input's environment to the region call's arguments.
+///
+/// The identity itself is not passed: the body seeds the register with the ref
+/// (see the `try_params` binding), exactly the way an erased lambda argument
+/// reaches an ordinary call. What crosses is one machine word per capture, in
+/// capture order, so both sides walk `try_body_params` and agree on the layout
+/// without either of them writing it down.
+fn try_lambda_env(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    site: LambdaEnvSite<'_>,
+    call_args: &mut Vec<ValueId>,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let LambdaEnvSite {
+        cap_ctx,
+        body,
+        reg,
+        identity,
+    } = site;
+    if identity.captures == 0 {
+        return Ok(());
+    }
+    let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(reg, block) else {
+        return Err(Unsupported::TryRegion {
+            pc,
+            reason: "a closure region input stopped resolving to the closure it was recorded as",
+        });
+    };
+    let resolver = CaptureSite::new(cap_ctx, identity.fidx, CaptureMode::Share, block, pc);
+    for (k, capture) in caps.iter().enumerate() {
+        let (v, ty) = match resolver.resolve(ssa, insts, sig, capture, k)? {
+            Some(resolved) => resolved,
+            None => {
+                let ClosureCapture::Cell(cid) = capture else {
+                    unreachable!("only `Cell` is left to the call site")
+                };
+                // A capture the closure *writes* would need the cell to travel
+                // and be read back — which is what the region's own cells do
+                // for registers, and there is no register here to hang one on.
+                if sig.cell_captures.contains(&(identity.fidx, k)) {
+                    return Err(Unsupported::TryRegion {
+                        pc,
+                        reason: "a closure crossing into the region assigns what it captured",
+                    });
+                }
+                ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
+            }
+        };
+        if !crosses_as_word(ty) {
+            return Err(Unsupported::TryRegion {
+                pc,
+                reason: "a closure crossing into the region captures a value wider than a machine word",
+            });
+        }
+        sig.try_body_lambda_env_tys.insert((body, reg, k as u8), ty);
+        // Stored into the trampoline's word buffer as-is, exactly as an
+        // ordinary input is: an `F64` goes in by its eight bytes and the body
+        // reads it back out of them (`Inst::BitsToFloat`).
+        call_args.push(v);
+    }
+    Ok(())
+}
+
 /// Lowers a single function to a [`MirFunction`]. User (non-entry) functions use
 /// the `(i64, ...) -> i64` ABI in this slice: params and return are `I64`, verified
 /// via typed reads / a return-type check — a mismatch rejects (falls back) rather
@@ -247,17 +469,52 @@ pub(crate) fn lower_function(
                     cells.push(reg);
                 }
             }
-            cells.sort_unstable();
         }
-        // The trampoline passes machine words and the arity switch caps them;
-        // inputs and cells share that budget.
-        if cells.len()
-            + sig
-                .try_body_params
-                .get(&body_index_of(sig, func_index, region.begin_pc)?)
-                .map_or(0, Vec::len)
-            > 8
-        {
+        // A cell of *this* function, when this function is itself a region's
+        // body: somebody past this frame reads it, which is what having a cell
+        // means, so a nested region that writes it has to carry it back even
+        // though nothing here reads it afterwards.
+        //
+        // The read-after-the-region evidence the set above is built from cannot
+        // see that reader — it is a frame away. `try { try { r = f(); } catch e
+        // { r = -1; } } catch e2 { r = -2; }` is the whole shape: the outer
+        // body's only statement is the inner `try`, so it never reads `r`, and
+        // the inner body's assignment was dropped with nothing said.
+        for &reg in sig.try_body_cells.get(&func_index).unwrap_or(&Vec::new()) {
+            if reg != region.catch_reg && !cells.contains(&reg) && body_writes.contains(&reg) {
+                cells.push(reg);
+            }
+        }
+        cells.sort_unstable();
+        // The trampoline passes machine words and its arity switch caps them at
+        // `LK_TRY_MAX_ARGS`; past that its `default` arm traps, so the count has
+        // to be exact rather than indicative. Everything that becomes an
+        // argument is counted: each input — a lambda one contributing a word per
+        // capture and nothing for its identity — each cell, and the two-cell
+        // return channel.
+        //
+        // It used to count inputs and cells only. A body with seven inputs that
+        // also returned built a nine-argument call, and the program compiled,
+        // linked, and died on `SIGILL` the first time the region ran.
+        let inputs: usize = sig
+            .try_body_params
+            .get(&body_index)
+            .map(|params| {
+                params
+                    .iter()
+                    .map(|reg| match sig.try_body_lambdas.get(&(body_index, *reg)) {
+                        Some(identity) => identity.captures as usize,
+                        None => 1,
+                    })
+                    .sum()
+            })
+            .unwrap_or(0);
+        let channel = if sig.try_body_returns.contains(&body_index) {
+            2
+        } else {
+            0
+        };
+        if inputs + cells.len() + channel > LK_TRY_MAX_ARGS {
             return Err(Unsupported::TryRegion {
                 pc: region.begin_pc,
                 reason: "too many values cross the region boundary",
@@ -472,7 +729,54 @@ pub(crate) fn lower_function(
     let mut rebound: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let try_params: Vec<u8> = sig.try_body_params.get(&func_index).cloned().unwrap_or_default();
     let mut try_param_bitcasts: Vec<(u8, ValueId)> = Vec::new();
+    // The same read-back for a lambda input's `F64` *capture*, which has no
+    // register of its own: the closure ref already names the float value, so
+    // only the bitcast producing it is outstanding.
+    let mut entry_bitcasts: Vec<(ValueId, ValueId)> = Vec::new();
+    // Upvalue-cell inputs, bound here in `try_params` order (so the caller's
+    // argument layout is matched) and wired into `capture_params` below, once
+    // that exists — `inst::global` reads and writes a `CellParam` backed by a
+    // runtime cell through `rt.cell_get`/`rt.cell_set`, which is exactly the
+    // sharing this input needs.
+    let mut cell_input_params: Vec<(u8, ValueId)> = Vec::new();
     for &reg in &try_params {
+        if sig.try_body_cell_inputs.contains(&(func_index, reg)) {
+            let pv = ssa.new_val();
+            fn_params.push((pv, Ty::Cell));
+            cell_input_params.push((reg, pv));
+            continue;
+        }
+        // A lambda input: its identity is a compile-time fact the caller wrote
+        // down, so the register is seeded with the reference and only the
+        // environment is bound — one parameter per capture, in capture order,
+        // which is the order the caller pushed them.
+        if let Some(identity) = sig.try_body_lambdas.get(&(func_index, reg)).copied() {
+            let mut caps = Vec::with_capacity(identity.captures as usize);
+            for k in 0..identity.captures {
+                let ety = sig
+                    .try_body_lambda_env_tys
+                    .get(&(func_index, reg, k as u8))
+                    .copied()
+                    .unwrap_or(Ty::I64);
+                let ev = ssa.new_val();
+                if ety == Ty::F64 {
+                    fn_params.push((ev, Ty::I64));
+                    let f = ssa.new_val();
+                    entry_bitcasts.push((f, ev));
+                    caps.push(ClosureCapture::Value(f, Ty::F64));
+                } else {
+                    fn_params.push((ev, ety));
+                    caps.push(ClosureCapture::Value(ev, ety));
+                }
+            }
+            let global_ref = if caps.is_empty() {
+                GlobalRef::Lambda(identity.fidx)
+            } else {
+                GlobalRef::Closure(identity.fidx, caps)
+            };
+            ssa.builtin_regs.insert((0, reg), global_ref);
+            continue;
+        }
         let ty = sig
             .try_body_param_tys
             .get(&(func_index, reg))
@@ -561,6 +865,15 @@ pub(crate) fn lower_function(
             ssa.write_slot(slot, 0, (cv, cty));
         }
     }
+    // The upvalue-cell inputs join the environment: a try body has no captures
+    // of its own (`capture_count` is 0), so these are all of it, and naming them
+    // as capture parameters is what lets `LoadCellVal`/`StoreCellVal` reach them
+    // through the arm that already knows how to read and write a runtime cell.
+    for (reg, pv) in cell_input_params {
+        ssa.builtin_regs
+            .insert((0, reg), GlobalRef::CellParam(capture_params.len()));
+        capture_params.push((pv, Ty::Cell));
+    }
     let mut block_insts: Vec<Vec<Inst>> = vec![Vec::new(); total_blocks];
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
     let mut ret_ty: Option<Ty> = None;
@@ -592,6 +905,9 @@ pub(crate) fn lower_function(
                 let f = ssa.new_val();
                 insts.push(Inst::BitsToFloat { dst: f, src: bits });
                 ssa.current_def[0][reg as usize] = Some((f, Ty::F64));
+            }
+            for &(dst, bits) in &entry_bitcasts {
+                insts.push(Inst::BitsToFloat { dst, src: bits });
             }
         }
         // The entry describes every declared struct to the runtime before any
@@ -662,48 +978,21 @@ pub(crate) fn lower_function(
                     }
                 }
             }
-            for (index, (reg, handle)) in cell_handles.iter().enumerate() {
-                let now = ssa.current_def[bi][*reg as usize];
-                if now == before[index] {
-                    continue;
-                }
-                let Some((value, ty)) = now else { continue };
-                // Written immediately, not at the end of the body: a raise can
-                // happen in the next call, and the VM shows whatever was
-                // assigned before it. Storing only on the way out would lose
-                // exactly the writes a handler is most likely to look at.
-                // The cell's kind is the caller's, not this store's type: a
-                // raw handle written into a value cell is a loud failure at the
-                // read (`cell_get_raw` checks the tag), and a register the
-                // caller saw as `nil` gets a *value* cell however containery
-                // the body's assignment turns out to be.
-                if cell_is_raw(ty) && sig.try_body_raw_cells.contains(&(func_index, *reg)) {
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("rt", "cell_set_raw"),
-                        args: vec![*handle, value],
-                    });
-                    continue;
-                }
-                // Into a value cell: boxing a typed *list* rebuilds it, so a
-                // mutation made after this store would not travel — reject
-                // rather than answer with a stale copy. Every other container
-                // boxes in place (`DYN_SET`/`DYN_BYTES`/`DYN_SLICE`/the typed
-                // map tags), so it carries whatever the body does to it.
-                if matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) {
-                    return Err(Unsupported::TryRegion {
-                        pc,
-                        reason: "a nil-seeded register is assigned a typed list, which cannot be boxed in place",
-                    });
-                }
-                let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, value, ty, pc)?;
-                insts.push(Inst::Call {
-                    dst: None,
-                    callee: AbiRef::new("rt", "cell_set"),
-                    args: vec![*handle, boxed],
-                });
-            }
+            mirror_cells(&mut ssa, &mut insts, sig, func_index, &cell_handles, &before, bi, pc)?;
         }
+        // The terminator can produce definitions too, and one of them is a
+        // *nested* region's write-back: an inner `try` hands its cells' values
+        // back here, in the exit handling, where the per-instruction mirror
+        // above has already run. Snapshotting across the terminator and
+        // mirroring after it is what carries an inner region's writes out
+        // through this body's own cells — without it, a `try` inside a `try`
+        // compiled to a program that dropped the inner body's assignments and
+        // said nothing.
+        let before_exit: Vec<Option<Reg>> = cell_handles
+            .iter()
+            .map(|(reg, _)| ssa.current_def[bi][*reg as usize])
+            .collect();
+        let before_all_exit: Vec<Option<Reg>> = (0..ssa.reg_count).map(|r| ssa.current_def[bi][r]).collect();
         // Resolve the terminator's value reads while this block is current.
         match exit {
             Some(Exit::Ret(Some(reg))) => {
@@ -839,7 +1128,58 @@ pub(crate) fn lower_function(
                 // machine words, and a body wanting something wider rejects
                 // when it reads it.
                 let mut call_args = Vec::new();
+                // Upvalue-cell inputs, resynced from their runtime cells after
+                // the call: the body may have written through one, and the
+                // parent's slot is the only place that write can land.
+                let mut cell_input_values: Vec<(u32, ValueId)> = Vec::new();
                 for &reg in sig.try_body_params.get(&body).cloned().unwrap_or_default().iter() {
+                    // A variable a closure captured: it lives in a slot behind a
+                    // compile-time cell ref, so what crosses is a runtime cell
+                    // seeded from that slot.
+                    match cell_region_input(&mut ssa, sig, &capture_params, body, reg, bi) {
+                        Some(CellInput::Slot(cid)) => {
+                            let (cur, cur_ty) = ssa.read_slot(ssa.cell_slot(cid), bi, start)?;
+                            let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, cur, cur_ty, start)?;
+                            let handle = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(handle),
+                                callee: AbiRef::new("rt", "cell_new"),
+                                args: vec![boxed],
+                            });
+                            call_args.push(handle);
+                            cell_input_values.push((cid, handle));
+                            continue;
+                        }
+                        Some(CellInput::Handle(handle)) => {
+                            call_args.push(handle);
+                            continue;
+                        }
+                        None => {}
+                    }
+                    // A lambda the enclosing function holds as a compile-time
+                    // reference: there is no word to marshal, so the identity
+                    // crosses at compile time and only its environment travels.
+                    if let Some(identity) = lambda_region_input(&mut ssa, sig, body, reg, bi) {
+                        try_lambda_env(
+                            &mut ssa,
+                            &mut insts,
+                            sig,
+                            LambdaEnvSite {
+                                cap_ctx: CaptureCtx {
+                                    params: &capture_params,
+                                    index: func_index,
+                                    param_count,
+                                },
+                                body,
+                                reg,
+                                identity,
+                            },
+                            &mut call_args,
+                            bi,
+                            start,
+                        )?;
+                        continue;
+                    }
                     // Read as whatever it is, then decide whether it can cross.
                     // Forcing `I64` here is what used to reject a body that
                     // merely *looked at* a list the parent owned — a handle is a
@@ -945,6 +1285,16 @@ pub(crate) fn lower_function(
                     func: FuncId(body),
                     args: call_args,
                 });
+                // The upvalue cells first, on the same principle.
+                for (cid, handle) in cell_input_values {
+                    let cur = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(cur),
+                        callee: AbiRef::new("rt", "cell_get"),
+                        args: vec![handle],
+                    });
+                    ssa.write_slot(ssa.cell_slot(cid), bi, (cur, Ty::Dyn));
+                }
                 // Read every cell back, before the branch, so both edges see
                 // what the body managed to write — including a body that
                 // raised half way through, which is what the VM shows.
@@ -1406,6 +1756,26 @@ pub(crate) fn lower_function(
             }
             _ => {}
         }
+        // What the terminator itself rebound — for a nested region, the
+        // registers its cells handed back — reported to this body's own caller
+        // and written through this body's own cells.
+        if is_try_body {
+            for (r, was) in before_all_exit.iter().enumerate() {
+                if ssa.current_def[bi][r] != *was {
+                    rebound.insert(r as u8);
+                }
+            }
+        }
+        mirror_cells(
+            &mut ssa,
+            &mut insts,
+            sig,
+            func_index,
+            &cell_handles,
+            &before_exit,
+            bi,
+            start,
+        )?;
         block_insts[bi] = insts;
         block_exit[bi] = exit;
         ssa.mark_filled(bi);
@@ -1573,6 +1943,41 @@ pub(crate) fn lower_function(
             callee: AbiRef::new("rt", "cell_get"),
             args: vec![*value],
         });
+        // This function may itself be a region's body, and then the `return` it
+        // is about to perform is not its own either: it belongs to whoever is
+        // two frames out. Forward it into *this* body's channel instead — the
+        // value is already boxed, so the hand-off is two `cell_set`s — and
+        // return normally, so the trampoline still reports "did not raise".
+        //
+        // Without the forward, the inner region's parked value was read back
+        // and then dropped, because a body's own return type is `Nil`: `try {
+        // try { return 11; } catch e { … } } catch e { … }` answered whatever
+        // the function fell through to.
+        if let Some((outer_flag, outer_value)) = return_channel {
+            ret_insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "cell_set"),
+                args: vec![outer_value, boxed],
+            });
+            let one = ssa.new_val();
+            ret_insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let marked = to_dyn_any(&mut ssa, &mut ret_insts, one, Ty::I64, 0)?;
+            ret_insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "cell_set"),
+                args: vec![outer_flag, marked],
+            });
+            mir_blocks.push(Block {
+                id: BlockId(ret_block_ids[index]),
+                params: Vec::new(),
+                insts: ret_insts,
+                term: Term::Ret(None),
+            });
+            continue;
+        }
         let returned_value = match ret {
             Ty::Nil => None,
             Ty::Dyn => Some(boxed),

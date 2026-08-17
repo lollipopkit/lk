@@ -420,8 +420,8 @@ let outer = |v| {
 cell 时,子的需求**往上传**:调用点把它记到父身上并请求重试,于是
 `cell_captures` 在整条链上收敛。三层也是这么通的。
 
-`spawn`、`try` 区域、以及被擦除的闭包环境这三处还不解析 `CellParam`,标了
-TODO —— 它们拒绝,于是程序回落,而不是丢掉写回。
+`spawn`、`try` 区域、以及被擦除的闭包环境这三处一开始不解析 `CellParam`,标了
+TODO;2026-08-17 补齐(见 §26)。
 
 ## 14. `base64` / `hex` / `url`(2026-07-30)
 
@@ -892,3 +892,48 @@ geomean 0.987x。
 
 扫描从 `identical=61 diverged=1 fallback=1` 变成 `identical=62 diverged=1 fallback=0`,
 门禁期望值同步更新(`scripts/vm_native_sweep.sh`、`docs/testing.md`)。
+
+## §26 `try` 区域:闭包入参、cell 入参、嵌套(2026-08-17)
+
+三件事一起做,因为它们是同一个问题的三面 —— region body 被外联成独立函数,于是
+"外层帧里的什么东西能跨过边界"这个问题要对每一类东西单独答一次。
+
+**闭包入参。** lambda 在原生侧没有运行时表示,它是编译期 `GlobalRef`,所以
+`try { r = inner(); }` 里的 `inner` 没有可 marshal 的机器字,body 读它报
+`ReferenceAsValue`。按擦除 lambda 实参的老办法走:**身份走编译期**
+(`SigInfer::try_body_lambdas`,body 把寄存器 seed 成 ref),**环境走运行时**
+(每个捕获一个字,capture 顺序)。两侧都按 `try_body_params` 顺序走,所以布局不用
+写在任何地方。
+
+**cell 入参。** 被任意闭包捕获的变量是 cell:寄存器持 `GlobalRef::Cell`,内容在虚拟
+slot 里。region 只要**读**一下这种变量就拒绝(body 的 `LoadCellVal` 找不到 ref)。
+这不是罕见形状 —— 函数里任何 lambda 提到的参数都是,生成语料里 191 个嵌套 region
+程序只有 2 个能原生化。改成跨**运行时 cell**:父从 slot 建一个,body 把它当
+capture parameter 收(`inst::global` 本来就会用 `rt.cell_get`/`cell_set` 读写这种),
+父在 region 后把 slot 读回来。父自己已经持指针时(它本身是 body 或闭包)直接传下去,
+三层帧同一个 cell。
+
+**嵌套。** `try` 里的 `try` 原来直接拒。放开只要两步:`scan` 只认本函数**自己**的
+region(内层属于 body,body 自己被扫时才轮到它),外联循环改成在**增长的**表上走。
+但放开之后暴露了三处静默错答,每一处都是"某个东西只在指令循环里被处理":
+
+1. 内层 region 的写回发生在 **terminator** 里,而"把改过的寄存器镜像进本体自己的
+   cell"只在指令循环里做 —— 内层 body 的赋值就这么丢了。抽出 `mirror_cells`,
+   terminator 之后再跑一次,`rebound` 同理。
+2. 本体自己的 cell,内层 region 写了也要带回来。原来的判据是"region 之后有人读",
+   而那个读者在**上一帧**,本体自己不读。所以 `try_body_cells[本体]` 直接并进内层
+   region 的 cell 集合。
+3. 内层 body 的 `return` 经 return channel 交给本体,而本体自己**也**是 body 时,
+   那个 `return` 还得再往上一层交。check block 原来直接 `Term::Ret`,于是值被读出来
+   又丢掉(body 自己的返回类型是 `Nil`)。
+
+还有一个不是静默的:trampoline 的 arity switch `default` 是 `__builtin_trap()`,而
+预算只数了 inputs + cells,没数 return channel 的两个 cell,也没把 lambda 入参按
+capture 数展开。七个 input 加一个 return 的 body 编译、链接、然后第一次进 region 就
+`SIGILL`。预算改成精确计数,codegen 侧再加一道 `LK_TRY_MAX_ARGS` 拒绝,于是那个
+`trap` 从构造上不可达。
+
+门禁:随机生成 836 个含 `try` 的程序(三批不同种子),176 个全原生,0 处分歧;
+fuzzer 加了嵌套 region + 闭包入参的形状;`examples/syntax/try_catch.lk` 把三种形状
+钉进覆盖率门禁。剩下的主要回落原因是 cell 读出来是 `Dyn`(`p0 % 5` 这类算术还没有
+Dyn 臂)和 body 里的 `for`(外联丢掉 `performance` facts),两条都是已知的、诚实的拒绝。

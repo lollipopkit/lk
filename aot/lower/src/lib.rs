@@ -159,6 +159,9 @@ pub fn lower_bundled(
         try_bodies: std::collections::HashMap::new(),
         try_body_params: std::collections::HashMap::new(),
         try_body_param_tys: std::collections::HashMap::new(),
+        try_body_lambdas: std::collections::HashMap::new(),
+        try_body_cell_inputs: std::collections::HashSet::new(),
+        try_body_lambda_env_tys: std::collections::HashMap::new(),
         try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
         try_body_raw_cells: std::collections::HashSet::new(),
@@ -210,11 +213,18 @@ pub fn lower_bundled(
     // signature fixpoint as everything else. A region whose body cannot be
     // outlined is not recorded here, and the parent's own lowering then reports
     // it — which is why the scan there runs again rather than trusting this one.
-    for fi in 0..funcs.len() {
-        if !reachable[fi] {
+    // Over a *growing* table: a body that itself contains a `try` is scanned
+    // when the loop reaches it, and its inner region is outlined the same way.
+    // That is what makes `try { try { … } catch { … } } catch { … }` lower —
+    // nesting is one more turn of the same crank, not a second mechanism.
+    let mut fi = 0;
+    while fi < funcs.len() {
+        let scanning = fi;
+        fi += 1;
+        if !reachable[scanning] {
             continue;
         }
-        let Ok(instrs) = funcs[fi]
+        let Ok(instrs) = funcs[scanning]
             .code
             .iter()
             .map(|raw| Instr::try_from_raw(*raw))
@@ -222,18 +232,18 @@ pub fn lower_bundled(
         else {
             continue;
         };
-        let Ok(regions) = try_region::scan(&funcs[fi], &instrs) else {
+        let Ok(regions) = try_region::scan(&funcs[scanning], &instrs) else {
             continue;
         };
         for region in &regions {
-            let body = try_region::outline(&funcs[fi], region);
+            let body = try_region::outline(&funcs[scanning], region);
             let body_index = funcs.len() as u32;
             funcs.push(body);
             reachable.push(true);
             sig.param_obs.push(Vec::new());
             sig.ret_types.push(Ty::Nil);
             sig.ret_known.push(true);
-            sig.try_bodies.insert((fi as u32, region.begin_pc), body_index);
+            sig.try_bodies.insert((scanning as u32, region.begin_pc), body_index);
             if region.body_returns {
                 sig.try_body_returns.insert(body_index);
             }
@@ -277,6 +287,10 @@ pub fn lower_bundled(
                 // thing — silently, and a silent convergence is a miscompile.
                 sig.param_structs.clone(),
                 sig.dyn_params.len(),
+                sig.try_body_lambdas.clone(),
+                sig.try_body_lambda_env_tys.clone(),
+                sig.try_body_params.clone(),
+                sig.try_body_cell_inputs.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -383,6 +397,23 @@ pub fn lower_bundled(
                     }) if reg < 256 => {
                         sig.try_body_extra_cells.entry(body).or_default().insert(reg as u8);
                     }
+                    // The mirror image, one frame in: a register *the body
+                    // itself* cannot define is an **input**, and the parent has
+                    // it. `discover_try_params` finds most of them before the
+                    // fixpoint starts, but it stops at the first failure that is
+                    // not this one — and a call through an input whose closure
+                    // identity the parent has not recorded yet is exactly such a
+                    // failure, resolved only on the pass after. Everything the
+                    // body reads past that point is therefore found here.
+                    Err(Unsupported::UndefinedOperand { reg, body: None, .. })
+                        if reg < 256 && sig.try_bodies.values().any(|&body| body == fi as u32) =>
+                    {
+                        let params = sig.try_body_params.entry(fi as u32).or_default();
+                        if !params.contains(&(reg as u8)) {
+                            params.push(reg as u8);
+                            params.sort_unstable();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -426,7 +457,11 @@ pub fn lower_bundled(
                 && snapshot.12 == sig.try_body_param_tys
                 && snapshot.13 == sig.try_body_rebound
                 && snapshot.14 == sig.param_structs
-                && snapshot.15 == sig.dyn_params.len();
+                && snapshot.15 == sig.dyn_params.len()
+                && snapshot.16 == sig.try_body_lambdas
+                && snapshot.17 == sig.try_body_lambda_env_tys
+                && snapshot.18 == sig.try_body_params
+                && snapshot.19 == sig.try_body_cell_inputs;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
@@ -442,7 +477,11 @@ pub fn lower_bundled(
                     .values()
                     .map(std::collections::HashSet::len)
                     .sum::<usize>()
-                + sig.try_body_param_tys.len();
+                + sig.try_body_param_tys.len()
+                + sig.try_body_lambdas.len()
+                + sig.try_body_lambda_env_tys.len()
+                + sig.try_body_params.values().map(Vec::len).sum::<usize>()
+                + sig.try_body_cell_inputs.len();
             if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
                 break;
             }

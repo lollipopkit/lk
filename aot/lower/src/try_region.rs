@@ -166,12 +166,19 @@ pub(crate) fn outline(parent: &FunctionData, region: &TryRegionShape) -> Functio
 /// silently is what made this feature invisible for so long: a program with a
 /// `try` in it simply ran three times slower, with nothing said.
 pub(crate) fn scan(func: &FunctionData, instrs: &[Instr]) -> Result<Vec<TryRegionShape>, Unsupported> {
-    let mut regions = Vec::new();
+    let mut regions: Vec<TryRegionShape> = Vec::new();
+    // Only this function's *own* regions. A `try` written inside another one's
+    // body belongs to the body — which becomes a function of its own, scanned
+    // in turn — so outlining it here as well would give one `TryBegin` two
+    // owners and consume the same instructions twice.
+    let mut inner_until = 0usize;
     for (pc, instr) in instrs.iter().enumerate() {
-        if instr.opcode() != Opcode::TryBegin {
+        if instr.opcode() != Opcode::TryBegin || pc < inner_until {
             continue;
         }
-        regions.push(shape_at(func, instrs, pc)?);
+        let shape = shape_at(func, instrs, pc)?;
+        inner_until = shape.body_end;
+        regions.push(shape);
     }
     Ok(regions)
 }
@@ -227,22 +234,12 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
     };
 
     let mut body_returns = false;
-    for (pc, instr) in instrs.iter().enumerate().take(body_end).skip(begin_pc + 1) {
+    for instr in instrs.iter().take(body_end).skip(begin_pc + 1) {
         let op = instr.opcode();
         // A `return` inside the body returns from the *enclosing* function —
         // recorded, and answered by the return channel (`body_returns`).
         if matches!(op, Opcode::Return | Opcode::Return0 | Opcode::Return1) {
             body_returns = true;
-        }
-
-        // A nested region would need its own outlining pass inside the
-        // synthesized function. That is the same work again, and it is the
-        // next round's.
-        if matches!(op, Opcode::TryBegin) {
-            return Err(Unsupported::TryRegion {
-                pc,
-                reason: "a try inside a try",
-            });
         }
     }
 

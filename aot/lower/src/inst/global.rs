@@ -77,7 +77,16 @@ pub(super) fn lower(
                     let (v, ty) = ssa.read_slot(slot, block, pc)?;
                     ssa.write(instr.a(), block, (v, ty));
                 }
-                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+                _ => {
+                    // No cell ref *here*. In a `try` body that is the ordinary
+                    // case for a variable some closure captured: the ref lives
+                    // in the enclosing function, and the read below reports the
+                    // register by name so the region can pass its cell in
+                    // (`cell_region_input`). A register that does have a plain
+                    // definition is simply not a cell, and rejects.
+                    ssa.read(instr.b(), block, pc)?;
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                }
             }
         }
         Opcode::StoreCellVal => {
@@ -150,7 +159,12 @@ pub(super) fn lower(
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     }
                 }
-                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+                _ => {
+                    // As `LoadCellVal`: the read names the register, which is
+                    // how the enclosing function's cell becomes a region input.
+                    ssa.read(instr.a(), block, pc)?;
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                }
             }
         }
         Opcode::SetGlobal => {

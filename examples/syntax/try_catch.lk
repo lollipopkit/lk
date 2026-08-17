@@ -38,4 +38,56 @@ try {
 }
 
 assert(log == ["ok", "caught", "code-404"]);
+
+// A closure written outside the region and called inside it. The body runs in
+// a frame of its own, so what crosses the boundary is the closure's *identity*
+// plus whatever it captured — one value per capture, and nothing at all for a
+// capture-free lambda.
+fn scale(v: Int) -> Int {
+    let factor = 3;
+    let apply = || -> Int { return v * factor; };
+    let plain = || -> Int { return 7; };
+    let out = 0;
+    try { out = apply() + plain(); } catch e { out = -1; }
+    return out;
+}
+assert(scale(2) == 13);
+
+// Two of them across one region, and a region the closure raises out of.
+fn probe(bad: Bool) -> Int {
+    let base = 10;
+    let ok = || -> Int { return base + 1; };
+    let boom = || -> Int { error("nope"); return 0; };
+    let out = 0;
+    try { out = if bad { boom() } else { ok() }; } catch e { out = -2; }
+    return out;
+}
+assert(probe(false) == 11);
+assert(probe(true) == -2);
+
+// A `try` inside a `try`. Each region's body becomes a function of its own, so
+// nesting is that same step taken twice — and what the inner body writes has to
+// travel out through *both* frames, including on a path where the outer one
+// then raises.
+fn layered(k: Int) -> String {
+    let trace = "";
+    try {
+        trace = trace + "a";
+        try {
+            if k == 1 { error("inner"); }
+            trace = trace + "b";
+        } catch e {
+            trace = trace + "B";
+        }
+        if k == 2 { error("outer"); }
+        trace = trace + "c";
+    } catch e {
+        trace = trace + "A";
+    }
+    return trace;
+}
+assert(layered(0) == "abc");
+assert(layered(1) == "aBc");
+assert(layered(2) == "abA");
+
 println("try/catch: ok");

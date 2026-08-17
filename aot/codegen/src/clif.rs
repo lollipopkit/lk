@@ -40,6 +40,11 @@ const HYBRID_ARG_SIZE: usize = 16;
 /// Byte offset of the value field within an `LkHybridArg`.
 const HYBRID_ARG_VALUE_OFFSET: i32 = 8;
 
+/// How many machine words the `try`-region trampoline's arity switch covers
+/// (`lkrt/src/try_trampoline.c`). Its `default` arm is `__builtin_trap()`, so a
+/// call built past this is a crashing binary rather than a rejected program.
+const LK_TRY_MAX_ARGS: usize = 8;
+
 /// Why a MIR shape is not (yet) lowerable through the Cranelift path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClifError {
@@ -888,7 +893,14 @@ impl Lower {
                 let reference = mctx.module.declare_func_in_func(callee, b.func);
                 let body_addr = b.ins().func_addr(types::I64, reference);
                 // The inputs travel as machine words in a stack buffer, which
-                // is what the trampoline's arity switch reads them back out of.
+                // is what the trampoline's arity switch reads them back out of
+                // — and that switch has a `default` arm that traps. Refusing
+                // here is what keeps the trap unreachable: the lowering budgets
+                // for the cap, but a budget is an estimate of a number this is
+                // holding, so the number itself is checked.
+                if args.len() > LK_TRY_MAX_ARGS {
+                    return Err(ClifError::Unsupported("try-region arity over trampoline cap"));
+                }
                 let slot_bytes = (args.len().max(1) * 8) as u32;
                 let args_slot =
                     b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, slot_bytes, 3));

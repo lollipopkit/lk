@@ -60,6 +60,28 @@ pub(crate) struct SigInfer {
     /// known, and read by the body on the next pass — the same fixpoint that
     /// discovers *which* registers are inputs at all.
     pub(crate) try_body_param_tys: std::collections::HashMap<(u32, u8), Ty>,
+    /// Region inputs the enclosing function holds as a *closure reference*
+    /// rather than as a value.
+    ///
+    /// A lambda has no runtime representation natively — it is a compile-time
+    /// `GlobalRef`, which is why storing one in a list rejects — so a region
+    /// input that is one has no word to marshal. It crosses the same way an
+    /// erased lambda argument crosses an ordinary call instead: the *identity*
+    /// travels at compile time (the body seeds the register with the ref) and
+    /// only the environment travels at run time, as extra words in the same
+    /// argument buffer.
+    ///
+    /// Without it `try { r = inner(); }` rejected for any local `inner`, which
+    /// is a shape a `try` block is written around constantly.
+    pub(crate) try_body_lambdas: std::collections::HashMap<(u32, u8), LambdaIdentity>,
+    /// Region inputs the enclosing function holds as an *upvalue cell* — a
+    /// variable some closure in it captured. See [`cell_region_input`].
+    pub(crate) try_body_cell_inputs: std::collections::HashSet<(u32, u8)>,
+    /// What type each of those environment words travels as, keyed by
+    /// `(body, register, capture index)` — the [`SigInfer::try_body_param_tys`]
+    /// of a lambda input, which needs one type per capture rather than one per
+    /// register.
+    pub(crate) try_body_lambda_env_tys: std::collections::HashMap<(u32, u8, u8), Ty>,
     /// A try body's *outputs*: registers of the enclosing function that the
     /// body assigns and the enclosing function goes on to read.
     ///
