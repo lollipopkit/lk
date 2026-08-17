@@ -14,4 +14,18 @@ println("u2.id={}, u2.name={}, u2.active={}", u2.id, u2.name, u2.active);
 let u3 = User { id: 3, name: "Bob", active: true };
 println("u3.id={}, u3.name={}, u3.active={}", u3.id, u3.name, u3.active);
 
+// Struct update (`{ ..base, field: value }`) keeps the *declared* field order,
+// like every other way of building the type. It printed the hash map's own
+// order instead, so the same struct rendered two ways depending on which syntax
+// built it — and the interpreter and the compiled build disagreed about which.
+// Six fields, deliberately: with fewer, the two orders can coincide.
+struct Reading { zebra: Int, apple: Int, mango: Int, kiwi: Int, pear: Int, fig: Int }
+let base = Reading { zebra: 1, apple: 2, mango: 3, kiwi: 4, pear: 5, fig: 6 };
+let shown = "{}".format(base);
+assert(shown == "Reading{zebra:1,apple:2,mango:3,kiwi:4,pear:5,fig:6}");
+let bumped = Reading { ..base, apple: 99 };
+assert("{}".format(bumped) == "Reading{zebra:1,apple:99,mango:3,kiwi:4,pear:5,fig:6}");
+assert(bumped.apple == 99);
+assert(bumped.zebra == 1);
+
 return;

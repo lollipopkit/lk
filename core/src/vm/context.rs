@@ -763,7 +763,33 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         }
     };
 
-    let ty = Arc::new(crate::val::DeclaredType::new(type_scope, type_name));
+    // The declaration's field order travels with the type, exactly as it does
+    // for an ordinary `NewObject` (see `exec::container::declared_type`).
+    // Without it `display` had nothing to order by and fell back to the hash
+    // map's own iteration, so `P { ..base, x: 9 }` printed its fields in a
+    // different order from the `P { … }` two lines above it — the same type,
+    // two renderings, decided by which syntax built the value.
+    let declared: Arc<[Arc<str>]> = runtime
+        .module()
+        .and_then(|module| {
+            module
+                .type_info
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_str() == &*type_name)
+        })
+        .map(|decl| {
+            decl.fields
+                .iter()
+                .map(|field| Arc::<str>::from(field.as_str()))
+                .collect()
+        })
+        .unwrap_or_else(|| Arc::from([] as [Arc<str>; 0]));
+    let ty = Arc::new(crate::val::DeclaredType::with_fields(
+        type_scope,
+        Arc::<str>::from(&*type_name),
+        declared,
+    ));
     Ok(RuntimeVal::Obj(
         runtime
             .heap_mut()

@@ -2139,13 +2139,23 @@ impl TypeChecker {
                     return Ok(());
                 }
             },
-            // A struct's field names its own type; anything else about the
-            // field (unknown name, non-literal) is the field-access path's
-            // business, so a failure to resolve one is simply not checked here.
-            Type::Named(name) => match self.struct_field_type(name, key) {
+            // A struct's field names its own type. A field name that does not
+            // resolve is an error *here* rather than the field-access path's
+            // business: a store has no access expression for that path to see.
+            // `p.z = 3` desugars straight to `__lk_set_field(p, "z", 3)`, so
+            // while reading `p.z` was refused, writing it was accepted — and
+            // the two back ends then disagreed about the value, the interpreter
+            // growing the field and the compiled build dropping it.
+            //
+            // Only for a struct this checker knows and a field written as a
+            // literal. An unknown name is somebody else's to refuse, and a
+            // computed field name is not a struct store at all.
+            Type::Named(name) if self.registry.get_struct(name).is_some() => match self.struct_field_type(name, key) {
                 Ok(ty) => ty,
-                Err(_) => return Ok(()),
+                Err(_) if !matches!(key, Expr::Literal(_)) => return Ok(()),
+                Err(err) => return Err(err),
             },
+            Type::Named(_) => return Ok(()),
             _ => return Ok(()),
         };
         let value_ty = self.check_expr(value)?;

@@ -926,6 +926,21 @@ mod tests {
         for (what, source) in refused {
             check_program(source).expect_err(what);
         }
+        // A field the struct does not declare, which is the same error reading
+        // it gives — and a store is where it has to be said, because a store
+        // has no field-access expression for the read path to see. `p.z = 3`
+        // desugars straight to `__lk_set_field(p, "z", 3)`, so reading `p.z`
+        // was refused while writing it was accepted, and the two back ends then
+        // disagreed: the interpreter grew the field, the compiled build dropped
+        // it, and neither said anything.
+        let undeclared = [
+            ("plain store", "struct S { x: Int }\nlet s = S { x: 1 };\ns.z = 2;"),
+            ("compound store", "struct S { x: Int }\nlet s = S { x: 1 };\ns.z += 2;"),
+        ];
+        for (what, source) in undeclared {
+            let message = check_program(source).expect_err(what).to_string();
+            assert!(message.contains("has no field 'z'"), "{what}: {message}");
+        }
 
         let accepted = [
             ("a store of the declared type", "let l: List<Int> = [1];\nl[0] = 2;"),
