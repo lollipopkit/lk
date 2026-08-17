@@ -2633,3 +2633,37 @@ slice / bytes,独缺字符串)。
 
 现在是一条规则两个调用者:`trait_method_conformance` 被注册路径和 `impl` 语句的检查
 共同调用。形参逆变、返回协变,是"一个签名要顶替另一个"的通常规矩。
+
+## trait 是一个类型(2026-08-18)
+
+trait 系统有三部分:`trait` 声明方法集、`impl` 为某类型提供实现、调用时按目标类型分发。
+前两部分一直在,第三部分——**把 trait 的名字写在类型的位置**——一直报错:
+
+```lk
+trait Show { fn show(self) -> String; }
+struct P { x: Int }
+impl Show for P { fn show(self) -> String { return "P"; } }
+
+fn render(v: Show) -> String { return v.show(); }
+render(P { x: 4 })      // 此前:Argument 1 has the wrong type (expected Show, got P)
+```
+
+于是唯一能写"任何有 show 的东西"的办法是把参数留成无类型的,也就是什么都不检查。
+
+修好后四个位置都成立:参数类型、返回类型、绑定的类型、容器的元素类型
+(`examples/syntax/trait_as_type.lk` 逐条钉住)。查出来的原因有四层,每一层都是独立的:
+
+| 层 | 现象 |
+| --- | --- |
+| `TypeRegistry.implementations` 在类型检查期是空的 | impl 只在**模块加载**时注册(`VmContext::register_module_types`),那是所有类型检查之后。`predeclare_type_declarations` 现在把 impl 和 struct/trait 一起提前登记 |
+| `Type::is_assignable_to` 没有 registry | 它是 `values` 里两个类型之间的纯函数。加了 `TraitOracle` 参数,由类型检查器实现;`NoTraits` 是其他调用方的答案 |
+| 返回类型走的是**合一**,不是可赋值性 | 同一个问题的两个答案,只有一个有这条规则。`unify` 补上对应分支 |
+| 异构字面量推成 `Tuple` | `container_literal_fits` 只有 List/Set/Map 三个分支,`[p, q]` 写给 `List<Show>` 从来没走到 List 那支 |
+
+顺带删掉了一个重复结构:`TypeInferenceEngine` 自己持有一份 `TypeRegistry` **克隆**,
+是构造检查器时拷的,之后所有声明它都看不见。它只用来发 `T{n}` 编号,现在改成一个 `u32`
+计数器,registry 由 `solve_constraints` / `unify` 按引用传入。
+
+还有一条:trait 类型的接收者只能调用 trait 声明过的方法。此前 `v.nosuch()` 直接到运行期,
+而两个后端"发现"的方式不同,报的话也不同——解释器说 `P has no method 'nosuch'`,
+编译版说的是 map 属性那句。

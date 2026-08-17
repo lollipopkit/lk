@@ -1,0 +1,59 @@
+// A trait is a type.
+//
+// The trait system had three parts and shipped two: a `trait` declares a
+// method set, an `impl` provides it for a type, and dispatch finds the right
+// body at the call. The third part is writing the trait's *name* where a type
+// goes — which is what makes "any shape" a thing a signature can say. It was
+// rejected outright: the checker knew `Show` was a declared name and had no
+// rule saying `P` satisfies it, so the only way to write this was to leave the
+// parameter untyped and check nothing.
+
+trait Shape {
+    fn area(self) -> Int;
+    fn name(self) -> String;
+}
+
+struct Rect { w: Int, h: Int }
+struct Square { side: Int }
+
+impl Shape for Rect {
+    fn area(self) -> Int { return self.w * self.h; }
+    fn name(self) -> String { return "rect"; }
+}
+
+impl Shape for Square {
+    fn area(self) -> Int { return self.side * self.side; }
+    fn name(self) -> String { return "square"; }
+}
+
+// 1. As a parameter type: one function, either implementor.
+fn describe(s: Shape) -> String {
+    return "{} {}".format(s.name(), s.area());
+}
+assert(describe(Rect { w: 3, h: 4 }) == "rect 12");
+assert(describe(Square { side: 5 }) == "square 25");
+
+// 2. As a return type. Checked by *unification* rather than assignability —
+// two answers to one question, and only one of them had the rule.
+fn pick(big: Bool) -> Shape {
+    if big { return Rect { w: 10, h: 10 }; }
+    return Square { side: 2 };
+}
+assert(pick(true).area() == 100);
+assert(pick(false).area() == 4);
+
+// 3. As a binding's type.
+let one: Shape = Rect { w: 2, h: 2 };
+assert(one.area() == 4);
+
+// 4. As a container's element type. A heterogeneous literal infers as a tuple,
+// which is the precision that made the annotation written for it fail.
+let all: List<Shape> = [Rect { w: 1, h: 6 }, Square { side: 3 }];
+let total = all.reduce(0, |sum, s| sum + s.area());
+assert(total == 15);
+assert(all[0].name() == "rect");
+
+// A type that does not implement it is refused, and so is a method the trait
+// does not declare — the surface of a `Shape` is what `Shape` says it is.
+
+println("trait as type: ok");

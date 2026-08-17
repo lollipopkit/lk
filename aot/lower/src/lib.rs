@@ -446,6 +446,11 @@ pub fn lower_bundled(
                 funcs.push(funcs[orig as usize].clone());
                 reachable.push(true);
             }
+            // The working list and the per-function tables are one indexing
+            // scheme (`SigInfer::push_function`); a queued clone is the only
+            // moment they legitimately differ, and it ends here.
+            debug_assert_eq!(funcs.len(), sig.param_obs.len(), "function tables out of step");
+            debug_assert_eq!(funcs.len(), reachable.len(), "reachability out of step");
             passes += 1;
             // Field-by-field comparison against the pre-pass snapshot: the same
             // convergence condition without cloning the whole state a second

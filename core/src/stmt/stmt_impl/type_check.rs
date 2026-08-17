@@ -5,7 +5,7 @@ use crate::{
     expr::Pattern,
     token::ParseError,
     typ::{
-        FunctionSig, NamedParamSig, PendingStrictFunction, PendingStrictParam, StructDef, TraitDef,
+        FunctionSig, NamedParamSig, PendingStrictFunction, PendingStrictParam, StructDef, TraitDef, TraitImpl,
         TypeAlias as AliasDef, TypeChecker, union_of,
     },
     val::{FunctionNamedParamType, Type},
@@ -280,7 +280,7 @@ impl Stmt {
                     }
                 } else if let Some(expected_type) = type_annotation
                     && !type_checker.is_assignable(&expr_type, expected_type)
-                    && !container_literal_fits(expected_type, value, &expr_type)
+                    && !container_literal_fits(expected_type, value, &expr_type, type_checker.registry())
                 {
                     let error_msg = format!(
                         "Type mismatch in let statement: pattern expected type {}, but expression has type {}",
@@ -1217,6 +1217,32 @@ impl Program {
                         target_type: target.clone(),
                     });
                 }
+                // Which types implement which trait, hoisted with the rest.
+                //
+                // The registry learned this only at *module load*
+                // (`VmContext::register_module_types`), which is after every
+                // type check — so `implements_trait` answered `false` for the
+                // whole checking pass and `fn render(v: Show)` accepted
+                // nothing. The impl's *conformance* was already checked in the
+                // ordered walk below; what was missing was the relation
+                // itself.
+                //
+                // No method indices: they are the compiler's, and this runs
+                // before compilation. The load-time registration replaces this
+                // entry (keyed by target type and trait name) with the real
+                // one, so dispatch is unaffected.
+                Stmt::Impl {
+                    trait_name: Some(trait_name),
+                    target_type,
+                    ..
+                } => {
+                    let target_type = type_checker.resolve_aliases(target_type);
+                    type_checker.registry_mut().register_trait_impl(TraitImpl {
+                        trait_name: trait_name.clone(),
+                        target_type,
+                        methods: HashMap::new(),
+                    });
+                }
                 _ => {}
             }
         }
@@ -1665,11 +1691,16 @@ fn declared_admits_nil(declared: &Type) -> bool {
 /// call sites apply to an argument (`literal_fits_container` in
 /// `typ::type_checker::expressions::calls`), through the same
 /// `Type::container_literal_fits`.
-fn container_literal_fits(expected: &Type, value: &crate::expr::Expr, value_ty: &Type) -> bool {
+fn container_literal_fits(
+    expected: &Type,
+    value: &crate::expr::Expr,
+    value_ty: &Type,
+    oracle: &dyn crate::val::TraitOracle,
+) -> bool {
     use crate::expr::Expr;
     let mut value = value;
     while let Expr::Paren(inner) = value {
         value = inner;
     }
-    matches!(value, Expr::List(_) | Expr::Map(_)) && value_ty.container_literal_fits(expected)
+    matches!(value, Expr::List(_) | Expr::Map(_)) && value_ty.container_literal_fits_with(expected, oracle)
 }

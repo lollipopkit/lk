@@ -274,7 +274,7 @@ impl TypeChecker {
 
     /// Create a type checker with existing registry and custom options
     pub fn with_registry_and_options(registry: TypeRegistry, options: TypeCheckerOptions) -> Self {
-        let inference_engine = TypeInferenceEngine::new(registry.clone());
+        let inference_engine = TypeInferenceEngine::new();
 
         Self {
             registry,
@@ -743,7 +743,13 @@ impl TypeChecker {
     pub fn is_assignable(&self, from: &Type, to: &Type) -> bool {
         let lhs = self.resolve_aliases(from);
         let rhs = self.resolve_aliases(to);
-        lhs.is_assignable_to(&rhs)
+        // Through the trait oracle: a trait names a type, and the tables that
+        // say which types implement it are here rather than in the walk.
+        // Without it `fn render(v: Show)` accepted nothing at all, and the only
+        // way to write "anything with a `show`" was to leave the parameter
+        // untyped — the declaration and the dispatch both already worked, and
+        // the *type* was the missing third of the feature.
+        lhs.is_assignable_to_with(&rhs, self.registry())
     }
 
     /// Register a function signature for static checking by name
@@ -758,7 +764,12 @@ impl TypeChecker {
 
     /// Solve type constraints and return final types
     pub fn solve_constraints(&mut self) -> Result<HashMap<String, Type>> {
-        self.inference_engine.solve_constraints()
+        let Self {
+            inference_engine,
+            registry,
+            ..
+        } = self;
+        inference_engine.solve_constraints(registry)
     }
 
     /// Add a type constraint via the inference engine (for use by external type-checking passes).

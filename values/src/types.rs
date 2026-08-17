@@ -521,6 +521,25 @@ pub const NUMBER_TYPE_NAME: &str = "Number";
 /// about, which is the part that drifts.
 pub const CONTAINER_TYPE_NAMES: &[&str] = &["List", "Map", "Set", "Tuple", "Task", "Channel", "Box", "Boxed"];
 
+/// Answers "does this type implement this trait", for the assignability walk.
+///
+/// This crate has the `Type` and none of the declarations: a trait's name is
+/// just a `Type::Named` here. The type checker holds the trait and impl tables
+/// and implements this; [`NoTraits`] is the answer everywhere else, and is what
+/// every existing caller of [`Type::is_assignable_to`] gets.
+pub trait TraitOracle {
+    fn implements(&self, ty: &Type, trait_name: &str) -> bool;
+}
+
+/// The oracle for a caller with no trait tables: nothing implements anything.
+pub struct NoTraits;
+
+impl TraitOracle for NoTraits {
+    fn implements(&self, _ty: &Type, _trait_name: &str) -> bool {
+        false
+    }
+}
+
 impl Type {
     pub fn parse(s: &str) -> Option<Type> {
         let s = s.trim();
@@ -797,10 +816,10 @@ impl Type {
     /// - either side is still a free type variable — `let xs: List<Int> = [];`
     ///   gives the empty literal `List<'T>`, and binding `'T` to `Int` is
     ///   inference, not a widening of one container into another.
-    fn element_assignable(source: &Type, target: &Type) -> bool {
+    fn element_assignable_with(source: &Type, target: &Type, oracle: &dyn TraitOracle) -> bool {
         match (source, target) {
             (_, Type::Unknown) => true,
-            (Type::Variable(_), _) | (_, Type::Variable(_)) => source.is_assignable_to(target),
+            (Type::Variable(_), _) | (_, Type::Variable(_)) => source.is_assignable_to_with(target, oracle),
             _ => source == target,
         }
     }
@@ -819,16 +838,44 @@ impl Type {
     /// a `let` with an annotation, a positional argument, and a named one.
     /// Callers pass the *expression* so that only a literal takes this path.
     pub fn container_literal_fits(&self, target: &Type) -> bool {
+        self.container_literal_fits_with(target, &NoTraits)
+    }
+
+    /// [`Self::container_literal_fits`] with a [`TraitOracle`], for the same
+    /// reason [`Self::is_assignable_to_with`] takes one: the elements may be
+    /// required to implement a trait.
+    pub fn container_literal_fits_with(&self, target: &Type, oracle: &dyn TraitOracle) -> bool {
         match (self, target) {
-            (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
-            (Type::Set(a), Type::Set(b)) => a.is_assignable_to(b),
-            (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),
+            (Type::List(a), Type::List(b)) => a.is_assignable_to_with(b, oracle),
+            (Type::Set(a), Type::Set(b)) => a.is_assignable_to_with(b, oracle),
+            (Type::Map(ak, av), Type::Map(bk, bv)) => {
+                ak.is_assignable_to_with(bk, oracle) && av.is_assignable_to_with(bv, oracle)
+            }
+            // A heterogeneous literal infers as a `Tuple` — that is the whole
+            // reason the variant exists — so `[p, q]` written for a
+            // `List<Show>` never reached the `List` arm above and the
+            // annotation was rejected by the precision it asked for. Element by
+            // element, like the arms above, and covariant for the same reason:
+            // a literal has no second name.
+            (Type::Tuple(elems), Type::List(target)) => {
+                elems.iter().all(|elem| elem.is_assignable_to_with(target, oracle))
+            }
             _ => false,
         }
     }
 
     /// Check if this type can be assigned to another type (subtyping)
     pub fn is_assignable_to(&self, other: &Type) -> bool {
+        self.is_assignable_to_with(other, &NoTraits)
+    }
+
+    /// [`Self::is_assignable_to`] with a [`TraitOracle`] for the one question
+    /// this crate cannot answer on its own: whether a type implements a named
+    /// trait. The rule belongs in this walk — a trait may be the target
+    /// anywhere a type may — and the tables that answer it live in the type
+    /// checker, so it arrives as a parameter rather than as a second, partial
+    /// copy of the walk over there.
+    pub fn is_assignable_to_with(&self, other: &Type, oracle: &dyn TraitOracle) -> bool {
         match (self, other) {
             // Any type is assignable to Any
             (_, Type::Any) => true,
@@ -854,9 +901,9 @@ impl Type {
             (a, b) if a == b => true,
             // Boxed types act as transparent wrappers — must come before numeric hierarchy
             // so that Box<Any> unwraps to Any before numeric ordering is applied.
-            (Type::Boxed(inner), Type::Boxed(expected)) => inner.is_assignable_to(expected),
-            (Type::Boxed(inner), expected) => inner.is_assignable_to(expected),
-            (actual, Type::Boxed(expected)) => actual.is_assignable_to(expected),
+            (Type::Boxed(inner), Type::Boxed(expected)) => inner.is_assignable_to_with(expected, oracle),
+            (Type::Boxed(inner), expected) => inner.is_assignable_to_with(expected, oracle),
+            (actual, Type::Boxed(expected)) => actual.is_assignable_to_with(expected, oracle),
             // Machine integers convert only explicitly, in either direction and
             // even between two machine widths. Systems code is exactly where an
             // implicit narrowing or sign change is a bug rather than a
@@ -880,11 +927,11 @@ impl Type {
             }
             (Type::Nil, Type::Optional(_)) => true,
             // Optional types: T is assignable to ?T
-            (inner, Type::Optional(expected_inner)) => inner.is_assignable_to(expected_inner),
+            (inner, Type::Optional(expected_inner)) => inner.is_assignable_to_with(expected_inner, oracle),
             // Union types: T is assignable to Union if T is assignable to any member
-            (t, Type::Union(union_types)) => union_types.iter().any(|ut| t.is_assignable_to(ut)),
+            (t, Type::Union(union_types)) => union_types.iter().any(|ut| t.is_assignable_to_with(ut, oracle)),
             // Union member is assignable to union
-            (Type::Union(union_types), target) => union_types.iter().all(|ut| ut.is_assignable_to(target)),
+            (Type::Union(union_types), target) => union_types.iter().all(|ut| ut.is_assignable_to_with(target, oracle)),
             // Containers are **invariant** in their element types, and the
             // read-only view `List<_>` is how a signature says "a list of
             // anything" without them.
@@ -896,11 +943,11 @@ impl Type {
             // positions did it — a `let`, a parameter, a struct field, a
             // container element, and a return type — so restricting any one of
             // them would not have been enough.
-            (Type::List(a), Type::List(b)) => Self::element_assignable(a, b),
+            (Type::List(a), Type::List(b)) => Self::element_assignable_with(a, b, oracle),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
-                Self::element_assignable(ak, bk) && Self::element_assignable(av, bv)
+                Self::element_assignable_with(ak, bk, oracle) && Self::element_assignable_with(av, bv, oracle)
             }
-            (Type::Set(a), Type::Set(b)) => Self::element_assignable(a, b),
+            (Type::Set(a), Type::Set(b)) => Self::element_assignable_with(a, b, oracle),
             // The same rule for a parameterised named type — `Slice<T>` is the
             // only one today. Without an element rule at all, `Slice<Int>` was
             // assignable to nothing but itself, so a declaration could not
@@ -920,10 +967,14 @@ impl Type {
                     && a_params
                         .iter()
                         .zip(b_params)
-                        .all(|(a, b)| Self::element_assignable(a, b))
+                        .all(|(a, b)| Self::element_assignable_with(a, b, oracle))
             }
             (Type::Tuple(as_), Type::Tuple(bs)) => {
-                as_.len() == bs.len() && as_.iter().zip(bs.iter()).all(|(a, b)| a.is_assignable_to(b))
+                as_.len() == bs.len()
+                    && as_
+                        .iter()
+                        .zip(bs.iter())
+                        .all(|(a, b)| a.is_assignable_to_with(b, oracle))
             }
             // A tuple *is* a list. `Tuple` is not a runtime thing — `HeapValue`
             // has `List` and no tuple at all; the variant exists so a
@@ -932,7 +983,9 @@ impl Type {
             // reads as a different type, and `let xs: List = [1, "a"];` — an
             // ordinary list in a language whose lists are heterogeneous — was
             // rejected by the annotation written to describe it.
-            (Type::Tuple(elems), Type::List(target)) => elems.iter().all(|elem| Self::element_assignable(elem, target)),
+            (Type::Tuple(elems), Type::List(target)) => elems
+                .iter()
+                .all(|elem| Self::element_assignable_with(elem, target, oracle)),
             // And the way back, which was missing — so `Tuple<Int, Int>` was a
             // type nothing could satisfy: `[1, 2]` is `List<Int>` (its elements
             // do not differ, so no tuple is inferred), and without this rule it
@@ -948,7 +1001,9 @@ impl Type {
             // length, so there is nothing to compare against the tuple's arity.
             // The precision a tuple adds is *per-position element types*, and
             // that is what this checks.
-            (Type::List(source), Type::Tuple(elems)) => elems.iter().all(|elem| Self::element_assignable(source, elem)),
+            (Type::List(source), Type::Tuple(elems)) => elems
+                .iter()
+                .all(|elem| Self::element_assignable_with(source, elem, oracle)),
             // Function types (contravariant parameters, covariant return)
             (
                 Type::Function {
@@ -969,7 +1024,7 @@ impl Type {
                     let params_compatible = b_params
                         .iter()
                         .zip(a_params.iter())
-                        .all(|(b_param, a_param)| b_param.is_assignable_to(a_param));
+                        .all(|(b_param, a_param)| b_param.is_assignable_to_with(a_param, oracle));
                     if !params_compatible {
                         return false;
                     }
@@ -983,7 +1038,7 @@ impl Type {
                     }
                     let named_compatible = b_named.iter().all(|b_np| {
                         if let Some(a_np) = a_map.get(b_np.name.as_str()) {
-                            b_np.has_default == a_np.has_default && b_np.ty.is_assignable_to(&a_np.ty)
+                            b_np.has_default == a_np.has_default && b_np.ty.is_assignable_to_with(&a_np.ty, oracle)
                         } else {
                             false
                         }
@@ -992,13 +1047,18 @@ impl Type {
                         return false;
                     }
                     // Return type is covariant
-                    let return_compatible = a_ret.is_assignable_to(b_ret);
+                    let return_compatible = a_ret.is_assignable_to_with(b_ret, oracle);
                     params_compatible && named_compatible && return_compatible
                 }
             }
             // Concurrency types
-            (Type::Task(a), Type::Task(b)) => a.is_assignable_to(b),
-            (Type::Channel(a), Type::Channel(b)) => a.is_assignable_to(b),
+            (Type::Task(a), Type::Task(b)) => a.is_assignable_to_with(b, oracle),
+            (Type::Channel(a), Type::Channel(b)) => a.is_assignable_to_with(b, oracle),
+            // A trait names a type, and whatever implements it may stand where
+            // it is expected. Last, so it costs nothing until every structural
+            // rule has already declined — and only the *oracle* decides, so a
+            // build with no trait tables behaves exactly as before.
+            (from, Type::Named(trait_name)) => oracle.implements(from, trait_name),
             // No other assignability rules
             _ => false,
         }

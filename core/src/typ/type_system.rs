@@ -448,22 +448,37 @@ pub struct TypeInferenceEngine {
     /// Constraints to be solved
     constraints: Vec<(Type, Type)>,
 
-    /// Registry for custom types
-    registry: TypeRegistry,
+    /// Next `T{n}` this engine hands out.
+    ///
+    /// It used to own a whole [`TypeRegistry`] for this counter — a *clone*
+    /// taken when the checker was built, so every declaration made afterwards
+    /// was invisible to unification. The two facts unification needs about
+    /// declarations (which names are traits, and which types implement them)
+    /// therefore could not be asked at all; they arrive as a parameter now, and
+    /// the copy is gone.
+    type_var_counter: u32,
+}
+
+impl Default for TypeInferenceEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeInferenceEngine {
-    pub fn new(registry: TypeRegistry) -> Self {
+    pub fn new() -> Self {
         Self {
             substitutions: HashMap::new(),
             constraints: Vec::new(),
-            registry,
+            type_var_counter: 0,
         }
     }
 
     /// Generate a fresh type variable
     pub fn fresh_type_var(&mut self) -> Type {
-        self.registry.fresh_type_var()
+        let var_name = format!("T{}", self.type_var_counter);
+        self.type_var_counter += 1;
+        Type::Variable(var_name)
     }
 
     /// Add a constraint that two types must be equal
@@ -472,9 +487,9 @@ impl TypeInferenceEngine {
     }
 
     /// Solve all constraints using unification
-    pub fn solve_constraints(&mut self) -> Result<HashMap<String, Type>> {
+    pub fn solve_constraints(&mut self, registry: &TypeRegistry) -> Result<HashMap<String, Type>> {
         while let Some((t1, t2)) = self.constraints.pop() {
-            self.unify(t1, t2)?;
+            self.unify(t1, t2, registry)?;
         }
         Ok(self.substitutions.clone())
     }
@@ -515,7 +530,7 @@ impl TypeInferenceEngine {
         }
     }
 
-    fn unify(&mut self, t1: Type, t2: Type) -> Result<()> {
+    fn unify(&mut self, t1: Type, t2: Type, registry: &TypeRegistry) -> Result<()> {
         // Before substitution, because substitution is what hides this case: a
         // variable already bound to one type, now required to be another.
         //
@@ -575,7 +590,7 @@ impl TypeInferenceEngine {
             }
 
             // Structural unification
-            (Type::List(a), Type::List(b)) => self.unify(*a, *b),
+            (Type::List(a), Type::List(b)) => self.unify(*a, *b, registry),
             // A tuple is a list whose element types are known one by one —
             // there is no tuple at runtime, `HeapValue` has only `List`. This
             // mirrors the rule in `is_assignable_to`; without it the two
@@ -583,21 +598,21 @@ impl TypeInferenceEngine {
             // concrete-concrete rule below swallows whatever reaches it.
             (Type::Tuple(elems), Type::List(elem)) | (Type::List(elem), Type::Tuple(elems)) => {
                 for tuple_elem in elems {
-                    self.unify(tuple_elem, (*elem).clone())?;
+                    self.unify(tuple_elem, (*elem).clone(), registry)?;
                 }
                 Ok(())
             }
-            (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
+            (Type::Set(a), Type::Set(b)) => self.unify(*a, *b, registry),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
-                self.unify(*ak, *bk)?;
-                self.unify(*av, *bv)
+                self.unify(*ak, *bk, registry)?;
+                self.unify(*av, *bv, registry)
             }
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() != b.len() {
                     return Err(anyhow!("Tuple arity mismatch"));
                 }
                 for (x, y) in a.into_iter().zip(b) {
-                    self.unify(x, y)?;
+                    self.unify(x, y, registry)?;
                 }
                 Ok(())
             }
@@ -617,7 +632,7 @@ impl TypeInferenceEngine {
                     return Err(anyhow!("Function arity mismatch"));
                 }
                 for (a_param, b_param) in a_params.into_iter().zip(b_params) {
-                    self.unify(a_param, b_param)?;
+                    self.unify(a_param, b_param, registry)?;
                 }
                 if a_named.len() != b_named.len() {
                     return Err(anyhow!("Function named parameter count mismatch"));
@@ -637,15 +652,15 @@ impl TypeInferenceEngine {
                     if a_default != b_default {
                         return Err(anyhow!("Function named parameter '{}' default mismatch", name));
                     }
-                    self.unify(a_ty, b_ty)?;
+                    self.unify(a_ty, b_ty, registry)?;
                 }
-                self.unify(*a_ret, *b_ret)
+                self.unify(*a_ret, *b_ret, registry)
             }
-            (Type::Optional(a), Type::Optional(b)) => self.unify(*a, *b),
-            (Type::Task(a), Type::Task(b)) => self.unify(*a, *b),
-            (Type::Channel(a), Type::Channel(b)) => self.unify(*a, *b),
-            (Type::Boxed(a), Type::Boxed(b)) => self.unify(*a, *b),
-            (Type::Boxed(inner), other) | (other, Type::Boxed(inner)) => self.unify(*inner, other),
+            (Type::Optional(a), Type::Optional(b)) => self.unify(*a, *b, registry),
+            (Type::Task(a), Type::Task(b)) => self.unify(*a, *b, registry),
+            (Type::Channel(a), Type::Channel(b)) => self.unify(*a, *b, registry),
+            (Type::Boxed(a), Type::Boxed(b)) => self.unify(*a, *b, registry),
+            (Type::Boxed(inner), other) | (other, Type::Boxed(inner)) => self.unify(*inner, other, registry),
 
             // Union type unification
             (Type::Union(a_types), Type::Union(b_types)) => {
@@ -716,7 +731,7 @@ impl TypeInferenceEngine {
                     return Err(anyhow!("Generic type mismatch"));
                 }
                 for (a_param, b_param) in a_params.iter().zip(b_params.iter()) {
-                    self.unify(a_param.clone(), b_param.clone())?;
+                    self.unify(a_param.clone(), b_param.clone(), registry)?;
                 }
                 Ok(())
             }
@@ -755,6 +770,17 @@ impl TypeInferenceEngine {
             //   - constraints were solved at the end of every function against
             //     a global pool, so one function's leftovers met the next one's
             //     (`Program::type_check` defers in both modes now).
+            // A trait meets an implementor. Assignability already says an
+            // implementor may stand where the trait is expected; a declared
+            // return type is checked by *unification* instead, so
+            // `fn pick() -> Show { return P { … }; }` was rejected while
+            // `fn render(v: Show)` was accepted — the same question answered
+            // two ways.
+            (ref t, Type::Named(ref name)) | (Type::Named(ref name), ref t)
+                if registry.get_trait(name).is_some() && registry.implements_trait(t, name) =>
+            {
+                Ok(())
+            }
             _ => Err(anyhow!("Cannot unify {} with {}", t1.display(), t2.display())),
         }
     }
@@ -816,6 +842,18 @@ impl TypeInferenceEngine {
     }
 }
 
+/// The registry is the answer to the assignability walk's trait question
+/// ([`crate::val::TraitOracle`]).
+///
+/// Only a *declared* trait counts: `Type::Named` covers struct names too, and
+/// `implements_trait` would answer `false` for those anyway — asking `get_trait`
+/// first says why, and keeps a struct name from being read as a bound.
+impl crate::val::TraitOracle for TypeRegistry {
+    fn implements(&self, ty: &Type, trait_name: &str) -> bool {
+        self.get_trait(trait_name).is_some() && self.implements_trait(ty, trait_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,7 +900,7 @@ mod tests {
     #[test]
     fn test_type_inference() {
         let registry = TypeRegistry::new();
-        let mut engine = TypeInferenceEngine::new(registry);
+        let mut engine = TypeInferenceEngine::new();
 
         let var1 = engine.fresh_type_var();
         let var2 = engine.fresh_type_var();
@@ -872,7 +910,7 @@ mod tests {
         // Add constraint: T1 = T0
         engine.add_constraint(var2.clone(), var1.clone());
 
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
 
         // Both variables should resolve to Int
         if let Type::Variable(name1) = &var1 {

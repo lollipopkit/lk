@@ -576,6 +576,23 @@ impl TypeChecker {
                     None,
                 ));
             }
+            // A trait-typed receiver's method surface is exactly what the trait
+            // declares — a value typed `Show` is known for that and nothing
+            // else. Without this, `v.nosuch()` on a `Show` parameter reached
+            // the runtime, where the interpreter said "P has no method
+            // 'nosuch'" and the compiled build said something else entirely,
+            // because the two find out in different ways.
+            if let Type::Named(trait_name) = &resolved_receiver
+                && let Some(declared) = self.registry.get_trait(trait_name)
+                && !declared.methods.contains_key(method)
+            {
+                return Err(Self::type_err(
+                    &format!("trait {trait_name} declares no method '{method}'"),
+                    None,
+                    Some(resolved_receiver.clone()),
+                    None,
+                ));
+            }
             return Ok(None);
         };
         // A variadic method has no upper bound: `"{} {}".format(a, b)` passes
@@ -686,7 +703,7 @@ impl TypeChecker {
         }
         if self.is_assignable(arg_type, param_type)
             || literal_fits_machine_int(param_type, arg)
-            || literal_fits_container(param_type, arg, arg_type)
+            || literal_fits_container(param_type, arg, arg_type, self.registry())
         {
             return Ok(());
         }
@@ -713,7 +730,7 @@ impl TypeChecker {
         }
         if self.is_assignable(arg_type, param_type)
             || literal_fits_machine_int(param_type, arg)
-            || literal_fits_container(param_type, arg, arg_type)
+            || literal_fits_container(param_type, arg, arg_type, self.registry())
         {
             return Ok(());
         }
@@ -763,12 +780,17 @@ impl TypeChecker {
 /// Containers are invariant because a widening is an alias; a literal has no
 /// second name, so its elements are checked covariantly. Same shape and same
 /// reason as [`literal_fits_machine_int`] right below.
-fn literal_fits_container(param_type: &Type, arg: &Expr, arg_type: &Type) -> bool {
+fn literal_fits_container(
+    param_type: &Type,
+    arg: &Expr,
+    arg_type: &Type,
+    oracle: &dyn crate::val::TraitOracle,
+) -> bool {
     let mut arg = arg;
     while let Expr::Paren(inner) = arg {
         arg = inner;
     }
-    matches!(arg, Expr::List(_) | Expr::Map(_)) && arg_type.container_literal_fits(param_type)
+    matches!(arg, Expr::List(_) | Expr::Map(_)) && arg_type.container_literal_fits_with(param_type, oracle)
 }
 
 fn literal_fits_machine_int(param_type: &Type, arg: &Expr) -> bool {

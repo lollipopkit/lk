@@ -322,13 +322,13 @@ mod tests {
     #[test]
     fn test_type_inference() {
         let registry = TypeRegistry::new();
-        let mut engine = TypeInferenceEngine::new(registry);
+        let mut engine = TypeInferenceEngine::new();
 
         // Test basic unification
         let var1 = engine.fresh_type_var();
         engine.add_constraint(var1.clone(), Type::Int);
 
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
 
         if let Type::Variable(name) = var1 {
             assert_eq!(substitutions.get(&name), Some(&Type::Int));
@@ -338,11 +338,11 @@ mod tests {
     #[test]
     fn test_type_inference_any_does_not_block_later_concrete_constraint() {
         let registry = TypeRegistry::new();
-        let mut engine = TypeInferenceEngine::new(registry);
+        let mut engine = TypeInferenceEngine::new();
         let var = engine.fresh_type_var();
 
         engine.add_constraint(var.clone(), Type::Any);
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
         if let Type::Variable(name) = &var {
             assert_eq!(substitutions.get(name), None);
         } else {
@@ -350,7 +350,7 @@ mod tests {
         }
 
         engine.add_constraint(var.clone(), Type::String);
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
         if let Type::Variable(name) = var {
             assert_eq!(substitutions.get(&name), Some(&Type::String));
         } else {

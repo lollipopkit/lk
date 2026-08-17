@@ -1171,7 +1171,12 @@ impl TypeChecker {
     pub fn infer_resolved_type(&mut self, expr: &Expr) -> Result<Type> {
         let ty = self.check_expr(expr)?;
         // Attempt to solve constraints and substitute into the resulting type
-        match self.inference_engine.solve_constraints() {
+        let Self {
+            inference_engine,
+            registry,
+            ..
+        } = self;
+        match inference_engine.solve_constraints(registry) {
             Ok(subs) => Ok(ty.substitute(&subs)),
             Err(_) => Ok(ty), // On failure, return the unsolved type to avoid hard errors in tooling
         }
