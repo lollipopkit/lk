@@ -131,17 +131,37 @@ pub(crate) fn written_registers(instrs: &[Instr], start: usize, end: usize) -> V
 /// Register numbering is left alone — the body uses the enclosing function's
 /// registers, so the synthesized function simply declares as many.
 ///
-/// `performance` is *not* carried over. Those facts are keyed by pc in the
-/// parent, and the body's pcs are rebased here; a fact read at the wrong pc is
-/// worse than a missing one. The shapes that need a fact (a `for` loop, which
-/// requires one) therefore reject rather than lower wrongly.
+/// `performance` is carried over **rebased**, and only the two tables this
+/// pipeline actually reads: `for_loops` (`cfg::exit_of`) and `key_ops`
+/// (`inst::container`). Both are keyed by pc, and the body's pcs are the
+/// parent's shifted by `body_start`, so the rebase is a slice — a fact read at
+/// the wrong pc is worse than a missing one, and slicing cannot produce one.
+///
+/// Dropping them wholesale is what it used to do, and the cost was concrete: a
+/// `for` loop *requires* its fact, so a region with an ordinary `for i in 0..n`
+/// in it rejected. That was the single most common blocker left in a generated
+/// corpus of `try` programs. Neither fact names a pc — `PerfForLoopFact`'s jump
+/// is an offset — so nothing inside them needs adjusting.
+///
+/// The rest of the tables stay default. They are the VM executor's, and an
+/// outlined body is never executed by the VM: it exists only in this crate's
+/// own function table.
 pub(crate) fn outline(parent: &FunctionData, region: &TryRegionShape) -> FunctionData {
     let mut code: Vec<u32> = parent.code[region.body_start..region.body_end].to_vec();
     code.push(Instr::abc(Opcode::Return0, 0, 0, 0).raw());
+    fn rebase<T: Clone>(table: &[Option<T>], start: usize, end: usize) -> Vec<Option<T>> {
+        (start..end).map(|pc| table.get(pc).cloned().flatten()).collect()
+    }
+    let (start, end) = (region.body_start, region.body_end);
+    let performance = lk_core::vm::analysis::PerformanceFacts {
+        for_loops: rebase(&parent.performance.for_loops, start, end),
+        key_ops: rebase(&parent.performance.key_ops, start, end),
+        ..Default::default()
+    };
     FunctionData {
         consts: parent.consts.clone(),
         code,
-        performance: Default::default(),
+        performance,
         register_count: parent.register_count,
         param_count: 0,
         positional_param_count: 0,

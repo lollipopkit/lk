@@ -949,6 +949,16 @@ callee 的捕获钉成 `Ty::Cell`,收敛回路照旧)。为此 region 入参的 
 先建 cell,再解析 lambda 环境 —— 每个入参的机器字按位置收集,最后按 `try_body_params`
 顺序摊平,所以布局仍然是 body 走的那个。
 
-门禁:随机生成 1688 个含 `try` 的程序(六批不同种子),0 处分歧;fuzzer 加了嵌套
-region + 闭包入参的形状;`examples/syntax/try_catch.lk` 把三种形状钉进覆盖率门禁。
-剩下的主要回落原因是 body 里的 `for`(外联丢掉 `performance` facts),是已知的、诚实的拒绝。
+**`performance` facts 按 pc 重基,不再整个丢掉。** 外联本来把 facts 全清空,理由是
+"pc 会重基,读到错位的 fact 比没有更糟"。但这条流水线只读两张表 —— `for_loops`
+(`cfg::exit_of`)和 `key_ops`(`inst::container`)—— 而 body 的 pc 就是父的 pc 减
+`body_start`,所以重基是一次**切片**,切片不会产生错位。两张表里也都没有 pc
+(`PerfForLoopFact` 的跳转是偏移量)。代价是具体的:`for` 循环**必须**有 fact,于是
+region 里一句普通的 `for i in 0..n` 就整程序回落 —— 那是生成语料里剩下最多的一类。
+其余的表是 VM 执行器的,而外联出来的 body 从不被 VM 执行(它只存在于本 crate 自己的
+函数表里),保持 default。
+
+门禁:随机生成的含 `try` 程序,六批不同种子共 1688 个,0 处分歧;facts 重基后原生化
+从 306/919 提到 494/1066(约 46%)。fuzzer 加了嵌套 region + 闭包入参的形状;
+`examples/syntax/try_catch.lk` 把三种形状钉进覆盖率门禁。剩下的回落主要是 trampoline
+的 8 字上限和 cell 之外的 `Dyn` 操作数,都是诚实的拒绝。
