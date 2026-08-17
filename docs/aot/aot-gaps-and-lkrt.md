@@ -1107,8 +1107,39 @@ v13 = call dyn.as_i64(v11)      // <-- 这里
 换掉之后那条臂就没了。`ssa.write` 会清掉 `builtin_regs`,所以引用要在 write **之后**补回去。
 代价是每个逃逸 lambda 的构造点多一次可能没人用的 `closure_new`。
 
-**③ 两者都做之后仍有一个形状回落**(`closure.lk` 的 `process_list`:`an operand at pc 3
-has a type outside the subset`;同时 `[|x| x+1, |x| x*2]` 又变回报引用)。没查完。下次从
-这里起:并存之后 `read_slot` 是**先看 `current_def` 再看 `builtin_regs`**,同块内应当拿到值
-—— 所以要确认失败的那次读到底在哪个块,以及那个 list 字面量是不是走的 `LoadHeapConst`
-(常量堆里的函数引用)而不是 `MakeClosure`,后者根本不经过 `bind_callable`。
+**③ 「一个寄存器同时挂引用和值」这个形状本身是错的 —— 这是 2026-08-18 第三轮的结论。**
+
+先说③走到哪:把「值 = 原 lambda 的一个全 `Dyn` 签名**克隆**」(复用 `pending_clones`,
+原函数签名不动,于是类型化 HOF 路径不受影响)这一步做完之后,覆盖率回到 61/61 无回归,
+`[|x| x+1, |x| x*2]` 和循环里 push 都原生化并与 VM 一致。中间还修掉两处:
+
+- `Move` 只搬引用不搬值 —— 而编译器在每个 `Call` 前都把 callee `Move` 进调用窗口,
+  于是值刚物化就够不着了(`GlobalRef::ArgList` 早就有同款"双视图"补丁,就在旁边)。
+- `lower_dyn_call` 要用 `read_scalar` 读 callee:从 list 里迭代出来的闭包是 `Maybe`,
+  把载体交给 `rt.closure_call` 会答"value is not callable" —— 对一个确实可调用的值。
+
+**然后随机差分扫描找到了第三种错法,而且是致命的那种**:
+
+```lk
+let fs = [];
+fs.push(|x| x + 2);
+fs.push(|x| x * 7);
+let t = 0;
+for f in fs { t = t + f(2); }
+```
+
+降低成 `dyn_push(v0, dyn.from_list(v0))` —— **list 把自己 push 进了自己**,两次。VM 答 18,
+原生答 `value is not callable`。方法实参的窗口读到的是接收者,不是 lambda。
+
+三次失败(`Move`、迭代出来的载体、方法实参窗口)是**同一个根因的三个面**:让一个寄存器
+同时有"编译期引用"和"运行时值"两种含义,就要求**每一处搬运、每一处读取**都知道该带哪一个,
+而它们并不知道。补一处就冒出下一处。
+
+**下次换设计:在需要值的那个消费点物化,而不是在定义点。** 这样寄存器永远只有一种含义,
+`Move`/窗口/迭代全都不用改。消费点是可以枚举的,而且正是今天报 `ReferenceAsValue` 的那些:
+容器存入、结构体字段、分支里的 `return`、间接调用。做法是给这些位置换一个
+`read_value(ssa, insts, sig, reg, …)` 帮手 —— 它在读到 lambda 引用时就地发 `closure_new`。
+`Ssa` 拿不到 `insts` 是当初没这么做的原因,但消费点是**在** `insts` 在手的地方。
+
+`①` 的载体修(`ListPush` 里 `Dyn` 值撞上猜出来的载体要先矛盾)仍然成立、仍然够不着,
+仍然要和这件事一起落地。
