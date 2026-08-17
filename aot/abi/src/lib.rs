@@ -341,6 +341,9 @@ macro_rules! for_each_abi_fn {
             ("rt", "closure_new", lkrt_closure_new, WritesHost, [Ptr, Ptr, I64, I64], DynVal);
             ("rt", "closure_call", lkrt_closure_call, WritesHost, [DynVal, Ptr], DynVal);
             ("rt", "closure_arity", lkrt_closure_arity, ReadsHost, [DynVal], I64);
+            // The callable-property call (`m.thing()`), which needs the name so
+            // a miss can say what the interpreter says.
+            ("rt", "closure_call_property", lkrt_closure_call_property, WritesHost, [DynVal, Ptr, StrPtr], DynVal);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);

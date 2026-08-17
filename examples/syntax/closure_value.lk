@@ -61,4 +61,16 @@ let apply = rule.apply;
 assert(apply(1) == 101);
 assert(rule.weight == 3);
 
+// Called where it sits, without naming it first. One meaning, two spellings —
+// and for a while only the spelling with a local in the middle compiled.
+assert(handlers["inc"](4) == 5);
+assert(rule.apply(1) == 101);
+
+// The miss says what the interpreter says. A map is the one receiver where the
+// question has two halves — a method *and* an entry holding a function — and
+// the answer names both.
+let missed = "";
+try { handlers.nosuch(); } catch e { missed = "{}".format(e); }
+assert(missed == "a Map has no method `nosuch`, and this map has no key `nosuch` holding a function either");
+
 println("closure value: all assertions passed");

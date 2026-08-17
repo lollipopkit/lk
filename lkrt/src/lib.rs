@@ -168,7 +168,7 @@ pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
 #[cfg(not(feature = "std"))]
 pub use io_bare::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write, set_output};
 #[cfg(feature = "std")]
-pub use lkclosure::{lkrt_closure_arity, lkrt_closure_call, lkrt_closure_new};
+pub use lkclosure::{lkrt_closure_arity, lkrt_closure_call, lkrt_closure_call_property, lkrt_closure_new};
 pub use lkdyn::lkrt_dyn_from_typed_map;
 pub use lkdyn::{
     DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, lkrt_dyn_add, lkrt_dyn_as_bool,

@@ -1211,8 +1211,26 @@ MIR 可证),如果不是,那它走的是哪条路、那条路怎么读实参。
 后者)。于是十个形状里八个原生化。剩下两个不是"闭包"的问题,是**调用点的拼法**:
 `m["inc"](3)` 和 `h.f(2)` 走的是 `CallMethodK`(VM 有一条"属性里放着一个可调用值"的路),
 而 `let f = m["inc"]; f(3);` / `let g = h.f; g(2);` 两种写法现在都原生化。同一个语义两种拼法,
-一种快一种回落 —— 下一步就是把 `CallMethodK` 那条接到 `rt.closure_call`。
+一种快一种回落 —— **已接**(见下)。
 
 *键*不走 `read_value`:可调用的东西不是这门语言的 map 键,那条读保持原样。门禁:coverage 62/62(新增 `examples/syntax/closure_value.lk`)、随机闭包语料
 350 个程序全原生 0 分歧、try 语料三批 0 分歧、容器惯用法 150/150、八个 fuzz 种子、
 workspace、clippy `--all-targets`、no_std。fuzzer 的生成器也加了这一类形状。
+
+## §33 属性里的可调用值(2026-08-18)
+
+`m["inc"](3)` / `h.f(2)` 走 `CallMethodK`,而 `let f = m["inc"]; f(3);` 走 `Call`。两种拼法
+一个语义,原来只有后者原生化。现在前者接到 `rt.closure_call_property`:在
+`lower_method_dispatch` 那个**大 match 的最后**,等所有真方法臂都拒绝之后才轮到它 —— 所以
+它不可能遮住任何方法。十个形状里十个,其中八个原生化;剩两个是"调用一个调用的返回值"
+(`pick(true)(5)`),那是另一件事。
+
+**它有自己的运行时入口,而不是给 `closure_call` 加个参数**,理由只有一个:**miss 的措辞**。
+map 是唯一一个"没找到"有两种原因的接收者,解释器把两半都说出来
+(`a Map has no method \`x\`, and this map has no key \`x\` holding a function either`),
+而 `closure_call` 只会说 "value is not callable"。同一个 `catch` 里拿到两种字符串就是分歧,
+所以 `lkrt_closure_call_property` 带上名字,自己发那句一模一样的话。
+`examples/syntax/closure_value.lk` 把这句话逐字钉住了。
+
+发现它靠的是**顺手探一下 miss**:功能本身的十个形状全绿,是问"那不存在的方法呢"才露出来的。
+加一条新的 raise 路径时,**它答错话**和它答对值一样要探。

@@ -2595,6 +2595,62 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
+        // No method of that name on that receiver — but a map's entry or a
+        // struct's field may *hold* a callable, which the interpreter calls
+        // (`CallMethodK`'s callable-property path). `m["inc"](3)` and `h.f(2)`
+        // are that, and they used to be the one spelling of a closure value
+        // that did not lower: `let f = m["inc"]; f(3);` did, so one meaning had
+        // a fast form and a slow one.
+        //
+        // Only after every real method arm has declined, so nothing here can
+        // shadow a method.
+        (Ty::MapStrDyn | Ty::Dyn, _, _) => {
+            let key = materialize_key(ssa, insts, globals, name);
+            let property = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(property),
+                callee: AbiRef::new(
+                    if receiver_ty == Ty::Dyn { "dyn" } else { "map_h" },
+                    if receiver_ty == Ty::Dyn {
+                        "map_get"
+                    } else {
+                        "str_dyn_get"
+                    },
+                ),
+                args: vec![receiver, key],
+            });
+            let block_v = if args.is_empty() {
+                let null = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: null,
+                    value: Const::I64(0),
+                });
+                null
+            } else {
+                let b = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(b),
+                    callee: AbiRef::new("rt", "spawn_args_new"),
+                    args: Vec::new(),
+                });
+                for &(v, ty) in args {
+                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "spawn_args_push"),
+                        args: vec![b, boxed],
+                    });
+                }
+                b
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("rt", "closure_call_property"),
+                args: vec![property, block_v, key],
+            });
+            (dst, Ty::Dyn)
+        }
         _ => {
             return Err(Unsupported::CallShape {
                 pc,

@@ -125,6 +125,33 @@ pub unsafe extern "C" fn lkrt_closure_call(callee: LkDyn, args_block: *mut c_voi
     }
 }
 
+/// `m.thing(args…)` where `thing` is a map entry or a struct field holding a
+/// callable — the interpreter's callable-property path.
+///
+/// Its own entry point rather than an argument to [`lkrt_closure_call`] so the
+/// *miss* can say what the interpreter says. A map is the one receiver where a
+/// miss has two causes, and the interpreter names both; answering "value is not
+/// callable" instead would be a different string out of the same `catch`.
+///
+/// # Safety
+/// `args_block` as [`lkrt_closure_call`]; `name` a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_closure_call_property(
+    property: LkDyn,
+    args_block: *mut c_void,
+    name: *const core::ffi::c_char,
+) -> LkDyn {
+    if property.tag != DYN_CLOSURE {
+        // SAFETY: `name` is a NUL-terminated constant from the module's pool.
+        let method = unsafe { core::ffi::CStr::from_ptr(name) }.to_string_lossy();
+        crate::panic::raise_str(&alloc::format!(
+            "a Map has no method `{method}`, and this map has no key `{method}` holding a function either"
+        ));
+    }
+    // SAFETY: the tag is checked above; the block contract is the callee's.
+    unsafe { lkrt_closure_call(property, args_block) }
+}
+
 /// Deep-copies a closure value, for the boundaries that copy (a channel, a
 /// goroutine's isolate). The code pointer is shared — it is code.
 pub(crate) fn own_closure(value: LkDyn) -> OwnedVal {
