@@ -9,27 +9,20 @@
 //! the browser playground did too — both build their global list by hand, and
 //! both lists were written before `error` was.
 //!
-//! `try$call` is here for a different reason: nothing calls it. `try`/`catch`
-//! compiles to `TryBegin`/`TryEnd` opcodes now, and the desugar-to-a-call it is
-//! named after is history. The umbrella host still registers it, so the
-//! implementation lives here rather than in two places — but a host that leaves
-//! it out loses nothing, which is why the two bare hosts do not register it.
-//!
 //! Nothing here needs an OS: these call through the VM's own machinery and
 //! allocate from its heap, both of which a bare host has.
 
 use alloc::sync::Arc;
-use alloc::vec;
 
 use anyhow::{Result, anyhow};
-use lk_core::val::{HeapValue, RuntimeVal, TypedList};
-use lk_core::vm::{NativeArgs, NativeRuntime, call_runtime_value_runtime};
+use lk_core::val::RuntimeVal;
+use lk_core::vm::{NativeArgs, NativeRuntime};
 
 /// `error(value)` — raise, carrying `value` itself where it can be carried.
 ///
 /// A raised heap value has to survive the collection that can happen at any
 /// native-call safepoint while the error unwinds, so it is pinned as a GC root
-/// until a `try$call` catches it. A primitive is `Copy` and needs no pinning; a
+/// until a `catch` binds it. A primitive is `Copy` and needs no pinning; a
 /// host with no full VM state cannot pin at all, and falls back to the rendered
 /// message — the value is lost, the report is not.
 pub fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -63,60 +56,6 @@ pub fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         joined_display(args.as_slice(), runtime)?
     };
     Err(anyhow!("{message}"))
-}
-
-/// `try$call(f, args…) -> [ok, result_or_error]` — the protected call `try`
-/// desugars to.
-///
-/// Answers `[true, result]` or `[false, error]` rather than propagating. A
-/// first-class error value round-trips as itself; anything else arrives as its
-/// message.
-pub fn try_call(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some((&callee, call_args)) = values.split_first() else {
-        return Err(anyhow!("try$call expects at least 1 argument: the function to call"));
-    };
-    let call_args = call_args.to_vec();
-    let outcome = {
-        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-            return Err(anyhow!("try$call requires full VM state"));
-        };
-        call_runtime_value_runtime(callee, &call_args, state, module, ctx)
-    };
-    if outcome.is_err()
-        && let Some((state, ctx, _)) = runtime.state_ctx_module_mut()
-    {
-        // Caught here, so the root pin is released: the value stays valid for
-        // the allocations below, and stops being a stray root once the program
-        // resumes.
-        state.set_pending_raise_root(None);
-        // The frames the failed call accumulated are not part of a later,
-        // unrelated report.
-        if let Some(ctx) = ctx {
-            ctx.truncate_call_stack(0);
-        }
-    }
-    let (ok, value) = match outcome {
-        Ok(result) => (true, result),
-        Err(err) => {
-            // The call machinery adds context, so the raised value is at the
-            // deepest cause rather than at the top.
-            let root = err.root_cause();
-            if let Some(raised) = root.downcast_ref::<lk_core::vm::LkRaisedValue>() {
-                (false, raised.value)
-            } else {
-                let message = alloc::format!("{root}");
-                let handle = runtime
-                    .heap_mut()
-                    .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
-                (false, RuntimeVal::Obj(handle))
-            }
-        }
-    };
-    let list = runtime
-        .heap_mut()
-        .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
-    Ok(RuntimeVal::Obj(list))
 }
 
 /// Values joined with spaces, each rendered the way the language renders it.

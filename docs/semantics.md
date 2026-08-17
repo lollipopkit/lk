@@ -263,9 +263,10 @@ example、差分用例或 fuzz 种子碰到过它。AOT 覆盖门禁也看不见
 - 语句以 `;` 结尾,**但以 `}` 收尾的表达式语句不需要** ——
   `match x { … }`、`unsafe { … }`、`if c { … }` 作语句时都不用分号,写了也行。
   作为操作数时不适用:`return match x { … } == nil;` 比较的是 match 的值。
-- `try`/`catch`、`select`、`go`、后缀 `!` 均为 **parse 时糖**(分别降到隐藏
-  native `try$call`、`select$block`、`spawn(闭包)`、nil 检查 Conditional),
-  不存在专用 AST 节点;`select`/并发语义见 `docs/concurrency.md`。
+- `select`、`go`、后缀 `!` 均为 **parse 时糖**(分别降到隐藏 native
+  `select$block`、`spawn(闭包)`、nil 检查 Conditional),不存在专用 AST
+  节点;`select`/并发语义见 `docs/concurrency.md`。`try`/`catch` 曾经也是
+  (降到 `try$call`),现在是真节点 `Expr::Try`,编译成 `TryBegin`/`TryEnd`。
 - **后缀 `!`(force unwrap)**:`expr!` 在 nil 时 raise "unwrap of nil value"
   (可 catch),否则原值。两条边界:`!` 紧跟 `(`/`[`/`{` 是**宏调用**语法
   (`name!(...)`),解包后调用/索引需加括号 `(x!)(...)`;lexer 贪婪 `!=`→Ne,
@@ -388,8 +389,7 @@ fn S$new({a: A, b: B}) -> S { return S { a: a, b: b }; }
 
 参数是**具名**的,所以调用点不需要知道声明:传的就是字面量里那些
 `field: value`,漏一个或拼错是构造函数自己的 arity 报错。`$` 不可词法化,
-所以这个名字撞不上任何程序能写出来的东西 —— `try$call` / `select$block`
-用的是同一招。
+所以这个名字撞不上任何程序能写出来的东西 —— `select$block` 用的是同一招。
 
 **脱糖不能漏出来**:那两句报错走的是具名参数的措辞("Missing required named
 argument: y"),而读者写的是字段。类型检查器现在认得 `Type$new` 这个 callee,

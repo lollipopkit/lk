@@ -627,7 +627,6 @@ fn is_removable(inst: &Inst) -> bool {
         // with a bad port) is observable precisely by aborting.
         Inst::Call { .. }
         | Inst::CallFn { .. }
-        | Inst::TryCall { .. }
         | Inst::TraitDispatch { .. }
         | Inst::CallVm { .. }
         | Inst::PrintStr { .. }
@@ -667,10 +666,7 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::UnwrapMaybeF64 { src, .. }
         | Inst::UnwrapMaybeStr { src, .. }
         | Inst::GlobalSet { src, .. } => vec![src],
-        Inst::Call { args, .. }
-        | Inst::CallFn { args, .. }
-        | Inst::TryCall { args, .. }
-        | Inst::CallVm { args, .. } => args.iter_mut().collect(),
+        Inst::Call { args, .. } | Inst::CallFn { args, .. } | Inst::CallVm { args, .. } => args.iter_mut().collect(),
         Inst::TraitDispatch { self_arg, .. } => vec![self_arg],
         Inst::ListGetMaybe { handle, index, .. }
         | Inst::SliceGetMaybe { handle, index, .. }

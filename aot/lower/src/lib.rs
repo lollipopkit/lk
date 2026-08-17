@@ -807,7 +807,7 @@ fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<
         for block in &function.blocks {
             for inst in &block.insts {
                 match inst {
-                    Inst::CallFn { func, .. } | Inst::TryCall { func, .. } => {
+                    Inst::CallFn { func, .. } => {
                         referenced.insert(*func);
                     }
                     Inst::Const {

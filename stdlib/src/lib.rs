@@ -391,11 +391,6 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
     register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
     register_full_state_builtin!(registry, error => error / NativeEntry::VARIADIC => core.error: Nil);
-    // `try$call` is the hidden protected-call primitive behind try/catch's
-    // parse-time desugar (`$` names are untokenizable, so user code can't
-    // reach it) — the former user-facing `pcall` global, removed in v2:
-    // try/catch is the only error-handling surface.
-    register_runtime_builtin_full_state(registry, "try$call", pcall, NativeEntry::VARIADIC, None);
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
@@ -526,14 +521,6 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 /// rooting across unwinding — deferred).
 fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     lk_stdlib_common::language::error(args, runtime)
-}
-
-/// `pcall(f, args...) -> [ok, result_or_error]` — a protected call. Invokes `f`
-/// with `args`; on success returns `[true, result]`, on any raised error returns
-/// `[false, message]` instead of propagating. This is the recoverable-error
-/// primitive (plan M2.1); it catches both `error(...)` and other runtime errors.
-fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::language::try_call(args, runtime)
 }
 
 // `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an

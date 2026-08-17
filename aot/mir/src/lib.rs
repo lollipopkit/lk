@@ -324,16 +324,6 @@ pub enum Inst {
         /// The enclosing function's registers the body reads, as machine words.
         args: Vec<ValueId>,
     },
-    /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
-    /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
-    /// call of the try-body function (which returns `Dyn`), joining into the
-    /// `[ok, value]` dyn-list the desugared destructuring consumes. A raise
-    /// inside the body longjmps back to the `_setjmp`.
-    TryCall {
-        dst: ValueId,
-        func: FuncId,
-        args: Vec<ValueId>,
-    },
     /// `dst = trait.dispatch(self, args, arms)` — a runtime trait-method
     /// dispatch over a boxed struct instance (plan J1): codegen reads the
     /// receiver's arena type mark (`lkrt_dyn_obj_type_id`) and expands an
@@ -954,7 +944,6 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
-        Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
         Inst::TraitDispatch {
             dst,
             self_arg,
@@ -1087,7 +1076,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
             *dst
         }
         Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::VolatileStore { .. } => None,
-        Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
+        Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
 
@@ -1140,8 +1129,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         Inst::Call { args, .. }
         | Inst::CallFn { args, .. }
         | Inst::CallExtern { args, .. }
-        | Inst::CallVm { args, .. }
-        | Inst::TryCall { args, .. } => args.clone(),
+        | Inst::CallVm { args, .. } => args.clone(),
         Inst::TraitDispatch { self_arg, args, .. } => {
             let mut operands = vec![*self_arg];
             operands.extend(args.iter().copied());

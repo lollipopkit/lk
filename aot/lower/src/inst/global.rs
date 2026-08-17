@@ -47,7 +47,7 @@ pub(super) fn lower(
                 }
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
-                    // A runtime cell (a `try$call` boundary capture) reads
+                    // A runtime cell (a nested-closure boundary capture) reads
                     // through the shared slot; a spawned goroutine reads its
                     // thread-private copy; by-value captures stay as-is.
                     if ty == Ty::Cell {
@@ -83,7 +83,7 @@ pub(super) fn lower(
         Opcode::StoreCellVal => {
             // `a` = cell register, `b` = value register: updates the tracked
             // cell content. A `CellParam` backed by a *runtime* cell (the
-            // `try$call` boundary) writes through the shared slot; a
+            // nested-closure boundary) writes through the shared slot; a
             // by-value capture parameter still rejects (no write-back path).
             match ssa.builtin_ref_at(instr.a(), block) {
                 Some(GlobalRef::Cell(cid)) => {
@@ -432,7 +432,7 @@ pub(crate) fn container_ty(ty: Ty) -> bool {
 /// lets through makes a later read resolve to the *builtin* meaning and ignore
 /// the rebinding. They had drifted: the write guard spelled out eight names
 /// while the read arm recognized twenty-one (`error`, `chan`, `send`, `recv`,
-/// `spawn`, `try$call`, the `__lk_*` internals).
+/// `spawn`, the `__lk_*` internals).
 ///
 /// Nothing reaches that gap today — the type checker rejects rebinding
 /// `chan`/`send`/`recv`/`spawn`/`println`/`Set`, and the `error`/`panic`/
@@ -478,7 +478,6 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "typeof" => Builtin::Typeof,
         "__lk_call_method" => Builtin::CallMethod,
         "Set" => Builtin::SetCtor,
-        "try$call" => Builtin::TryCall,
         "error" => Builtin::ErrorRaise,
         "__lk_merge_fields" => Builtin::MergeFields,
         "__lk_make_struct" => Builtin::MakeStruct,

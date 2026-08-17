@@ -2,7 +2,7 @@
 //! protected-call trampoline (`src/try_trampoline.c`) and the stack-exhaustion
 //! guard (`src/stack_guard.c`). It hoists `setjmp` into a C frame for the Cranelift
 //! backend, which cannot emit the `returns_twice` call itself (see the C file).
-//! Bundled into `liblkrt.a`/the rlib, so the `lkrt_rt_try_call` symbol links
+//! Bundled into `liblkrt.a`/the rlib, so the `lkrt_rt_try_region` symbol links
 //! wherever the runtime does.
 
 fn main() {

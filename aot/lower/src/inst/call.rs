@@ -175,20 +175,6 @@ pub(super) fn lower(
             // (closures, runtime values) rejects.
             let base = instr.a();
             match ssa.builtin_ref_at(base, block) {
-                Some(GlobalRef::Builtin(Builtin::TryCall)) => {
-                    lower_try_call(
-                        ssa,
-                        insts,
-                        funcs,
-                        entry,
-                        sig,
-                        cap_ctx,
-                        base,
-                        instr.c() as usize,
-                        block,
-                        pc,
-                    )?;
-                }
                 Some(GlobalRef::Builtin(Builtin::Spawn)) => {
                     lower_spawn(
                         ssa,

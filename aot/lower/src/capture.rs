@@ -1,15 +1,15 @@
 //! Resolving a closure's environment at a call site.
 //!
-//! Four sites hand a closure its captures — the ordinary closure call, a
-//! protected call (`try$call`), `spawn`, and the erased-lambda environment
-//! [`lower_user_call`] appends as hidden trailing arguments. They differ in what
-//! they do with a *cell* the enclosing frame owns, and in nothing else, so the
-//! three arms that do not differ ([`ClosureCapture::Value`],
-//! [`ClosureCapture::StaticRef`], [`ClosureCapture::CellParam`]) live here once
-//! and each site keeps only its own `Cell` arm.
+//! Three sites hand a closure its captures — the ordinary closure call,
+//! `spawn`, and the erased-lambda environment [`lower_user_call`] appends as
+//! hidden trailing arguments. They differ in what they do with a *cell* the
+//! enclosing frame owns, and in nothing else, so the three arms that do not
+//! differ ([`ClosureCapture::Value`], [`ClosureCapture::StaticRef`],
+//! [`ClosureCapture::CellParam`]) live here once and each site keeps only its
+//! own `Cell` arm.
 //!
-//! [`ClosureCapture::CellParam`] is the arm that was missing at three of the
-//! four. A closure nested in a closure captures what its parent captured, and
+//! [`ClosureCapture::CellParam`] is the arm that was missing at two of the
+//! three. A closure nested in a closure captures what its parent captured, and
 //! the parent holds that as a capture *parameter* rather than as a cell of its
 //! own — so resolving it means reading the parent's parameter, not a slot. Only
 //! the ordinary call did that; the rest refused, and a program as plain as
@@ -75,7 +75,7 @@ impl<'a> CaptureSite<'a> {
     /// Resolves capture `k` to the value this call site passes, or `None` when
     /// the capture is a [`ClosureCapture::Cell`] and the site has to decide.
     ///
-    /// `Cell` is deliberately not answered here: the four sites genuinely
+    /// `Cell` is deliberately not answered here: the three sites genuinely
     /// disagree about it (seed a fresh runtime cell and read it back, snapshot
     /// its content, or pass the content by value), and that disagreement is the
     /// only real difference between them.

@@ -11,10 +11,7 @@ fn artifact(source: &str) -> ModuleArtifact {
     let program = parse_program_source(source, ParseOptions::default()).expect("parse");
     // The try/catch desugar references runtime builtins; declare them as
     // external globals the way a CLI compile (full stdlib context) would.
-    let externals: Vec<String> = ["try$call", "assert", "error", "println"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let externals: Vec<String> = ["assert", "error", "println"].iter().map(|s| s.to_string()).collect();
     let module = Compiler::compile_module_with_globals(&program, externals).expect("compile");
     ModuleArtifact::new(Vec::new(), &module).expect("artifact")
 }

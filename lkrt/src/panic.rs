@@ -1,4 +1,4 @@
-//! Native protected calls (deep-coverage plan G: `try$call`): a setjmp/
+//! Native protected regions (deep-coverage plan G): a setjmp/
 //! longjmp handler stack plus mutable capture cells.
 //!
 //! The generated code executes `_setjmp` itself (declared `returns_twice` in

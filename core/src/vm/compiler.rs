@@ -235,7 +235,7 @@ impl Compiler {
             Expr::Conditional(condition, then_expr, else_expr) => {
                 self.lower_conditional(condition, then_expr, else_expr)
             } // Every `Expr` variant lowers — parse-time-desugared sugar
-              // (try/catch → pcall, select → select$block) never reaches here
+              // (select → select$block) never reaches here
               // as a dedicated node.
         }
     }

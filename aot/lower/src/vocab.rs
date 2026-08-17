@@ -40,8 +40,6 @@ pub(crate) enum Builtin {
     CallMethod,
     /// `Set()` / `Set(list)` — the VM's set constructor builtin.
     SetCtor,
-    /// `try$call(closure)` — the try/catch desugar's protected call.
-    TryCall,
     /// `error(v)` — raises a first-class error value (`rt.raise_dyn`).
     ErrorRaise,
     /// `chan(capacity[, type])` — a native channel (its `i64` id).

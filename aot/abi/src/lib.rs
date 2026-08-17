@@ -182,7 +182,7 @@ macro_rules! for_each_abi_fn {
             ("rt", "assert", lkrt_assert, WritesHost, [I64], Nil);
             ("rt", "assert_msg", lkrt_assert_msg, WritesHost, [I64, StrPtr], Nil);
             ("rt", "panic", lkrt_panic, WritesHost, [StrPtr], Nil);
-            // Native protected calls (`try$call`, plan G): handler-stack
+            // Native protected regions (plan G): handler-stack
             // frames around a `_setjmp` in the generated code, the raised
             // value, and the raise entry points (no live handler → the
             // existing loud abort). Cells are the VM's `UpvalCell` — shared

@@ -26,14 +26,6 @@ pub(crate) fn lower_builtin_call(
                 reason: "no native lowering for this builtin in this argument shape",
             });
         }
-        Builtin::TryCall => {
-            // Dispatched by the caller before reaching here (it needs the
-            // function table and the signature lattice).
-            return Err(Unsupported::CallShape {
-                pc,
-                reason: "no native lowering for this builtin in this argument shape",
-            });
-        }
         Builtin::ErrorRaise => {
             // `error(v)`: raise the boxed value to the nearest `try` frame
             // (`raise_dyn` diverges: longjmp with a handler, abort without —
