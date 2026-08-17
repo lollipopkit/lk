@@ -5,7 +5,8 @@
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
+use crate::util::fast_map::{FastHashSet, fast_hash_set_new};
+use crate::util::value_map::{ValueMap, value_map_from_iter, value_map_new};
 use alloc::sync::Arc;
 
 use crate::val::DeclaredType;
@@ -393,21 +394,19 @@ pub struct RuntimeObject {
     /// Shared by `Arc` rather than stored inline — see [`DeclaredType`] for why
     /// this struct's width is worth caring about.
     pub ty: Arc<DeclaredType>,
-    pub fields: FastHashMap<Arc<str>, RuntimeVal>,
-    pub field_slots: Vec<Arc<str>>,
+    /// Insertion-ordered, so it is also the field *slot* table: slot `i` is the
+    /// `i`th key. There used to be a parallel `Vec<Arc<str>>` for that, kept in
+    /// step by hand, because the carrier was a hash map and had no `i`th
+    /// anything. It cost 24 bytes on **every heap cell** — `RuntimeObject` is
+    /// the widest `HeapValue` variant, so its width is every list's and every
+    /// string's too — which is the budget `layout::heap_cells_stay_narrow`
+    /// guards.
+    pub fields: ValueMap<Arc<str>, RuntimeVal>,
 }
 
 impl RuntimeObject {
-    pub fn new(ty: Arc<DeclaredType>, fields: FastHashMap<Arc<str>, RuntimeVal>) -> Self {
-        let mut field_slots = Vec::with_capacity(fields.len());
-        for key in fields.keys() {
-            field_slots.push(Arc::clone(key));
-        }
-        Self {
-            ty,
-            fields,
-            field_slots,
-        }
+    pub fn new(ty: Arc<DeclaredType>, fields: ValueMap<Arc<str>, RuntimeVal>) -> Self {
+        Self { ty, fields }
     }
 
     #[inline]
@@ -421,7 +420,7 @@ impl RuntimeObject {
     }
 
     pub fn field_slot(&self, key: &str) -> Option<usize> {
-        self.field_slots.iter().position(|candidate| candidate.as_ref() == key)
+        self.fields.get_index_of(key)
     }
 
     pub fn get_field(&self, key: &str) -> Option<RuntimeVal> {
@@ -429,18 +428,14 @@ impl RuntimeObject {
     }
 
     pub fn get_field_slot(&self, slot: usize, key: &str) -> Option<RuntimeVal> {
-        let slot_key = self.field_slots.get(slot)?;
-        if slot_key.as_ref() == key {
-            self.fields.get(slot_key).cloned()
-        } else {
-            None
-        }
+        let (slot_key, value) = self.fields.get_index(slot)?;
+        (slot_key.as_ref() == key).then_some(*value)
     }
 
     pub fn set_field(&mut self, key: Arc<str>, value: RuntimeVal) {
-        if !self.fields.contains_key(key.as_ref()) {
-            self.field_slots.push(key.clone());
-        }
+        // A new key lands at the end, an existing one keeps its slot — which is
+        // `IndexMap::insert`'s own behaviour, and used to need a second write to
+        // the slot table beside it.
         self.fields.insert(key, value);
     }
 }
@@ -875,11 +870,11 @@ fn typed_list_item_equal_no_heap(left: &TypedList, left_index: usize, right: &Ty
 
 #[derive(Clone, Debug)]
 pub enum TypedMap {
-    Mixed(FastHashMap<RuntimeMapKey, RuntimeVal>),
-    StringMixed(FastHashMap<Arc<str>, RuntimeVal>),
-    StringInt(FastHashMap<Arc<str>, i64>),
-    StringFloat(FastHashMap<Arc<str>, f64>),
-    StringBool(FastHashMap<Arc<str>, bool>),
+    Mixed(ValueMap<RuntimeMapKey, RuntimeVal>),
+    StringMixed(ValueMap<Arc<str>, RuntimeVal>),
+    StringInt(ValueMap<Arc<str>, i64>),
+    StringFloat(ValueMap<Arc<str>, f64>),
+    StringBool(ValueMap<Arc<str>, bool>),
 }
 
 /// Build a string-keyed [`TypedMap`] from `(key, value)` pairs. Intended for
@@ -993,10 +988,10 @@ impl TypedMap {
                 {
                     let key = Arc::<str>::from(key_str);
                     *self = match value {
-                        RuntimeVal::Int(value) => Self::StringInt(fast_hash_map_from_iter([(key, value)])),
-                        RuntimeVal::Float(value) => Self::StringFloat(fast_hash_map_from_iter([(key, value)])),
-                        RuntimeVal::Bool(value) => Self::StringBool(fast_hash_map_from_iter([(key, value)])),
-                        value => Self::StringMixed(fast_hash_map_from_iter([(key, value)])),
+                        RuntimeVal::Int(value) => Self::StringInt(value_map_from_iter([(key, value)])),
+                        RuntimeVal::Float(value) => Self::StringFloat(value_map_from_iter([(key, value)])),
+                        RuntimeVal::Bool(value) => Self::StringBool(value_map_from_iter([(key, value)])),
+                        value => Self::StringMixed(value_map_from_iter([(key, value)])),
                     };
                     return;
                 }
@@ -1025,7 +1020,7 @@ impl TypedMap {
                         }
                         value => {
                             let key = Arc::<str>::from(key_str);
-                            let mut mixed = fast_hash_map_new();
+                            let mut mixed = value_map_new();
                             for (k, v) in values.iter() {
                                 mixed.insert(k.clone(), RuntimeVal::Int(*v));
                             }
@@ -1049,7 +1044,7 @@ impl TypedMap {
                         }
                         value => {
                             let key = Arc::<str>::from(key_str);
-                            let mut mixed = fast_hash_map_new();
+                            let mut mixed = value_map_new();
                             for (k, v) in values.iter() {
                                 mixed.insert(k.clone(), RuntimeVal::Float(*v));
                             }
@@ -1073,7 +1068,7 @@ impl TypedMap {
                         }
                         value => {
                             let key = Arc::<str>::from(key_str);
-                            let mut mixed = fast_hash_map_new();
+                            let mut mixed = value_map_new();
                             for (k, v) in values.iter() {
                                 mixed.insert(k.clone(), RuntimeVal::Bool(*v));
                             }
@@ -1089,31 +1084,31 @@ impl TypedMap {
     }
 
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
-        let mut mixed = match core::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
+        let mut mixed = match core::mem::replace(self, Self::Mixed(value_map_new())) {
             Self::Mixed(values) => values,
             Self::StringMixed(values) => {
-                let mut mixed = fast_hash_map_new();
+                let mut mixed = value_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), value);
                 }
                 mixed
             }
             Self::StringInt(values) => {
-                let mut mixed = fast_hash_map_new();
+                let mut mixed = value_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Int(value));
                 }
                 mixed
             }
             Self::StringFloat(values) => {
-                let mut mixed = fast_hash_map_new();
+                let mut mixed = value_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Float(value));
                 }
                 mixed
             }
             Self::StringBool(values) => {
-                let mut mixed = fast_hash_map_new();
+                let mut mixed = value_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Bool(value));
                 }
@@ -1127,24 +1122,28 @@ impl TypedMap {
     /// Remove a key from the map, returning the removed value if present.
     /// For typed string maps, if the key type doesn't match (e.g., integer key on StringInt map),
     /// returns None without modification.
+    ///
+    /// `shift_remove`, not `swap_remove`: the survivors keep their order, which
+    /// is the guarantee the carrier exists for. It costs a memmove of the tail,
+    /// and a delete that silently reordered the rest would cost the guarantee.
     pub fn remove(&mut self, key: &RuntimeMapKey) -> Option<RuntimeVal> {
         match self {
-            Self::Mixed(entries) => entries.remove(key),
+            Self::Mixed(entries) => entries.shift_remove(key),
             Self::StringMixed(entries) => {
                 let key_str = key.as_str()?;
-                entries.remove(key_str)
+                entries.shift_remove(key_str)
             }
             Self::StringInt(entries) => {
                 let key_str = key.as_str()?;
-                entries.remove(key_str).map(RuntimeVal::Int)
+                entries.shift_remove(key_str).map(RuntimeVal::Int)
             }
             Self::StringFloat(entries) => {
                 let key_str = key.as_str()?;
-                entries.remove(key_str).map(RuntimeVal::Float)
+                entries.shift_remove(key_str).map(RuntimeVal::Float)
             }
             Self::StringBool(entries) => {
                 let key_str = key.as_str()?;
-                entries.remove(key_str).map(RuntimeVal::Bool)
+                entries.shift_remove(key_str).map(RuntimeVal::Bool)
             }
         }
     }
@@ -1156,7 +1155,7 @@ impl TypedMap {
 /// runtime mirrors this construction; the lkrt test compares against this
 /// function so any drift (hasher, table layout, key shape) fails loudly.
 pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)>) -> Vec<String> {
-    let mut stage1 = fast_hash_map_new();
+    let mut stage1 = value_map_new();
     for (key, value) in entries {
         let key = match ShortStr::new(key) {
             Some(short) => RuntimeMapKey::ShortStr(short),
@@ -1211,7 +1210,7 @@ pub enum MirrorMember {
 /// native carrier has to be built by replaying the same insertion sequence
 /// rather than by iterating stage 1 into a second table.
 pub fn typed_map_iteration_int_keys(entries: impl Iterator<Item = (i64, i64)>) -> Vec<i64> {
-    let mut stage1 = fast_hash_map_new();
+    let mut stage1 = value_map_new();
     for (key, value) in entries {
         stage1.insert(RuntimeMapKey::Int(key), RuntimeVal::Int(value));
     }
@@ -1227,7 +1226,7 @@ pub fn typed_map_iteration_int_keys(entries: impl Iterator<Item = (i64, i64)>) -
     }
 }
 
-pub(crate) fn typed_map_from_entries(entries: FastHashMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
+pub(crate) fn typed_map_from_entries(entries: ValueMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
     if entries.is_empty() {
         return TypedMap::Mixed(entries);
     }
@@ -1272,19 +1271,17 @@ pub(crate) fn typed_map_from_entries(entries: FastHashMap<RuntimeMapKey, Runtime
 }
 
 fn string_mixed_entries_from_runtime_entries(
-    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
-) -> FastHashMap<Arc<str>, RuntimeVal> {
-    let mut out = fast_hash_map_new();
+    entries: ValueMap<RuntimeMapKey, RuntimeVal>,
+) -> ValueMap<Arc<str>, RuntimeVal> {
+    let mut out = value_map_new();
     for (key, value) in entries {
         out.insert(key.as_arc_str().expect("validated string key"), value);
     }
     out
 }
 
-fn string_int_entries_from_runtime_entries(
-    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
-) -> FastHashMap<Arc<str>, i64> {
-    let mut out = fast_hash_map_new();
+fn string_int_entries_from_runtime_entries(entries: ValueMap<RuntimeMapKey, RuntimeVal>) -> ValueMap<Arc<str>, i64> {
+    let mut out = value_map_new();
     for (key, value) in entries {
         let RuntimeVal::Int(value) = value else {
             unreachable!("validated int map value");
@@ -1294,10 +1291,8 @@ fn string_int_entries_from_runtime_entries(
     out
 }
 
-fn string_float_entries_from_runtime_entries(
-    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
-) -> FastHashMap<Arc<str>, f64> {
-    let mut out = fast_hash_map_new();
+fn string_float_entries_from_runtime_entries(entries: ValueMap<RuntimeMapKey, RuntimeVal>) -> ValueMap<Arc<str>, f64> {
+    let mut out = value_map_new();
     for (key, value) in entries {
         let RuntimeVal::Float(value) = value else {
             unreachable!("validated float map value");
@@ -1307,10 +1302,8 @@ fn string_float_entries_from_runtime_entries(
     out
 }
 
-fn string_bool_entries_from_runtime_entries(
-    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
-) -> FastHashMap<Arc<str>, bool> {
-    let mut out = fast_hash_map_new();
+fn string_bool_entries_from_runtime_entries(entries: ValueMap<RuntimeMapKey, RuntimeVal>) -> ValueMap<Arc<str>, bool> {
+    let mut out = value_map_new();
     for (key, value) in entries {
         let RuntimeVal::Bool(value) = value else {
             unreachable!("validated bool map value");
@@ -1544,7 +1537,7 @@ mod tests {
 
     #[test]
     fn runtime_entries_materialize_to_typed_string_maps() {
-        let mut entries = fast_hash_map_new();
+        let mut entries = value_map_new();
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("answer")), RuntimeVal::Int(42));
 
         assert!(matches!(
@@ -1552,7 +1545,7 @@ mod tests {
             TypedMap::StringInt(values) if values.get("answer") == Some(&42)
         ));
 
-        let mut entries = fast_hash_map_new();
+        let mut entries = value_map_new();
         entries.insert(
             RuntimeMapKey::ShortStr(ShortStr::new("ok").expect("short")),
             RuntimeVal::Bool(true),
@@ -1562,7 +1555,7 @@ mod tests {
             TypedMap::StringBool(values) if values.get("ok") == Some(&true)
         ));
 
-        let mut entries = fast_hash_map_new();
+        let mut entries = value_map_new();
         entries.insert(RuntimeMapKey::Int(1), RuntimeVal::Int(42));
         assert!(matches!(typed_map_from_entries(entries), TypedMap::Mixed(_)));
     }
@@ -1584,7 +1577,7 @@ mod tests {
 
     #[test]
     fn typed_map_get_and_set_preserve_specialized_backing_until_polluted() {
-        let mut map = TypedMap::StringInt(fast_hash_map_from_iter([(Arc::<str>::from("answer"), 41)]));
+        let mut map = TypedMap::StringInt(value_map_from_iter([(Arc::<str>::from("answer"), 41)]));
 
         assert_eq!(
             map.get(&RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short"))),
@@ -1612,7 +1605,7 @@ mod tests {
 
     #[test]
     fn empty_mixed_map_set_with_string_key_specializes_backing() {
-        let mut map = TypedMap::Mixed(fast_hash_map_new());
+        let mut map = TypedMap::Mixed(value_map_new());
 
         map.set(
             RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
@@ -1628,7 +1621,7 @@ mod tests {
 
     #[test]
     fn typed_map_set_materializes_to_mixed_for_non_string_key() {
-        let mut map = TypedMap::StringBool(fast_hash_map_from_iter([(Arc::<str>::from("ok"), true)]));
+        let mut map = TypedMap::StringBool(value_map_from_iter([(Arc::<str>::from("ok"), true)]));
 
         map.set(RuntimeMapKey::Int(7), RuntimeVal::Bool(false));
 
@@ -1643,16 +1636,14 @@ mod tests {
 
     #[test]
     fn typed_map_equality_compares_entries_without_materializing_vector() {
-        let typed = TypedMap::StringInt(fast_hash_map_from_iter([(Arc::<str>::from("answer"), 42)]));
-        let string_mixed = TypedMap::StringMixed(fast_hash_map_from_iter([(
-            Arc::<str>::from("answer"),
-            RuntimeVal::Int(42),
-        )]));
-        let exact_mixed = TypedMap::Mixed(fast_hash_map_from_iter([(
+        let typed = TypedMap::StringInt(value_map_from_iter([(Arc::<str>::from("answer"), 42)]));
+        let string_mixed =
+            TypedMap::StringMixed(value_map_from_iter([(Arc::<str>::from("answer"), RuntimeVal::Int(42))]));
+        let exact_mixed = TypedMap::Mixed(value_map_from_iter([(
             RuntimeMapKey::String(Arc::<str>::from("answer")),
             RuntimeVal::Int(42),
         )]));
-        let short_key_mixed = TypedMap::Mixed(fast_hash_map_from_iter([(
+        let short_key_mixed = TypedMap::Mixed(value_map_from_iter([(
             RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
             RuntimeVal::Int(42),
         )]));
@@ -1794,25 +1785,33 @@ pub enum ResourceHandle {
 
 #[cfg(test)]
 mod layout {
-    /// `RuntimeObject` is the widest `HeapValue` variant, so its size is the
-    /// size of *every* heap cell — lists, maps and strings included.
+    /// Every heap cell is one `HeapValue`, so this size is what a list, a
+    /// string and a map each pay — including programs that declare no structs.
     ///
     /// This is a real budget, not a style rule. Adding the declaring module to
     /// an object's identity as a second `Arc<str>` field pushed `HeapValue`
-    /// from 72 to 88 bytes and cost ~1.3% geometric mean on the workload suite,
-    /// on programs that declare no structs at all. Folding both halves behind
-    /// one `Arc<DeclaredType>` brought it to 64.
+    /// from 72 to 88 bytes and cost ~1.3% geometric mean on the workload suite.
+    /// Folding both halves behind one `Arc<DeclaredType>` brought it to 64.
+    ///
+    /// It is 72 again, and this time deliberately. Insertion-ordered value maps
+    /// (`util::value_map`) carry an entry vector beside the index table, which
+    /// is 8 bytes wider than a bare hash table, and `TypedMap`'s own
+    /// discriminant no longer fits in a niche on top of it. What it buys is in
+    /// that module's docs; the 24 bytes it *would* have cost were paid back by
+    /// deleting `RuntimeObject::field_slots`, which an ordered map makes
+    /// redundant. Measured on the workload suite: ~2% geometric mean, against a
+    /// 10% gate.
+    ///
+    /// The way back to 64, if it is ever wanted, is to flatten `TypedMap`'s
+    /// five variants into `HeapValue` so the two discriminants become one.
     #[test]
     fn heap_cells_stay_narrow() {
-        assert_eq!(
-            core::mem::size_of::<super::RuntimeObject>(),
-            core::mem::size_of::<super::HeapValue>(),
-            "RuntimeObject still sets the heap cell size; re-read the budget below before widening it"
-        );
         assert!(
-            core::mem::size_of::<super::HeapValue>() <= 64,
-            "HeapValue grew to {} bytes — every heap cell pays for this",
-            core::mem::size_of::<super::HeapValue>()
+            core::mem::size_of::<super::HeapValue>() <= 72,
+            "HeapValue grew to {} bytes ({} for RuntimeObject, {} for TypedMap) — every heap cell pays for this",
+            core::mem::size_of::<super::HeapValue>(),
+            core::mem::size_of::<super::RuntimeObject>(),
+            core::mem::size_of::<super::TypedMap>()
         );
     }
 }

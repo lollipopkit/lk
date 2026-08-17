@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapStore, HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -74,7 +74,7 @@ impl FsModule {
     fn metadata(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = path_arg(args.get(0).expect("checked arity"), runtime, "fs.metadata path")?;
         let meta = std::fs::metadata(path.as_ref()).map_err(|err| anyhow!("failed to stat '{}': {err}", path))?;
-        let mut map = fast_hash_map_new();
+        let mut map = value_map_new();
         map.insert(Arc::<str>::from("len"), RuntimeVal::Int(meta.len() as i64));
         map.insert(Arc::<str>::from("is_file"), RuntimeVal::Bool(meta.is_file()));
         map.insert(Arc::<str>::from("is_dir"), RuntimeVal::Bool(meta.is_dir()));

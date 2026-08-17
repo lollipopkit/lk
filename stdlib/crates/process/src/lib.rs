@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -81,7 +81,7 @@ impl ProcessModule {
 }
 
 fn output_map(output: std::process::Output, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut map = fast_hash_map_new();
+    let mut map = value_map_new();
     map.insert(
         Arc::<str>::from("status"),
         RuntimeVal::Int(output.status.code().unwrap_or(-1) as i64),

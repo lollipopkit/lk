@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -80,8 +80,8 @@ impl Executor {
         Ok(out)
     }
 
-    pub(super) fn read_map_entries(&self, base: u8, count: u8) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
-        let mut values = fast_hash_map_new();
+    pub(super) fn read_map_entries(&self, base: u8, count: u8) -> Result<ValueMap<RuntimeMapKey, RuntimeVal>> {
+        let mut values = value_map_new();
         for entry in 0..count {
             let key_reg = base
                 .checked_add(entry.checked_mul(2).expect("map entry register overflow"))
@@ -102,8 +102,8 @@ impl Executor {
         count: u8,
         move_keys: bool,
         move_values: bool,
-    ) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
-        let mut values = fast_hash_map_new();
+    ) -> Result<ValueMap<RuntimeMapKey, RuntimeVal>> {
+        let mut values = value_map_new();
         for entry in 0..count {
             let key_reg = base
                 .checked_add(entry.checked_mul(2).expect("map entry register overflow"))
@@ -128,7 +128,7 @@ impl Executor {
         let field_base = base
             .checked_add(1)
             .ok_or_else(|| anyhow!("object field base overflow"))?;
-        let mut fields = fast_hash_map_new();
+        let mut fields = value_map_new();
         for entry in 0..count {
             let offset = entry
                 .checked_mul(2)
@@ -1271,7 +1271,7 @@ impl Executor {
         })
     }
 
-    fn string_map_contains_key<T>(&self, values: &FastHashMap<Arc<str>, T>, needle: &RuntimeVal) -> Result<bool> {
+    fn string_map_contains_key<T>(&self, values: &ValueMap<Arc<str>, T>, needle: &RuntimeVal) -> Result<bool> {
         let Some(key) = self.runtime_value_to_key_string(needle)? else {
             return Ok(false);
         };
@@ -1310,7 +1310,7 @@ fn list_value_kind(list: &TypedList) -> PerfValueKind {
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !typed_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1319,7 +1319,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1328,7 +1328,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1337,7 +1337,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1346,7 +1346,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);

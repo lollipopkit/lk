@@ -1,6 +1,5 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
 use alloc::sync::Arc;
 
 use crate::vm::{RuntimeExport, RuntimeModuleState, copy_runtime_value, import_runtime_export};
@@ -14,7 +13,7 @@ use super::*;
 #[test]
 fn a_long_string_map_key_survives_both_crossings_as_itself() {
     let mut source_heap = HeapStore::new();
-    let mut entries = fast_hash_map_new();
+    let mut entries = crate::util::value_map::value_map_new();
     entries.insert(
         RuntimeMapKey::String(Arc::<str>::from("a key too long to live inline")),
         RuntimeVal::Int(42),

@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::ValueMap;
 use crate::vm::ModuleResolver;
 use alloc::sync::Arc;
 
@@ -741,7 +742,7 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         .unwrap_or_default();
 
     let fields = match args.get(1).expect("arity checked") {
-        RuntimeVal::Nil => fast_hash_map_new(),
+        RuntimeVal::Nil => crate::util::value_map::value_map_new(),
         RuntimeVal::Obj(handle) => {
             let value = runtime
                 .heap()
@@ -906,25 +907,20 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
 }
 
 fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: RuntimeVal) -> RuntimeObject {
-    let mut fields = fast_hash_map_new();
-    for (field_key, field_value) in &object.fields {
-        if field_key.as_ref() != key.as_ref() {
-            fields.insert(Arc::clone(field_key), *field_value);
-        }
-    }
-    fields.insert(Arc::clone(&key), value);
-
-    let mut field_slots = object.field_slots.clone();
-    if !field_slots.iter().any(|field_key| field_key.as_ref() == key.as_ref()) {
-        field_slots.push(key);
-    }
-
+    // Clone and overwrite: an existing field keeps its position and a new one
+    // lands at the end, which is `IndexMap::insert`'s behaviour and the only
+    // sensible reading of "the same object with one value replaced".
+    //
+    // This used to rebuild the map *skipping* the key and then append it, which
+    // moved an existing field to the end — invisible only because a parallel
+    // slot table, which did keep the position, was what `display` read. One
+    // ordered map cannot disagree with itself.
+    let mut fields = object.fields.clone();
+    fields.insert(key, value);
     RuntimeObject {
-        // Setting a field produces the same object with one value replaced —
-        // same type, so the identity is shared, not rebuilt.
+        // Same type, so the identity is shared, not rebuilt.
         ty: Arc::clone(&object.ty),
         fields,
-        field_slots,
     }
 }
 
@@ -932,7 +928,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
     match (map, value) {
         (TypedMap::Mixed(entries), value) => {
             let runtime_key = RuntimeMapKey::String(key);
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if *entry_key != runtime_key {
                     out.insert(entry_key.clone(), *entry_value);
@@ -942,7 +938,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::Mixed(out)
         }
         (TypedMap::StringMixed(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -952,7 +948,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringInt(entries), RuntimeVal::Int(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -962,7 +958,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringInt(out)
         }
         (TypedMap::StringFloat(entries), RuntimeVal::Float(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -972,7 +968,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringFloat(out)
         }
         (TypedMap::StringBool(entries), RuntimeVal::Bool(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -982,7 +978,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringBool(out)
         }
         (TypedMap::StringInt(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
@@ -992,7 +988,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringFloat(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
@@ -1002,7 +998,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringBool(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
@@ -1022,7 +1018,7 @@ enum FieldMergeBase<'a> {
 fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     match base {
         FieldMergeBase::Object(object) => {
-            let mut entries = fast_hash_map_new();
+            let mut entries = crate::util::value_map::value_map_new();
             for (key, value) in &object.fields {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
                     entries.insert(Arc::clone(key), *value);
@@ -1040,77 +1036,30 @@ fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     }
 }
 
+/// A copy of the map, keys and all.
+///
+/// A plain `clone`, which it could not be while iteration order was the hash
+/// layout's: reproducing an order meant *replaying the insertion sequence*, so
+/// every copy re-hashed every key into a fresh table. Insertion order makes the
+/// copy structural — the entry vector and its index table are memcpy'd — which
+/// is both the simpler code and the faster one.
 fn copy_typed_map(map: &TypedMap) -> TypedMap {
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                out.insert(key.clone(), *value);
-            }
-            TypedMap::Mixed(out)
-        }
-        TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                out.insert(Arc::clone(key), *value);
-            }
-            TypedMap::StringMixed(out)
-        }
-        TypedMap::StringInt(entries) => TypedMap::StringInt(copy_string_map_entries(entries)),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(copy_string_map_entries(entries)),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(copy_string_map_entries(entries)),
-    }
+    map.clone()
 }
 
+/// The same copy, minus whatever the overlay is about to shadow.
+///
+/// `retain` rather than a rebuild: it keeps the survivors in order and touches
+/// the index table once, where inserting one key at a time hashed each survivor
+/// a second time.
 fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> TypedMap {
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                if !typed_map_contains(overlay, key) {
-                    out.insert(key.clone(), *value);
-                }
-            }
-            TypedMap::Mixed(out)
-        }
-        TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                if !typed_map_contains_str(overlay, key.as_ref()) {
-                    out.insert(Arc::clone(key), *value);
-                }
-            }
-            TypedMap::StringMixed(out)
-        }
-        TypedMap::StringInt(entries) => {
-            TypedMap::StringInt(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-        TypedMap::StringFloat(entries) => {
-            TypedMap::StringFloat(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-        TypedMap::StringBool(entries) => {
-            TypedMap::StringBool(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-    }
-}
-
-fn copy_string_map_entries<T: Copy>(entries: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
-    for (key, value) in entries {
-        out.insert(Arc::clone(key), *value);
-    }
-    out
-}
-
-fn copy_string_map_entries_without_overlay_keys<T: Copy>(
-    entries: &FastHashMap<Arc<str>, T>,
-    overlay: &TypedMap,
-) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
-    for (key, value) in entries {
-        if !typed_map_contains_str(overlay, key.as_ref()) {
-            out.insert(Arc::clone(key), *value);
-        }
+    let mut out = map.clone();
+    match &mut out {
+        TypedMap::Mixed(entries) => entries.retain(|key, _| !typed_map_contains(overlay, key)),
+        TypedMap::StringMixed(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringInt(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringFloat(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringBool(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
     }
     out
 }
@@ -1163,8 +1112,8 @@ fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
     }
 }
 
-fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<FastHashMap<Arc<str>, RuntimeVal>> {
-    let mut fields = fast_hash_map_new();
+fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<ValueMap<Arc<str>, RuntimeVal>> {
+    let mut fields = crate::util::value_map::value_map_new();
     match map {
         TypedMap::Mixed(entries) => {
             for (key, value) in entries {
@@ -1462,7 +1411,6 @@ hardware_builtins! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::fast_map::fast_hash_map_from_iter;
     use crate::val::TypedList;
     use crate::vm::{Module, RuntimeModuleState};
 
@@ -1690,14 +1638,9 @@ mod tests {
     #[test]
     fn core_make_struct_reads_typed_map_backing_directly() {
         let mut state = RuntimeModuleState::default();
-        let fields = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("answer"),
-                    42,
-                )])))),
-        );
+        let fields = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("answer"), 42)]),
+        ))));
         let name = RuntimeVal::ShortStr(crate::val::ShortStr::new("Point").expect("short"));
         let args = [name, fields];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1717,22 +1660,12 @@ mod tests {
     #[test]
     fn core_merge_fields_reads_typed_map_backing_directly() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("a"),
-                    1,
-                )])))),
-        );
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("b"),
-                    2,
-                )])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("a"), 1)]),
+        ))));
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("b"), 2)]),
+        ))));
         let args = [base, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 
@@ -1753,14 +1686,12 @@ mod tests {
     #[test]
     fn core_set_field_preserves_typed_string_int_map_without_copying_overwritten_entry() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Int(42)];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1784,14 +1715,12 @@ mod tests {
     #[test]
     fn core_set_field_pollutes_typed_map_without_copying_overwritten_entry() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Bool(true)];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1815,22 +1744,15 @@ mod tests {
     #[test]
     fn core_merge_fields_filters_base_keys_overwritten_by_overlay() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("answer"),
-                    42,
-                )])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("answer"), 42)]),
+        ))));
         let args = [base, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 
@@ -1853,14 +1775,9 @@ mod tests {
     #[test]
     fn core_merge_fields_nil_base_preserves_overlay_typed_backing() {
         let mut state = RuntimeModuleState::default();
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringBool(fast_hash_map_from_iter([(
-                    Arc::<str>::from("ok"),
-                    true,
-                )])))),
-        );
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringBool(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("ok"), true)]),
+        ))));
         let args = [RuntimeVal::Nil, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 

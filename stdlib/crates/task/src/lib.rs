@@ -4,6 +4,7 @@
 // `stdlib::register_stdlib_concurrency_globals` are migrated separately.
 
 use anyhow::{Result, anyhow, bail};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
     val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
     vm::{NativeArgs, NativeRuntime},
@@ -79,7 +80,7 @@ impl TaskModule {
             .async_runtime()
             .with(|rt| Ok(rt.stats()))
             .map_err(|err| anyhow!("Failed to read runtime stats: {err}"))?;
-        let mut map = lk_core::util::fast_map::fast_hash_map_new();
+        let mut map = value_map_new();
         map.insert(
             Arc::<str>::from("active_tasks"),
             RuntimeVal::Int(stats.active_tasks as i64),

@@ -24,6 +24,10 @@ std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:ch
 lk-aot-abi = { path = "../aot/abi", default-features = false }
 rustc-hash = { version = "2", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+# The value-map carrier, mirroring `lk-core`'s `util::value_map`: a program's
+# `Map` iterates in insertion order, so both back ends agree by *construction*
+# rather than by both landing on the same hash layout.
+indexmap = { version = "2", default-features = false }
 # Bare metal has no thread-local storage; the arena lives behind a spin lock
 # there instead. Uncontended on a single core, so the hot path stays cheap.
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }

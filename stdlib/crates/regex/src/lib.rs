@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -121,7 +121,7 @@ fn cached_regex(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) 
 }
 
 fn match_map(text: &str, start: usize, end: usize, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
-    let mut map = fast_hash_map_new();
+    let mut map = value_map_new();
     map.insert(Arc::<str>::from("text"), runtime_string_value(text, runtime.heap_mut()));
     map.insert(Arc::<str>::from("start"), RuntimeVal::Int(start as i64));
     map.insert(Arc::<str>::from("end"), RuntimeVal::Int(end as i64));

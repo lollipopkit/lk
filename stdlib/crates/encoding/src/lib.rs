@@ -23,8 +23,7 @@ use alloc::sync::Arc;
 use anyhow::bail;
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
-#[cfg(feature = "std")]
-use lk_core::util::fast_map::fast_hash_map_new;
+use lk_core::util::value_map::value_map_new;
 #[cfg(feature = "std")]
 use lk_core::val::{HeapValue, TypedMap};
 use lk_core::{
@@ -245,7 +244,7 @@ impl UrlEncodingModule {
             runtime.heap(),
             "encoding.url.query_parse value",
         )?;
-        let mut map = fast_hash_map_new();
+        let mut map = value_map_new();
         for (key, value) in url::form_urlencoded::parse(value.as_bytes()) {
             map.insert(
                 Arc::<str>::from(key.as_ref()),

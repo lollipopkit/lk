@@ -202,12 +202,12 @@ fn execute_to_iter_reads_typed_string_int_map_backing_as_pairs() {
 
 #[test]
 fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
-    let mut short_key_map = fast_hash_map_new();
+    let mut short_key_map = crate::util::value_map::value_map_new();
     short_key_map.insert(
         RuntimeMapKey::ShortStr(crate::val::ShortStr::new("a").expect("short key")),
         crate::vm::ConstRuntimeValue::Int(42),
     );
-    let mut heap_key_map = fast_hash_map_new();
+    let mut heap_key_map = crate::util::value_map::value_map_new();
     heap_key_map.insert(
         RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(42),
@@ -238,7 +238,7 @@ fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
 
 #[test]
 fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
-    let mut map = fast_hash_map_new();
+    let mut map = crate::util::value_map::value_map_new();
     map.insert(
         RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(1),

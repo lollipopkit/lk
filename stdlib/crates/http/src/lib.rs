@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -79,7 +79,7 @@ fn send_request(
 
 fn response_map(response: ureq::Response, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let status = response.status() as i64;
-    let mut headers = fast_hash_map_new();
+    let mut headers = value_map_new();
     for name in response.headers_names() {
         if let Some(value) = response.header(&name) {
             headers.insert(Arc::<str>::from(name), runtime_string_value(value, runtime.heap_mut()));
@@ -94,7 +94,7 @@ fn response_map(response: ureq::Response, runtime: &mut NativeRuntime<'_>) -> Re
         bail!("http response body exceeds {MAX_BODY_BYTES} bytes");
     }
     let headers = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(headers))));
-    let mut map = fast_hash_map_new();
+    let mut map = value_map_new();
     map.insert(Arc::<str>::from("status"), RuntimeVal::Int(status));
     map.insert(Arc::<str>::from("headers"), headers);
     map.insert(Arc::<str>::from("body"), runtime_bytes_value(body, runtime.heap_mut()));

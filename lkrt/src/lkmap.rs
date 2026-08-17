@@ -26,13 +26,17 @@ use core::ffi::{CStr, c_char, c_void};
 use crate::lklist::{LkMaybeF64, LkMaybeI64};
 use crate::vm_mirror::{RtKey, str_key};
 
-// The exact carrier the VM uses (`core::util::fast_map::FastHashMap` =
-// `hashbrown::HashMap` + `FxBuildHasher`, fixed seed): iteration order is a
-// deterministic function of key hashes + operation sequence, so a native map
-// built by the same operation sequence iterates in the *same* order — the
-// deep-coverage plan's "mirror the Fx order" adjudication. Do not swap either
-// piece independently of `core/src/util/fast_map.rs`.
-pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+// The exact carrier the VM uses (`core::util::value_map::ValueMap`): a
+// program's `Map` iterates in **insertion order**, so a native map built by the
+// same sequence of operations iterates the same way for a structural reason —
+// both append to a vector — rather than because both happen to land on the same
+// hash layout. That older arrangement is what `vm_mirror` was for, and its
+// correctness rested on both builds linking one `hashbrown`, one rustc deriving
+// the same `Hash` discriminants, and one fixed seed.
+//
+// Keep in step with `core/src/util/value_map.rs`, including `shift_remove`
+// (order-preserving) over `swap_remove`.
+pub(crate) type FxMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
 /// The set counterpart of [`FxMap`]. hashbrown rather than std so the same
 /// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
 pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
@@ -212,7 +216,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_i64_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrI64Map` from `lkrt_lkmap_str_i64_new`.
         unsafe { (*(handle as *mut StrI64Map)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
 
@@ -229,7 +233,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_f64_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrF64Map` from `lkrt_lkmap_str_f64_new`.
         unsafe { (*(handle as *mut StrF64Map)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
 
@@ -247,7 +251,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrDynMap` from `lkrt_lkmap_str_dyn_new`.
         unsafe { (*(handle as *mut StrDynMap)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
 
@@ -457,7 +461,7 @@ macro_rules! map_iter_family {
             // SAFETY: as above.
             let map = unsafe { &mut *(handle as *mut $carrier) };
             #[allow(clippy::redundant_closure_call)]
-            match map.remove(unsafe { key_str(key) }) {
+            match map.shift_remove(unsafe { key_str(key) }) {
                 Some(v) => ($box_val)(&v),
                 None => crate::lkdyn::LkDyn::NIL,
             }

@@ -57,6 +57,10 @@ stacker = { version = "0.1", optional = true }
 # Pure-Rust float math for no_std (the inherent f64 methods live in std).
 libm = { version = "0.2", default-features = false }
 hashbrown = { version = "0.15", features = ["serde"] }
+# Insertion-ordered value maps (`ValueMap`): a program's `Map` is one of these,
+# so `println(m)` and `m.keys()` are functions of the value rather than of the
+# hash layout. `default-features = false` keeps the no_std build available.
+indexmap = { version = "2", default-features = false, features = ["serde"] }
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 itoa = { version = "1" }
 ryu = { version = "1" }

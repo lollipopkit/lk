@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
+use crate::util::value_map::value_map_new;
 use alloc::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -951,7 +951,7 @@ fn typed_map_without_key(map: &TypedMap, removed_key: &RuntimeMapKey) -> TypedMa
 fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !replaced_keys.contains(key) {
                     out.insert(key.clone(), *value);
@@ -960,7 +960,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -969,7 +969,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -978,7 +978,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -987,7 +987,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -1001,7 +1001,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !runtime_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1010,7 +1010,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1019,7 +1019,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1028,7 +1028,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1037,7 +1037,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);

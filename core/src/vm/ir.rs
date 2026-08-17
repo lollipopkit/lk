@@ -5,7 +5,7 @@
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::FastHashMap;
+use crate::util::value_map::ValueMap;
 use alloc::sync::Arc;
 use core::fmt::Write as _;
 use core::mem::size_of;
@@ -138,7 +138,10 @@ pub enum ConstRuntimeValue {
 pub enum ConstHeapValue {
     LongString(Arc<str>),
     List(Vec<ConstRuntimeValue>),
-    Map(FastHashMap<RuntimeMapKey, ConstRuntimeValue>),
+    /// Insertion-ordered: a map literal's entries reach the heap in the order
+    /// they were written, because that is the order the value iterates in
+    /// (`util::value_map`).
+    Map(ValueMap<RuntimeMapKey, ConstRuntimeValue>),
     UpvalCell(Box<ConstRuntimeValue>),
 }
 
@@ -896,7 +899,6 @@ pub fn disassemble_module(module: &Module) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::util::fast_map::fast_hash_map_new;
 
     use super::*;
 
@@ -1078,7 +1080,7 @@ mod tests {
 
     #[test]
     fn const_pool_heap_values_can_represent_nested_containers() {
-        let mut entries = fast_hash_map_new();
+        let mut entries = crate::util::value_map::value_map_new();
         entries.insert(
             RuntimeMapKey::ShortStr(ShortStr::new("name").expect("short")),
             ConstRuntimeValue::Heap(Box::new(ConstHeapValue::LongString(Arc::<str>::from(

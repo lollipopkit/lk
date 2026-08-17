@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::sync::Mutex;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -1482,7 +1482,7 @@ fn copy_heap_value(
         // No member carries a heap handle — see `imports::import_runtime_set`.
         HeapValue::Set(values) => HeapValue::Set(values.clone()),
         HeapValue::Object(object) => {
-            let mut fields = fast_hash_map_new();
+            let mut fields = value_map_new();
             for (key, value) in &object.fields {
                 fields.insert(
                     Arc::clone(key),
@@ -1594,7 +1594,7 @@ fn copy_typed_map(
     Ok(match values {
         TypedMap::Mixed(values) => TypedMap::Mixed(copy_runtime_entries(values, source_heap, dest_heap, mode)?),
         TypedMap::StringMixed(values) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in values {
                 out.insert(
                     Arc::clone(key),
@@ -1615,8 +1615,8 @@ fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
     out
 }
 
-fn copy_string_map_values<T: Copy>(values: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
+fn copy_string_map_values<T: Copy>(values: &ValueMap<Arc<str>, T>) -> ValueMap<Arc<str>, T> {
+    let mut out = value_map_new();
     for (key, value) in values {
         out.insert(Arc::clone(key), *value);
     }
@@ -1624,12 +1624,12 @@ fn copy_string_map_values<T: Copy>(values: &FastHashMap<Arc<str>, T>) -> FastHas
 }
 
 fn copy_runtime_entries(
-    values: &FastHashMap<RuntimeMapKey, RuntimeVal>,
+    values: &ValueMap<RuntimeMapKey, RuntimeVal>,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     mode: &ClosureCopy,
-) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
-    let mut out = fast_hash_map_new();
+) -> Result<ValueMap<RuntimeMapKey, RuntimeVal>> {
+    let mut out = value_map_new();
     for (key, value) in values {
         out.insert(
             key.clone(),

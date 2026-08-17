@@ -1,5 +1,4 @@
 use super::*;
-use crate::util::fast_map::fast_hash_map_from_iter;
 use crate::vm::ProgramExec;
 use crate::vm::analysis::PerfGlobalFact;
 /// A native is called through the same `Call` opcode as anything else, and the
@@ -297,12 +296,9 @@ fn direct_full_state_native_named_map_uses_heap_map_source() {
         arity: 1,
         function: NativeFunction::FullState(full_state_named),
     })));
-    let named = state
-        .heap
-        .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-            Arc::<str>::from("increment"),
-            37,
-        )]))));
+    let named = state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+        crate::util::value_map::value_map_from_iter([(Arc::<str>::from("increment"), 37)]),
+    )));
 
     let mut ctx = VmContext::new_without_core_vm_builtins();
     let result = call_runtime_value_runtime_named_map(

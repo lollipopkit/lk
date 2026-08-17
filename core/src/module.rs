@@ -2,7 +2,7 @@ use crate::compat::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::sync::Mutex;
-use crate::util::fast_map::fast_hash_map_new;
+use crate::util::value_map::value_map_new;
 use crate::{
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::{ContextNativeFunction, Module, NativeFunction, PlainNativeFunction, RuntimeExport, RuntimeModuleState},
@@ -195,7 +195,7 @@ pub fn runtime_export_from_plain_native_entries(
     values: &[RuntimeValueExport],
 ) -> RuntimeExport {
     let mut heap = HeapStore::new();
-    let mut entries = fast_hash_map_new();
+    let mut entries = value_map_new();
     for native in natives {
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
             name: Arc::<str>::from(native.name),
@@ -231,7 +231,7 @@ pub fn runtime_export_from_runtime_native(name: &str, function: NativeFunction, 
 /// it takes owned names and any [`NativeFunction`], including capturing closures.
 pub fn runtime_module_export(entries: &[(Arc<str>, u16, NativeFunction)]) -> RuntimeExport {
     let mut heap = HeapStore::new();
-    let mut map = fast_hash_map_new();
+    let mut map = value_map_new();
     for (name, arity, function) in entries {
         let callable = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
             name: Arc::clone(name),

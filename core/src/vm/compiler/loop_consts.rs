@@ -7,7 +7,6 @@ use anyhow::Result;
 use crate::{
     expr::{Expr, MatchArm},
     stmt::Stmt,
-    util::fast_map::FastHashMap,
     val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue,
 };
@@ -757,7 +756,7 @@ fn collect_boxed_exprs_inline_call_scalar_consts(
 
 fn collect_stmt_const_map_get_scalar_consts(
     stmt: &Stmt,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     match stmt {
@@ -835,7 +834,7 @@ fn collect_stmt_const_map_get_scalar_consts(
 
 fn collect_expr_const_map_get_scalar_consts(
     expr: &Expr,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     if let Some(key) = const_map_get_scalar_loop_key(expr, const_maps)? {
@@ -920,7 +919,7 @@ fn collect_expr_const_map_get_scalar_consts(
 
 fn collect_boxed_exprs_const_map_get_scalar_consts(
     exprs: &[Box<Expr>],
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     for expr in exprs {
@@ -931,7 +930,7 @@ fn collect_boxed_exprs_const_map_get_scalar_consts(
 
 fn const_map_get_scalar_loop_key(
     expr: &Expr,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
 ) -> Result<Option<ScalarLoopConstKey>> {
     let Some((target, key)) = const_map_get_target_and_key(expr) else {
         return Ok(None);

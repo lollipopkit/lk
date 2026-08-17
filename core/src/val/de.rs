@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
+use crate::util::value_map::value_map_new;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList};
 use alloc::sync::Arc;
 
@@ -214,7 +214,7 @@ fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> anyhow::Re
             RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         serde_json::Value::Object(values) => {
-            let mut entries = fast_hash_map_new();
+            let mut entries = value_map_new();
             for (key, value) in values {
                 entries.insert(runtime_string_key(&key), json_to_runtime(value, heap)?);
             }
@@ -238,7 +238,7 @@ fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> anyhow::Re
             RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         serde_yaml::Value::Mapping(values) => {
-            let mut entries = fast_hash_map_new();
+            let mut entries = value_map_new();
             for (key, value) in values {
                 entries.insert(yaml_key_to_runtime(key)?, yaml_to_runtime(value, heap)?);
             }
@@ -264,7 +264,7 @@ fn toml_to_runtime(value: toml::Value, heap: &mut HeapStore) -> anyhow::Result<R
             RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         toml::Value::Table(values) => {
-            let mut entries = fast_hash_map_new();
+            let mut entries = value_map_new();
             for (key, value) in values {
                 entries.insert(runtime_string_key(&key), toml_to_runtime(value, heap)?);
             }

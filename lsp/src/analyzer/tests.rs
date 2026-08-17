@@ -1,7 +1,6 @@
 use super::*;
 use lk_core::expr;
 use lk_core::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
-use lk_core::util::fast_map::FastHashMap;
 use lk_core::val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap};
 use std::{fs, path::PathBuf, time::Duration};
 use tower_lsp::lsp_types::{
@@ -35,7 +34,7 @@ fn string_map(heap: &mut HeapStore, entries: impl IntoIterator<Item = (&'static 
     let entries = entries
         .into_iter()
         .map(|(key, value)| (std::sync::Arc::<str>::from(key), value))
-        .collect::<FastHashMap<_, _>>();
+        .collect::<lk_core::util::value_map::ValueMap<_, _>>();
     RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))))
 }
 

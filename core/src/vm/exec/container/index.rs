@@ -652,12 +652,11 @@ pub(in crate::vm::exec) fn with_string_int_key<R>(prefix: &str, suffix: i64, f: 
 #[cfg(test)]
 mod tests {
     use super::get_string_map_direct;
-    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
     use crate::val::{RuntimeMapKey, RuntimeVal, ShortStr, TypedMap};
 
     #[test]
     fn direct_string_map_lookup_returns_nil_for_empty_mixed_map() {
-        let map = TypedMap::Mixed(fast_hash_map_new());
+        let map = TypedMap::Mixed(crate::util::value_map::value_map_new());
 
         assert_eq!(get_string_map_direct(&map, "missing"), Some(RuntimeVal::Nil));
     }
@@ -665,7 +664,7 @@ mod tests {
     #[test]
     fn direct_string_map_lookup_keeps_non_empty_mixed_map_on_generic_path() {
         let key = RuntimeMapKey::ShortStr(ShortStr::new("present").expect("short key"));
-        let map = TypedMap::Mixed(fast_hash_map_from_iter([(key, RuntimeVal::Int(1))]));
+        let map = TypedMap::Mixed(crate::util::value_map::value_map_from_iter([(key, RuntimeVal::Int(1))]));
 
         assert_eq!(get_string_map_direct(&map, "missing"), None);
         assert_eq!(get_string_map_direct(&map, "present"), None);

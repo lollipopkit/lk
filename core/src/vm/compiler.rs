@@ -41,7 +41,6 @@ use crate::{
     expr::{Expr, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     stmt::{ForPattern, Program, Stmt},
-    util::fast_map::FastHashMap,
     val::{FunctionNamedParamType, LiteralVal, RuntimeMapKey, ShortStr, Type},
 };
 
@@ -149,7 +148,7 @@ pub struct Compiler {
     loops: Vec<LoopPatch>,
     loop_const_scopes: Vec<HashMap<ScalarLoopConstKey, u16>>,
     single_char_string_locals: HashMap<String, u16>,
-    const_map_locals: HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_map_locals: HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     local_rebind_suppression: u16,
     /// The `let` binding whose initializer is being lowered, if any.
     ///

@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
+use crate::util::value_map::value_map_new;
 use anyhow::{Result, anyhow};
 
 use alloc::sync::Arc;
@@ -111,7 +111,7 @@ impl Executor {
                 HeapValue::List(list)
             }
             ConstHeapValue::Map(values) => {
-                let mut runtime_entries = fast_hash_map_new();
+                let mut runtime_entries = value_map_new();
                 for (key, value) in values {
                     runtime_entries.insert(key, self.materialize_const_value(value)?);
                 }

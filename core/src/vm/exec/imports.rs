@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -85,7 +85,7 @@ fn import_heap_value(
         )?),
         HeapValue::Set(values) => HeapValue::Set(import_runtime_set(values)),
         HeapValue::Object(object) => {
-            let mut fields = fast_hash_map_new();
+            let mut fields = value_map_new();
             for (key, value) in &object.fields {
                 fields.insert(
                     Arc::clone(key),
@@ -212,7 +212,7 @@ fn import_typed_map(
 ) -> Result<TypedMap> {
     Ok(match values {
         TypedMap::Mixed(values) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in values {
                 out.insert(
                     key.clone(),
@@ -228,7 +228,7 @@ fn import_typed_map(
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(values) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in values {
                 out.insert(
                     Arc::clone(key),
@@ -255,8 +255,8 @@ fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
     out
 }
 
-fn copy_string_map_values<T: Copy>(values: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
+fn copy_string_map_values<T: Copy>(values: &ValueMap<Arc<str>, T>) -> ValueMap<Arc<str>, T> {
+    let mut out = value_map_new();
     for (key, value) in values {
         out.insert(Arc::clone(key), *value);
     }

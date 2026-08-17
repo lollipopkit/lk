@@ -693,7 +693,6 @@ impl NativeEntry {
 
 #[cfg(test)]
 mod tests {
-    use crate::util::fast_map::fast_hash_map_from_iter;
     use alloc::sync::Arc;
 
     use crate::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
@@ -763,10 +762,9 @@ mod tests {
         assert_eq!(seen, vec![("flag".to_string(), RuntimeVal::Bool(false))]);
 
         let mut heap = HeapStore::new();
-        let named_handle = heap.alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-            Arc::<str>::from("limit"),
-            7,
-        )]))));
+        let named_handle = heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("limit"), 7)]),
+        )));
         let native_args = NativeArgs::new_with_named_map_handle(&args, named_handle, 1);
         assert_eq!(native_args.named_len(), 1);
         let mut seen = Vec::new();

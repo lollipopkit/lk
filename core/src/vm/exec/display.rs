@@ -322,14 +322,15 @@ mod tests {
     use alloc::sync::Arc;
 
     use super::*;
-    use crate::util::fast_map::fast_hash_map_from_iter;
     use crate::val::{DeclaredType, TypeScope};
     use crate::val::{MAX_VALUE_DEPTH, RuntimeObject};
 
     fn object_of(fields: &[(&str, RuntimeVal)]) -> RuntimeObject {
         RuntimeObject::new(
             Arc::new(DeclaredType::new(TypeScope::anonymous(), Arc::<str>::from("P"))),
-            fast_hash_map_from_iter(fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value))),
+            crate::util::value_map::value_map_from_iter(
+                fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value)),
+            ),
         )
     }
 
@@ -340,7 +341,9 @@ mod tests {
                 Arc::<str>::from("P"),
                 declared.iter().map(|name| Arc::<str>::from(*name)).collect(),
             )),
-            fast_hash_map_from_iter(fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value))),
+            crate::util::value_map::value_map_from_iter(
+                fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value)),
+            ),
         )
     }
 

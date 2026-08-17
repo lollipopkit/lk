@@ -1,24 +1,26 @@
 //! VM map-layout mirror (deep-coverage plan D1, user adjudication: "native
 //! replicates the Fx order, the VM is untouched").
 //!
-//! The VM materializes a map literal in **two stages**
-//! (`exec/const_load.rs` + `val/runtime_model.rs::typed_map_from_entries`):
-//! stage 1 inserts the serialized entries, in order, into a fresh
-//! `FastHashMap<RuntimeMapKey, RuntimeVal>`; stage 2 iterates *that* map (Fx
-//! hash order) and inserts into the final typed map keyed by `Arc<str>`.
-//! Iteration order of the result is therefore a deterministic function of
-//! the key hashes and both insertion sequences — nothing else. This module
-//! replays both stages with hash-identical key types, so `for k in m` /
-//! `.keys()` iterate in exactly the VM's order.
+//! The VM materializes a map literal in two stages (`exec/const_load.rs` +
+//! `val/runtime_model.rs::typed_map_from_entries`): stage 1 inserts the
+//! serialized entries, in order, into a `ValueMap<RuntimeMapKey, RuntimeVal>`;
+//! stage 2 iterates that and inserts into the final typed map keyed by
+//! `Arc<str>`. Both carriers are insertion-ordered, so the result iterates in
+//! the order the literal was *written*. This module replays the same two
+//! stages.
 //!
-//! Hash identity argument: [`RtKey`] mirrors `RuntimeMapKey`'s variant order
-//! (same `derive(Hash)` discriminants under the same rustc) and field hashing
-//! (`MirrorShortStr` = `ShortStr`'s exact field order; `String` hashes its
-//! `str` content exactly like `Arc<str>`); the hasher and table
-//! implementation are the same `hashbrown + FxBuildHasher` the VM's
-//! `fast_map` uses, resolved to one version by the workspace lockfile. The
-//! lkrt order-conformance test compares against `lk-core` directly, so a
-//! drift in any of these assumptions fails loudly.
+//! **The hash-identity argument is retired.** Both sides now carry a map's
+//! entries in a vector and iterate it, so `for k in m` agrees between the two
+//! back ends because both append — not because both land on the same hash
+//! layout. What that used to rest on is worth recording, since it is the kind
+//! of invariant that holds until it silently does not: `RtKey` had to mirror
+//! `RuntimeMapKey`'s `derive(Hash)` discriminants under the same rustc, and
+//! both builds had to resolve to one `hashbrown` with one fixed seed. `RtKey`
+//! now only has to be *self*-consistent — equal keys hash equally — which is
+//! an ordinary requirement rather than a coincidence to defend.
+//!
+//! The order-conformance test stays: it compares against `lk-core` directly,
+//! so a divergence still fails loudly.
 
 // `alloc`, not the std prelude: this module is part of the computation-only
 // subset that builds without an OS.
@@ -153,18 +155,14 @@ impl core::hash::Hash for IntKey {
 /// `FastHashMap<RuntimeMapKey, RuntimeVal>` (values ride along boxed), plus
 /// the order the entries were written in.
 ///
-/// The order log is not redundant with the table. A *string*-keyed literal
-/// gets a stage 2 in the VM — iterate stage 1, insert into a fresh typed map —
-/// so its finishers replay that by iterating the table. A non-string-keyed one
-/// gets no stage 2 at all, so its finisher has to replay the *literal*
-/// insertion sequence instead; iterating the table there would be a second
-/// stage the VM never ran.
+/// One field, now. There used to be a second — an explicit log of first-
+/// occurrence order — because the table's own iteration was hash order and a
+/// non-string-keyed literal (which gets no stage 2 in the VM) had to replay the
+/// *written* sequence instead. The table iterates in that sequence itself now,
+/// so the log was a copy of it.
 #[derive(Default)]
 struct LitBuilder {
     stage1: FxMap<RtKey, LkDyn>,
-    /// First-occurrence order. A repeated key updates its value in place and
-    /// keeps its original position, which is what the table does too.
-    order: Vec<RtKey>,
 }
 
 /// Starts a map-literal build (VM stage 1, zero capacity).
@@ -181,10 +179,9 @@ pub extern "C" fn lkrt_lkmap_lit_new() -> *mut c_void {
 pub unsafe extern "C" fn lkrt_lkmap_lit_set(builder: *mut c_void, key: LkDyn, value: LkDyn) {
     // SAFETY: `builder` addresses a `LitBuilder` from `lkrt_lkmap_lit_new`.
     let lit = unsafe { &mut *(builder as *mut LitBuilder) };
-    let key = key_from_dyn(key);
-    if lit.stage1.insert(key.clone(), value).is_none() {
-        lit.order.push(key);
-    }
+    // A repeated key updates in place and keeps its original position, which
+    // is `IndexMap::insert`'s own behaviour.
+    lit.stage1.insert(key_from_dyn(key), value);
 }
 
 fn builder<'a>(handle: *mut c_void) -> &'a FxMap<RtKey, LkDyn> {
@@ -192,14 +189,9 @@ fn builder<'a>(handle: *mut c_void) -> &'a FxMap<RtKey, LkDyn> {
     &unsafe { &*(handle as *mut LitBuilder) }.stage1
 }
 
-/// The literal's entries in *written* order — the replay a non-string key
-/// needs. See [`LitBuilder`].
+/// The literal's entries in written order, which is what the table gives.
 fn literal_order<'a>(handle: *mut c_void) -> impl Iterator<Item = (&'a RtKey, &'a LkDyn)> {
-    // SAFETY: callers pass a live `LitBuilder` handle.
-    let lit = unsafe { &*(handle as *mut LitBuilder) };
-    lit.order
-        .iter()
-        .map(|k| (k, lit.stage1.get(k).expect("order entry is in the table")))
+    builder(handle).iter()
 }
 
 /// Finishes into `Map<str, i64>` (VM stage 2: iterate stage 1 in its hash

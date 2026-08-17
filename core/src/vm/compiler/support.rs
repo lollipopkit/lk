@@ -1,7 +1,6 @@
 use crate::compat::collections::{HashMap, HashSet};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -841,7 +840,7 @@ pub(super) fn const_heap_list_from_expr_literals(values: &[Box<Expr>]) -> Result
 }
 
 pub(super) fn const_heap_map_from_expr_literals(entries: &[(Box<Expr>, Box<Expr>)]) -> Result<Option<ConstHeapValue>> {
-    let mut const_entries = fast_hash_map_new();
+    let mut const_entries = crate::util::value_map::value_map_new();
     for (key, value) in entries {
         let Expr::Literal(key) = &**key else {
             return Ok(None);

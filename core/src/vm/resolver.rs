@@ -549,7 +549,6 @@ mod tests {
     fn test_parent_module_item_import_binds_child_namespace() -> Result<()> {
         use crate::{
             module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
-            util::fast_map::fast_hash_map_from_iter,
             val::{HeapStore, HeapValue, TypedMap},
             vm::{NativeArgs, NativeRuntime},
         };
@@ -572,7 +571,7 @@ mod tests {
                 let mut heap = HeapStore::new();
                 let file = crate::vm::import_runtime_export(&file, &mut heap)?;
                 let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(
-                    fast_hash_map_from_iter([(Arc::<str>::from("file"), file)]),
+                    crate::util::value_map::value_map_from_iter([(Arc::<str>::from("file"), file)]),
                 ))));
                 Ok(RuntimeExport::from_value(value, heap))
             }

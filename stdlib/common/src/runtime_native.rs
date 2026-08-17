@@ -15,7 +15,6 @@ use alloc::{
 };
 use lk_core::{
     module::{RuntimeNativeExport, RuntimeValueExport},
-    util::fast_map::fast_hash_map_new,
     val::{
         CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
     },
@@ -52,7 +51,7 @@ pub fn module_export(
     namespaces: &[(&'static str, RuntimeExport)],
 ) -> Result<RuntimeExport> {
     let mut heap = HeapStore::new();
-    let mut map = fast_hash_map_new();
+    let mut map = lk_core::util::value_map::value_map_new();
     for native in natives {
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
             name: Arc::<str>::from(native.name),
@@ -350,7 +349,6 @@ pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<Str
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use lk_core::util::fast_map::fast_hash_map_from_iter;
 
     use super::*;
     use lk_core::val::TypedMap;
@@ -359,12 +357,12 @@ mod tests {
     fn runtime_display_formats_typed_containers_without_val_containers() {
         let mut heap = HeapStore::new();
         let nested = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
-        let map = RuntimeVal::Obj(
-            heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([
+        let map = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(
+            lk_core::util::value_map::value_map_from_iter([
                 (Arc::<str>::from("items"), nested),
                 (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
-            ])))),
-        );
+            ]),
+        ))));
 
         let output = runtime_display_value(&map, &heap).expect("display");
 

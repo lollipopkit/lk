@@ -1,5 +1,6 @@
 use super::display::runtime_display_value;
 use super::*;
+use crate::util::value_map::value_map_new;
 
 impl ProgramResult {
     pub fn first_return(&self) -> &RuntimeVal {
@@ -36,7 +37,7 @@ impl ProgramResult {
 
     pub fn into_exports(self) -> RuntimeExport {
         let mut state = self.state;
-        let mut entries = fast_hash_map_new();
+        let mut entries = value_map_new();
         for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
             entries.insert(RuntimeMapKey::String(slot.name.clone()), *value);
         }

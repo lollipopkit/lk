@@ -273,7 +273,6 @@ impl Default for HeapStore {
 #[cfg(test)]
 mod tests {
     use crate::compat::sync::Mutex;
-    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
     use alloc::sync::Arc;
 
     use super::*;
@@ -322,7 +321,9 @@ mod tests {
         heap.collect([]);
         assert_eq!(heap.shape_generation(handle), None);
 
-        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_new())));
+        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_new(),
+        )));
         assert_eq!(reused.index(), handle.index());
         assert_eq!(heap.shape_generation(reused), Some(initial.wrapping_add(2)));
     }
@@ -351,16 +352,15 @@ mod tests {
         let mut heap = HeapStore::new();
         let leaf = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
         let list = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(leaf)])));
-        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([(
-            Arc::<str>::from("list"),
-            RuntimeVal::Obj(list),
-        )]))));
+        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("list"), RuntimeVal::Obj(list))]),
+        )));
         let object = heap.alloc(HeapValue::Object(crate::val::RuntimeObject::new(
             Arc::new(crate::val::DeclaredType::new(
                 crate::val::TypeScope::anonymous(),
                 Arc::<str>::from("Box"),
             )),
-            fast_hash_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
         )));
         let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index: 7,

@@ -48,7 +48,6 @@ pub use runtime_callable::{
     copy_runtime_value, copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
-use crate::util::fast_map::fast_hash_map_new;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
