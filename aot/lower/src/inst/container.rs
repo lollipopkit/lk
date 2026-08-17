@@ -858,7 +858,7 @@ pub(super) fn lower(
                 Ty::ListI64 => {
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
                         Ok(v) => v,
-                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                        Err(e) => return Err(keep_discovery(e, guess_wrong(ssa))),
                     };
                     insts.push(Inst::Call {
                         dst: None,
@@ -884,7 +884,7 @@ pub(super) fn lower(
                     // pointer push involves no ownership transfer.
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc) {
                         Ok(v) => v,
-                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                        Err(e) => return Err(keep_discovery(e, guess_wrong(ssa))),
                     };
                     insts.push(Inst::Call {
                         dst: None,
@@ -1488,9 +1488,10 @@ pub(super) fn lower(
                 Ty::MapStrI64 => match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
                     Ok(v) => ("str_i64_set", v),
                     Err(e) => {
-                        return Err(
-                            carrier_contradicted_here_or_at_callers(ssa, func, instr.a(), handle, map_ty).unwrap_or(e),
-                        );
+                        return Err(keep_discovery(
+                            e,
+                            carrier_contradicted_here_or_at_callers(ssa, func, instr.a(), handle, map_ty),
+                        ));
                     }
                 },
                 Ty::MapStrF64 => {
@@ -1819,6 +1820,31 @@ pub(super) fn lower(
 /// A parameter has none: the container belongs to the caller, and the caller's
 /// other aliases read the same allocation by its static type, so the carrier
 /// has to be decided at the caller's literal (`SigInfer::dyn_params`).
+/// Which rejection to report when a container write's value could not be read
+/// *and* the container's carrier looks contradicted.
+///
+/// The carrier answer stands in for a **type** failure only. An
+/// `UndefinedOperand` is not one: it is a *discovery*, and the fixpoint keys a
+/// `try` region's write-back cells on that exact variant
+/// (`try_body_extra_cells`). Substituting the carrier rejection for it is how a
+/// region's write reached nobody —
+///
+/// ```lk
+/// try { try { b = clo(); } catch c1 { } } catch c2 { }
+/// acc.push(b);
+/// ```
+///
+/// printed `b`'s value from *before* the region, natively, with no fallback and
+/// no warning, while `let t = b; acc.push(t);` — the same program with a `Move`
+/// in the way — was correct. A `ReferenceAsValue` is the same kind of thing: it
+/// names a register the caller can be asked about, not a type that is wrong.
+fn keep_discovery(original: Unsupported, carrier: Option<Unsupported>) -> Unsupported {
+    match original {
+        Unsupported::UndefinedOperand { .. } | Unsupported::ReferenceAsValue { .. } => original,
+        _ => carrier.unwrap_or(original),
+    }
+}
+
 pub(crate) fn carrier_contradicted_here_or_at_callers(
     ssa: &Ssa,
     func: &FunctionData,

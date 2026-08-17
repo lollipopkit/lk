@@ -87,6 +87,19 @@ pub(crate) struct SigInfer {
     /// type instead, and a store of a *different* type joins the entry to `Dyn`
     /// and retries, so the two ends cannot disagree about what the cell holds.
     pub(crate) try_body_cell_input_tys: std::collections::HashMap<(u32, u8), Ty>,
+    /// What a runtime-cell capture *holds*, by `(callee, capture index)`.
+    ///
+    /// A cell is dynamically typed, so reading one answers `Dyn` — and `Dyn`
+    /// arithmetic has no lowering, so a closure that merely *adds* to what it
+    /// captured rejected the moment the capture became a cell (which is what
+    /// assigning to it, or handing it to a `try` region, does). The call site
+    /// seeds the cell and therefore knows the type; the callee unboxes reads to
+    /// it, and a store of a different type joins the entry to `Dyn` and retries,
+    /// so the two ends cannot hold two opinions about one object.
+    ///
+    /// [`SigInfer::try_body_cell_input_tys`] is the same notion for a region
+    /// input, keyed by *register* because that is what the caller has there.
+    pub(crate) cell_capture_tys: std::collections::HashMap<(u32, usize), Ty>,
     /// What type each of those environment words travels as, keyed by
     /// `(body, register, capture index)` — the [`SigInfer::try_body_param_tys`]
     /// of a lambda input, which needs one type per capture rather than one per

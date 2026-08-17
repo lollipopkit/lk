@@ -93,6 +93,33 @@ fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
     })
 }
 
+/// Whether a value of this type can be taken back out of a cell at all.
+///
+/// The same table [`unbox_cell_value`] uses, asked without emitting anything —
+/// what a call site consults before promising a callee that its cell holds one.
+pub(crate) fn unbox_cell_value_supported(ty: Ty) -> bool {
+    unbox_from_dyn(ty).is_some()
+}
+
+/// Joins what a cell was already agreed to hold with what this call site is
+/// seeding it from.
+///
+/// **Monotone, and that is the whole point.** The fixpoint's early passes
+/// observe *provisional* types — a callee's return type is its `I64` default
+/// until its body has been lowered once — so a rule that simply overwrote made
+/// the agreement flip type every pass, the snapshot never settle, and the
+/// budget run out: `examples/syntax/closure.lk` stopped lowering entirely.
+/// Disagreement goes to `Dyn`, which is where a cell was before any of this,
+/// and `Dyn` is absorbing.
+pub(crate) fn join_cell_content(previous: Option<Ty>, seeded: Ty) -> Ty {
+    match previous {
+        Some(prev) if prev == seeded => prev,
+        Some(_) => Ty::Dyn,
+        None if unbox_cell_value_supported(seeded) => seeded,
+        None => Ty::Dyn,
+    }
+}
+
 /// Takes a value of type `ty` back out of the boxed `Dyn` a cell holds.
 ///
 /// One function for the three places that do it — the region's output cells,
@@ -340,14 +367,15 @@ struct LambdaEnvSite<'a> {
     body: u32,
     reg: u8,
     identity: LambdaIdentity,
-    /// The runtime cell each cell input of this region travels in, by cell id.
+    /// The runtime cell each cell input of this region travels in, and what it
+    /// is agreed to hold, by cell id.
     ///
     /// A capture of the crossing closure that names one of them must get *that*
     /// cell rather than a snapshot of its content: the body writes through it,
     /// and the closure is called after those writes. `try { a = a * 2; a =
     /// clo(); }`, with `clo` capturing `a`, read the value `a` had entering the
     /// region and answered `3` where the VM answered `6`.
-    region_cells: &'a std::collections::HashMap<u32, ValueId>,
+    region_cells: &'a std::collections::HashMap<u32, (ValueId, Ty)>,
     /// The lambda's own parameter count, which is where its capture slots begin
     /// ([`SigInfer::require_cell_capture`] keys on it).
     callee_param_count: usize,
@@ -400,8 +428,22 @@ fn try_lambda_env(
                 // means the callee's capture has to be a cell at every call
                 // site, which is a demand the fixpoint already knows how to
                 // propagate.
-                if let Some(&handle) = region_cells.get(cid) {
-                    if sig.require_cell_capture(identity.fidx as usize, callee_param_count, k) {
+                if let Some(&(handle, content)) = region_cells.get(cid) {
+                    // Written down *before* any retry is asked for. The pass
+                    // that asks does not reach the record at the bottom of this
+                    // loop, so the next pass's body would bind this env word as
+                    // the by-value type it had before — and calling the closure
+                    // with it re-observes the parameter, joins it away from
+                    // `Cell`, and the pin is re-requested forever. That is a
+                    // fixpoint that never converges, reported as a rejection at
+                    // the region's first pc.
+                    sig.try_body_lambda_env_tys.insert((body, reg, k as u8), Ty::Cell);
+                    // The closure reads through the same agreement the body
+                    // does — one cell, one opinion about what is in it.
+                    let joined = join_cell_content(sig.cell_capture_tys.get(&(identity.fidx, k)).copied(), content);
+                    let mut retry = sig.require_cell_capture(identity.fidx as usize, callee_param_count, k);
+                    retry |= sig.cell_capture_tys.insert((identity.fidx, k), joined) != Some(joined);
+                    if retry {
                         return Err(Unsupported::TypeMismatch { pc });
                     }
                     (handle, Ty::Cell)
@@ -927,6 +969,15 @@ pub(crate) fn lower_function(
         if !erased_environment {
             fn_params.push((cv, cty));
         }
+        // What reads of this capture unbox to, when it arrived as a runtime
+        // cell. The call site wrote it down (`SigInfer::cell_capture_tys`);
+        // unset means `Dyn`, which is what a cell answered everywhere before.
+        if cty == Ty::Cell {
+            ssa.cellparam_content.insert(
+                k,
+                sig.cell_capture_tys.get(&(func_index, k)).copied().unwrap_or(Ty::Dyn),
+            );
+        }
         // A spawned goroutine's cell captures are thread-private copies:
         // seed the virtual slot so body writes (isolate — never visible to
         // the spawner) go through plain SSA.
@@ -1221,7 +1272,7 @@ pub(crate) fn lower_function(
                 // the call: the body may have written through one, and the
                 // parent's slot is the only place that write can land.
                 let mut cell_input_values: Vec<(u32, ValueId, Ty)> = Vec::new();
-                let mut region_cells: std::collections::HashMap<u32, ValueId> = std::collections::HashMap::new();
+                let mut region_cells: std::collections::HashMap<u32, (ValueId, Ty)> = std::collections::HashMap::new();
                 for (index, &reg) in region_params.iter().enumerate() {
                     // A variable a closure captured: it lives in a slot behind a
                     // compile-time cell ref, so what crosses is a runtime cell
@@ -1232,11 +1283,8 @@ pub(crate) fn lower_function(
                             // The content type the body reads through, unless a
                             // store inside it has already disagreed (which pins
                             // the entry to `Dyn` — see `try_body_cell_input_tys`).
-                            let content = match sig.try_body_cell_input_tys.get(&(body, reg)) {
-                                Some(Ty::Dyn) => Ty::Dyn,
-                                _ if unbox_from_dyn(cur_ty).is_some() => cur_ty,
-                                _ => Ty::Dyn,
-                            };
+                            let content =
+                                join_cell_content(sig.try_body_cell_input_tys.get(&(body, reg)).copied(), cur_ty);
                             sig.try_body_cell_input_tys.insert((body, reg), content);
                             let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, cur, cur_ty, start)?;
                             let handle = ssa.new_val();
@@ -1246,7 +1294,7 @@ pub(crate) fn lower_function(
                                 args: vec![boxed],
                             });
                             input_words[index] = Some(vec![handle]);
-                            region_cells.insert(cid, handle);
+                            region_cells.insert(cid, (handle, content));
                             cell_input_values.push((cid, handle, content));
                             continue;
                         }
@@ -1261,7 +1309,7 @@ pub(crate) fn lower_function(
                             sig.try_body_cell_input_tys.insert((body, reg), content);
                             input_words[index] = Some(vec![handle]);
                             if let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(reg, bi) {
-                                region_cells.insert(cid, handle);
+                                region_cells.insert(cid, (handle, content));
                             }
                             continue;
                         }
@@ -1468,7 +1516,7 @@ pub(crate) fn lower_function(
                 // and must not be — poisoning it would make the next read
                 // report itself, the fixpoint would give it a cell, and the
                 // round trip a cell implies is what loses the mutation.
-                let rebound: Vec<u8> = match sig.try_body_rebound.get(&body) {
+                let body_may_write: Vec<u8> = match sig.try_body_rebound.get(&body) {
                     Some(set) => set.iter().copied().collect(),
                     None => regions
                         .iter()
@@ -1476,10 +1524,35 @@ pub(crate) fn lower_function(
                         .map(|span| crate::try_region::written_registers(&instrs, span.body_start, span.body_end))
                         .unwrap_or_default(),
                 };
-                for reg in rebound {
-                    if reg != catch_reg && !cell_regs.contains(&reg) {
-                        ssa.poison(reg, bi, body);
+                for reg in &body_may_write {
+                    if *reg != catch_reg && !cell_regs.contains(reg) {
+                        ssa.poison(*reg, bi, body);
                     }
+                }
+                // A nested region's writes are *this* body's writes too, and
+                // this body has to report them to *its* caller whether or not
+                // the nested region managed to perform them on *this* pass —
+                // it cannot, until the nested region has its cells, which is a
+                // pass later.
+                //
+                // From the nested body's own report, which is `current_def`-based
+                // and therefore precise. The syntactic scan is not usable here:
+                // it names the `a` field of every instruction, so a container
+                // the region merely *mutates* (`ListPush a=receiver`) would be
+                // reported as rebound, the fixpoint would give it a cell, and
+                // the round trip a cell implies is what loses the mutation. Both
+                // spellings were tried; that one stopped
+                // `examples/syntax/closure.lk` lowering at all.
+                //
+                // Without the transitive report:
+                //
+                //     try { try { b = clo(); } catch c1 { } } catch c2 { }
+                //     acc.push(b);
+                //
+                // printed `b` from before the region, natively, with nothing
+                // said.
+                if is_try_body && let Some(nested) = sig.try_body_rebound.get(&body) {
+                    rebound.extend(nested.iter().copied());
                 }
                 let caught = ssa.new_val();
                 insts.push(Inst::Call {

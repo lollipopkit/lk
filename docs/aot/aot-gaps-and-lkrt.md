@@ -962,3 +962,33 @@ region 里一句普通的 `for i in 0..n` 就整程序回落 —— 那是生成
 从 306/919 提到 494/1066(约 46%)。fuzzer 加了嵌套 region + 闭包入参的形状;
 `examples/syntax/try_catch.lk` 把三种形状钉进覆盖率门禁。剩下的回落主要是 trampoline
 的 8 字上限和 cell 之外的 `Dyn` 操作数,都是诚实的拒绝。
+
+## §27 cell 内容类型推广到闭包捕获,以及两处静默错答(2026-08-17)
+
+§26 给 region 的 cell 入参记了内容类型;闭包**自己的**可变捕获有同样的毛病 ——
+`clo` 一旦捕获变成 cell(赋值给它,或者把它交给 region 就会),`return p0 + a` 里的
+`a` 读出来就是 `Dyn`,整条算术没有降低。同一个概念推广成 `cell_capture_tys`:
+建 cell 的那一侧(它知道类型)记下来,callee 按它 unbox,写的时候类型不合就并到 `Dyn`
+重试。join 必须**单调**(`join_cell_content`):定点的前几遍看到的是**临时**类型
+(callee 的返回类型在它自己被降低一次之前就是默认的 `I64`),直接覆盖会让协议每遍都翻,
+snapshot 永不收敛,预算耗尽 —— `examples/syntax/closure.lk` 直接不再原生化。
+
+放开之后暴露了两处**静默错答**,两处都不是这次引入的,是这次才够得着:
+
+1. **`unwrap_or` 吞掉了发现通道。** `acc.push(b)` 读 `b` 失败时,容器载体那条
+   "literal 猜错了" 的拒绝会**顶替**原始错误 —— 而 `UndefinedOperand` 不是类型错误,
+   它是**发现**,region 的写回 cell(`try_body_extra_cells`)正是按这个变体收集的。
+   于是 `try { try { b = clo(); } catch { } } catch { }` 之后的 `acc.push(b)` 读到的是
+   进 region 之前的 `b`,原生、无回落、无提示;而 `let t = b; acc.push(t);` ——
+   中间多一条 `Move` 的同一个程序 —— 是对的。改成 `keep_discovery`:载体答案只顶替
+   *类型*失败。
+
+2. **外层 body 少报了自己重绑了什么。** 内层 region 的写回要等内层有 cell 才发生,
+   而外层 body 的 `try_body_rebound` 是在那之前就报出去的 —— 报完之后它就是权威的,
+   再也回不来。改成把内层 body 自己的报告并进来(传递闭包)。注意**不能**用语法扫描来并:
+   那个扫描取每条指令的 `a`,于是 region 只是**改**了一下的容器(`ListPush a=receiver`)
+   会被算作重绑,定点给它发 cell,而 cell 的往返恰恰会丢掉那次修改 —— 两种写法都试过,
+   语法那种让 `examples/syntax/closure.lk` 彻底不再原生化。
+
+门禁:六批随机语料(约 1340 个含 `try` 的程序)0 处分歧;coverage 60/60;十个 fuzz
+种子;`examples/syntax/try_catch.lk` 把这两处静默错答各钉了一条。

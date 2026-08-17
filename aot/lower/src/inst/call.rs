@@ -314,7 +314,7 @@ pub(super) fn lower(
                     // this call site seeds and reads back afterwards
                     // (`SigInfer::cell_captures`); one it only reads keeps
                     // passing as a plain value.
-                    let mut writebacks: Vec<(u32, ValueId)> = Vec::new();
+                    let mut writebacks: Vec<(u32, ValueId, Ty)> = Vec::new();
                     for (k, capture) in captures.iter().enumerate() {
                         let (v, ty) = match (site.resolve(ssa, insts, sig, capture, k)?, capture) {
                             (Some(resolved), _) => resolved,
@@ -322,6 +322,13 @@ pub(super) fn lower(
                                 let slot = ssa.cell_slot(*cid);
                                 let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
                                 if sig.cell_captures.contains(&(fidx, k)) {
+                                    // What the callee's reads of this cell
+                                    // unbox to. Recorded here because this is
+                                    // where the type is known; the callee never
+                                    // sees anything but the pointer.
+                                    let content =
+                                        join_cell_content(sig.cell_capture_tys.get(&(fidx, k)).copied(), cur_ty);
+                                    sig.cell_capture_tys.insert((fidx, k), content);
                                     let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
                                     let cell = ssa.new_val();
                                     insts.push(Inst::Call {
@@ -329,7 +336,7 @@ pub(super) fn lower(
                                         callee: AbiRef::new("rt", "cell_new"),
                                         args: vec![boxed],
                                     });
-                                    writebacks.push((*cid, cell));
+                                    writebacks.push((*cid, cell, content));
                                     (cell, Ty::Cell)
                                 } else {
                                     (cur, cur_ty)
@@ -358,15 +365,21 @@ pub(super) fn lower(
                     )?;
                     // Re-sync the parent's tracked cell content from the cell
                     // the callee wrote through.
-                    for (cid, cell) in writebacks {
+                    for (cid, cell, content) in writebacks {
                         let cur = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(cur),
                             callee: AbiRef::new("rt", "cell_get"),
                             args: vec![cell],
                         });
+                        // Back under the type the callee read through, so the
+                        // caller's own later uses stay typed as well.
+                        let (value, ty) = match unbox_cell_value(ssa, insts, cur, content) {
+                            Some(value) if content != Ty::Dyn => (value, content),
+                            _ => (cur, Ty::Dyn),
+                        };
                         let slot = ssa.cell_slot(cid);
-                        ssa.write_slot(slot, block, (cur, Ty::Dyn));
+                        ssa.write_slot(slot, block, (value, ty));
                     }
                 }
                 // A plain function value, called through the register the

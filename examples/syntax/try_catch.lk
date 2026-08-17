@@ -90,4 +90,36 @@ assert(layered(0) == "abc");
 assert(layered(1) == "aBc");
 assert(layered(2) == "abA");
 
+// What an inner region writes has to reach the frame that reads it, however
+// many frames away that is, and whatever the reader looks like. Both halves of
+// that sentence were wrong once: a write two regions deep was reported to
+// nobody, and a read spelled `xs.push(v)` rather than `let t = v;` swallowed the
+// report that would have fixed it.
+fn relay(n: Int) -> Int {
+    let seen = [];
+    let value = 0;
+    let bump = || -> Int { return n + 1; };
+    try {
+        try { value = bump(); } catch inner { value = 0 - 1; }
+    } catch outer {
+        value = 0 - 2;
+    }
+    seen.push(value);
+    return value + seen.len();
+}
+assert(relay(0) == 2);
+assert(relay(4) == 6);
+
+// The same shape with the captured variable *itself* crossing the boundary and
+// being written on the far side: one cell, three frames, and the closure called
+// after the write sees it.
+fn accumulate(step: Int) -> Int {
+    let total = 1;
+    let add = || -> Int { return total + step; };
+    try { total = total * 10; total = add(); } catch e { total = 0 - 1; }
+    return total;
+}
+assert(accumulate(0) == 10);
+assert(accumulate(3) == 13);
+
 println("try/catch: ok");

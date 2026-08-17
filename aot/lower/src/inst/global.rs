@@ -149,8 +149,16 @@ pub(super) fn lower(
                         // the reads then come back boxed, as they always did.
                         let content = ssa.cellparam_content.get(&k).copied().unwrap_or(Ty::Dyn);
                         if content != Ty::Dyn && content != ty {
-                            if let Some(reg) = ssa.cellparam_reg(k) {
-                                sig.try_body_cell_input_tys.insert((ctx_func_index, reg), Ty::Dyn);
+                            // Both spellings of the same agreement: a region
+                            // input is keyed by the register its caller knows it
+                            // by, a closure capture by its index.
+                            match ssa.cellparam_reg(k) {
+                                Some(reg) => {
+                                    sig.try_body_cell_input_tys.insert((ctx_func_index, reg), Ty::Dyn);
+                                }
+                                None => {
+                                    sig.cell_capture_tys.insert((ctx_func_index, k), Ty::Dyn);
+                                }
                             }
                             return Err(Unsupported::TypeMismatch { pc });
                         }
