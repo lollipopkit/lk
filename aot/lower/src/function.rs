@@ -1201,13 +1201,37 @@ pub(crate) fn lower_function(
                         && ret_closure_body_is_pure(&instrs)
                     {
                         record_ret_closure(sig, func_index as usize, candidate);
+                        // Summarized: call sites build the closure from their
+                        // own argument values and this body is never emitted,
+                        // so there is nothing here to return.
+                        return Err(Unsupported::Opcode {
+                            pc: start,
+                            op: Opcode::Return1,
+                        });
                     }
-                    return Err(Unsupported::Opcode {
-                        pc: start,
-                        op: Opcode::Return1,
-                    });
+                    // Not summarizable — two returns in a branch, a capture the
+                    // summary cannot express. That used to reject here, before
+                    // a closure could be a *value*: now it falls through and
+                    // returns one, which is what `pick(true)(5)` needs.
                 }
-                let (v, ty) = ssa.read(reg, bi, start)?;
+                // Through `read_value`: a `return` of a lambda that the
+                // closure-return summary above declined — one of two returns in
+                // a branch, say — hands back a closure *value*, which is what
+                // the caller then calls.
+                let (v, ty) = read_value(
+                    &mut ssa,
+                    &mut insts,
+                    sig,
+                    funcs,
+                    CaptureCtx {
+                        params: &capture_params,
+                        index: func_index,
+                        param_count,
+                    },
+                    reg,
+                    bi,
+                    start,
+                )?;
                 // A try body's `return` is the enclosing function's, not this
                 // one's: set the flag, park the value, and return normally so
                 // the trampoline reports "did not raise". The caller checks the

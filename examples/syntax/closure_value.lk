@@ -73,4 +73,18 @@ let missed = "";
 try { handlers.nosuch(); } catch e { missed = "{}".format(e); }
 assert(missed == "a Map has no method `nosuch`, and this map has no key `nosuch` holding a function either");
 
+// Returned from a branch, and called on the spot. A function whose *only*
+// return is a closure over its parameters is summarized instead — the call site
+// builds the closure and the body is never emitted — but two returns cannot be,
+// so this one comes back as a value.
+fn pick(up: Bool) -> (Int) -> Int {
+    if up { return |x| x + 1; }
+    return |x| x * 2;
+}
+assert(pick(true)(5) == 6);
+assert(pick(false)(5) == 10);
+
+let chosen = pick(true);
+assert(chosen(9) == 10);
+
 println("closure value: all assertions passed");
