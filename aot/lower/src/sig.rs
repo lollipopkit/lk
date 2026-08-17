@@ -100,6 +100,25 @@ pub(crate) struct SigInfer {
     /// [`SigInfer::try_body_cell_input_tys`] is the same notion for a region
     /// input, keyed by *register* because that is what the caller has there.
     pub(crate) cell_capture_tys: std::collections::HashMap<(u32, usize), Ty>,
+    /// Lambdas the program uses as **runtime values** — stored in a container,
+    /// put in a struct field, returned from a branch — mapped to the *clone*
+    /// that is that value.
+    ///
+    /// A clone, not the lambda itself. A closure value is called through one
+    /// arity switch in the runtime, so it must have an all-`Dyn` signature;
+    /// the same lambda's other uses are often the ones that resolve statically,
+    /// and the typed HOF path takes its address with the typed signature.
+    /// Pinning the original to `Dyn` cost `examples/syntax/closure.lk` its
+    /// lowering. So the original keeps its signature and the value form is a
+    /// second copy of the body — the mechanism lambda erasure already uses.
+    ///
+    /// The value is built **at the consumer that needs one**
+    /// (`lower_call::read_value`), never at the definition, so a register that
+    /// names a lambda keeps exactly one meaning and `Move`, a call window and
+    /// an iteration need to know nothing about any of this.
+    pub(crate) value_lambdas: std::collections::HashMap<u32, u32>,
+    /// The clones themselves: what [`SigInfer::param_ty`] answers `Dyn` for.
+    pub(crate) value_lambda_bodies: std::collections::HashSet<u32>,
     /// What type each of those environment words travels as, keyed by
     /// `(body, register, capture index)` — the [`SigInfer::try_body_param_tys`]
     /// of a lambda input, which needs one type per capture rather than one per
@@ -305,6 +324,13 @@ impl SigInfer {
     /// the live functions it happens to call. A function that cannot lower on
     /// the `I64` guess is dropped instead, provided nothing reaches it.
     pub(crate) fn param_ty(&self, func: usize, i: usize) -> Ty {
+        // The value form of a lambda is called through one arity switch, so
+        // every one of them has the same signature: all `Dyn`, parameters and
+        // captures alike. Same pinning `spawn` does to the body it launches by
+        // address.
+        if self.value_lambda_bodies.contains(&(func as u32)) {
+            return Ty::Dyn;
+        }
         if let Some(observed) = self.param_obs[func].get(i).copied().flatten() {
             return observed;
         }

@@ -27,7 +27,8 @@ use crate::state::arena_handle;
 /// A value that crossed an isolate boundary: fully owned, `Send`. Maps keep
 /// their iteration order (entries captured in order, replayed on rebuild —
 /// same keys + same insertion order = the same Fx layout on the other side).
-enum OwnedVal {
+#[derive(Clone)]
+pub(crate) enum OwnedVal {
     Nil,
     Bool(bool),
     Int(i64),
@@ -35,9 +36,13 @@ enum OwnedVal {
     Str(String),
     List(Vec<OwnedVal>),
     Map(Vec<(String, OwnedVal)>),
+    /// A closure: its code address, its visible arity, its module function
+    /// index (for `display`), and its own captures owned the same way. The
+    /// address is shared rather than copied — it is code.
+    Closure(usize, i64, i64, Vec<OwnedVal>),
 }
 
-fn own(v: LkDyn) -> OwnedVal {
+pub(crate) fn own(v: LkDyn) -> OwnedVal {
     match v.tag {
         DYN_NIL => OwnedVal::Nil,
         DYN_BOOL => OwnedVal::Bool(v.payload != 0),
@@ -70,11 +75,13 @@ fn own(v: LkDyn) -> OwnedVal {
         }
         // Channels/tasks/functions do not cross as *values* in the native
         // subset (channels travel as their i64 ids).
+        // A closure copies its captures the same way and shares its code.
+        crate::lkdyn::DYN_CLOSURE => crate::lkclosure::own_closure(v),
         _ => crate::panic::raise_str("value cannot cross a channel"),
     }
 }
 
-fn materialize(v: &OwnedVal) -> LkDyn {
+pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
     match v {
         OwnedVal::Nil => LkDyn::NIL,
         OwnedVal::Bool(b) => LkDyn {
@@ -112,6 +119,9 @@ fn materialize(v: &OwnedVal) -> LkDyn {
                 tag: DYN_MAP,
                 payload: arena_handle(map) as i64,
             }
+        }
+        OwnedVal::Closure(code, params, fn_index, env) => {
+            crate::lkclosure::materialize_closure(*code, *params, *fn_index, env)
         }
     }
 }

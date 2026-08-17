@@ -105,6 +105,11 @@ pub const DYN_TLIST_END: i64 = 19;
 /// it windows — which the VM's `HeapValue::Slice` does not do either.
 pub const DYN_SLICE: i64 = DYN_TMAP_END;
 
+/// A closure as a **runtime value**: the payload is an `LkClosure` handle (see
+/// `lkclosure`). Every other closure in the native build is a compile-time
+/// reference, which is why storing one in a container had no form at all.
+pub const DYN_CLOSURE: i64 = 20;
+
 /// Whether a tag denotes a map of any representation.
 pub(crate) fn is_map_tag(tag: i64) -> bool {
     tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
@@ -394,6 +399,7 @@ fn kind_name(v: LkDyn) -> String {
         DYN_SET => "Set",
         DYN_BYTES => "Bytes",
         DYN_SLICE => "Slice",
+        DYN_CLOSURE => "Function",
         tag if is_map_tag(tag) => "Map",
         _ => "Object",
     }
@@ -1076,6 +1082,8 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
         DYN_BYTES => out.push_str(&crate::lkbytes::bytes_text(v.payload as *mut c_void)),
         // A window renders as the list it windows, which is what the VM shows.
         DYN_SLICE => out.push_str(&crate::lkslice::slice_text(v.payload as *mut c_void)),
+        // SAFETY: the tag is only set by `lkrt_closure_new`.
+        DYN_CLOSURE => out.push_str(&unsafe { crate::lkclosure::closure_text(v) }),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");

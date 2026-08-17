@@ -935,6 +935,28 @@ impl Generator {
             }
         }
 
+        // A closure used as a *value* — in a list, pushed, iterated and called
+        // back. Everything else the generator makes of a lambda is built and
+        // called where it stands, which is the case the compiler answers
+        // statically; this is the one that has to go through the runtime.
+        if self.rng.chance(40) {
+            let ops = self.fresh("cv");
+            let a = self.rng.below(9) + 1;
+            let b = self.rng.below(9) + 1;
+            let _ = writeln!(out, "let {ops} = [|x| x + {a}, |x| x * {b}];");
+            let _ = writeln!(out, "println({ops}[0]({a}));");
+            let _ = writeln!(out, "println({ops}[1]({b}));");
+            let built = self.fresh("cb");
+            let _ = writeln!(out, "let {built} = [];");
+            let _ = writeln!(out, "{built}.push(|x| x - {a});");
+            let _ = writeln!(out, "println({built}.len());");
+            let _ = writeln!(out, "println(typeof({built}[0]));");
+            let sum = self.fresh("cs");
+            let _ = writeln!(out, "let {sum} = 0;");
+            let _ = writeln!(out, "for f in {ops} {{ {sum} = {sum} + f({b}); }}");
+            let _ = writeln!(out, "println({sum});");
+        }
+
         let statements = 3 + self.rng.below(5);
         for _ in 0..statements {
             self.statement(&mut out, "");

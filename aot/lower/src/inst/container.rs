@@ -14,6 +14,13 @@ pub(super) fn lower(
     let globals = &mut *ctx.globals;
     let sig = &mut *ctx.sig;
     let func = ctx.func;
+    let funcs = ctx.funcs;
+    // Where a lambda used as a value becomes a closure (`read_value`).
+    let cap_ctx = CaptureCtx {
+        params: ctx.capture_params,
+        index: ctx.func_index,
+        param_count: ctx.func.param_count as usize,
+    };
     match instr.opcode() {
         Opcode::NewList => {
             // `a` = dst, `b` = base, `c` = count: a register-window list. The
@@ -24,7 +31,10 @@ pub(super) fn lower(
             let mut elems = Vec::with_capacity(count);
             for i in 0..count {
                 let reg = instr.b().wrapping_add(i as u8);
-                elems.push(ssa.read(reg, block, pc)?);
+                // Through `read_value`, so a lambda in the literal becomes a
+                // closure value here rather than reporting that it is a
+                // reference: `[|x| x + 1, |x| x * 2]` is the shape.
+                elems.push(read_value(ssa, insts, sig, funcs, cap_ctx, reg, block, pc)?);
             }
             let all = |t: Ty| elems.iter().all(|&(_, ty)| ty == t);
             // Same retry channel as the constant-list path above: a push of a
@@ -850,6 +860,31 @@ pub(super) fn lower(
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("dyn", "list_push"),
+                    args: vec![handle, boxed],
+                });
+                return Ok(());
+            }
+            // A lambda pushed into a list becomes a closure value, and the
+            // carrier has to be one that can hold it.
+            if let Some(GlobalRef::Lambda(_) | GlobalRef::Closure(..) | GlobalRef::UserFn(_)) =
+                ssa.builtin_ref_at(instr.b(), block)
+            {
+                let (value, value_ty) = read_value(ssa, insts, sig, funcs, cap_ctx, instr.b(), block, pc)?;
+                if list_ty != Ty::ListDyn && list_ty != Ty::Dyn {
+                    return Err(
+                        carrier_contradicted_here_or_at_callers(ssa, func, instr.a(), handle, list_ty)
+                            .unwrap_or(Unsupported::TypeMismatch { pc }),
+                    );
+                }
+                let boxed = to_dyn_any(ssa, insts, value, value_ty, pc)?;
+                let (module, name) = if list_ty == Ty::Dyn {
+                    ("dyn", "list_push")
+                } else {
+                    ("list_h", "dyn_push")
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new(module, name),
                     args: vec![handle, boxed],
                 });
                 return Ok(());

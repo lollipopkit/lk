@@ -330,6 +330,17 @@ macro_rules! for_each_abi_fn {
             ("hash", "fnv64_bytes", lkrt_hash_fnv64_bytes, ReadsHost, [Ptr], I64);
             ("url", "encode_component", lkrt_url_encode_component, WritesHost, [StrPtr], StrPtr);
             ("url", "decode_component", lkrt_url_decode_component, WritesHost, [StrPtr], StrPtr);
+            // A closure as a runtime *value* (`lkrt::lkclosure`). Built from a
+            // function address and the same argument block a `spawn` uses for
+            // its captures; called by appending that block to the arguments,
+            // which is the order the native signature already declares.
+            //
+            // Not `Constructs`: that annotation is the scope-drop pass's
+            // contract that a call answers a *bare arena handle*, which
+            // `rt.handle_release` can be handed. This one answers an `LkDyn`.
+            ("rt", "closure_new", lkrt_closure_new, WritesHost, [Ptr, Ptr, I64, I64], DynVal);
+            ("rt", "closure_call", lkrt_closure_call, WritesHost, [DynVal, Ptr], DynVal);
+            ("rt", "closure_arity", lkrt_closure_arity, ReadsHost, [DynVal], I64);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);

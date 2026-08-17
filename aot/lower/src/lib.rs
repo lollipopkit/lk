@@ -163,6 +163,8 @@ pub fn lower_bundled(
         try_body_cell_inputs: std::collections::HashSet::new(),
         try_body_cell_input_tys: std::collections::HashMap::new(),
         cell_capture_tys: std::collections::HashMap::new(),
+        value_lambdas: std::collections::HashMap::new(),
+        value_lambda_bodies: std::collections::HashSet::new(),
         try_body_lambda_env_tys: std::collections::HashMap::new(),
         try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
@@ -295,6 +297,7 @@ pub fn lower_bundled(
                 sig.try_body_cell_inputs.clone(),
                 sig.try_body_cell_input_tys.clone(),
                 sig.cell_capture_tys.clone(),
+                sig.value_lambdas.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -366,6 +369,28 @@ pub fn lower_bundled(
                     // the phi pre-typed Dyn).
                     Err(Unsupported::DynLoopPhi { block, slot }) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    // A closure used where a *value* is required. The value
+                    // form is a clone with an all-`Dyn` signature, queued here
+                    // and materialized with the other clones below; the
+                    // original keeps the signature its static call sites
+                    // resolved.
+                    Err(Unsupported::ReferenceAsValue { lambda: Some(orig), .. })
+                        if !sig.value_lambdas.contains_key(&orig) && (orig as usize) < funcs.len() =>
+                    {
+                        let clone = sig.param_obs.len() as u32;
+                        let arity =
+                            funcs[orig as usize].param_count as usize + funcs[orig as usize].capture_count as usize;
+                        sig.param_obs.push(vec![Some(Ty::Dyn); arity]);
+                        sig.ret_types.push(Ty::Dyn);
+                        sig.ret_known.push(true);
+                        sig.ret_closures.push(None);
+                        sig.ret_closure_poisoned.push(true);
+                        sig.lambda_params.push(Vec::new());
+                        sig.dyn_rets.insert(clone);
+                        sig.value_lambda_bodies.insert(clone);
+                        sig.value_lambdas.insert(orig, clone);
+                        sig.pending_clones.push(orig);
                     }
                     Err(Unsupported::ParamCarrierContradicted { param }) => {
                         sig.dyn_params.insert((fi as u32, param));
@@ -467,7 +492,8 @@ pub fn lower_bundled(
                 && snapshot.18 == sig.try_body_params
                 && snapshot.19 == sig.try_body_cell_inputs
                 && snapshot.20 == sig.try_body_cell_input_tys
-                && snapshot.21 == sig.cell_capture_tys;
+                && snapshot.21 == sig.cell_capture_tys
+                && snapshot.22 == sig.value_lambdas;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
@@ -489,7 +515,8 @@ pub fn lower_bundled(
                 + sig.try_body_params.values().map(Vec::len).sum::<usize>()
                 + sig.try_body_cell_inputs.len()
                 + sig.try_body_cell_input_tys.len()
-                + sig.cell_capture_tys.len();
+                + sig.cell_capture_tys.len()
+                + sig.value_lambdas.len() * 2;
             if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
                 break;
             }

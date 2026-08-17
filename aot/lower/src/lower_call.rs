@@ -651,3 +651,202 @@ pub(crate) fn lower_named_call(
     ssa.write(base, block, (dst, ty));
     Ok(())
 }
+
+/// The runtime's closure arity switch (`lkrt::lkclosure`), counting visible
+/// parameters and captures together.
+pub(crate) const LK_CLOSURE_MAX_ARGS: usize = 8;
+
+/// Reads a register **as a value**, building a closure for it when it names a
+/// lambda.
+///
+/// The one entry point for "I need a value here". A register that names a
+/// lambda holds a compile-time reference and no SSA value, and the sites that
+/// need one — a container store, an argument, an indirect call — are exactly
+/// the sites that reported `ReferenceAsValue`. Materializing *here*, at the
+/// consumer, is what keeps a register to one meaning: binding both a reference
+/// and a value to it was tried and every mover that carried one and not the
+/// other produced a different wrong answer (`docs/aot/aot-gaps-and-lkrt.md`
+/// §30).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_value(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+) -> Result<Reg, Unsupported> {
+    if let Some(global_ref) = ssa.builtin_ref_at(reg, block)
+        && let Some(value) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &global_ref, block, pc)?
+    {
+        return Ok(value);
+    }
+    ssa.read(reg, block, pc)
+}
+
+/// Builds a lambda's runtime closure value.
+///
+/// `None` when the program has not asked for one: a closure that is only built
+/// and called stays a compile-time reference and keeps devirtualizing, which is
+/// why this is demand-driven rather than uniform.
+///
+/// The address taken is the *clone*'s (`SigInfer::value_lambdas`), whose
+/// signature is all-`Dyn`. The environment travels in the same argument block a
+/// `spawn` builds, and the runtime appends it at the call — the order the
+/// native signature already declares.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_closure(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    global_ref: &GlobalRef,
+    block: usize,
+    pc: usize,
+) -> Result<Option<Reg>, Unsupported> {
+    let (fidx, captures) = match global_ref {
+        GlobalRef::Lambda(fidx) | GlobalRef::UserFn(fidx) => (*fidx, Vec::new()),
+        GlobalRef::Closure(fidx, captures) => (*fidx, captures.clone()),
+        _ => return Ok(None),
+    };
+    let Some(&body) = sig.value_lambdas.get(&fidx) else {
+        return Ok(None);
+    };
+    let callee = funcs.get(fidx as usize).ok_or(Unsupported::BadConst { pc })?;
+    if callee.param_count as usize + captures.len() > LK_CLOSURE_MAX_ARGS {
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a closure value with this many parameters and captures is past the runtime's arity switch",
+        });
+    }
+    let env = if captures.is_empty() {
+        None
+    } else {
+        let block_v = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(block_v),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        // A closure outlives the frame that built it, so a cell's *content*
+        // crosses into it — the same snapshot a goroutine takes.
+        let site = CaptureSite::new(cap_ctx, body, CaptureMode::Snapshot, block, pc);
+        for (k, capture) in captures.iter().enumerate() {
+            let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                Some(resolved) => resolved,
+                None => {
+                    let ClosureCapture::Cell(cid) = capture else {
+                        unreachable!("only `Cell` is left to the call site")
+                    };
+                    ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
+                }
+            };
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![block_v, boxed],
+            });
+        }
+        Some(block_v)
+    };
+    let code = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: code,
+        value: Const::FnAddr(FuncId(body)),
+    });
+    let env_ptr = match env {
+        Some(block_v) => block_v,
+        None => {
+            let null = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: null,
+                value: Const::I64(0),
+            });
+            null
+        }
+    };
+    let params = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: params,
+        value: Const::I64(i64::from(callee.param_count)),
+    });
+    // Only so `display` prints what the interpreter prints. The *original*
+    // index, not the clone's: the clone is this pipeline's bookkeeping and no
+    // program can observe it.
+    let index = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: index,
+        value: Const::I64(i64::from(fidx)),
+    });
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", "closure_new"),
+        args: vec![code, env_ptr, params, index],
+    });
+    Ok(Some((dst, Ty::Dyn)))
+}
+
+/// `f(args…)` where `f` is an ordinary value: a closure built by
+/// [`materialize_closure`], reached through the runtime's arity switch.
+pub(crate) fn lower_dyn_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc > LK_CLOSURE_MAX_ARGS {
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a call through a closure value with this many arguments is past the runtime's arity switch",
+        });
+    }
+    // Through `read_scalar`, so a carrier unwraps first: a closure that came
+    // out of a list is a `Maybe`, and handing the carrier to the runtime made
+    // it answer "value is not callable" for a value that is one.
+    let (callee, callee_ty) = read_scalar(ssa, insts, base, block, pc)?;
+    let callee = if callee_ty == Ty::Dyn {
+        callee
+    } else {
+        to_dyn_any(ssa, insts, callee, callee_ty, pc)?
+    };
+    let args = if argc == 0 {
+        let null = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: null,
+            value: Const::I64(0),
+        });
+        null
+    } else {
+        let block_v = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(block_v),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        for i in 0..argc {
+            let (v, ty) = ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?;
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![block_v, boxed],
+            });
+        }
+        block_v
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", "closure_call"),
+        args: vec![callee, args],
+    });
+    ssa.write(base, block, (dst, Ty::Dyn));
+    Ok(())
+}

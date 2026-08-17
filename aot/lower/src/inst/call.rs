@@ -398,6 +398,17 @@ pub(super) fn lower(
                         pc,
                     )?;
                 }
+                // No compile-time ref: the callee may still be an ordinary
+                // value holding a closure, which is what `rt.closure_call` is
+                // for. A carrier counts — a closure read out of a list is a
+                // `Maybe`, and `lower_dyn_call` unwraps it.
+                None if matches!(
+                    ssa.peek(base, block),
+                    Some((_, Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool))
+                ) =>
+                {
+                    lower_dyn_call(ssa, insts, base, instr.c() as usize, block, pc)?;
+                }
                 Some(GlobalRef::Module(_))
                 | Some(GlobalRef::UserModule(_))
                 | Some(GlobalRef::ArgList(_))

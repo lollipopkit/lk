@@ -108,6 +108,11 @@ pub enum Unsupported {
         pc: usize,
         reg: usize,
         what: &'static str,
+        /// The lambda the register named, when it named one. A closure *can*
+        /// become a runtime value (`SigInfer::value_lambdas`); which one it was
+        /// is what the fixpoint needs in order to make one, and the register
+        /// number does not survive the return out of `Ssa`.
+        lambda: Option<u32>,
     },
     /// An empty `[]` literal's guessed element type was contradicted by a
     /// later consumer: retriable — the fixpoint re-lowers with the literal
@@ -206,7 +211,7 @@ impl Unsupported {
             Unsupported::UndefinedOperand { pc, reg, .. } => {
                 format!("register r{reg} is read at pc {pc} before any definition")
             }
-            Unsupported::ReferenceAsValue { pc, reg, what } => format!(
+            Unsupported::ReferenceAsValue { pc, reg, what, .. } => format!(
                 "the {what} in r{reg} at pc {pc} is a compile-time reference, not a runtime value \
                  — storing one in a container, or otherwise using it where a value is required, \
                  has no native form yet"

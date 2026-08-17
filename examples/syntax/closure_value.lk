@@ -1,0 +1,48 @@
+// A closure used as a *value* rather than called where it is built.
+//
+// Every other closure the compiler sees is a compile-time fact: it knows which
+// function a register names, so the call devirtualizes and the captures become
+// hidden arguments. That covers a closure that is built and called, and nothing
+// else — putting one in a list has no compile-time answer, because what comes
+// back out of the list is decided at run time.
+//
+// So it becomes a value: a code address, the arity, and the captured
+// environment, called back through the runtime. The lambda gets a second copy
+// of its body with an all-`Dyn` signature for that path, so the original keeps
+// the typed signature its ordinary call sites resolved and pays nothing.
+
+// In a list, called through the element.
+let ops = [|x| x + 1, |x| x * 2];
+assert(ops[0](3) == 4);
+assert(ops[1](3) == 6);
+assert(ops.len() == 2);
+
+// Pushed rather than written in a literal. This is the shape that used to
+// compile to the list pushing *itself*: the bytecode reuses registers, and the
+// lambda landed on the slot the `[]` had just been in.
+let built = [];
+built.push(|x| x + 10);
+assert(built.len() == 1);
+assert(typeof(built[0]) == "Function");
+assert(built[0](5) == 15);
+
+// One built per iteration, each capturing that iteration's value. The capture
+// is copied into the closure, so each one keeps its own.
+let steps = [];
+for i in 0..3 { steps.push(|| i * 100); }
+assert(steps.len() == 3);
+assert(steps[0]() == 0);
+assert(steps[2]() == 200);
+
+// Iterated and called, which reads the closure back out as an ordinary value.
+let total = 0;
+for op in ops { total = total + op(10); }
+assert(total == 31);
+
+// A capture-free lambda and a capturing one side by side.
+let factor = 4;
+let mixed = [|x| x, |x| x * factor];
+assert(mixed[0](7) == 7);
+assert(mixed[1](7) == 28);
+
+println("closure value: all assertions passed");

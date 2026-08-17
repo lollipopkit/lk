@@ -372,6 +372,14 @@ impl Ssa {
         self.builtin_regs.insert((block, reg), reference);
     }
 
+    /// What `reg` holds, without recording a read or building a phi for it.
+    ///
+    /// For asking a *question* about a register — "is this already a value?" —
+    /// where reading it would commit to a definition the caller may not want.
+    pub(crate) fn peek(&self, reg: u8, block: usize) -> Option<Reg> {
+        self.current_def[block][reg as usize]
+    }
+
     pub(crate) fn read(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         self.read_slot(reg as usize, block, pc)
     }
@@ -400,6 +408,10 @@ impl Ssa {
                 pc,
                 reg: slot,
                 what: reference.describe(),
+                lambda: match reference {
+                    GlobalRef::Lambda(fidx) | GlobalRef::Closure(fidx, _) | GlobalRef::UserFn(fidx) => Some(*fidx),
+                    _ => None,
+                },
             });
         }
         self.read_recursive(slot, block, pc)
