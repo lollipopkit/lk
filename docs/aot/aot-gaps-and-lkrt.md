@@ -1393,7 +1393,15 @@ AOT 侧 `TraitEnv::struct_field_tys` 记 `(结构体名, 字段名) → Ty`,字�
 元素读把身份传给结果;`Ssa::inherit_provenance` 在 phi 处继承(此前只有猜测载体 `literal_carrier`
 有这个待遇,三张表现在在同一处继承,免得再加第四张时漏掉)。
 
-**仍然缺口**:循环头的 phi。Braun 算法里循环体在 header 封口**之前**降级,而 phi 的继承发生在
-封口时,所以 `while c >= 0 { c = nodes[c].next; }` 里读到的 `nodes` 是还没继承身份的 phi 参数。
-补它需要"创建时先继承、封口时校验、不符则报可重试的发现"这一套(与 `dyn_loop_phis` 同型),
-是单独一项。
+循环头的 phi 也补上了(同日)。Braun 算法里循环体在 header 封口**之前**降级,所以等所有边到齐
+再继承等于身体永远看不到这件事。改成**创建时**从已填充的那个前驱种下(`seed_provenance`)——
+`phi_ty` 给类型定型用的正是同一个前驱,同样是乐观的——操作数到齐时校验
+(`verify_seeded_provenance`),被某条边推翻就报可重试的 `Unsupported::PhiProvenance`,
+下一趟对这个槽位不再种(`no_phi_provenance`)。这是 `dyn_loop_phis` 对**类型**做的同一件事。
+
+于是 `while cursor >= 0 { walked += nodes[cursor].value; cursor = nodes[cursor].next; }`
+整段原生化,字段读是 `dyn.as_i64` + `int.add` / `icmp.ge`,不再是 `dyn.add` / `dyn.ge`。
+`examples/syntax/struct.lk` 钉住了这个形状。
+
+注意 snapshot 元组:新字段**追加在末尾**(索引 23),不是插在中间。第一版插在索引 5,
+把后面每一项都错位成比较别的东西——那正是那段注释警告的事。

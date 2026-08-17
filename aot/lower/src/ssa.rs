@@ -220,6 +220,9 @@ pub(crate) struct Ssa {
     /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
     /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
     pub(crate) dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
+    /// Loop-header phis a fixpoint retry has forbidden from inheriting
+    /// provenance (`(block, slot)`; see `Unsupported::PhiProvenance`).
+    pub(crate) no_provenance_slots: std::collections::HashSet<(usize, usize)>,
     /// Container-literal pcs forced to a Dyn carrier by a fixpoint retry.
     pub(crate) dyn_literal_pcs: std::collections::HashSet<usize>,
     /// SSA values that hold a **closure**, built by
@@ -344,6 +347,7 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             dyn_loop_slots: std::collections::HashSet::new(),
+            no_provenance_slots: std::collections::HashSet::new(),
             dyn_literal_pcs: std::collections::HashSet::new(),
             closure_values: std::collections::HashSet::new(),
             closure_fidx: std::collections::HashMap::new(),
@@ -645,6 +649,16 @@ impl Ssa {
                 ty,
                 operands: Vec::new(),
             });
+            // Provenance seeded from the same filled predecessor the *type*
+            // came from, and for the same reason: a loop body is lowered
+            // before its header is sealed, so waiting for every edge means the
+            // body never sees the fact at all. The seed is optimistic and
+            // checked when the operands arrive — a back edge that disagrees
+            // reports `PhiProvenance`, and the retry lowers this slot without
+            // it (`no_provenance_slots`). The type does exactly this already.
+            if !self.no_provenance_slots.contains(&(block, slot)) {
+                self.seed_provenance(param, slot, block, pc);
+            }
             self.incomplete[block].push(idx);
             (param, ty)
         } else if self.preds[block].len() == 1 {
@@ -716,6 +730,7 @@ impl Ssa {
                 .iter()
                 .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
         {
+            self.verify_seeded_provenance(param, &incoming, block, slot)?;
             self.inherit_provenance(param, &incoming);
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {
@@ -776,6 +791,30 @@ impl Ssa {
         Ok(())
     }
 
+    /// Copies provenance from the first filled predecessor's definition of
+    /// `slot` onto a not-yet-complete phi parameter.
+    fn seed_provenance(&mut self, param: ValueId, slot: usize, block: usize, pc: usize) {
+        let preds = self.preds[block].clone();
+        for p in preds {
+            if !self.filled[p] {
+                continue;
+            }
+            let Ok((v, _)) = self.read_slot(slot, p, pc) else {
+                return;
+            };
+            if let Some(&carrier) = self.literal_carrier.get(&v) {
+                self.literal_carrier.insert(param, carrier);
+            }
+            if let Some(name) = self.struct_types.get(&v).cloned() {
+                self.struct_types.insert(param, name);
+            }
+            if let Some(name) = self.list_elem_struct.get(&v).cloned() {
+                self.list_elem_struct.insert(param, name);
+            }
+            return;
+        }
+    }
+
     /// What a phi inherits from its operands: the facts that are about *which
     /// value this is*, not about its type.
     ///
@@ -813,6 +852,39 @@ impl Ssa {
         if let Some(name) = agreed(incoming, param, |v| self.list_elem_struct.get(&v).cloned()) {
             self.list_elem_struct.insert(param, name);
         }
+    }
+
+    /// Checks a seeded phi provenance against the operands that have now
+    /// arrived.
+    ///
+    /// An optimistic seed the back edge contradicts has already been used by
+    /// the loop body, so it cannot simply be dropped here — the pass is
+    /// reported as retriable and the next one lowers this slot without the
+    /// seed, which is what `dyn_loop_phis` does for an optimistic *type*.
+    fn verify_seeded_provenance(
+        &mut self,
+        param: ValueId,
+        incoming: &[(usize, ValueId, Ty)],
+        block: usize,
+        slot: usize,
+    ) -> Result<(), Unsupported> {
+        let seeded_struct = self.struct_types.get(&param).cloned();
+        let seeded_elem = self.list_elem_struct.get(&param).cloned();
+        if seeded_struct.is_none() && seeded_elem.is_none() {
+            return Ok(());
+        }
+        for &(_, v, _) in incoming {
+            if v == param {
+                continue;
+            }
+            if seeded_struct.is_some() && self.struct_types.get(&v) != seeded_struct.as_ref() {
+                return Err(Unsupported::PhiProvenance { block, slot });
+            }
+            if seeded_elem.is_some() && self.list_elem_struct.get(&v) != seeded_elem.as_ref() {
+                return Err(Unsupported::PhiProvenance { block, slot });
+            }
+        }
+        Ok(())
     }
 
     /// Emits the `dyn.from_*` boxing sequence for one phi edge into

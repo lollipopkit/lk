@@ -117,6 +117,14 @@ pub enum Unsupported {
     /// An empty `[]` literal's guessed element type was contradicted by a
     /// later consumer: retriable — the fixpoint re-lowers with the literal
     /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
+    /// A loop-header phi's optimistically seeded *provenance* (which struct a
+    /// value is, which literal a container came from) is contradicted by an
+    /// edge that arrived later. Retriable: the next pass lowers the slot with
+    /// no seed.
+    PhiProvenance {
+        block: usize,
+        slot: usize,
+    },
     LiteralElemTypeContradicted {
         pcs: Vec<usize>,
     },
@@ -224,6 +232,11 @@ impl Unsupported {
             }
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")
+            }
+            Unsupported::PhiProvenance { block, slot } => {
+                format!(
+                    "the loop-header phi for r{slot} in block {block} was seeded with a provenance an edge contradicts"
+                )
             }
             Unsupported::LiteralElemTypeContradicted { pcs } => {
                 format!("empty list literal(s) at pc {pcs:?} were mis-guessed (retried as Dyn)")

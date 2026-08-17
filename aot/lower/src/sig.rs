@@ -181,6 +181,9 @@ pub(crate) struct SigInfer {
     /// Loop-header phis discovered to merge heterogeneous boxable types
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.
+    /// Loop-header phis forbidden from inheriting provenance, discovered by a
+    /// contradicting edge (`Unsupported::PhiProvenance`).
+    pub(crate) no_phi_provenance: std::collections::HashSet<(u32, usize, usize)>,
     pub(crate) dyn_loop_phis: std::collections::HashSet<(u32, usize, usize)>,
     /// Functions whose returns disagreed on a boxable type (or returned a
     /// nullable carrier): the next fixpoint pass boxes every return point,

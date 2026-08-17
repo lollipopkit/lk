@@ -173,6 +173,7 @@ pub fn lower_bundled(
         try_body_returns: std::collections::HashSet::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
+        no_phi_provenance: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
         cell_captures: std::collections::HashSet::new(),
         ref_captures: std::collections::HashMap::new(),
@@ -297,6 +298,7 @@ pub fn lower_bundled(
                 sig.try_body_cell_input_tys.clone(),
                 sig.cell_capture_tys.clone(),
                 sig.value_lambdas.clone(),
+                sig.no_phi_provenance.len(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -368,6 +370,10 @@ pub fn lower_bundled(
                     // the phi pre-typed Dyn).
                     Err(Unsupported::DynLoopPhi { block, slot }) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    // The provenance twin of the arm above.
+                    Err(Unsupported::PhiProvenance { block, slot }) => {
+                        sig.no_phi_provenance.insert((fi as u32, block, slot));
                     }
                     // A closure used where a *value* is required. The value
                     // form is a clone with an all-`Dyn` signature, queued here
@@ -492,7 +498,8 @@ pub fn lower_bundled(
                 && snapshot.19 == sig.try_body_cell_inputs
                 && snapshot.20 == sig.try_body_cell_input_tys
                 && snapshot.21 == sig.cell_capture_tys
-                && snapshot.22 == sig.value_lambdas;
+                && snapshot.22 == sig.value_lambdas
+                && snapshot.23 == sig.no_phi_provenance.len();
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
@@ -500,6 +507,7 @@ pub fn lower_bundled(
             // found: a region carries nothing back until a read reports that it
             // must, and each report costs a pass.
             let discovery_budget = sig.dyn_loop_phis.len()
+                + sig.no_phi_provenance.len()
                 + sig.dyn_literals.len()
                 + sig.dyn_rets.len()
                 + sig.force_dyn_globals.len()

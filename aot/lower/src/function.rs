@@ -835,6 +835,12 @@ pub(crate) fn lower_function(
         .filter(|&&(fi, _, _)| fi == func_index)
         .map(|&(_, b, s)| (b, s))
         .collect();
+    ssa.no_provenance_slots = sig
+        .no_phi_provenance
+        .iter()
+        .filter(|&&(fi, _, _)| fi == func_index)
+        .map(|&(_, b, s)| (b, s))
+        .collect();
     ssa.dyn_literal_pcs = sig
         .dyn_literals
         .iter()
