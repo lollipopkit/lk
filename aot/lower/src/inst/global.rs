@@ -213,17 +213,8 @@ pub(super) fn lower(
                 }
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
-            // Writing a global whose *name* this lowering recognizes would let
-            // later `GetGlobal` reads resolve to the stale builtin/module
-            // meaning and miscompile (`println = f; println(x)`), so those
-            // writes reject the program.
             let slot = instr.bx();
             let name = module_globals.get(slot as usize).map(String::as_str);
-            if let Some(name) = name
-                && (builtin_for_name(name).is_some() || module_global(name))
-            {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            }
             // Mutable module global (a top-level `let` shared with functions).
             // Scalar slots stay typed when every write agrees; disagreeing or
             // non-scalar (but boxable) writes join the slot to `Dyn` — each
@@ -327,7 +318,14 @@ pub(super) fn lower(
             // zero — a read that could observe it must reject).
             let slot = instr.bx();
             let name = module_globals.get(slot as usize).map(String::as_str);
+            // A slot the program writes is a user global, whatever it is
+            // called: `let time = [1]` shadows the stdlib module for the rest
+            // of the file, exactly as the import bindings below are already
+            // shadowed. Resolving by name regardless is what made a write to
+            // such a slot have to reject the whole program.
+            let shadowed = sig.shadowed_globals.get(slot as usize).copied().unwrap_or(false);
             let global_ref = match name {
+                _ if shadowed => None,
                 Some(name) if let Some(builtin) = builtin_for_name(name) => Some(GlobalRef::Builtin(builtin)),
                 // Two-level stdlib exports arrive as `module::member` global
                 // names (`chan.close(c)` → `GetGlobal "chan::close"`).

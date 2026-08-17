@@ -187,6 +187,7 @@ pub fn lower_bundled(
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
+        shadowed_globals: prescan_shadowed_globals(module, global_count),
         lambda_params: module
             .functions
             .iter()

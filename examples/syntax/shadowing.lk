@@ -1,0 +1,36 @@
+// A name a program binds is that program's name.
+
+// The standard library's modules and the built-in functions live in the same
+// namespace a top-level `let` writes into, so a program may reuse any of their
+// names. The binding wins from then on — which is what the interpreter does,
+// and what the compiled build had to be taught: it resolved the *name* before
+// asking whether the slot had been written, so `let time = …` read by any
+// function dropped the whole program off the native path.
+let time = [30, 45, 60];
+let env = "production";
+let hash = 7;
+
+fn first_reading() -> Int {
+    return time[0];
+}
+fn where_it_runs() -> String {
+    return env;
+}
+assert(first_reading() == 30);
+assert(where_it_runs() == "production");
+assert(hash == 7);
+
+// A built-in function's name is the same kind of name.
+let len = 42;
+fn stored_len() -> Int {
+    return len;
+}
+assert(stored_len() == 42);
+// The method spelling is unaffected — it was never the global.
+assert([1, 2, 3].len() == 3);
+
+// An unshadowed module is still the module, in the same file.
+use math;
+assert(math.abs(0 - 3) == 3);
+
+println("shadowing: ok");

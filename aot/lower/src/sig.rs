@@ -258,6 +258,10 @@ pub(crate) struct SigInfer {
     /// assigned exactly once, in the entry prefix, from a zero-capture
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     pub(crate) lambda_globals: Vec<Option<u32>>,
+    /// Global slots the program writes — see
+    /// [`crate::prescan::prescan_shadowed_globals`]. A read of one resolves to
+    /// the slot, never to the stdlib module or builtin of the same name.
+    pub(crate) shadowed_globals: Vec<bool>,
     /// `lambda_params[f][i]` — this function's i-th parameter is an *erased*
     /// lambda with a statically known identity: the callee seeds the register
     /// with a `GlobalRef::Lambda`/`Closure` instead of binding a value, so

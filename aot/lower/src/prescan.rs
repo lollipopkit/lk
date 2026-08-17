@@ -196,6 +196,36 @@ pub(crate) fn bridge_eligibility(
 /// of a zero-capture `MakeClosure`. Only such slots may resolve to
 /// [`GlobalRef::Lambda`] on `GetGlobal` — a slot with any other write could be
 /// observed with a different value at runtime.
+/// Global slots the program **writes**, by slot index.
+///
+/// A written slot is a user global, whatever it is called. Name resolution
+/// (`inst::global`'s `GetGlobal`) otherwise answers "the stdlib module `time`"
+/// for a program whose own `let time = …` shadows it — the same shadowing the
+/// import path already respects, applied to the built-in names too. Before
+/// this, fourteen ordinary variable names (`time`, `env`, `hash`, `iter`,
+/// `os`, `io`, `net`, `math`, `fs`, `bytes`, `regex`, `task`, `process`,
+/// `encoding`) made the whole program fall back the moment a function read one.
+///
+/// Syntactic and whole-module on purpose: a read may lower before the write in
+/// the same pass, so asking "has a write been *observed* yet" would answer
+/// differently depending on pass order.
+pub(crate) fn prescan_shadowed_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<bool> {
+    let mut shadowed = vec![false; global_count];
+    for func in &module.functions {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                break;
+            };
+            if instr.opcode() == Opcode::SetGlobal
+                && let Some(flag) = shadowed.get_mut(instr.bx() as usize)
+            {
+                *flag = true;
+            }
+        }
+    }
+    shadowed
+}
+
 pub(crate) fn prescan_lambda_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<Option<u32>> {
     let mut candidates: Vec<Option<u32>> = vec![None; global_count];
     let mut write_counts = vec![0usize; global_count];
