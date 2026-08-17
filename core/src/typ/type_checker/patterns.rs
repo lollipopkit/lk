@@ -36,6 +36,22 @@ impl TypeChecker {
 
     /// Ensure a pattern is compatible with a given value type, adding constraints where possible
     pub(super) fn check_pattern_against_type(&mut self, pattern: &Pattern, value_type: &Type) -> Result<()> {
+        // A union scrutinee is the *reason* to write a match: the pattern
+        // discriminates it, so it has to agree with only the member it selects.
+        // Constraining it against the whole union reported a conflict between
+        // two arms of the same match — `[0, 0]` against
+        // `List<Int> | Tuple<String, Int>` — which is a conflict the program
+        // does not have.
+        if let Type::Union(members) = self.resolve_aliases(value_type) {
+            let mut checkpoint = Ok(());
+            for member in &members {
+                match self.check_pattern_against_type(pattern, member) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => checkpoint = Err(err),
+                }
+            }
+            return checkpoint;
+        }
         match pattern {
             Pattern::Literal(v) => {
                 // Unify with literal type
@@ -49,6 +65,19 @@ impl TypeChecker {
             }
             Pattern::Wildcard => Ok(()),
             Pattern::List { patterns, rest: _ } => {
+                // A tuple knows each position's type, and that is exactly what
+                // a list pattern asks about. Falling through to the shared
+                // element type below constrained every position to one type,
+                // so `match ["a", 2] { ["b", n] => … }` reported "Cannot unify
+                // Int with String" — a conflict manufactured by the check, not
+                // present in the program.
+                if let Type::Tuple(elems) = value_type {
+                    for (index, p) in patterns.iter().enumerate() {
+                        let at = elems.get(index).cloned().unwrap_or(Type::Any);
+                        self.check_pattern_against_type(p, &at)?;
+                    }
+                    return Ok(());
+                }
                 // Expect a list; if element type is unknown, introduce a fresh var
                 let elem_ty = match value_type {
                     Type::List(inner) => (**inner).clone(),
@@ -137,12 +166,51 @@ impl TypeChecker {
     /// Collect variable bindings and their types from a pattern
     fn collect_bindings_for_pattern(&mut self, pattern: &Pattern, value_type: &Type) -> Result<Vec<(String, Type)>> {
         let mut out = Vec::new();
+        // A union scrutinee, as in `check_pattern_against_type`: a destructuring
+        // pattern selects the member it fits, so the bindings come from that
+        // member rather than from a constraint against the whole union. A
+        // binding pattern keeps the union — a name binds whatever arrives.
+        if let Type::Union(members) = self.resolve_aliases(value_type)
+            && !matches!(pattern, Pattern::Variable(_) | Pattern::Wildcard)
+        {
+            let mut last = Ok(out);
+            for member in &members {
+                match self.collect_bindings_for_pattern(pattern, member) {
+                    Ok(bindings) => return Ok(bindings),
+                    Err(err) => last = Err(err),
+                }
+            }
+            return last;
+        }
         match pattern {
             Pattern::Variable(name) => {
                 out.push((name.clone(), value_type.clone()));
             }
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
             Pattern::List { patterns, rest } => {
+                // Per position, for a tuple — see the note in
+                // `check_pattern_against_type`. The rest binding keeps the
+                // remaining positions' types, so `[a, ..rest]` over a
+                // `Tuple<Int, String>` binds `rest` as `List<String>` rather
+                // than as a list of the conflict.
+                if let Type::Tuple(elems) = value_type {
+                    for (index, p) in patterns.iter().enumerate() {
+                        let at = elems.get(index).cloned().unwrap_or(Type::Any);
+                        out.extend(self.collect_bindings_for_pattern(p, &at)?);
+                    }
+                    if let Some(rest_name) = rest {
+                        let remaining: Vec<Type> = elems.iter().skip(patterns.len()).cloned().collect();
+                        let rest_ty = match remaining.split_first() {
+                            None => Type::List(Box::new(Type::Any)),
+                            Some((first, others)) if others.iter().all(|t| t == first) => {
+                                Type::List(Box::new(first.clone()))
+                            }
+                            Some(_) => Type::Tuple(remaining),
+                        };
+                        out.push((rest_name.clone(), rest_ty));
+                    }
+                    return Ok(out);
+                }
                 let (elem_ty, rest_ty) = match value_type {
                     Type::List(inner) => ((**inner).clone(), Type::List(inner.clone())),
                     Type::String => (Type::String, Type::List(Box::new(Type::String))),

@@ -2667,3 +2667,42 @@ render(P { x: 4 })      // 此前:Argument 1 has the wrong type (expected Show, 
 还有一条:trait 类型的接收者只能调用 trait 声明过的方法。此前 `v.nosuch()` 直接到运行期,
 而两个后端"发现"的方式不同,报的话也不同——解释器说 `P has no method 'nosuch'`,
 编译版说的是 map 属性那句。
+
+## 容器模式里的子模式(2026-08-18)
+
+`match` 的列表/映射模式此前**只检查形状**——列表的长度、映射的键——里面写别的一律拒绝:
+`Compiler does not support nested refutable pattern yet`。也就是说
+
+```lk
+match p {
+    [0, 0] => "origin",
+    [0, y] => "on-y",
+    [x, y] => "point",
+}
+```
+
+这种写法不能编译,而模式匹配大半是这么用的。现在子模式和顶层模式是同一种东西,
+字面量、区间、嵌套容器、`|`、`if` 守卫都可以出现在里面。
+
+三处配套:
+
+| 位置 | 内容 |
+| --- | --- |
+| `pattern_control::lower_container_pattern` | 形状测试 + 逐个子模式。取元素放在形状守卫**内部**——对非列表取下标会抛错 |
+| `lower_subpattern` | 容器里的裸名字是**绑定**,不是"非 nil"测试。`lower_pattern_match` 是和 `if let` 共用的,那里裸名字意味着非 nil |
+| `type_checker/patterns` | 元组按位置给类型。此前所有位置共用一个元素类型,`match ["a", 2] { ["b", n] => … }` 报的是检查过程自己造出来的 `Cannot unify Int with String` |
+
+模式树用到的寄存器在**第一个形状测试之前**统一分配并置 nil。VM 里没写过的寄存器就是 nil,
+原生降级要建 SSA,一条走不到的路径上的读也是读。`..rest` 例外,留在守卫外面:它产出的是
+列表或映射句柄,一边 nil 一边句柄没有统一类型。
+
+顺带修了两个原生降级的**静默错答**(不是回退,是编译通过并答错):
+
+- `IsList` / `IsMap` 只比较一个 tag(`DYN_LIST` / `DYN_MAP`)。列表有五种表示、映射有六种,
+  解释器还把 `String` 算作列表(`let [a, b] = "ab"` 成立)。落在类型化载体里的列表因此答 `false`,
+  跳过了本该走的分支。现在走 `dyn.is_list` / `dyn.is_map`,与 lkrt 其余部分用同一个判定。
+- `lkrt_dyn_index` 对装箱的 `String` 抛 `runtime type error`,而未装箱的 `s[0]` 一直是可以的。
+
+已知缺口:被 `match` 的值类型是**联合类型**时,解构模式与联合的合一仍会报冲突
+(一个无类型参数收了五种形状就会这样)。`check_pattern_against_type` 和
+`collect_bindings_for_pattern` 现在会逐个成员去试,但更早加进求解器的约束还是按整个联合建的。

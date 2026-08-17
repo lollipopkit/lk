@@ -151,32 +151,22 @@ pub(super) fn lower(
             // nil) is not. Const-folds to a `Bool`, mirroring the VM's
             // `runtime_value_is_list`.
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
-            // A boxed Dyn is list-ness only at runtime: test its tag (5 =
-            // DYN_LIST). Everything else const-folds.
+            // A boxed Dyn is list-ness only at runtime, and it is not one tag:
+            // `rt.is_list` answers for every representation, including the
+            // `String` the interpreter also calls list-like.
             if ty == Ty::Dyn {
-                let tag = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(tag),
-                    callee: AbiRef::new("dyn", "tag"),
-                    args: vec![v],
-                });
-                let want = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: want,
-                    value: Const::I64(5),
-                });
                 let dst = ssa.new_val();
-                insts.push(Inst::Cmp {
-                    dst,
-                    op: CmpOp::Eq,
-                    float: false,
-                    lhs: tag,
-                    rhs: want,
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "is_list"),
+                    args: vec![v],
                 });
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
-            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+            // `Str` included for the same reason: `runtime_value_is_list` says
+            // true for one, and a `let [a, b] = "ab"` relies on it.
+            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Str);
             let dst = ssa.new_val();
             insts.push(Inst::Const {
                 dst,
@@ -190,24 +180,11 @@ pub(super) fn lower(
             // to a `Bool`, mirroring the VM's `runtime_value_is_map`.
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             if ty == Ty::Dyn {
-                let tag = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(tag),
-                    callee: AbiRef::new("dyn", "tag"),
-                    args: vec![v],
-                });
-                let want = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: want,
-                    value: Const::I64(6),
-                });
                 let dst = ssa.new_val();
-                insts.push(Inst::Cmp {
-                    dst,
-                    op: CmpOp::Eq,
-                    float: false,
-                    lhs: tag,
-                    rhs: want,
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "is_map"),
+                    args: vec![v],
                 });
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());

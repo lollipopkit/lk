@@ -735,6 +735,9 @@ macro_rules! for_each_abi_fn {
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
             // The same two conversions for a *map key*, which refuse a type no
             // map can key by name instead of with the generic type error.
+            // The shape tests, which are five tags and six rather than one each.
+            ("dyn", "is_list", lkrt_dyn_is_list, Pure, [DynVal], I64);
+            ("dyn", "is_map", lkrt_dyn_is_map, Pure, [DynVal], I64);
             ("dyn", "as_key_i64", lkrt_dyn_as_key_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_key_str", lkrt_dyn_as_key_str, ReadsHost, [DynVal], StrPtr);
             // Deliberately `Retained`: this returns the *existing* handle held

@@ -53,3 +53,70 @@ assert(size_label == "many");
 
 
 println("match: all assertions passed");
+
+// A sub-pattern inside a list or a map is a pattern like any other. It used to
+// be refused outright — "Compiler does not support nested refutable pattern
+// yet" — so a list pattern could check its *shape* and nothing about its
+// contents, which is most of what pattern matching is for.
+fn quadrant(p) -> String {
+    match p {
+        [0, 0] => { return "origin"; }
+        [0, y] => { return "on-y"; }
+        [x, 0] => { return "on-x"; }
+        [x, y] => { return "point"; }
+        _ => { return "not a pair"; }
+    }
+}
+assert(quadrant([0, 0]) == "origin");
+assert(quadrant([0, 5]) == "on-y");
+assert(quadrant([3, 0]) == "on-x");
+assert(quadrant([3, 4]) == "point");
+assert(quadrant([1]) == "not a pair");
+
+// A tagged map, which is what most protocol handling looks like.
+fn apply(msg) -> Int {
+    match msg {
+        {"op": "add", "n": n} => { return n + 1; }
+        {"op": "double", "n": n} => { return n * 2; }
+        _ => { return 0; }
+    }
+}
+assert(apply({"op": "add", "n": 4}) == 5);
+assert(apply({"op": "double", "n": 4}) == 8);
+assert(apply({"op": "nope", "n": 4}) == 0);
+
+// Nested one level down, a guard, and a rest. Each in its own function: a
+// single untyped parameter that receives five different shapes gives the
+// scrutinee a union type, and unifying a destructuring pattern against a union
+// is a gap in inference rather than in matching.
+fn inner(v: List<List<Int>>) -> String {
+    match v {
+        [[a, 9]] => { return "nine"; }
+        [[a, b]] => { return "inner"; }
+        _ => { return "other"; }
+    }
+}
+assert(inner([[2, 9]]) == "nine");
+assert(inner([[2, 3]]) == "inner");
+assert(inner([]) == "other");
+
+fn guarded(v: List<Int>) -> String {
+    match v {
+        [n, _] if n > 3 => { return "big"; }
+        [x, ..rest] => { return "head and {}".format(rest.len()); }
+        _ => { return "other"; }
+    }
+}
+assert(guarded([5, 1]) == "big");
+assert(guarded([0, 1, 2, 3]) == "head and 3");
+assert(guarded([]) == "other");
+
+fn tagged(v: List<String>) -> String {
+    match v {
+        ["a", n] => { return "a {}".format(n); }
+        [other, n] => { return "{} {}".format(other, n); }
+        _ => { return "other"; }
+    }
+}
+assert(tagged(["a", "1"]) == "a 1");
+assert(tagged(["b", "2"]) == "b 2");

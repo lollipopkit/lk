@@ -120,6 +120,25 @@ pub(crate) fn is_list_tag(tag: i64) -> bool {
     tag == DYN_LIST || (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag)
 }
 
+/// `IsList` / `IsMap` on a boxed value.
+///
+/// One tag comparison is not the question: a list has five representations
+/// (the boxed one and four typed carriers) and a map six, and the interpreter
+/// also answers **true** for a `String` — `let [a, b] = "ab"` is a list
+/// destructuring there. Native lowering compared the tag against `DYN_LIST`
+/// alone, so a list that happened to be in a typed carrier answered `false`,
+/// compiled clean, and skipped the arm that should have run.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_is_list(v: LkDyn) -> i64 {
+    i64::from(is_list_tag(v.tag) || v.tag == DYN_STR)
+}
+
+/// The map half of [`lkrt_dyn_is_list`]. A `String` is not a map.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_is_map(v: LkDyn) -> i64 {
+    i64::from(is_map_tag(v.tag))
+}
+
 /// Boxes a typed list handle under its carrier's tag. `kind` is `TLIST_*`.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_typed_list(handle: *mut c_void, kind: i64) -> LkDyn {
@@ -1545,6 +1564,14 @@ pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
             .get(&crate::vm_mirror::RtKey::Int(index))
             .copied()
             .unwrap_or(LkDyn::NIL);
+    }
+    // A string indexes by character, which is what `s[0]` does on a *typed*
+    // `Str` already. It reaches here whenever the same string is boxed —
+    // `[a, b]` destructuring one, for instance, since `IsList` calls a string
+    // list-like the way the interpreter does.
+    if v.tag == DYN_STR {
+        // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+        return unsafe { crate::lkstr::lkrt_str_char_at(v.payload as *const c_char, index) };
     }
     let values = dyn_list_values(v);
     let len = values.len() as i64;
