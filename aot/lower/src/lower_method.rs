@@ -78,7 +78,13 @@ pub(crate) fn lower_method_call_k(
         // where a method call's arguments already sit.
         return lower_module_call(ssa, insts, &module, &name, base, argc, block, pc);
     }
-    let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
+    // A `Maybe` receiver unwraps first, which is what the VM does: calling a
+    // method on an absent one raises (`lkrt_maybe_*_unwrap` raises too, so the
+    // two agree, including on being catchable). Without it a list's loop
+    // variable — a `Maybe`, since the element read is bounds-checked — could be
+    // printed but not asked anything: `for s in ["ab", "cde"] { s.len() }`
+    // dropped the whole program to the VM.
+    let (receiver, receiver_ty) = read_scalar(ssa, insts, base, block, pc)?;
     // A boxed Dyn receiver unwraps through the as_list guard for list-only
     // method names (a non-list tag aborts — the VM's method-on-wrong-type is
     // a loud error too). Names shared with str/map receivers stay boxed.

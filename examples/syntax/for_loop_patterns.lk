@@ -61,4 +61,25 @@ for pair in items.enumerate() {
 }
 assert(indices == [0, 1, 2]);
 
+// A loop variable is asked a question, not just read. The element it holds
+// came out of a bounds-checked read, so it is a `Maybe` — and asking it
+// anything unwraps first, which is what happens outside a loop too: a method
+// on an absent value raises, catchably.
+let widths = [];
+for word in ["ab", "cde", "f"] { widths.push(word.len()); }
+assert(widths == [2, 3, 1]);
+
+let cased = [];
+for word in ["ab", "cd"] { cased.push(word.upper()); }
+assert(cased == ["AB", "CD"]);
+
+fn width_of(table: Map<String, String>, key: String) -> Int {
+    let asked = 0;
+    try { asked = table[key].len(); } catch e { asked = 0 - 1; }
+    return asked;
+}
+let table = {"a": "xy"};
+assert(width_of(table, "missing") == 0 - 1);
+assert(width_of(table, "a") == 2);
+
 println("for_loop_patterns: all assertions passed");

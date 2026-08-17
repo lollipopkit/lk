@@ -1020,5 +1020,20 @@ snapshot 永不收敛,预算耗尽 —— `examples/syntax/closure.lk` 直接不
 subset" 改成指名道姓的 `OperandType`(`is a dyn where a machine word is required`)——
 是哪个类型过不去,本来就是这个答案的全部内容。
 
-**注意**:`for s in ["ab","cde"]`(字符串 list 的循环)仍然回落,那是**先于**这条的缺口
-——不带 `try` 也一样回落,查的时候别记到这条头上。
+(写这条时发现的另一个缺口 —— 字符串 list 循环 —— 见 §29。)
+
+## §29 载体接收者先 unwrap(2026-08-18)
+
+`for s in ["ab","cde"] { s.len(); }` 整程序回落,**不带 `try` 也一样**。原因:list 的元素
+读是带边界检查的,循环变量类型是 `Maybe`,而 `Opcode::Len` 和 `CallMethodK` 都用
+`ssa.read` 拿接收者 —— 拿到一个两寄存器的载体,查不到对应的 `len` 实现就拒。
+
+改成 `read_scalar`,它先 unwrap。判据不是"方便",是**与 VM 一致**:VM 里
+`m["zz"].len()` 会 raise(可被 catch),而 `lkrt_maybe_*_unwrap` 走的也是
+`raise_str`,不是 abort —— 两边同样是可捕获的 raise。`examples/syntax/for_loop_patterns.lk`
+两向都钉了:present 的答长度,absent 的被 `catch` 接住。
+
+顺带一条教训:这条的回归覆盖**最初写进了 `closure.lk`**,结果那个文件整体不再原生化
+(`opcode CallDirect (at pc 2)`),而两段代码**各自单独**都能原生化 —— 是和文件里已有的
+`spawn` 段互相作用。覆盖率门禁要求 61/61,所以例子加在哪里不是随便的:**加完当场跑一次
+`AOT_COVERAGE_REQUIRE_FULL=1`**,别假设"能编译的两段拼起来还能编译"。

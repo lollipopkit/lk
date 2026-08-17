@@ -586,7 +586,13 @@ pub(super) fn lower(
         Opcode::Len => {
             // `a` = dst, `b` = container register; the length is always a plain `i64`,
             // regardless of element type (lists) or key/value type (maps).
-            let (handle, ty) = ssa.read(instr.b(), block, pc)?;
+            //
+            // Read through `read_scalar`, so a `Maybe` receiver unwraps first —
+            // the VM raises on `nil.len()`, and so does the unwrap. A string
+            // list's loop variable is a `Maybe` (the element read is
+            // bounds-checked), so without this `for s in ["ab", "cde"] {
+            // s.len() }` dropped the whole program to the interpreter.
+            let (handle, ty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (module, len_fn) = match ty {
                 // Strings count Unicode scalar values (the VM's char length).
                 Ty::Str => ("str", "char_len"),
