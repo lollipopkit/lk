@@ -352,6 +352,26 @@ impl Ssa {
         }
     }
 
+    /// Records that `reg` names a compile-time reference from here on.
+    ///
+    /// **Clears the register's SSA definition**, which is the half of the
+    /// invariant that was missing. [`Ssa::write`] clears the reference, so a
+    /// value shadows a ref; a bare `builtin_regs` insert did *not* clear the
+    /// definition, so a ref did not shadow a value — and `read_slot` consults
+    /// `current_def` first. A register recycled from a value to a reference
+    /// therefore read back the **stale value**.
+    ///
+    /// `GlobalRef::ArgList` is the exception, and the only one: it is a *view*
+    /// of a materialized handle rather than a name for something with no value,
+    /// so both halves are meant to be live at once (see `NewList`, and the
+    /// `Move` arm that propagates the pair).
+    pub(crate) fn bind_ref(&mut self, block: usize, reg: u8, reference: GlobalRef) {
+        if (reg as usize) < self.reg_count && !matches!(reference, GlobalRef::ArgList(_)) {
+            self.current_def[block][reg as usize] = None;
+        }
+        self.builtin_regs.insert((block, reg), reference);
+    }
+
     pub(crate) fn read(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         self.read_slot(reg as usize, block, pc)
     }

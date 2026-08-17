@@ -840,7 +840,7 @@ pub(crate) fn lower_function(
         // visible parameters, so signature order matches the call site.
         if let Some(id) = identities.get(r).copied().flatten() {
             if id.captures == 0 {
-                ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(id.fidx));
+                ssa.bind_ref(0, r as u8, GlobalRef::Lambda(id.fidx));
             }
             continue;
         }
@@ -930,7 +930,7 @@ pub(crate) fn lower_function(
             } else {
                 GlobalRef::Closure(identity.fidx, caps)
             };
-            ssa.builtin_regs.insert((0, reg), global_ref);
+            ssa.bind_ref(0, reg, global_ref);
             continue;
         }
         let ty = sig
@@ -1006,7 +1006,7 @@ pub(crate) fn lower_function(
             caps.push(ClosureCapture::Value(ev, ety));
             env_offset += 1;
         }
-        ssa.builtin_regs.insert((0, r as u8), GlobalRef::Closure(id.fidx, caps));
+        ssa.bind_ref(0, r as u8, GlobalRef::Closure(id.fidx, caps));
     }
     // A capturing lambda's own environment arrives after any erased-argument
     // env blocks (the closure's by-value snapshot, appended by the `Call`
@@ -1047,7 +1047,7 @@ pub(crate) fn lower_function(
     // through the arm that already knows how to read and write a runtime cell.
     for (reg, pv) in cell_input_params {
         let k = capture_params.len();
-        ssa.builtin_regs.insert((0, reg), GlobalRef::CellParam(k));
+        ssa.bind_ref(0, reg, GlobalRef::CellParam(k));
         capture_params.push((pv, Ty::Cell));
         // What reads of this cell unbox to, and what a store into it must
         // agree with. Unset (a closure's own capture) means `Dyn`, which is

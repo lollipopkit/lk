@@ -27,13 +27,13 @@ pub(super) fn lower(
             // before the bounds test because an all-static environment declares
             // no parameters at all.
             if let Some(callable) = sig.ref_captures.get(&(ctx_func_index, k)).cloned() {
-                ssa.builtin_regs.insert((block, instr.a()), callable);
+                ssa.bind_ref(block, instr.a(), callable);
                 return Ok(());
             }
             if k >= capture_params.len() {
                 return Err(Unsupported::BadConst { pc });
             }
-            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::CellParam(k));
+            ssa.bind_ref(block, instr.a(), GlobalRef::CellParam(k));
         }
         Opcode::LoadCellVal => {
             // `a` = dst, `b` = cell register: reads the cell's current content.
@@ -43,7 +43,7 @@ pub(super) fn lower(
                 // The register already holds the callable (a ref capture): a
                 // cell read of it is the same reference.
                 Some(callable @ (GlobalRef::Lambda(_) | GlobalRef::UserFn(_))) => {
-                    ssa.builtin_regs.insert((block, instr.a()), callable);
+                    ssa.bind_ref(block, instr.a(), callable);
                 }
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
@@ -80,7 +80,7 @@ pub(super) fn lower(
                     // A cell holding a lambda/closure gives the *reference*
                     // back: there is no runtime value to read.
                     if let Some(global_ref) = ssa.cell_refs.get(&cid).cloned() {
-                        ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                        ssa.bind_ref(block, instr.a(), global_ref);
                         return Ok(());
                     }
                     let slot = ssa.cell_slot(cid);
@@ -339,7 +339,7 @@ pub(super) fn lower(
                 _ => None,
             };
             if let Some(global_ref) = global_ref {
-                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                ssa.bind_ref(block, instr.a(), global_ref);
                 return Ok(());
             }
             // Import-derived bindings (aliases, `use {..} from`, bundled file
@@ -350,7 +350,7 @@ pub(super) fn lower(
             {
                 if let Some(module) = sig.imports.module_aliases.get(name) {
                     let global_ref = GlobalRef::Module(module.clone());
-                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    ssa.bind_ref(block, instr.a(), global_ref);
                     return Ok(());
                 }
                 if let Some((module, member)) = sig.imports.module_items.get(name) {
@@ -361,11 +361,11 @@ pub(super) fn lower(
                     } else {
                         GlobalRef::ModuleFn(module.clone(), member.clone())
                     };
-                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    ssa.bind_ref(block, instr.a(), global_ref);
                     return Ok(());
                 }
                 if let Some(&fidx) = sig.imports.file_items.get(name) {
-                    ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                    ssa.bind_ref(block, instr.a(), GlobalRef::Lambda(fidx));
                     return Ok(());
                 }
                 if let Some(&bundle) = sig.imports.file_namespaces.get(name) {
@@ -378,7 +378,7 @@ pub(super) fn lower(
             // its function reference (initialization-order safe: the prescan
             // only accepts entry-prefix writes, which precede any user call).
             if let Some(fidx) = sig.lambda_globals.get(slot as usize).copied().flatten() {
-                ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                ssa.bind_ref(block, instr.a(), GlobalRef::Lambda(fidx));
                 return Ok(());
             }
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);

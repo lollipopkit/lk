@@ -121,7 +121,7 @@ pub(super) fn lower(
             } else {
                 GlobalRef::Closure(fidx as u32, captures)
             };
-            ssa.builtin_regs.insert((block, instr.a()), global_ref);
+            ssa.bind_ref(block, instr.a(), global_ref);
         }
         // `abx(CallNamed, call_base, (named_count << 7) | positional_count)`:
         // the callee sits at `call_base`, the positional arguments follow it,

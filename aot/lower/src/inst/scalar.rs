@@ -69,7 +69,7 @@ pub(super) fn lower(
                 // would shadow the ref at its consumers (e.g. a recycled
                 // register's stale definition burying a `println` ref).
                 let dual_view = matches!(global_ref, GlobalRef::ArgList(_));
-                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                ssa.bind_ref(block, instr.a(), global_ref);
                 if dual_view && let Some(src) = ssa.current_def[block][instr.b() as usize] {
                     ssa.write(instr.a(), block, src);
                 }
@@ -82,13 +82,13 @@ pub(super) fn lower(
             // Fused adjacent moves: `a ← b`, then `b ← c`. The VM reads `b`
             // before overwriting it; SSA reads naturally see the old value.
             if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
-                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                ssa.bind_ref(block, instr.a(), global_ref);
             } else {
                 let first = ssa.read(instr.b(), block, pc)?;
                 ssa.write(instr.a(), block, first);
             }
             if let Some(global_ref) = ssa.builtin_ref_at(instr.c(), block) {
-                ssa.builtin_regs.insert((block, instr.b()), global_ref);
+                ssa.bind_ref(block, instr.b(), global_ref);
             } else {
                 let second = ssa.read(instr.c(), block, pc)?;
                 ssa.write(instr.b(), block, second);

@@ -155,7 +155,7 @@ pub(super) fn lower(
             }
             // Recorded after the write (which clears the slot) so both views
             // coexist: SSA reads see the handle, method dispatch sees elements.
-            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::ArgList(elems));
+            ssa.bind_ref(block, instr.a(), GlobalRef::ArgList(elems));
         }
         Opcode::NewMap => {
             // `a` = dst, `b` = base, `c` = entry count: a register window of
@@ -579,7 +579,7 @@ pub(super) fn lower(
                     });
                     let slot = ssa.cell_slot(cid);
                     ssa.write_slot(slot, block, (nil, Ty::Nil));
-                    ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Cell(cid));
+                    ssa.bind_ref(block, instr.a(), GlobalRef::Cell(cid));
                 }
             }
         }
@@ -937,7 +937,7 @@ pub(super) fn lower(
                 let Some(fidx) = fidx else {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                 };
-                ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                ssa.bind_ref(block, instr.a(), GlobalRef::Lambda(fidx));
                 return Ok(());
             }
             // `use chan;` binds the module over the `chan()` global, and both
@@ -992,7 +992,7 @@ pub(super) fn lower(
                 } else {
                     GlobalRef::ModuleFn(module, name)
                 };
-                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                ssa.bind_ref(block, instr.a(), global_ref);
                 return Ok(());
             }
             // `a` = dst, `b` = container register, `c` = key register.

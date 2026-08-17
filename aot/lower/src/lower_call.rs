@@ -370,7 +370,7 @@ pub(crate) fn lower_user_call(
         if (dst_reg as usize) < ssa.reg_count {
             ssa.current_def[block][dst_reg as usize] = None;
         }
-        ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        ssa.bind_ref(block, dst_reg, GlobalRef::Closure(lf, caps));
         return Ok(());
     }
     // Tier 1 bridge call (`docs/aot/tier1-hybrid.md`): the callee runs on the
