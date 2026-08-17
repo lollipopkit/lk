@@ -556,6 +556,32 @@ impl Ssa {
             .all(|&pred| self.collect_builtin_ref(reg, pred, visited, found))
     }
 
+    /// The compile-time string a *value* is, looking through a phi.
+    ///
+    /// [`Self::reg_const_str`] answers the same question from a register; this
+    /// one starts from the SSA value, which is what a consumer holding an
+    /// already-read operand has. A phi param redirects to its register's
+    /// reaching definitions — the compiler's loop-literal cache hoists a
+    /// template out of the loop body, so inside the loop `"{}"` *is* a phi
+    /// param and the plain map lookup saw nothing. `"{} ".format(i)` in a loop
+    /// fell back for that reason alone.
+    pub(crate) fn const_str_value(&self, v: ValueId) -> Option<String> {
+        if let Some(found) = self.const_strs.get(&v) {
+            return Some(found.clone());
+        }
+        let (phi_block, phi_reg) = self
+            .phis
+            .iter()
+            .enumerate()
+            .find_map(|(block, phis)| phis.iter().find(|phi| phi.param == v).map(|phi| (block, phi.reg)))?;
+        let mut visited = std::collections::HashSet::new();
+        let mut found: Option<String> = None;
+        let agreed = self.preds[phi_block]
+            .iter()
+            .all(|&p| self.collect_reg_const_str(phi_reg, p, &mut visited, &mut found));
+        agreed.then_some(found).flatten()
+    }
+
     pub(crate) fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
         let mut visited = std::collections::HashSet::new();
         let mut found: Option<String> = None;

@@ -1405,3 +1405,19 @@ AOT 侧 `TraitEnv::struct_field_tys` 记 `(结构体名, 字段名) → Ty`,字�
 
 注意 snapshot 元组:新字段**追加在末尾**(索引 23),不是插在中间。第一版插在索引 5,
 把后面每一项都错位成比较别的东西——那正是那段注释警告的事。
+
+## §42 循环里的 format 模板(2026-08-18)
+
+`"{}".format(x)` 在编译期展开,所以模板必须是常量。而字节码编译器会把**循环不变的字面量提到
+循环外**(`vm/compiler/loop_consts.rs`),于是循环体内那个模板是一个 **phi 参数**,不是字面量本身。
+按 SSA 值查 `const_strs` 什么也查不到,写在循环里的每一个 `"{}".format(x)` 都掉出原生路径:
+
+```lk
+let s = "";
+for i in 0..n { s = s + "[{}]".format(i); }   // 整段回退
+```
+
+`Ssa::reg_const_str` 早就为这件事写好了——"Recovers `println` format strings the compiler's
+loop-literal cache hoisted out of the loop body"——但它从**寄存器**出发,而 `format` 这一处手里
+只有已经读出来的 SSA 值。补了 `Ssa::const_str_value`:值查不到就找它是哪个 phi 的参数,
+改按那个 phi 的寄存器走同一个回溯。`println` 那条路一直是对的,`format` 这条不是。

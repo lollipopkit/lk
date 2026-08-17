@@ -2159,7 +2159,7 @@ pub(crate) fn lower_method_dispatch(
             // The template has to be a constant, for the same reason `println`'s
             // does: the pieces are decided at compile time. A computed template
             // falls back.
-            let Some(fmt) = ssa.const_strs.get(&receiver).cloned() else {
+            let Some(fmt) = ssa.const_str_value(receiver) else {
                 return Err(Unsupported::CallShape {
                     pc,
                     reason: "format needs a constant template to expand at compile time",
