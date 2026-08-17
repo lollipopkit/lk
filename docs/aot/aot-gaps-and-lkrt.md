@@ -1156,9 +1156,24 @@ for f in fs { t = t + f(2); }
 (`NewList` 和 `Move` 里那段"双视图"注释说的就是它)。漏掉这个例外会让参数包整个失效:
 `the argument pack in r0 is a compile-time reference`,一次扫描里 14 个程序掉到 3 个。
 
-现有语料上它不改变任何可观察行为(coverage 61/61、workspace、六个 fuzz 种子、try 语料两批、
-容器惯用法 150/150,全部与之前一致)。它是**闭包值那条路上必须先有的地基**:那条路上
-`fs.push(|x| …)` 会把 list 自己 push 进去,而寄存器复用正是候选原因之一。
+**它修掉了一个已经在跑的静默错答(2026-08-18 补,第五轮)。** 反汇编一看就清楚:
+
+```
+0000 LoadHeapConst r1 #0     ; []
+0001 Move r0 r1              ; fs = r0
+0002 MakeClosure r1 …        ; lambda,落在刚才装 list 的那个槽
+0003 ListPush r0 r1
+```
+
+字节码**复用寄存器**,于是 lambda 的 `MakeClosure` 正好落在 `[]` 字面量刚用过的槽上。
+`read_slot` 先看 `current_def`,而记录引用不清它,于是 push 读回来的是**那个 list**,
+把它 push 进了自己。`let fs = []; fs.push(|x| x + 1);` 就这样编译通过并且答错:
+`typeof(fs[0])` 原生答 `List` 而 VM 答 `Function`,`println(fs)` 原生一路递归到爆栈。
+`len()` 两边都是 1,所以从数字上看不出来 —— 这也是它一直没被发现的原因。
+
+第四轮先做了 `bind_ref` 但**转换漏了三处换行写法**(`ssa.builtin_regs\n.insert(...)`),
+`MakeClosure` 的零捕获早返回恰好是其中之一 —— 也就是恰好是这个 bug 的现场。补完之后这个程序
+从"编译并答错"变成"诚实回落"。`aot/lower/src/tests.rs` 两条单测把规则和它的例外都钉住了。
 
 ### 第四轮闭包值走到哪
 

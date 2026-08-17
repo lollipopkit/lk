@@ -369,8 +369,7 @@ pub(super) fn lower(
                     return Ok(());
                 }
                 if let Some(&bundle) = sig.imports.file_namespaces.get(name) {
-                    ssa.builtin_regs
-                        .insert((block, instr.a()), GlobalRef::UserModule(bundle));
+                    ssa.bind_ref(block, instr.a(), GlobalRef::UserModule(bundle));
                     return Ok(());
                 }
             }

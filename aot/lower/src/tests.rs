@@ -1340,3 +1340,53 @@ fn every_handle_type_counts_as_a_container_global() {
         );
     }
 }
+
+/// Recording a compile-time reference clears the register's SSA definition —
+/// the other half of the invariant [`Ssa::write`] already keeps in the opposite
+/// direction, and the half that was missing.
+///
+/// The bytecode reuses registers, so a lambda's `MakeClosure` lands on the slot
+/// a container literal was loaded into a moment earlier:
+///
+/// ```text
+/// 0000 LoadHeapConst r1 #0     ; []
+/// 0001 Move r0 r1              ; fs = r0
+/// 0002 MakeClosure r1 …        ; the lambda, into the slot the list was in
+/// 0003 ListPush r0 r1
+/// ```
+///
+/// `read_slot` consults `current_def` before `builtin_regs`, so with the
+/// definition left in place the push read the **list** back and pushed it into
+/// itself. `let fs = []; fs.push(|x| x + 1);` compiled, answered `List` for
+/// `typeof(fs[0])` where the interpreter answers `Function`, and made
+/// `println(fs)` recurse until the stack ran out.
+#[test]
+fn binding_a_reference_clears_the_registers_value() {
+    let mut ssa = Ssa::new(4, 0, 0, vec![Vec::new()], 1);
+    let value = ssa.new_val();
+    ssa.write(1, 0, (value, Ty::ListI64));
+    assert!(ssa.read(1, 0, 0).is_ok(), "the register holds a value to begin with");
+
+    ssa.bind_ref(0, 1, GlobalRef::Lambda(7));
+    let err = ssa.read(1, 0, 0).expect_err("a reference is not a value");
+    assert!(
+        matches!(err, Unsupported::ReferenceAsValue { reg: 1, .. }),
+        "the read must report the reference, not hand back the stale value: {err:?}"
+    );
+}
+
+/// `GlobalRef::ArgList` is the exception, and deliberately: it is a *view* of a
+/// materialized handle rather than a name for something with no value, so both
+/// halves stay live. Clearing it too takes an argument pack out of reach.
+#[test]
+fn an_argument_pack_keeps_both_views() {
+    let mut ssa = Ssa::new(4, 0, 0, vec![Vec::new()], 1);
+    let handle = ssa.new_val();
+    ssa.write(1, 0, (handle, Ty::ListDyn));
+    ssa.bind_ref(0, 1, GlobalRef::ArgList(vec![]));
+    assert_eq!(
+        ssa.read(1, 0, 0).expect("the handle is still readable").0,
+        handle,
+        "an ArgList names a handle that exists; the value half is not stale"
+    );
+}

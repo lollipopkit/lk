@@ -58,8 +58,7 @@ pub(super) fn lower(
         // target in a byte. The index rides along so the `Call` arm can
         // devirtualize it.
         Opcode::LoadFunction => {
-            ssa.builtin_regs
-                .insert((block, instr.a()), GlobalRef::UserFn(u32::from(instr.bx())));
+            ssa.bind_ref(block, instr.a(), GlobalRef::UserFn(u32::from(instr.bx())));
         }
         Opcode::MakeClosure => {
             // `a` = dst, `b` = function index, `c` = capture window base. A
@@ -71,8 +70,7 @@ pub(super) fn lower(
             let fidx = instr.b() as usize;
             let callee = funcs.get(fidx).ok_or(Unsupported::BadConst { pc })?;
             if callee.capture_count == 0 {
-                ssa.builtin_regs
-                    .insert((block, instr.a()), GlobalRef::Lambda(fidx as u32));
+                ssa.bind_ref(block, instr.a(), GlobalRef::Lambda(fidx as u32));
                 return Ok(());
             }
             let mut captures = Vec::with_capacity(callee.capture_count as usize);
