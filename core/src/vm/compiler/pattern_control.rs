@@ -396,39 +396,30 @@ impl Compiler {
         if fields.len() != width {
             bail!("pattern slot supply exhausted");
         }
-        // The `..rest` binding stays *outside* the guard, where it has always
-        // been: what it produces is a list or a map handle, and a register
-        // that is `nil` on the mismatch path and a handle on the other has no
-        // single type for native lowering to give it. The elements above can
-        // be `nil` because they are boxed values either way.
-        match pattern {
-            Pattern::List {
-                patterns,
-                rest: Some(rest),
-            } => {
-                let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
-                let slice = self.alloc_reg();
-                self.emit(Instr::abc(
-                    Opcode::SliceFrom,
-                    checked_u8("pattern rest slice", slice)?,
-                    checked_u8("pattern rest value", value)?,
-                    checked_u8("pattern rest start", start)?,
-                ));
-                previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
+        // The `..rest` slot is seeded with an **empty container of its own
+        // kind** before the guard, and filled inside it. Not `nil`: what lands
+        // in it is a list or a map handle, and a register that is nil on one
+        // path and a handle on the other has no single type native lowering
+        // can give it. Not outside the guard either — `..rest` against a Map
+        // ran `SliceFrom` on it and raised "not sliceable" from an arm that
+        // simply does not match.
+        let rest_slot = match pattern {
+            Pattern::List { rest: Some(_), .. } | Pattern::Map { rest: Some(_), .. } => {
+                let slot = self.alloc_reg();
+                let opcode = if matches!(pattern, Pattern::Map { .. }) {
+                    Opcode::NewMap
+                } else {
+                    Opcode::NewList
+                };
+                self.emit(Instr::abc(opcode, checked_u8("pattern rest slot", slot)?, 0, 0));
+                Some(slot)
             }
-            Pattern::Map {
-                patterns,
-                rest: Some(rest),
-            } => {
-                let map = self.lower_map_rest(value, patterns)?;
-                previous.push((rest.clone(), self.insert_local(rest.clone(), map)));
-            }
-            _ => {}
-        }
+            _ => None,
+        };
         let skip = self.emit_test_placeholder(shape)?;
         let mut condition = self.lower_val(&LiteralVal::Bool(true))?;
         match pattern {
-            Pattern::List { patterns, .. } => {
+            Pattern::List { patterns, rest } => {
                 for (index, sub) in patterns.iter().enumerate() {
                     let field = fields[index];
                     let index = i64::try_from(index).map_err(|_| anyhow::anyhow!("Compiler pattern index overflow"))?;
@@ -443,8 +434,18 @@ impl Compiler {
                         condition = self.lower_and_condition(condition, sub_condition)?;
                     }
                 }
+                if let (Some(rest), Some(slot)) = (rest, rest_slot) {
+                    let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
+                    self.emit(Instr::abc(
+                        Opcode::SliceFrom,
+                        checked_u8("pattern rest slice", slot)?,
+                        checked_u8("pattern rest value", value)?,
+                        checked_u8("pattern rest start", start)?,
+                    ));
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), slot)));
+                }
             }
-            Pattern::Map { patterns, .. } => {
+            Pattern::Map { patterns, rest } => {
                 for (index, (key, sub)) in patterns.iter().enumerate() {
                     let field = fields[index];
                     let key = self.lower_val(&LiteralVal::from_str(key))?;
@@ -457,6 +458,11 @@ impl Compiler {
                     if let Some(sub_condition) = self.lower_subpattern(sub, field, previous, slots)? {
                         condition = self.lower_and_condition(condition, sub_condition)?;
                     }
+                }
+                if let (Some(rest), Some(slot)) = (rest, rest_slot) {
+                    let map = self.lower_map_rest(value, patterns)?;
+                    self.emit_move(slot, map, "pattern map rest")?;
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), slot)));
                 }
             }
             other => bail!("not a container pattern: {:?}", pattern_kind(other)),

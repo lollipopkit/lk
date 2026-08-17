@@ -82,6 +82,13 @@ impl TypeChecker {
                 let elem_ty = match value_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::String => Type::String,
+                    // A scrutinee whose type is still open is *not* constrained
+                    // to this pattern's shape. A match arm asks a question; the
+                    // other arms are there because the answer can be no. The
+                    // constraint made every arm a requirement, so a function
+                    // that matched three shapes reported them as a conflict
+                    // with each other — a conflict the program does not have.
+                    Type::Variable(_) | Type::Union(_) => self.inference_engine.fresh_type_var(),
                     other => {
                         // Constrain to List<T>
                         let t = self.inference_engine.fresh_type_var();
@@ -99,6 +106,8 @@ impl TypeChecker {
                 // Expect a map; keys are strings, values have a (possibly inferred) type
                 let val_ty = match value_type {
                     Type::Map(_, v) => (**v).clone(),
+                    // As above: an open scrutinee is asked, not required.
+                    Type::Variable(_) | Type::Union(_) => self.inference_engine.fresh_type_var(),
                     other => {
                         let t = self.inference_engine.fresh_type_var();
                         self.inference_engine
@@ -214,6 +223,11 @@ impl TypeChecker {
                 let (elem_ty, rest_ty) = match value_type {
                     Type::List(inner) => ((**inner).clone(), Type::List(inner.clone())),
                     Type::String => (Type::String, Type::List(Box::new(Type::String))),
+                    Type::Variable(_) | Type::Union(_) => {
+                        let t = self.inference_engine.fresh_type_var();
+                        let rest_t = Type::List(Box::new(t.clone()));
+                        (t, rest_t)
+                    }
                     other => {
                         let t = self.inference_engine.fresh_type_var();
                         self.inference_engine
@@ -232,6 +246,7 @@ impl TypeChecker {
             Pattern::Map { patterns, rest } => {
                 let vty = match value_type {
                     Type::Map(_, v) => (**v).clone(),
+                    Type::Variable(_) | Type::Union(_) => self.inference_engine.fresh_type_var(),
                     other => {
                         let t = self.inference_engine.fresh_type_var();
                         self.inference_engine
