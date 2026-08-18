@@ -435,6 +435,33 @@ mod tests {
         );
     }
 
+    /// A method the trait never declared is a check error too — the other half
+    /// of the same rule, and it had the same hole.
+    ///
+    /// `TypeRegistry::validate_trait_impl` refuses it, and that runs when the
+    /// *VM registers impls*. So `lk check` — documented as the same check the
+    /// executors run — passed a program that stopped on its first line.
+    #[test]
+    fn an_undeclared_trait_method_is_a_check_error() {
+        let error = check_program(
+            "trait T { fn a(self) -> Int; }\nstruct P { x: Int }\nimpl T for P { fn a(self) -> Int { return 1; } fn b(self) -> Int { return 2; } }",
+        )
+        .expect_err("`b` is not declared by `T`");
+        let message = format!("{error:#}");
+        assert!(message.contains("is not declared by trait"), "{message}");
+        // The fix is named, and named on one line.
+        assert!(message.contains("`impl P { … }`"), "{message}");
+
+        // An *inherent* impl is where such a method belongs, so the same
+        // method there is fine.
+        assert!(
+            check_program(
+                "trait T { fn a(self) -> Int; }\nstruct P { x: Int }\nimpl T for P { fn a(self) -> Int { return 1; } }\nimpl P { fn b(self) -> Int { return 2; } }"
+            )
+            .is_ok()
+        );
+    }
+
     /// A trait's required methods are checked where `lk check` can see them.
     ///
     /// The check existed and only ran when the *VM* registered impls, so the

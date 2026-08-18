@@ -194,6 +194,23 @@ impl Stmt {
                             crate::typ::trait_method_conformance(&required, trait_name, &expected, &actual)?;
                         }
                     }
+                    // And nothing the trait did *not* declare. The rule existed
+                    // (`TypeRegistry::validate_trait_impl`) and ran only when
+                    // the VM registered the impl — so `lk check`, which is
+                    // supposed to be the same check the executors run, passed a
+                    // program that stopped on its first line.
+                    for method in methods.iter().map(item_of) {
+                        let Stmt::Function { name, .. } = method else {
+                            continue;
+                        };
+                        if !trait_def.methods.contains_key(name) {
+                            let target = target_type.display();
+                            return Err(anyhow!(format!(
+                                "Method '{name}' is not declared by trait '{trait_name}' — put it in \
+                                 `impl {target} {{ … }}`, which is where a type's own methods go"
+                            )));
+                        }
+                    }
                 }
                 let prev = type_checker.set_impl_self_type(Some(type_checker.resolve_aliases(target_type)));
                 let result: Result<()> = methods.iter().try_for_each(|method| method.type_check(type_checker));
