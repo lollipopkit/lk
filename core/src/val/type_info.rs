@@ -130,6 +130,11 @@ pub struct DeclaredType {
     /// against it. It costs nothing per object — instances share one
     /// `DeclaredType` by `Arc`.
     pub fields: Arc<[DeclaredField]>,
+    /// Whether any field was written with a type — precomputed because the
+    /// answer decides whether a store has to look at all, and a store that
+    /// scanned the field list to find out made construction quadratic in the
+    /// field count for the (common) type that declares none.
+    typed_fields: bool,
 }
 
 /// One field of a declared type: the name it was written with, and the type it
@@ -171,16 +176,32 @@ impl DeclaredType {
             scope,
             name,
             fields: Arc::from([] as [DeclaredField; 0]),
+            typed_fields: false,
         }
     }
 
     pub fn with_fields(scope: TypeScope, name: Arc<str>, fields: Arc<[DeclaredField]>) -> Self {
-        Self { scope, name, fields }
+        let typed_fields = fields.iter().any(|field| field.ty.is_some());
+        Self {
+            scope,
+            name,
+            fields,
+            typed_fields,
+        }
+    }
+
+    /// Whether this type declares any field with a type. `false` means no
+    /// store into it can be measured, so no store has to look.
+    pub fn has_typed_fields(&self) -> bool {
+        self.typed_fields
     }
 
     /// The declared type of `field`, when the declaration is in reach and the
     /// field was written with one.
     pub fn field_type(&self, field: &str) -> Option<&crate::val::Type> {
+        if !self.typed_fields {
+            return None;
+        }
         self.fields
             .iter()
             .find(|declared| &*declared.name == field)
