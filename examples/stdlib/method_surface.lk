@@ -1,0 +1,118 @@
+// Every method the native lowering claims, printed on both backends.
+//
+// The AOT lowering has a table of methods it can lower, and its answer has to
+// be the interpreter's — not only the value, but what a mutating method hands
+// back and what a refusal says. Four defects came out of comparing it entry by
+// entry: `m.clear()` answered nil, `s.clear()` answered nil, a map accepted a
+// `remove` the language does not have, and `chunk(0)` printed its explanation
+// instead of raising it. Each was one arm of a table nobody read as a whole.
+//
+// So the table is read as a whole here. The VM/native differential gate runs
+// every example on both backends, which is exactly the comparison that found
+// them — this file is that comparison, kept.
+
+// ── String ──────────────────────────────────────────────────
+let v1 = "hello world";  println("String.len()");  println(v1.len());  println(v1);
+let v2 = "hello world";  println("String.upper()");  println(v2.upper());  println(v2);
+let v3 = "hello world";  println("String.lower()");  println(v3.lower());  println(v3);
+let v4 = "hello world";  println("String.trim()");  println(v4.trim());  println(v4);
+let v5 = "hello world";  println("String.chars()");  println(v5.chars());  println(v5);
+let v6 = "hello world";  println("String.bytes()");  println(v6.bytes());  println(v6);
+let v7 = "hello world";  println("String.repeat(2)");  println(v7.repeat(2));  println(v7);
+let v8 = "hello world";  println("String.reverse()");  println(v8.reverse());  println(v8);
+let v9 = "hello world";  println("String.slice(1,4)");  println(v9.slice(1,4));  println(v9);
+let v10 = "hello world";  println("String.byte_at(0)");  println(v10.byte_at(0));  println(v10);
+let v11 = "hello world";  println("String.is_empty()");  println(v11.is_empty());  println(v11);
+let v12 = "hello world";  println("String.capitalize()");  println(v12.capitalize());  println(v12);
+let v13 = "hello world";  println("String.title()");  println(v13.title());  println(v13);
+
+// ── List ────────────────────────────────────────────────────
+let v14 = [3,1,2];  println("List.len()");  println(v14.len());  println(v14);
+let v15 = [3,1,2];  println("List.first()");  println(v15.first());  println(v15);
+let v16 = [3,1,2];  println("List.last()");  println(v16.last());  println(v16);
+let v17 = [3,1,2];  println("List.sum()");  println(v17.sum());  println(v17);
+let v18 = [3,1,2];  println("List.max()");  println(v18.max());  println(v18);
+let v19 = [3,1,2];  println("List.min()");  println(v19.min());  println(v19);
+let v20 = [3,1,2];  println("List.sort()");  println(v20.sort());  println(v20);
+let v21 = [3,1,2];  println("List.reverse()");  println(v21.reverse());  println(v21);
+let v22 = [3,1,2];  println("List.contains(2)");  println(v22.contains(2));  println(v22);
+let v23 = [3,1,2];  println("List.index_of(2)");  println(v23.index_of(2));  println(v23);
+let v24 = [3,1,2];  println("List.slice(0,2)");  println(v24.slice(0,2));  println(v24);
+let v25 = [3,1,2];  println("List.take(2)");  println(v25.take(2));  println(v25);
+let v26 = [3,1,2];  println("List.skip(1)");  println(v26.skip(1));  println(v26);
+let v27 = [3,1,2];  println("List.concat([4])");  println(v27.concat([4]));  println(v27);
+let v28 = [3,1,2];  println("List.unique()");  println(v28.unique());  println(v28);
+let v29 = [3,1,2];  println("List.enumerate()");  println(v29.enumerate());  println(v29);
+let v30 = [3,1,2];  println("List.zip([7,8,9])");  println(v30.zip([7,8,9]));  println(v30);
+let v31 = [3,1,2];  println("List.chunk(2)");  println(v31.chunk(2));  println(v31);
+let v32 = [3,1,2];  println("List.is_empty()");  println(v32.is_empty());  println(v32);
+let v33 = [3,1,2];  println("List.count(1)");  println(v33.count(1));  println(v33);
+let v34 = [3,1,2];  println("List.get(0)");  println(v34.get(0));  println(v34);
+let v35 = [3,1,2];  println("List.remove_at(0)");  println(v35.remove_at(0));  println(v35);
+let v36 = [3,1,2];  println("List.clear()");  println(v36.clear());  println(v36);
+
+// ── Map ─────────────────────────────────────────────────────
+let v37 = {"a":1,"b":2};  println("Map.len()");  println(v37.len());  println(v37);
+let v38 = {"a":1,"b":2};  println("Map.keys()");  println(v38.keys());  println(v38);
+let v39 = {"a":1,"b":2};  println("Map.values()");  println(v39.values());  println(v39);
+let v40 = {"a":1,"b":2};  println("Map.is_empty()");  println(v40.is_empty());  println(v40);
+let v41 = {"a":1,"b":2};  println("Map.clear()");  println(v41.clear());  println(v41);
+
+// ── Set ─────────────────────────────────────────────────────
+let v42 = Set([1,2,3]);  println("Set.len()");  println(v42.len());  println(v42);
+let v43 = Set([1,2,3]);  println("Set.contains(2)");  println(v43.contains(2));  println(v43);
+let v44 = Set([1,2,3]);  println("Set.add(4)");  println(v44.add(4));  println(v44);
+let v45 = Set([1,2,3]);  println("Set.delete(1)");  println(v45.delete(1));  println(v45);
+let v46 = Set([1,2,3]);  println("Set.union(Set([9]))");  println(v46.union(Set([9])));  println(v46);
+let v47 = Set([1,2,3]);  println("Set.intersection(Set([1]))");  println(v47.intersection(Set([1])));  println(v47);
+let v48 = Set([1,2,3]);  println("Set.difference(Set([1]))");  println(v48.difference(Set([1])));  println(v48);
+let v49 = Set([1,2,3]);  println("Set.symmetric_difference(Set([1]))");  println(v49.symmetric_difference(Set([1])));  println(v49);
+let v50 = Set([1,2,3]);  println("Set.is_subset(Set([1,2,3,4]))");  println(v50.is_subset(Set([1,2,3,4])));  println(v50);
+let v51 = Set([1,2,3]);  println("Set.is_superset(Set([1]))");  println(v51.is_superset(Set([1])));  println(v51);
+let v52 = Set([1,2,3]);  println("Set.is_disjoint(Set([9]))");  println(v52.is_disjoint(Set([9])));  println(v52);
+let v53 = Set([1,2,3]);  println("Set.is_empty()");  println(v53.is_empty());  println(v53);
+
+// ── Bytes ───────────────────────────────────────────────────
+let v54 = "ab".bytes();  println("Bytes.len()");  println(v54.len());  println(v54);
+let v55 = "ab".bytes();  println("Bytes.to_string_utf8()");  println(v55.to_string_utf8());  println(v55);
+let v56 = "ab".bytes();  println("Bytes.to_string_lossy()");  println(v56.to_string_lossy());  println(v56);
+let v57 = "ab".bytes();  println("Bytes.to_list()");  println(v57.to_list());  println(v57);
+let v58 = "ab".bytes();  println("Bytes.get(0)");  println(v58.get(0));  println(v58);
+
+// ── Empty list ──────────────────────────────────────────────
+let v59 = [];  println("Empty list.len()");  println(v59.len());  println(v59);
+let v60 = [];  println("Empty list.is_empty()");  println(v60.is_empty());  println(v60);
+let v61 = [];  println("Empty list.first()");  println(v61.first());  println(v61);
+let v62 = [];  println("Empty list.last()");  println(v62.last());  println(v62);
+let v63 = [];  println("Empty list.sum()");  println(v63.sum());  println(v63);
+let v64 = [];  println("Empty list.clear()");  println(v64.clear());  println(v64);
+let v65 = [];  println("Empty list.unique()");  println(v65.unique());  println(v65);
+let v66 = [];  println("Empty list.flatten()");  println(v66.flatten());  println(v66);
+let v67 = [];  println("Empty list.take(2)");  println(v67.take(2));  println(v67);
+let v68 = [];  println("Empty list.skip(2)");  println(v68.skip(2));  println(v68);
+
+// ── Empty map ───────────────────────────────────────────────
+let v69 = {};  println("Empty map.len()");  println(v69.len());  println(v69);
+let v70 = {};  println("Empty map.keys()");  println(v70.keys());  println(v70);
+let v71 = {};  println("Empty map.values()");  println(v71.values());  println(v71);
+let v72 = {};  println("Empty map.is_empty()");  println(v72.is_empty());  println(v72);
+let v73 = {};  println("Empty map.clear()");  println(v73.clear());  println(v73);
+
+// ── Empty string ────────────────────────────────────────────
+let v74 = "";  println("Empty string.len()");  println(v74.len());  println(v74);
+let v75 = "";  println("Empty string.upper()");  println(v75.upper());  println(v75);
+let v76 = "";  println("Empty string.trim()");  println(v76.trim());  println(v76);
+let v77 = "";  println("Empty string.split(",")");  println(v77.split(","));  println(v77);
+let v78 = "";  println("Empty string.reverse()");  println(v78.reverse());  println(v78);
+let v79 = "";  println("Empty string.is_empty()");  println(v79.is_empty());  println(v79);
+
+// ── Edge index ──────────────────────────────────────────────
+let v80 = [1,2,3];  println("Edge index.slice(0-2, 3)");  println(v80.slice(0-2, 3));  println(v80);
+let v81 = [1,2,3];  println("Edge index.slice(1, 99)");  println(v81.slice(1, 99));  println(v81);
+let v82 = [1,2,3];  println("Edge index.get(0-1)");  println(v82.get(0-1));  println(v82);
+let v83 = [1,2,3];  println("Edge index.get(99)");  println(v83.get(99));  println(v83);
+let v84 = [1,2,3];  println("Edge index.take(99)");  println(v84.take(99));  println(v84);
+let v85 = [1,2,3];  println("Edge index.skip(99)");  println(v85.skip(99));  println(v85);
+
+println("method surface: ok");
+

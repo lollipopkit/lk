@@ -960,20 +960,18 @@ pub(crate) fn lower_method_dispatch(
         // `clear()` returns the receiver, which is what the VM's `clear` gives
         // back — the same handle, now empty. Every carrier at once: the
         // operation does not look at the element type.
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "clear", []) => {
-            let helper = match receiver_ty {
-                Ty::ListI64 => "i64_clear",
-                Ty::ListF64 => "f64_clear",
-                Ty::ListStr => "str_clear",
-                _ => "dyn_clear",
-            };
+        // `clear()` empties the receiver and hands *it* back — one rule for
+        // every container, stated once. It used to be three arms with three
+        // copies of the answer, and two of them (a map's and a set's) said
+        // `nil` instead: the convention was in the list arm's comment and
+        // nowhere a reader of the other two would look.
+        (_, "clear", []) if clear_helper(receiver_ty).is_some() => {
+            let (module, helper) = clear_helper(receiver_ty).expect("checked by the guard");
             insts.push(Inst::Call {
                 dst: None,
-                callee: AbiRef::new("list_h", helper),
+                callee: AbiRef::new(module, helper),
                 args: vec![receiver],
             });
-            // The value *is* the receiver — the helper returns nothing on
-            // purpose (see `lklist::list_clear!`).
             (receiver, receiver_ty)
         }
         // The other element types slice through `*_slice_from`, which has been
@@ -1359,30 +1357,6 @@ pub(crate) fn lower_method_dispatch(
             (dst, Ty::ListDyn)
         }
         // `m.clear()`, the one container method the map did not lower.
-        (
-            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64,
-            "clear",
-            [],
-        ) => {
-            let abi_name = match receiver_ty {
-                // `Map<str, bool>` rides the `str_i64` carrier.
-                Ty::MapStrI64 | Ty::MapStrBool => "str_i64_clear",
-                Ty::MapStrF64 => "str_f64_clear",
-                Ty::MapI64I64 => "i64_i64_clear",
-                Ty::MapI64F64 => "i64_f64_clear",
-                _ => "str_dyn_clear",
-            };
-            insts.push(Inst::Call {
-                dst: None,
-                callee: AbiRef::new("map_h", abi_name),
-                args: vec![receiver],
-            });
-            // The value *is* the receiver, as it is for a list's `clear` right
-            // above: the VM's `clear` hands the same map back, now empty.
-            // Answering `nil` made `println(m.clear())` print `nil` where the
-            // interpreter prints `{}`.
-            (receiver, receiver_ty)
-        }
         // `remove` is *not* a map method — the interpreter has `delete`, and
         // says so. Accepting it here meant the compiled build answered where
         // the VM raised, which is the worse direction: a program that cannot
@@ -1572,16 +1546,6 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::ListDyn)
-        }
-        (Ty::Set, "clear", []) => {
-            insts.push(Inst::Call {
-                dst: None,
-                callee: AbiRef::new("set", "clear"),
-                args: vec![receiver],
-            });
-            // The value is the receiver, as for a list and a map: `clear`
-            // hands the same container back, empty.
-            (receiver, receiver_ty)
         }
         // `s.byte_at(i)` — one byte as a number, the only string read that
         // allocates nothing. `Pure`, so the optimizer may hoist it out of a loop
@@ -2698,4 +2662,26 @@ pub(crate) fn lower_method_dispatch(
     let _ = globals;
     let _ = block;
     Ok(result)
+}
+
+/// The runtime helper that empties a container of this type, when there is one.
+///
+/// The *answer* to `clear()` is not here: it is the receiver, for every
+/// container, and the single arm that calls this says so once.
+fn clear_helper(receiver_ty: Ty) -> Option<(&'static str, &'static str)> {
+    let helper = match receiver_ty {
+        Ty::ListI64 => ("list_h", "i64_clear"),
+        Ty::ListF64 => ("list_h", "f64_clear"),
+        Ty::ListStr => ("list_h", "str_clear"),
+        Ty::ListDyn => ("list_h", "dyn_clear"),
+        // `Map<str, bool>` rides the `str_i64` carrier.
+        Ty::MapStrI64 | Ty::MapStrBool => ("map_h", "str_i64_clear"),
+        Ty::MapStrF64 => ("map_h", "str_f64_clear"),
+        Ty::MapStrDyn => ("map_h", "str_dyn_clear"),
+        Ty::MapI64I64 => ("map_h", "i64_i64_clear"),
+        Ty::MapI64F64 => ("map_h", "i64_f64_clear"),
+        Ty::Set => ("set", "clear"),
+        _ => return None,
+    };
+    Some(helper)
 }
