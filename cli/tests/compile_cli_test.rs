@@ -934,6 +934,50 @@ fn test_trait_as_a_type_accepts_an_imported_implementor() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A module whose functions call a *read-only* user method on a parameter is
+/// still bundlable.
+///
+/// Bundling declines a module that could write through a container parameter,
+/// because it hands the caller's container over by reference where the VM
+/// hands a copy. A call to a user method counted as a write on the grounds
+/// that the bytecode carries no types — but the method's body is *in the same
+/// module*, and the same fixpoint is already deciding whether its receiver is
+/// safe. Assuming the worst meant `fn describe(v: Shape) { return v.area(); }`
+/// — the whole point of a trait — made the module unbundlable, so every name it
+/// exported stopped resolving natively.
+#[test]
+fn test_a_read_only_trait_method_does_not_block_bundling() {
+    let dir = unique_tmp_dir("bundle_trait_method");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n\
+         fn describe(v: Area) -> Int { return v.area(); }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make, describe } from \"./shape.lk\";\nprintln(describe(make(5)));\n",
+    );
+
+    let out = run_cli(&dir, ["compile", "main.lk"])
+        .env("LK_AOT_HYBRID", "0")
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .output()
+        .expect("spawn compile");
+    assert!(
+        out.status.success(),
+        "a read-only trait method blocked bundling: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// One trait may be implemented for a builtin type only once across the whole
 /// program.
 ///

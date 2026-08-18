@@ -2080,6 +2080,25 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
         .flat_map(|decl| decl.methods.iter().map(|method| method.name.as_str()))
         .collect();
 
+    // Every function index a user method of that name compiles to.
+    //
+    // A call to one is not automatically a write: the method's own body is in
+    // this module, and the fixpoint below is already deciding whether *its*
+    // receiver is safe. Assuming the worst instead meant that a module with
+    // one function calling a trait method on a parameter — `fn describe(v:
+    // Shape) { return v.area(); }`, the whole point of a trait — could not be
+    // bundled at all, and every name it exports stopped resolving.
+    let method_bodies: std::collections::HashMap<&str, Vec<usize>> =
+        module.type_info.impls.iter().flat_map(|decl| decl.methods.iter()).fold(
+            std::collections::HashMap::new(),
+            |mut acc, method| {
+                acc.entry(method.name.as_str())
+                    .or_insert_with(Vec::new)
+                    .push(method.function as usize);
+                acc
+            },
+        );
+
     loop {
         let mut changed = false;
         for (fi, function) in module.functions.iter().enumerate() {
@@ -2105,6 +2124,19 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     // anything else that writes a register produces a *new*
                     // value, so it does not.
                     Opcode::Move => {
+                        if let Some(&slot) = tainted.get(&instr.b()) {
+                            tainted.insert(instr.a(), slot);
+                        } else {
+                            tainted.remove(&instr.a());
+                        }
+                    }
+                    // A container *read out of* a tainted container is part of
+                    // it: `self.items` is the caller's list, so a push through
+                    // it is a write to the parameter. Without this the taint
+                    // stopped at the first field access, and a method whose
+                    // body only ever touches `self.<field>` looked as though it
+                    // left `self` alone.
+                    Opcode::GetFieldK | Opcode::GetIndex | Opcode::GetList | Opcode::GetIndexStrI => {
                         if let Some(&slot) = tainted.get(&instr.b()) {
                             tainted.insert(instr.a(), slot);
                         } else {
@@ -2151,7 +2183,17 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                             .get(instr.b() as usize)
                             .map(|s| s.as_ref())
                             .unwrap_or("");
+                        // A user method whose every body leaves its receiver
+                        // alone is a read, whatever its name suggests.
+                        let user_method_is_safe = method_bodies.get(name).is_some_and(|bodies| {
+                            bodies.iter().all(|&body| {
+                                unsafe_params
+                                    .get(body)
+                                    .is_none_or(|params| params.first() != Some(&true))
+                            })
+                        });
                         if !reads_only(name, &user_methods)
+                            && !user_method_is_safe
                             && let Some(&slot) = tainted.get(&instr.a())
                         {
                             mark(slot, &mut unsafe_params, &mut changed);
