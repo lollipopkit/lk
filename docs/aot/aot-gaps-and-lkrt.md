@@ -1381,6 +1381,18 @@ fn first() -> Int { return time[0]; }   // 有这一行就不原生化
 `Dyn`。声明说了 `Int`,而**没有任何东西把这句话带到降级这一层**——`StructDecl` 只存字段名。
 于是 `p.count + 1` 两边都装箱、走 `dyn.add`,`p.count >= 0` 走 `dyn.ge`。
 
+**这条改动的收益是覆盖,不是速度**——量过了。同一个程序编译两遍(有/无这条narrowing):
+
+| 形状 | 无 | 有 |
+| --- | --- | --- |
+| `for i in 0..3e6 { total += s.a * s.b - s.a; }` | 1.01s | 0.99s |
+| 200 个结构体 × 2000 轮,每轮一次函数调用 | 0.20s | 0.20s |
+
+装箱本身不是瓶颈。真正的开销在字段读这一次哈希查找上:同样的循环,把 `s.a` 提到循环外
+(`let av = s.a`)之后是 0.00s,留在循环里是 0.32s / 3e6 次 ≈ **107ns 一次字段读**。
+下一步是按**下标**读:声明的字段序已经通过 `obj_ty.begin`/`obj_ty.field` 注册给运行时了,
+实例也是按声明序建的,所以下标在编译期就知道。要先逐个确认每个构造路径都保持这个顺序。
+
 改动:`StructDecl.fields` 从 `Vec<String>` 变成 `Vec<StructFieldDecl>`(名字 + 声明类型文本,
 沿用 `TraitDecl` / `ImplDecl` 的 `Type::display()` 约定),artifact 版本 17 → 18。
 AOT 侧 `TraitEnv::struct_field_tys` 记 `(结构体名, 字段名) → Ty`,字段读之后按它拆箱。
