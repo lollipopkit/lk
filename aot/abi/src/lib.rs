@@ -818,6 +818,12 @@ macro_rules! for_each_abi_fn {
             // a static table: these are shapes the ABI already has.
             ("obj_ty", "begin", lkrt_struct_type_begin, WritesHost, [I64, StrPtr], Nil);
             ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr, I64], Nil);
+            // A store the lowering could not rule out statically. The declared
+            // code is a constant here, so this is a tag compare — no table.
+            ("obj_ty", "check", lkrt_check_declared_field, ReadsHost, [StrPtr, StrPtr, I64, DynVal], Nil);
+            // The same check when only the *mark* knows the struct type.
+            ("obj_ty", "check_marked", lkrt_check_marked_field, ReadsHost, [Ptr, StrPtr, DynVal], Nil);
+            ("obj_ty", "check_marked_dyn", lkrt_check_marked_field_dyn, ReadsHost, [Ptr, DynVal, DynVal], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
             // `typeof(x)` where the carrier could be a struct instance at run
             // time (`Dyn`, `MapStrDyn`): the answer is the declared name, which

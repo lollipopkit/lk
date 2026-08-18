@@ -31,6 +31,9 @@ pub(crate) struct TraitEnv {
     /// A declared struct's fields are a fixed, ordered list, so a field read
     /// can be a positional one rather than a hash lookup (`map_h.str_dyn_get_at`).
     pub(crate) struct_field_index: std::collections::HashMap<(String, String), usize>,
+    /// `(struct name, field name)` → the declared-type code a store is measured
+    /// against (`DECLARED_*`).
+    pub(crate) struct_field_codes: std::collections::HashMap<(String, String), i64>,
 }
 
 /// Method names the lowering may call **without** a `CallMethodK` naming them.
@@ -114,6 +117,10 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
         for (index, field) in decl.fields.iter().enumerate() {
             env.struct_field_index
                 .insert((decl.name.clone(), field.name.clone()), index);
+            env.struct_field_codes.insert(
+                (decl.name.clone(), field.name.clone()),
+                declared_field_code(field.ty.as_deref()),
+            );
         }
     }
     for decl in &module.type_info.impls {
@@ -133,27 +140,28 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
 /// The declared-type code `obj_ty.field` carries to the runtime, mirroring
 /// `lkrt::lkdyn`'s constants. Scalars only, and `Any` for everything else — see
 /// `lkrt::lkdyn::check_declared_field`.
+pub(crate) const DECLARED_ANY: i64 = 0;
+pub(crate) const DECLARED_INT: i64 = 1;
+pub(crate) const DECLARED_FLOAT: i64 = 2;
+pub(crate) const DECLARED_BOOL: i64 = 3;
+pub(crate) const DECLARED_STR: i64 = 4;
+pub(crate) const DECLARED_NULLABLE: i64 = 16;
+
 fn declared_field_code(text: Option<&str>) -> i64 {
     use lk_core::val::Type;
-    const ANY: i64 = 0;
-    const INT: i64 = 1;
-    const FLOAT: i64 = 2;
-    const BOOL: i64 = 3;
-    const STR: i64 = 4;
-    const NULLABLE: i64 = 16;
     let Some(ty) = text.and_then(Type::parse) else {
-        return ANY;
+        return DECLARED_ANY;
     };
     let (ty, nullable) = match &ty {
-        Type::Optional(inner) => ((**inner).clone(), NULLABLE),
+        Type::Optional(inner) => ((**inner).clone(), DECLARED_NULLABLE),
         other => (other.clone(), 0),
     };
     let base = match ty {
-        Type::Int => INT,
-        Type::Float => FLOAT,
-        Type::Bool => BOOL,
-        Type::String => STR,
-        _ => return ANY,
+        Type::Int => DECLARED_INT,
+        Type::Float => DECLARED_FLOAT,
+        Type::Bool => DECLARED_BOOL,
+        Type::String => DECLARED_STR,
+        _ => return DECLARED_ANY,
     };
     base | nullable
 }

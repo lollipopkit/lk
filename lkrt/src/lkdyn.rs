@@ -2165,15 +2165,59 @@ pub(crate) unsafe fn check_declared_field(target: LkDyn, key: *const c_char, val
     unsafe { check_declared_field_of(lkrt_dyn_obj_type_id(target), key, value) }
 }
 
-/// [`check_declared_field`] for a caller that holds the raw map handle rather
-/// than a boxed value.
+/// The declared-field check for a store whose struct type only the *mark*
+/// knows — a write through a value the lowering could not name.
 ///
 /// # Safety
-/// As [`check_declared_field`].
-pub(crate) unsafe fn check_declared_field_handle(handle: *mut c_void, key: *const c_char, value: LkDyn) {
+/// `key` must be a NUL-terminated string; `handle` a live map handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_marked_field(handle: *mut c_void, key: *const c_char, value: LkDyn) {
     let type_id = with_obj_type_marks(|marks| marks.get(&(handle as usize)).copied().unwrap_or(0));
     // SAFETY: as documented.
     unsafe { check_declared_field_of(type_id, key, value) }
+}
+
+/// [`lkrt_check_marked_field`] with the field name as a boxed string — a store
+/// whose key is computed (`p[name] = v`).
+///
+/// # Safety
+/// `handle` must be a live map handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_marked_field_dyn(handle: *mut c_void, key: LkDyn, value: LkDyn) {
+    if key.tag != DYN_STR {
+        return;
+    }
+    // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+    unsafe { lkrt_check_marked_field(handle, key.payload as *const c_char, value) }
+}
+
+/// The declared-field check with the declaration **passed in**.
+///
+/// The lowering knows the struct's type and the field's declared code, so a
+/// store it cannot rule out statically needs no table lookup at run time: the
+/// code is a constant and this is a tag compare. The table-driven form above is
+/// for a store through a value whose struct type only the mark knows.
+///
+/// # Safety
+/// `type_name` and `key` must be NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_declared_field(
+    type_name: *const c_char,
+    key: *const c_char,
+    declared: i64,
+    value: LkDyn,
+) {
+    if satisfies_declared(declared, value) {
+        return;
+    }
+    // SAFETY: as documented.
+    let (type_name, key) = unsafe {
+        (
+            core::ffi::CStr::from_ptr(type_name).to_string_lossy().into_owned(),
+            core::ffi::CStr::from_ptr(key).to_string_lossy().into_owned(),
+        )
+    };
+    raise_declared_field(&type_name, &key, declared, value);
 }
 
 /// # Safety
@@ -2196,14 +2240,22 @@ fn check_declared_value(type_id: i64, key: &str, value: LkDyn) {
     }) else {
         return;
     };
+    if satisfies_declared(declared, value) {
+        return;
+    }
+    let type_name = with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone())).unwrap_or_default();
+    raise_declared_field(&type_name, key, declared, value);
+}
+
+/// Whether `value` may be stored in a field declared with `declared`.
+fn satisfies_declared(declared: i64, value: LkDyn) -> bool {
     if declared == DECLARED_ANY {
-        return;
+        return true;
     }
-    let nullable = declared & DECLARED_NULLABLE != 0;
-    if nullable && value.tag == DYN_NIL {
-        return;
+    if declared & DECLARED_NULLABLE != 0 && value.tag == DYN_NIL {
+        return true;
     }
-    let ok = match declared & !DECLARED_NULLABLE {
+    match declared & !DECLARED_NULLABLE {
         DECLARED_INT => value.tag == DYN_I64,
         // An `Int` satisfies a `Float` field: the language never coerces at a
         // typed boundary, so it stays an `Int` and the field holds one.
@@ -2211,11 +2263,10 @@ fn check_declared_value(type_id: i64, key: &str, value: LkDyn) {
         DECLARED_BOOL => value.tag == DYN_BOOL,
         DECLARED_STR => value.tag == DYN_STR,
         _ => true,
-    };
-    if ok {
-        return;
     }
-    let type_name = with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone())).unwrap_or_default();
+}
+
+fn raise_declared_field(type_name: &str, key: &str, declared: i64, value: LkDyn) -> ! {
     let declared_name = match declared & !DECLARED_NULLABLE {
         DECLARED_INT => "Int",
         DECLARED_FLOAT => "Float",
@@ -2223,11 +2274,11 @@ fn check_declared_value(type_id: i64, key: &str, value: LkDyn) {
         DECLARED_STR => "String",
         _ => "Any",
     };
-    let suffix = if nullable { "?" } else { "" };
+    let suffix = if declared & DECLARED_NULLABLE != 0 { "?" } else { "" };
     crate::panic::raise_str(&alloc::format!(
         "field `{key}` of {type_name} is declared {declared_name}{suffix}, and a {} cannot be stored in it",
         kind_name_of(value)
-    ));
+    ))
 }
 
 #[cfg(test)]

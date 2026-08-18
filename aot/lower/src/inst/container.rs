@@ -810,30 +810,7 @@ pub(super) fn lower(
                 callee: AbiRef::new("map_h", "str_dyn_new"),
                 args: Vec::new(),
             });
-            // Struct provenance (plan J1): the type name drives static method
-            // devirtualization; a type with registered trait impls also marks
-            // the handle for boxed runtime dispatch.
-            //
-            // Marked *before* the fields are set, so the sets are measured
-            // against the declaration (`lkrt::lkdyn::check_declared_field`).
-            // `A { v: x }` with an untyped `x` is a store the type checker
-            // cannot see, exactly like `p["v"] = x` is.
             let type_name = ssa.const_str_at(instr.b(), block, pc);
-            if let Some(type_name) = type_name {
-                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
-                    let tid_v = ssa.new_val();
-                    insts.push(Inst::Const {
-                        dst: tid_v,
-                        value: Const::I64(tid),
-                    });
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("map_h", "obj_mark"),
-                        args: vec![map, tid_v],
-                    });
-                }
-                ssa.struct_types.insert(map, type_name);
-            }
             for i in 0..instr.c() as usize {
                 let key_reg = instr.b().wrapping_add(1).wrapping_add((i * 2) as u8);
                 let value_reg = key_reg.wrapping_add(1);
@@ -848,11 +825,37 @@ pub(super) fn lower(
                 // a `Maybe` carrier and boxes through `from_maybe_*` (nil
                 // stays nil, like the VM's absent-element field value).
                 let boxed = to_dyn_any(ssa, insts, vv, vty, pc)?;
+                // `A { v: x }` with an untyped `x` is a store the type checker
+                // cannot see, exactly like `p["v"] = x` is — so it is measured
+                // against the declaration. Only when the value's own type does
+                // not already settle it: a literal `Int` into an `Int` field
+                // needs nothing, which is the common case and pays nothing.
+                if let Some(name) = type_name.as_deref() {
+                    emit_declared_field_check(ssa, insts, globals, sig, name, &key, vty, boxed);
+                }
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("map_h", "str_dyn_set"),
                     args: vec![map, key_v, boxed],
                 });
+            }
+            // Struct provenance (plan J1): the type name drives static method
+            // devirtualization; a type with registered trait impls also marks
+            // the handle for boxed runtime dispatch.
+            if let Some(type_name) = type_name {
+                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+                    let tid_v = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: tid_v,
+                        value: Const::I64(tid),
+                    });
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "obj_mark"),
+                        args: vec![map, tid_v],
+                    });
+                }
+                ssa.struct_types.insert(map, type_name);
             }
             ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
         }
@@ -1394,6 +1397,20 @@ pub(super) fn lower(
                 let key = read_map_key(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
+                // As in `SetFieldK`: a store into a declared field is measured
+                // against the declaration. The key here may be computed, so
+                // the constant-code form only applies when it is not.
+                match ssa.const_str_at(instr.b(), block, pc) {
+                    Some(field) => emit_field_store_check(ssa, insts, globals, sig, handle, &field, cty, boxed),
+                    None => {
+                        let key_dyn = to_dyn_any(ssa, insts, key, Ty::Str, pc)?;
+                        insts.push(Inst::Call {
+                            dst: None,
+                            callee: AbiRef::new("obj_ty", "check_marked_dyn"),
+                            args: vec![handle, key_dyn, boxed],
+                        });
+                    }
+                }
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("map_h", "str_dyn_set"),
@@ -1626,6 +1643,14 @@ pub(super) fn lower(
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
+            // A store into a declared field is measured against the
+            // declaration. The struct type is usually known here, which makes
+            // the code a constant and the check a tag compare; when it is not,
+            // the mark answers at run time.
+            if map_ty == Ty::MapStrDyn {
+                let value_ty = ssa.peek(instr.b(), block).map(|(_, ty)| ty).unwrap_or(Ty::Dyn);
+                emit_field_store_check(ssa, insts, globals, sig, handle, key, value_ty, value);
+            }
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("map_h", set_fn),
@@ -2002,4 +2027,88 @@ fn struct_field_position(ssa: &Ssa, sig: &SigInfer, handle: ValueId, field: &str
         .struct_field_index
         .get(&(name.clone(), field.to_string()))
         .copied()
+}
+
+/// Emits the declared-field check for a store the value's own type does not
+/// already settle.
+///
+/// The declared code is a compile-time constant, so the runtime side is a tag
+/// compare (`lkrt_check_declared_field`) with no table lookup. A statically
+/// satisfying store emits nothing at all — which is every field of an ordinary
+/// `P { x: 1, y: 2 }`.
+#[allow(clippy::too_many_arguments)]
+fn emit_declared_field_check(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    sig: &SigInfer,
+    type_name: &str,
+    field: &str,
+    value_ty: Ty,
+    boxed: ValueId,
+) {
+    let Some(&declared) = sig
+        .traits
+        .struct_field_codes
+        .get(&(type_name.to_string(), field.to_string()))
+    else {
+        return;
+    };
+    if declared == crate::trait_env::DECLARED_ANY || statically_satisfies(declared, value_ty) {
+        return;
+    }
+    let type_v = materialize_key(ssa, insts, globals, type_name);
+    let field_v = materialize_key(ssa, insts, globals, field);
+    let declared_v = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: declared_v,
+        value: Const::I64(declared),
+    });
+    insts.push(Inst::Call {
+        dst: None,
+        callee: AbiRef::new("obj_ty", "check"),
+        args: vec![type_v, field_v, declared_v, boxed],
+    });
+}
+
+/// Whether a value of this MIR type always satisfies the declared code.
+fn statically_satisfies(declared: i64, ty: Ty) -> bool {
+    use crate::trait_env::{DECLARED_BOOL, DECLARED_FLOAT, DECLARED_INT, DECLARED_NULLABLE, DECLARED_STR};
+    match declared & !DECLARED_NULLABLE {
+        DECLARED_INT => ty == Ty::I64,
+        DECLARED_FLOAT => matches!(ty, Ty::I64 | Ty::F64),
+        DECLARED_BOOL => ty == Ty::Bool,
+        DECLARED_STR => ty == Ty::Str,
+        _ => true,
+    }
+}
+
+/// The declared-field check for a *store* into a map that may be a struct
+/// instance.
+///
+/// Statically decided when the receiver's struct type is known — the common
+/// case, and then a satisfying value emits nothing at all. Otherwise the mark
+/// decides at run time, which is one table lookup on a path that had none of
+/// this before and no guarantee either.
+#[allow(clippy::too_many_arguments)]
+fn emit_field_store_check(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    sig: &SigInfer,
+    handle: ValueId,
+    field: &str,
+    value_ty: Ty,
+    boxed: ValueId,
+) {
+    if let Some(type_name) = ssa.struct_types.get(&handle).cloned() {
+        emit_declared_field_check(ssa, insts, globals, sig, &type_name, field, value_ty, boxed);
+        return;
+    }
+    let field_v = materialize_key(ssa, insts, globals, field);
+    insts.push(Inst::Call {
+        dst: None,
+        callee: AbiRef::new("obj_ty", "check_marked"),
+        args: vec![handle, field_v, boxed],
+    });
 }
