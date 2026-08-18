@@ -1,6 +1,7 @@
 //! Container opcodes: list/map/object construction, indexing, mutation.
 
 use super::LowerCtx;
+use crate::trait_env::DECLARED_ANY;
 use crate::*;
 
 pub(super) fn lower(
@@ -1402,7 +1403,10 @@ pub(super) fn lower(
                 // the constant-code form only applies when it is not.
                 match ssa.const_str_at(instr.b(), block, pc) {
                     Some(field) => emit_field_store_check(ssa, insts, globals, sig, handle, &field, cty, boxed),
-                    None => {
+                    // A computed key cannot be filtered by name, so this is
+                    // the one store shape that asks at run time — and only in
+                    // a module that declares a typed field at all.
+                    None if sig.traits.struct_field_codes.values().any(|&code| code != DECLARED_ANY) => {
                         let key_dyn = to_dyn_any(ssa, insts, key, Ty::Str, pc)?;
                         insts.push(Inst::Call {
                             dst: None,
@@ -1410,6 +1414,7 @@ pub(super) fn lower(
                             args: vec![handle, key_dyn, boxed],
                         });
                     }
+                    None => {}
                 }
                 insts.push(Inst::Call {
                     dst: None,
@@ -2054,7 +2059,7 @@ fn emit_declared_field_check(
     else {
         return;
     };
-    if declared == crate::trait_env::DECLARED_ANY || statically_satisfies(declared, value_ty) {
+    if declared == DECLARED_ANY || statically_satisfies(declared, value_ty) {
         return;
     }
     let type_v = materialize_key(ssa, insts, globals, type_name);
@@ -2103,6 +2108,26 @@ fn emit_field_store_check(
 ) {
     if let Some(type_name) = ssa.struct_types.get(&handle).cloned() {
         emit_declared_field_check(ssa, insts, globals, sig, &type_name, field, value_ty, boxed);
+        return;
+    }
+    // A handle this function watched a *map literal* produce is not a struct
+    // instance — those come from `NewObject`, which records a struct type
+    // above. So there is nothing to check, and an ordinary `m[k] = v` loop
+    // pays nothing.
+    if ssa.literal_carrier.contains_key(&handle) {
+        return;
+    }
+    // Nor is there anything to check when *no declared struct has a field of
+    // this name with a type*: whatever this map is, this key cannot name a
+    // field a store could violate. A program with no structs emits none of
+    // this, and `m["count"] = v` only pays where some struct really declares
+    // `count`.
+    let constrained = sig
+        .traits
+        .struct_field_codes
+        .iter()
+        .any(|((_, name), code)| name == field && *code != DECLARED_ANY);
+    if !constrained {
         return;
     }
     let field_v = materialize_key(ssa, insts, globals, field);
