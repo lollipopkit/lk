@@ -831,10 +831,7 @@ pub fn lower_bundled(
     // not-natively-lowerable rather than emitting it as an internal codegen
     // error. Debug the underlying shape with `LK_AOT_DEBUG_FAILURES=1`.
     if let Err(error) = lk_aot_mir::validate(&lowered) {
-        if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
-            eprintln!("lk-aot-lower: lowered module failed validation: {error:?}");
-        }
-        return Err(Unsupported::InvalidMir);
+        return Err(Unsupported::InvalidMir(format!("{error:?}")));
     }
     Ok(lowered)
 }

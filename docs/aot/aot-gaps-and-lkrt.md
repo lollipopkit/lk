@@ -1550,3 +1550,13 @@ fn describe(v: Area) -> Int { return v.area(); }
 
 教训:一个从未成功过的分支,和一个不存在的分支,外部看起来一样。补一个缺失的 ABI 名字之前,
 先问它当初为什么缺。
+
+两条后续,免得再靠运气发现:
+
+- `Unsupported::InvalidMir` 现在**带上校验错误本身**。此前只说"没通过 MIR 校验",
+  真正的原因(`UnknownAbi { module: "dyn", name: "map_get" }`)藏在一个没人会设的
+  `LK_AOT_DEBUG_FAILURES` 后面。整模块回退的诊断不该需要开关。
+- `aot/lower/tests/abi_names.rs` 扫源码:`AbiRef::new( … )` 里每一个**当作名字用**的字符串
+  字面量都必须在 schema 里。名字可以由条件式选出来
+  (`AbiRef::new("dyn", if name == "keys" { "map_keys" } else { … })`),所以两个位置都读,
+  只跳过 `==` / `!=` 的操作数。把 `str_dyn_get` 改回 `map_get` 试过,这个测试确实会红。

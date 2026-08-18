@@ -181,7 +181,11 @@ pub enum Unsupported {
     /// now-bridged callee) produced structurally-invalid MIR. Rather than emit
     /// it (codegen would reject it as an internal error), the module is treated
     /// as not-natively-lowerable so the caller falls back to the VM.
-    InvalidMir,
+    /// The lowered module failed MIR validation. The error is carried along:
+    /// this is a whole-module fallback, so without naming the cause the only
+    /// way to see it was an env var nobody sets — which is how an arm that
+    /// named a nonexistent ABI function went unnoticed (see §45).
+    InvalidMir(String),
 }
 
 impl Unsupported {
@@ -250,7 +254,9 @@ impl Unsupported {
             }
             Unsupported::ReturnTypeConflict => "returns disagree on the value type".to_string(),
             Unsupported::BadTarget { pc } => format!("a branch at pc {pc} targets an out-of-range pc"),
-            Unsupported::InvalidMir => "the lowered module did not pass MIR validation".to_string(),
+            Unsupported::InvalidMir(error) => {
+                format!("the lowered module did not pass MIR validation: {error}")
+            }
         }
     }
 }
