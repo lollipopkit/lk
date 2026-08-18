@@ -82,3 +82,19 @@ assert_eq(window[1], 4);
 assert_eq(window[2], 1);
 
 println("stdlib comprehensive test: all assertions passed");
+
+// `clear()` hands the receiver back, empty — the same handle, for a map as for
+// a list. The compiled build answered `nil` for the map, so
+// `println(m.clear())` printed two different things.
+let cleared_map = {"a": 1, "b": 2};
+assert(cleared_map.clear() == {});
+assert(cleared_map.len() == 0);
+let cleared_list = [1, 2];
+assert(cleared_list.clear() == []);
+
+// A map has `delete`, and does not have `remove`. The compiled build accepted
+// `remove` as a second spelling — so a program the interpreter refuses to run
+// ran, on one backend, and answered.
+let with_key = {"a": 1};
+assert(with_key.delete("a") == 1);
+assert(with_key.len() == 0);

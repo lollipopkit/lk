@@ -1309,7 +1309,7 @@ pub(crate) fn lower_method_dispatch(
         // `delete` writes, which is why the dispatch is per operation: an
         // `as_map` that materialized a copy would answer `keys`/`values`/`has`
         // and silently drop this one.
-        (Ty::Dyn, "delete" | "remove", [(k, Ty::Str)]) => {
+        (Ty::Dyn, "delete", [(k, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
@@ -1377,14 +1377,17 @@ pub(crate) fn lower_method_dispatch(
                 callee: AbiRef::new("map_h", abi_name),
                 args: vec![receiver],
             });
-            let nil = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: nil,
-                value: Const::Nil,
-            });
-            (nil, Ty::Nil)
+            // The value *is* the receiver, as it is for a list's `clear` right
+            // above: the VM's `clear` hands the same map back, now empty.
+            // Answering `nil` made `println(m.clear())` print `nil` where the
+            // interpreter prints `{}`.
+            (receiver, receiver_ty)
         }
-        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete" | "remove", [(k, Ty::Str)]) => {
+        // `remove` is *not* a map method — the interpreter has `delete`, and
+        // says so. Accepting it here meant the compiled build answered where
+        // the VM raised, which is the worse direction: a program that cannot
+        // run at all ran, and only on one backend.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete", [(k, Ty::Str)]) => {
             let abi_name = match receiver_ty {
                 Ty::MapStrI64 => "str_i64_delete",
                 Ty::MapStrF64 => "str_f64_delete",
