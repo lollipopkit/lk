@@ -240,27 +240,55 @@ pub(super) fn lower(
             } else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
-            let lit = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(lit),
-                callee: AbiRef::new("map_h", "lit_new"),
-                args: Vec::new(),
-            });
-            for &((k, kt), (v, vt)) in &entries {
-                let boxed_key = to_dyn(ssa, insts, k, kt, pc)?;
-                let boxed_value = to_dyn(ssa, insts, v, vt, pc)?;
-                insts.push(Inst::Call {
-                    dst: None,
-                    callee: AbiRef::new("map_h", "lit_set"),
-                    args: vec![lit, boxed_key, boxed_value],
-                });
-            }
+            // Straight into the carrier the shape above already chose.
+            //
+            // This used to go through the two-stage literal builder
+            // (`lit_new`/`lit_set`/`lit_finish_*`): every key and value boxed,
+            // inserted into a `RtKey`-keyed map, then that map iterated and
+            // re-inserted into the typed one. Twice the hash inserts and twice
+            // the key allocations, plus a box per entry — a 24-entry map
+            // literal built 100k times took 1.8s where the same-sized list
+            // literal took 0.08s.
+            //
+            // The second stage existed to replay the VM's stage-1 *hash* order
+            // into stage 2. Since the VM's maps became insertion-ordered there
+            // is no such order to replay: inserting in written order is what
+            // both sides do. The builder stays for the shapes chosen at run
+            // time (`lit_finish_str_dyn` from a `MapRest`, the decoders).
+            let (new_fn, set_fn) = match map_ty {
+                Ty::MapStrBool => ("str_i64_new", "str_i64_set"),
+                Ty::MapStrI64 => ("str_i64_new", "str_i64_set"),
+                Ty::MapStrF64 => ("str_f64_new", "str_f64_set"),
+                Ty::MapI64I64 => ("i64_i64_new", "i64_i64_set"),
+                Ty::MapI64F64 => ("i64_f64_new", "i64_f64_set"),
+                _ => ("str_dyn_new", "str_dyn_set"),
+            };
             let handle = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(handle),
-                callee: AbiRef::new("map_h", finish_fn),
-                args: vec![lit],
+                callee: AbiRef::new("map_h", new_fn),
+                args: Vec::new(),
             });
+            for &((k, kt), (v, vt)) in &entries {
+                let value = match map_ty {
+                    Ty::MapStrDyn => to_dyn(ssa, insts, v, vt, pc)?,
+                    // A `bool` carrier stores its members as `i64` (it shares
+                    // the `str_i64` ABI), and a MIR `Bool` is one bit.
+                    Ty::MapStrBool => {
+                        let wide = ssa.new_val();
+                        insts.push(Inst::ZextBool { dst: wide, src: v });
+                        wide
+                    }
+                    _ => v,
+                };
+                let _ = (kt, vt);
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", set_fn),
+                    args: vec![handle, k, value],
+                });
+            }
+            let _ = finish_fn;
             ssa.write(instr.a(), block, (handle, map_ty));
         }
         Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
@@ -516,23 +544,27 @@ pub(super) fn lower(
                         // Non-scalar values / mixed key kinds fall back.
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     };
-                    let lit = ssa.new_val();
+                    // Straight into the carrier, as the register-window path
+                    // above does and for the same reason: the two-stage
+                    // builder's second stage only existed to replay stage 1's
+                    // *hash* order, and the VM's maps are insertion-ordered now.
+                    let (new_fn, set_fn) = match map_ty {
+                        Ty::MapStrBool | Ty::MapStrI64 => ("str_i64_new", "str_i64_set"),
+                        Ty::MapStrF64 => ("str_f64_new", "str_f64_set"),
+                        Ty::MapI64I64 => ("i64_i64_new", "i64_i64_set"),
+                        Ty::MapI64F64 => ("i64_f64_new", "i64_f64_set"),
+                        _ => ("str_dyn_new", "str_dyn_set"),
+                    };
+                    let handle = ssa.new_val();
                     insts.push(Inst::Call {
-                        dst: Some(lit),
-                        callee: AbiRef::new("map_h", "lit_new"),
+                        dst: Some(handle),
+                        callee: AbiRef::new("map_h", new_fn),
                         args: Vec::new(),
                     });
                     for (k, v) in entries {
-                        let boxed_key = match k {
+                        let key = match k {
                             RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                let raw = materialize_key(ssa, insts, globals, key);
-                                let boxed = ssa.new_val();
-                                insts.push(Inst::Call {
-                                    dst: Some(boxed),
-                                    callee: AbiRef::new("dyn", "from_str"),
-                                    args: vec![raw],
-                                });
-                                boxed
+                                materialize_key(ssa, insts, globals, key)
                             }
                             RuntimeMapKeyData::Int(ik) => {
                                 let raw = ssa.new_val();
@@ -540,29 +572,22 @@ pub(super) fn lower(
                                     dst: raw,
                                     value: Const::I64(*ik),
                                 });
-                                let boxed = ssa.new_val();
-                                insts.push(Inst::Call {
-                                    dst: Some(boxed),
-                                    callee: AbiRef::new("dyn", "from_i64"),
-                                    args: vec![raw],
-                                });
-                                boxed
+                                raw
                             }
                             _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
                         };
-                        let boxed_value = box_const_scalar(ssa, insts, globals, v);
+                        let value = match map_ty {
+                            Ty::MapStrDyn => box_const_scalar(ssa, insts, globals, v),
+                            _ => unboxed_const_scalar(ssa, insts, globals, v)
+                                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?,
+                        };
                         insts.push(Inst::Call {
                             dst: None,
-                            callee: AbiRef::new("map_h", "lit_set"),
-                            args: vec![lit, boxed_key, boxed_value],
+                            callee: AbiRef::new("map_h", set_fn),
+                            args: vec![handle, key, value],
                         });
                     }
-                    let handle = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(handle),
-                        callee: AbiRef::new("map_h", finish_fn),
-                        args: vec![lit],
-                    });
+                    let _ = finish_fn;
                     if map_ty != Ty::MapStrDyn {
                         ssa.literal_carrier.insert(handle, (pc, map_ty));
                     }
@@ -2136,4 +2161,40 @@ fn emit_field_store_check(
         callee: AbiRef::new("obj_ty", "check_marked"),
         args: vec![handle, field_v, boxed],
     });
+}
+
+/// A constant scalar as the carrier stores it, unboxed. `None` for a constant
+/// no typed carrier holds.
+fn unboxed_const_scalar(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    value: &ConstRuntimeValueData,
+) -> Option<ValueId> {
+    let dst = ssa.new_val();
+    match value {
+        ConstRuntimeValueData::Int(v) => insts.push(Inst::Const {
+            dst,
+            value: Const::I64(*v),
+        }),
+        // A `bool` carrier stores its members as `i64`, which is why the
+        // `MapStrBool` shape shares the `str_i64` ABI.
+        ConstRuntimeValueData::Bool(v) => insts.push(Inst::Const {
+            dst,
+            value: Const::I64(i64::from(*v)),
+        }),
+        ConstRuntimeValueData::Float(v) => insts.push(Inst::Const {
+            dst,
+            value: Const::F64(*v),
+        }),
+        ConstRuntimeValueData::ShortStr(v) => return Some(materialize_key(ssa, insts, globals, v)),
+        ConstRuntimeValueData::Heap(heap) => match &**heap {
+            lk_core::vm::ConstHeapValueData::LongString(v) => {
+                return Some(materialize_key(ssa, insts, globals, v));
+            }
+            _ => return None,
+        },
+        _ => return None,
+    }
+    Some(dst)
 }
