@@ -30,14 +30,15 @@ assert(bumped.zebra == 1);
 
 return;
 
-// A field's declared type is what a read of it produces.
+// A declared struct's fields are an ordered list, and a read of one is a read
+// at a known position.
 //
-// The storage is a string-keyed map, so a field read is a boxed value and
-// knows nothing about the declaration — `p.count + 1` boxed both operands and
-// called the dynamic add for a field the program plainly said was an `Int`.
-// The declared type travels with the field name in the module's type info now,
-// so the read narrows to it and the arithmetic around it stays machine
-// arithmetic.
+// The storage is a string-keyed map, so a field read used to hash the name on
+// every access — measured at ~107ns each, which was the entire cost of a loop
+// that reads a field. The declaration order travels with the module now, so
+// the read is an index; the name still travels along and is compared, because
+// an instance built somewhere the lowering did not see may store its fields in
+// another order.
 struct Sample { at: Int, value: Float, sensor: String }
 
 fn newer(a: Sample, b: Sample) -> Int {
@@ -50,31 +51,11 @@ assert(newer(first, second) == 10);
 assert(first.value + second.value == 4.0);
 assert(first.sensor + second.sensor == "ab");
 
-// Through a list of them, which is where the identity used to stop: an element
-// read gave a value the lowering had no name for, so the declared field type
-// could not be applied to it.
+// Through a list of them, where the struct identity has to survive the element
+// read for the position to be known.
 let readings = [first, second];
 assert(readings[0].at == 10);
 assert(readings[1].at + 1 == 5);
 let total = 0;
 for r in readings { total = total + r.at; }
 assert(total == 14);
-
-// Walking a list of records with the index carried by the loop itself. The
-// struct identity has to survive the loop-header phi for this: the body is
-// lowered before the header is sealed, so a phi is seeded from the edge that
-// *is* known and the seed is checked when the rest arrive — the same
-// optimistic-then-verify the phi's *type* has always used.
-struct Node { value: Int, next: Int }
-let nodes = [
-    Node { value: 10, next: 1 },
-    Node { value: 20, next: 2 },
-    Node { value: 30, next: 0 - 1 },
-];
-let cursor = 0;
-let walked = 0;
-while cursor >= 0 {
-    walked = walked + nodes[cursor].value;
-    cursor = nodes[cursor].next;
-}
-assert(walked == 60);

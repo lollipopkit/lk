@@ -1309,6 +1309,34 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
         .unwrap_or(LkDyn::NIL)
 }
 
+/// [`lkrt_dyn_field`] read by **position**, with the key as the check.
+///
+/// The boxed twin of `lkrt_lkmap_str_dyn_get_at`, for the shape a member chain
+/// produces: `nodes[i].next` reads its element as a boxed value, so the field
+/// read goes through the tag check rather than through a typed map handle.
+/// Only the boxed `Map<str, Dyn>` representation has a position to read; a
+/// typed carrier is never a struct, and falls through to the keyed path.
+///
+/// # Safety
+/// As [`lkrt_dyn_field`], plus `key_len` bytes readable at `key`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_field_at(v: LkDyn, index: i64, key: *const c_char, key_len: i64) -> LkDyn {
+    if !is_map_tag(v.tag) || (v.payload as *mut c_void).is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    if v.tag == DYN_MAP
+        && index >= 0
+        && let Some((found, value)) = dyn_map(v).get_index(index as usize)
+        && found.len() == key_len as usize
+        // SAFETY: `key_len` bytes are readable at `key`, as documented.
+        && found.as_bytes() == unsafe { core::slice::from_raw_parts(key as *const u8, key_len as usize) }
+    {
+        return *value;
+    }
+    // SAFETY: as documented.
+    unsafe { lkrt_dyn_field(v, key) }
+}
+
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
 /// (negative-from-tail, OOB → Nil); any non-container tag is the VM's
 /// "index on a non-container" loud failure.

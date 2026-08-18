@@ -1162,6 +1162,48 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const
         .unwrap_or(crate::lkdyn::LkDyn::NIL)
 }
 
+/// A declared struct field, read by **position** with the key as the check.
+///
+/// A field read was a hash lookup: `strlen` + UTF-8 validation of the key,
+/// then hash and probe. Measured at ~107ns each, which is the whole cost of a
+/// loop that reads a field (the same loop with the read hoisted out is
+/// unmeasurable). A declared struct has a fixed field order that the compiler
+/// knows, so the position is a compile-time constant.
+///
+/// The key is still passed and still compared, because position alone is not a
+/// guarantee: an instance built somewhere this lowering did not see — through
+/// the hybrid bridge, or by a merge — may store its fields in another order.
+/// The comparison is a length test and a byte compare against a constant, not
+/// a hash; a mismatch falls back to the lookup, so the answer is the same
+/// either way.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string of `key_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get_at(
+    handle: *mut c_void,
+    index: i64,
+    key: *const c_char,
+    key_len: i64,
+) -> crate::lkdyn::LkDyn {
+    if handle.is_null() {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    if index >= 0
+        && let Some((found, value)) = map.get_index(index as usize)
+        && found.len() == key_len as usize
+        // SAFETY: `key` is `key_len` readable bytes, as documented.
+        && found.as_bytes() == unsafe { core::slice::from_raw_parts(key as *const u8, key_len as usize) }
+    {
+        return *value;
+    }
+    map.get(unsafe { key_str(key) })
+        .copied()
+        .unwrap_or(crate::lkdyn::LkDyn::NIL)
+}
+
 /// Key membership (distinct from `get`: a stored-nil value still counts).
 ///
 /// # Safety

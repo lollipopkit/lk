@@ -1094,19 +1094,37 @@ pub(super) fn lower(
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 let dst = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(dst),
-                    callee: AbiRef::new("dyn", helper),
-                    args: vec![handle, key],
-                });
-                // A member chain (`nodes[i].next`) reaches the field this way
-                // rather than through `GetFieldK`, so the declared-type
-                // narrowing has to be here too.
-                let (dst, result_ty) = match (helper, ssa.const_str_value(key)) {
-                    ("field", Some(name)) => unbox_declared_field(ssa, insts, sig, handle, &name, dst, Ty::Dyn, pc)?,
-                    _ => (dst, Ty::Dyn),
-                };
-                ssa.write(instr.a(), block, (dst, result_ty));
+                let field_name = (helper == "field").then(|| ssa.const_str_value(key)).flatten();
+                match field_name
+                    .as_deref()
+                    .and_then(|name| struct_field_position(ssa, sig, handle, name).map(|i| (name, i)))
+                {
+                    // A declared struct's field, by position — the boxed twin
+                    // of the `MapStrDyn` read above.
+                    Some((name, index)) => {
+                        let index_v = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: index_v,
+                            value: Const::I64(index as i64),
+                        });
+                        let len_v = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: len_v,
+                            value: Const::I64(name.len() as i64),
+                        });
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("dyn", "field_at"),
+                            args: vec![handle, index_v, key, len_v],
+                        });
+                    }
+                    None => insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", helper),
+                        args: vec![handle, key],
+                    }),
+                }
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
                 return Ok(());
             }
             // `s[i]` — single-char read, char-indexed, OOB = nil (the VM's
@@ -1520,11 +1538,34 @@ pub(super) fn lower(
                 // Mixed-value map: the Dyn carrier's Nil tag *is* the
                 // missing-key case — no Maybe wrapper needed.
                 Ty::MapStrDyn => {
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("map_h", "str_dyn_get"),
-                        args: vec![handle, key_v],
-                    });
+                    // A declared struct's field sits at a known position, so
+                    // this is an index rather than a hash of the key — see
+                    // `lkrt_lkmap_str_dyn_get_at` for why the key travels
+                    // along anyway.
+                    match struct_field_position(ssa, sig, handle, key) {
+                        Some(index) => {
+                            let index_v = ssa.new_val();
+                            insts.push(Inst::Const {
+                                dst: index_v,
+                                value: Const::I64(index as i64),
+                            });
+                            let len_v = ssa.new_val();
+                            insts.push(Inst::Const {
+                                dst: len_v,
+                                value: Const::I64(key.len() as i64),
+                            });
+                            insts.push(Inst::Call {
+                                dst: Some(dst),
+                                callee: AbiRef::new("map_h", "str_dyn_get_at"),
+                                args: vec![handle, index_v, key_v, len_v],
+                            });
+                        }
+                        None => insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("map_h", "str_dyn_get"),
+                            args: vec![handle, key_v],
+                        }),
+                    }
                     Ty::Dyn
                 }
                 // A boxed Dyn (e.g. a nested map read out of a MapStrDyn):
@@ -1540,14 +1581,6 @@ pub(super) fn lower(
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
-            // A field of a *declared* struct has a declared type, and reading
-            // it through the string-keyed map gives a boxed `Dyn` that knows
-            // nothing about it. Unboxing here is what keeps `p.count + 1` an
-            // integer add instead of `dyn.add`, and what lets a loop variable
-            // fed from a field (`cur = nodes[cur].next`) stay an `I64` —
-            // without it the loop phi joined `I64` with `Dyn` and the whole
-            // walk fell back.
-            let (dst, result_ty) = unbox_declared_field(ssa, insts, sig, handle, key, dst, result_ty, pc)?;
             ssa.write(instr.a(), block, (dst, result_ty));
         }
         Opcode::SetFieldK => {
@@ -1961,45 +1994,11 @@ pub(crate) fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> O
     Some(Unsupported::LiteralElemTypeContradicted { pcs })
 }
 
-/// A declared struct field's read, narrowed to its declared scalar type.
-///
-/// Returns the input unchanged whenever the answer is not known: the receiver
-/// is not a value this lowering tracked to a declared struct, the field has no
-/// annotation, or its type is not one held unboxed. Nothing here guesses — an
-/// undeclared field stays the boxed `Dyn` it has always been.
-#[allow(clippy::too_many_arguments)]
-fn unbox_declared_field(
-    ssa: &mut Ssa,
-    insts: &mut Vec<Inst>,
-    sig: &SigInfer,
-    handle: ValueId,
-    field: &str,
-    dst: ValueId,
-    ty: Ty,
-    pc: usize,
-) -> Result<(ValueId, Ty), Unsupported> {
-    if ty != Ty::Dyn {
-        return Ok((dst, ty));
-    }
-    let Some(struct_name) = ssa.struct_types.get(&handle).cloned() else {
-        return Ok((dst, ty));
-    };
-    let Some(&want) = sig.traits.struct_field_tys.get(&(struct_name, field.to_string())) else {
-        return Ok((dst, ty));
-    };
-    let unbox = match want {
-        Ty::I64 => "as_i64",
-        Ty::F64 => "as_f64",
-        Ty::Bool => "as_bool",
-        Ty::Str => "as_str",
-        _ => return Ok((dst, ty)),
-    };
-    let narrowed = ssa.new_val();
-    insts.push(Inst::Call {
-        dst: Some(narrowed),
-        callee: AbiRef::new("dyn", unbox),
-        args: vec![dst],
-    });
-    let _ = pc;
-    Ok((narrowed, want))
+/// Where a declared struct keeps this field, when the receiver is one.
+fn struct_field_position(ssa: &Ssa, sig: &SigInfer, handle: ValueId, field: &str) -> Option<usize> {
+    let name = ssa.struct_types.get(&handle)?;
+    sig.traits
+        .struct_field_index
+        .get(&(name.clone(), field.to_string()))
+        .copied()
 }

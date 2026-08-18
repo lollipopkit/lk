@@ -779,6 +779,8 @@ macro_rules! for_each_abi_fn {
             ("dyn", "from_slice", lkrt_dyn_from_slice, Pure, [Ptr], DynVal);
             ("dyn", "as_slice", lkrt_dyn_as_slice, ReadsHost, [DynVal], Ptr);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
+            // The same read by position — see `lkrt_dyn_field_at`.
+            ("dyn", "field_at", lkrt_dyn_field_at, ReadsHost, [DynVal, I64, StrPtr, I64], DynVal);
             // Map methods on a *boxed* receiver. `as_map` cannot serve them:
             // it hands back a `str_dyn` handle, and a typed map boxed in place
             // is still its own carrier. Dispatched per operation rather than
@@ -825,6 +827,9 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);
             ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            // The same read by position, with the key as the check — see
+            // `lkrt_lkmap_str_dyn_get_at`.
+            ("map_h", "str_dyn_get_at", lkrt_lkmap_str_dyn_get_at, ReadsHost, [Ptr, I64, StrPtr, I64], DynVal);
             ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64, Borrowed);
             ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
