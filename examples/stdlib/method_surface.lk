@@ -115,4 +115,3 @@ let v84 = [1,2,3];  println("Edge index.take(99)");  println(v84.take(99));  pri
 let v85 = [1,2,3];  println("Edge index.skip(99)");  println(v85.skip(99));  println(v85);
 
 println("method surface: ok");
-
