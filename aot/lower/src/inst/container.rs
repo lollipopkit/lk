@@ -256,8 +256,7 @@ pub(super) fn lower(
             // both sides do. The builder stays for the shapes chosen at run
             // time (`lit_finish_str_dyn` from a `MapRest`, the decoders).
             let (new_fn, set_fn) = match map_ty {
-                Ty::MapStrBool => ("str_i64_new", "str_i64_set"),
-                Ty::MapStrI64 => ("str_i64_new", "str_i64_set"),
+                Ty::MapStrBool | Ty::MapStrI64 => ("str_i64_new", "str_i64_set"),
                 Ty::MapStrF64 => ("str_f64_new", "str_f64_set"),
                 Ty::MapI64I64 => ("i64_i64_new", "i64_i64_set"),
                 Ty::MapI64F64 => ("i64_f64_new", "i64_f64_set"),
