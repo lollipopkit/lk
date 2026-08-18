@@ -771,7 +771,7 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
     // map's own iteration, so `P { ..base, x: 9 }` printed its fields in a
     // different order from the `P { … }` two lines above it — the same type,
     // two renderings, decided by which syntax built the value.
-    let declared: Arc<[Arc<str>]> = runtime
+    let declared: Arc<[crate::val::DeclaredField]> = runtime
         .module()
         .and_then(|module| {
             module
@@ -783,15 +783,35 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         .map(|decl| {
             decl.fields
                 .iter()
-                .map(|field| Arc::<str>::from(field.name.as_str()))
+                .map(|field| {
+                    crate::val::DeclaredField::new(
+                        Arc::<str>::from(field.name.as_str()),
+                        field.ty.as_deref().and_then(crate::val::Type::parse),
+                    )
+                })
                 .collect()
         })
-        .unwrap_or_else(|| Arc::from([] as [Arc<str>; 0]));
+        .unwrap_or_else(|| Arc::from([] as [crate::val::DeclaredField; 0]));
     let ty = Arc::new(crate::val::DeclaredType::with_fields(
         type_scope,
         Arc::<str>::from(&*type_name),
         declared,
     ));
+    // The spread spelling builds from a *map*, whose values the checker never
+    // measured against the declaration — `A { ..m }` with `m["v"]` a String is
+    // the same hole `A { v: x }` was.
+    for (key, value) in &fields {
+        if let Some(declared) = ty.field_type(key)
+            && !crate::val::value_satisfies_declared(value, declared, runtime.heap())
+        {
+            return Err(anyhow!(
+                "field `{key}` of {} is declared {}, and a {} cannot be stored in it",
+                ty.name,
+                declared.display(),
+                value.type_name_in(runtime.heap())
+            ));
+        }
+    }
     Ok(RuntimeVal::Obj(
         runtime
             .heap_mut()
@@ -836,7 +856,10 @@ fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::Map(map) => HeapValue::Map(set_string_field_on_map(map, key, field_value)),
-                HeapValue::Object(object) => HeapValue::Object(set_string_field_on_object(object, key, field_value)),
+                HeapValue::Object(object) => {
+                    check_declared_field(object, &key, &field_value, runtime.heap())?;
+                    HeapValue::Object(set_string_field_on_object(object, key, field_value))
+                }
                 other => Err(anyhow!(
                     "__lk_set_field target must be Map or Object, got {}",
                     other.type_name()
@@ -905,6 +928,39 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
             other.kind().scalar_type_name()
         )),
     }
+}
+
+/// A store into a declared field, checked against the type it was declared
+/// with.
+///
+/// A `struct P { count: Int }` whose `count` can hold a String makes the
+/// declaration decorative. The type checker catches the store it can see; this
+/// is the one it cannot — a write through an untyped binding:
+///
+/// ```lk
+/// fn poison(p) { p["v"] = "s"; }
+/// ```
+///
+/// Scalars only (`val::value_satisfies_declared` says why), so the cost is a
+/// discriminant test on a path that was already cloning a map.
+fn check_declared_field(
+    object: &RuntimeObject,
+    key: &str,
+    value: &RuntimeVal,
+    heap: &crate::val::HeapStore,
+) -> anyhow::Result<()> {
+    let Some(declared) = object.ty.field_type(key) else {
+        return Ok(());
+    };
+    if crate::val::value_satisfies_declared(value, declared, heap) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "field `{key}` of {} is declared {}, and a {} cannot be stored in it",
+        object.ty.name,
+        declared.display(),
+        value.type_name_in(heap)
+    ))
 }
 
 fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: RuntimeVal) -> RuntimeObject {

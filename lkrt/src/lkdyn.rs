@@ -574,6 +574,21 @@ fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
     with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
+    // Whatever is already in the map is measured against the declaration now.
+    // A construction that *builds* the map first — `P { ..base }`, which
+    // rebuilds a map and marks the copy — has no other moment to be checked:
+    // the sets happened before this handle was a struct at all.
+    if handle.is_null() || type_id == 0 {
+        return;
+    }
+    // SAFETY: a marked handle is a live `Map<str, Dyn>`.
+    let entries: Vec<(String, LkDyn)> = unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
+        .iter()
+        .map(|(key, &value)| (key.clone(), value))
+        .collect();
+    for (key, value) in entries {
+        check_declared_value(type_id, &key, value);
+    }
 }
 
 /// One struct type as `display` needs it: its name, and its field names in
@@ -588,8 +603,21 @@ pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
 #[derive(Default)]
 struct StructTypeDesc {
     name: String,
-    fields: Vec<String>,
+    /// `(field name, declared-type code)` — see [`DECLARED_ANY`] and friends.
+    fields: Vec<(String, i64)>,
 }
+
+/// The declared-type codes `obj_ty.field` carries, mirroring the scalar set
+/// `val::value_satisfies_declared` checks. Anything else is `DECLARED_ANY`: a
+/// container's element type is not something one value carries, so it is not a
+/// thing a store can be measured against.
+pub const DECLARED_ANY: i64 = 0;
+pub const DECLARED_INT: i64 = 1;
+pub const DECLARED_FLOAT: i64 = 2;
+pub const DECLARED_BOOL: i64 = 3;
+pub const DECLARED_STR: i64 = 4;
+/// Added to a code to say the field is nullable, so `nil` satisfies it.
+pub const DECLARED_NULLABLE: i64 = 16;
 
 #[cfg(feature = "std")]
 thread_local! {
@@ -647,7 +675,7 @@ pub unsafe extern "C" fn lkrt_struct_type_begin(type_id: i64, name: *const c_cha
 /// # Safety
 /// `field` must be a valid C string, or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_char) {
+pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_char, declared: i64) {
     // SAFETY: as above.
     let field = if field.is_null() {
         String::new()
@@ -658,7 +686,7 @@ pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_ch
     };
     with_struct_types(|types| {
         if let Some(desc) = types.get_mut(&type_id) {
-            desc.fields.push(field);
+            desc.fields.push((field, declared));
         }
     });
 }
@@ -685,7 +713,7 @@ fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool) -> 
     let entries = dyn_map(v);
     out.push_str(&name);
     out.push('{');
-    for (i, field) in fields.iter().enumerate() {
+    for (i, (field, _)) in fields.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -1559,6 +1587,8 @@ pub unsafe extern "C" fn lkrt_dyn_map_delete(v: LkDyn, key: *const c_char) -> Lk
 pub extern "C" fn lkrt_dyn_index_set(v: LkDyn, key: LkDyn, value: LkDyn) {
     if is_map_tag(v.tag) {
         if v.tag == DYN_MAP {
+            // SAFETY: a boxed string key is a live NUL-terminated string.
+            unsafe { check_declared_field(v, lkrt_dyn_as_str(key), value) };
             // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; the key
             // pointer is the boxed key's own NUL-terminated string.
             unsafe { crate::lkmap::lkrt_lkmap_str_dyn_set(v.payload as *mut c_void, lkrt_dyn_as_str(key), value) };
@@ -2118,6 +2148,88 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_display(handle: *mut c_void) -> *mut c_
     arena_c_string(CString::new(out).unwrap_or_default())
 }
 
+/// Refuses a store into a declared field whose type the value does not satisfy.
+///
+/// The native half of the interpreter's rule (`val::value_satisfies_declared`):
+/// a `struct P { v: Int }` whose `v` can hold a String makes the declaration
+/// decorative, and the type checker only sees the stores it can type. A store
+/// through an untyped binding reaches here.
+///
+/// Scalars only, and `DECLARED_ANY` for everything else, so the common store
+/// costs one table lookup and one tag test.
+///
+/// # Safety
+/// `key` must be a NUL-terminated string.
+pub(crate) unsafe fn check_declared_field(target: LkDyn, key: *const c_char, value: LkDyn) {
+    // SAFETY: as documented.
+    unsafe { check_declared_field_of(lkrt_dyn_obj_type_id(target), key, value) }
+}
+
+/// [`check_declared_field`] for a caller that holds the raw map handle rather
+/// than a boxed value.
+///
+/// # Safety
+/// As [`check_declared_field`].
+pub(crate) unsafe fn check_declared_field_handle(handle: *mut c_void, key: *const c_char, value: LkDyn) {
+    let type_id = with_obj_type_marks(|marks| marks.get(&(handle as usize)).copied().unwrap_or(0));
+    // SAFETY: as documented.
+    unsafe { check_declared_field_of(type_id, key, value) }
+}
+
+/// # Safety
+/// As [`check_declared_field`].
+unsafe fn check_declared_field_of(type_id: i64, key: *const c_char, value: LkDyn) {
+    if type_id == 0 || key.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    let key = unsafe { core::ffi::CStr::from_ptr(key) }.to_string_lossy().into_owned();
+    check_declared_value(type_id, &key, value);
+}
+
+/// The check itself, once the field name is a `str`.
+fn check_declared_value(type_id: i64, key: &str, value: LkDyn) {
+    let Some(declared) = with_struct_types(|types| {
+        types
+            .get(&type_id)
+            .and_then(|desc| desc.fields.iter().find(|(name, _)| name == key).map(|(_, code)| *code))
+    }) else {
+        return;
+    };
+    if declared == DECLARED_ANY {
+        return;
+    }
+    let nullable = declared & DECLARED_NULLABLE != 0;
+    if nullable && value.tag == DYN_NIL {
+        return;
+    }
+    let ok = match declared & !DECLARED_NULLABLE {
+        DECLARED_INT => value.tag == DYN_I64,
+        // An `Int` satisfies a `Float` field: the language never coerces at a
+        // typed boundary, so it stays an `Int` and the field holds one.
+        DECLARED_FLOAT => value.tag == DYN_I64 || value.tag == DYN_F64,
+        DECLARED_BOOL => value.tag == DYN_BOOL,
+        DECLARED_STR => value.tag == DYN_STR,
+        _ => true,
+    };
+    if ok {
+        return;
+    }
+    let type_name = with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone())).unwrap_or_default();
+    let declared_name = match declared & !DECLARED_NULLABLE {
+        DECLARED_INT => "Int",
+        DECLARED_FLOAT => "Float",
+        DECLARED_BOOL => "Bool",
+        DECLARED_STR => "String",
+        _ => "Any",
+    };
+    let suffix = if nullable { "?" } else { "" };
+    crate::panic::raise_str(&alloc::format!(
+        "field `{key}` of {type_name} is declared {declared_name}{suffix}, and a {} cannot be stored in it",
+        kind_name_of(value)
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2282,12 +2394,12 @@ mod tests {
         // struct P { name: String, v: Int }
         unsafe {
             lkrt_struct_type_begin(101, c"P".as_ptr());
-            lkrt_struct_type_field(101, c"name".as_ptr());
-            lkrt_struct_type_field(101, c"v".as_ptr());
+            lkrt_struct_type_field(101, c"name".as_ptr(), DECLARED_ANY);
+            lkrt_struct_type_field(101, c"v".as_ptr(), DECLARED_ANY);
             // struct Outer { inner: P, tag: String }
             lkrt_struct_type_begin(102, c"Outer".as_ptr());
-            lkrt_struct_type_field(102, c"inner".as_ptr());
-            lkrt_struct_type_field(102, c"tag".as_ptr());
+            lkrt_struct_type_field(102, c"inner".as_ptr(), DECLARED_ANY);
+            lkrt_struct_type_field(102, c"tag".as_ptr(), DECLARED_ANY);
         }
 
         let inner = crate::lkmap::lkrt_lkmap_str_dyn_new();

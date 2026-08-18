@@ -817,7 +817,7 @@ macro_rules! for_each_abi_fn {
             // (declaration order, nested values quoted). Two calls rather than
             // a static table: these are shapes the ABI already has.
             ("obj_ty", "begin", lkrt_struct_type_begin, WritesHost, [I64, StrPtr], Nil);
-            ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr], Nil);
+            ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr, I64], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
             // `typeof(x)` where the carrier could be a struct instance at run
             // time (`Dyn`, `MapStrDyn`): the answer is the declared name, which

@@ -1139,12 +1139,17 @@ pub(crate) fn lower_function(
                     callee: AbiRef::new("obj_ty", "begin"),
                     args: vec![id, name_v],
                 });
-                for field in &fields {
+                for (field, declared) in &fields {
                     let field_v = const_str_value(&mut ssa, &mut insts, globals, field);
+                    let declared_v = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: declared_v,
+                        value: Const::I64(*declared),
+                    });
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("obj_ty", "field"),
-                        args: vec![id, field_v],
+                        args: vec![id, field_v, declared_v],
                     });
                 }
             }

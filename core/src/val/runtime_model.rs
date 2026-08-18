@@ -1893,3 +1893,31 @@ mod compare_floats_tests {
         );
     }
 }
+
+/// Whether a runtime value may be stored where `declared` is written.
+///
+/// Scalars only. A container's declared element type is not something a single
+/// value carries — `List<Int>` and `List<String>` are the same `HeapValue::List`
+/// at run time — so a container-typed field is not checked here, and neither is
+/// `Any`, a union, or a named type. What is left is exactly the set a wrong
+/// store corrupts silently, and the set the type checker's own assignability
+/// rules answer the same way: an `Int` satisfies a `Float` field (the language
+/// never coerces at a typed boundary, so it stays an `Int`), and `nil`
+/// satisfies a nullable one.
+pub fn value_satisfies_declared(value: &RuntimeVal, declared: &Type, heap: &HeapStore) -> bool {
+    if let Type::Optional(inner) = declared {
+        return matches!(value, RuntimeVal::Nil) || value_satisfies_declared(value, inner, heap);
+    }
+    let is_string = match value {
+        RuntimeVal::ShortStr(_) => true,
+        RuntimeVal::Obj(handle) => matches!(heap.get(*handle), Some(HeapValue::String(_))),
+        _ => false,
+    };
+    match declared {
+        Type::Int => matches!(value, RuntimeVal::Int(_)),
+        Type::Float => matches!(value, RuntimeVal::Int(_) | RuntimeVal::Float(_)),
+        Type::Bool => matches!(value, RuntimeVal::Bool(_)),
+        Type::String => is_string,
+        _ => true,
+    }
+}

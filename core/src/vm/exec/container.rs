@@ -139,10 +139,22 @@ impl Executor {
             let value_reg = key_reg
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("object value register overflow"))?;
-            fields.insert(
-                Arc::<str>::from(self.to_runtime_string(key_reg)?),
-                *self.read(value_reg)?,
-            );
+            let key = Arc::<str>::from(self.to_runtime_string(key_reg)?);
+            let value = *self.read(value_reg)?;
+            // Construction is checked against the declaration for the same
+            // reason a store is: `A { v: x }` with an untyped `x` is a write
+            // the type checker cannot see.
+            if let Some(declared) = ty.field_type(&key)
+                && !crate::val::value_satisfies_declared(&value, declared, &self.state.heap)
+            {
+                let declared = declared.display();
+                bail!(
+                    "field `{key}` of {} is declared {declared}, and a {} cannot be stored in it",
+                    ty.name,
+                    self.value_type_name(&value)
+                );
+            }
+            fields.insert(key, value);
         }
         Ok(RuntimeObject::new(ty, fields))
     }
@@ -165,13 +177,18 @@ impl Executor {
         // can print an instance the way its `struct` was written. Looked up
         // once per distinct type thanks to the memo above, not once per object.
         let name = Arc::<str>::from(name);
-        let fields: Arc<[Arc<str>]> = match self.struct_decls.iter().find(|decl| decl.name == *name) {
+        let fields: Arc<[crate::val::DeclaredField]> = match self.struct_decls.iter().find(|decl| decl.name == *name) {
             Some(decl) => decl
                 .fields
                 .iter()
-                .map(|field| Arc::<str>::from(field.name.as_str()))
+                .map(|field| {
+                    crate::val::DeclaredField::new(
+                        Arc::<str>::from(field.name.as_str()),
+                        field.ty.as_deref().and_then(crate::val::Type::parse),
+                    )
+                })
                 .collect(),
-            None => Arc::from([] as [Arc<str>; 0]),
+            None => Arc::from([] as [crate::val::DeclaredField; 0]),
         };
         let ty = Arc::new(crate::val::DeclaredType::with_fields(
             self.type_scope.clone(),
@@ -859,6 +876,21 @@ impl Executor {
                 self.object_key_from_register_or_value(key_reg, moved_key)?
             }
         };
+        // A declared field is checked against the type it was declared with.
+        // The type checker catches every store it can see; this is the one it
+        // cannot — a write through an untyped binding, `fn poison(p) { p["v"]
+        // = "s"; }` — and without it a `struct P { v: Int }` could hold a
+        // String and the declaration meant nothing.
+        if let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
+            && let Some(declared) = object.ty.field_type(&key)
+            && !crate::val::value_satisfies_declared(&value, declared, &self.state.heap)
+        {
+            let (type_name, declared) = (object.ty.name.clone(), declared.display());
+            bail!(
+                "field `{key}` of {type_name} is declared {declared}, and a {} cannot be stored in it",
+                self.value_type_name(&value)
+            );
+        }
         match self
             .state
             .heap

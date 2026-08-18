@@ -59,3 +59,42 @@ assert(readings[1].at + 1 == 5);
 let total = 0;
 for r in readings { total = total + r.at; }
 assert(total == 14);
+
+// A declared field type is enforced, not decorative.
+//
+// The type checker catches every store it can type. It cannot type a store
+// through an untyped binding — `fn poison(p) { p["v"] = "s"; }` — and without
+// a runtime check a `struct Sample { at: Int }` could hold a String, which
+// makes the declaration a comment. Every way of writing a field is checked:
+// the two store spellings, the two construction spellings.
+struct Counter { n: Int, label: String?, ratio: Float }
+
+fn store_by_index(c, v) { c["n"] = v; }
+fn store_by_dot(c, v) { c.n = v; }
+fn build(v) { let made = Counter { n: v, label: nil, ratio: 1.5 }; }
+fn spread(fields) { let made = Counter { ..fields }; }
+
+let counter = Counter { n: 1, label: nil, ratio: 0.5 };
+
+// An `Int` satisfies a `Float` field and stays an `Int`: this language never
+// coerces at a typed boundary, so the value keeps its own type.
+store_by_dot(counter, 7);
+assert(counter.n == 7);
+counter.ratio = 2;
+assert(counter.ratio == 2);
+assert(typeof(counter.ratio) == "Int");
+
+// A nullable field takes nil; a non-nullable one does not.
+counter.label = nil;
+assert(counter.label == nil);
+
+let refused = [];
+try { store_by_index(counter, "x"); } catch e { refused.push("{}".format(e)); }
+try { store_by_dot(counter, "x"); } catch e { refused.push("{}".format(e)); }
+try { build("x"); } catch e { refused.push("{}".format(e)); }
+try { spread({"n": "x", "label": nil, "ratio": 1.0}); } catch e { refused.push("{}".format(e)); }
+assert(refused.len() == 4);
+for message in refused {
+    assert(message == "field `n` of Counter is declared Int, and a String cannot be stored in it");
+}
+assert(counter.n == 7);

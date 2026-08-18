@@ -6,6 +6,11 @@
 /// a runtime registration call, so every consumer had to decode them again.
 /// The declarations now travel structurally in the artifact and the
 /// registration calls are gone, so this is a direct read.
+/// One declared struct as the entry prologue describes it to the runtime: its
+/// type id, its name, and `(field name, declared-type code)` in declaration
+/// order.
+pub(crate) type StructTypeDecl = (i64, String, Vec<(String, i64)>);
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TraitEnv {
     /// `(type name, method name)` → impl function index.
@@ -20,7 +25,7 @@ pub(crate) struct TraitEnv {
     /// Emitted into the entry prologue as `obj_ty.begin`/`obj_ty.field` calls so
     /// the runtime can render a marked instance. Ordered by type id, so the
     /// emission order is fixed.
-    pub(crate) struct_fields: Vec<(i64, String, Vec<String>)>,
+    pub(crate) struct_fields: Vec<StructTypeDecl>,
     /// `(struct name, field name)` → the field's position in the declaration.
     ///
     /// A declared struct's fields are a fixed, ordered list, so a field read
@@ -101,7 +106,10 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
         env.struct_fields.push((
             tid,
             decl.name.clone(),
-            decl.fields.iter().map(|f| f.name.clone()).collect(),
+            decl.fields
+                .iter()
+                .map(|f| (f.name.clone(), declared_field_code(f.ty.as_deref())))
+                .collect(),
         ));
         for (index, field) in decl.fields.iter().enumerate() {
             env.struct_field_index
@@ -120,4 +128,32 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
         }
     }
     env
+}
+
+/// The declared-type code `obj_ty.field` carries to the runtime, mirroring
+/// `lkrt::lkdyn`'s constants. Scalars only, and `Any` for everything else — see
+/// `lkrt::lkdyn::check_declared_field`.
+fn declared_field_code(text: Option<&str>) -> i64 {
+    use lk_core::val::Type;
+    const ANY: i64 = 0;
+    const INT: i64 = 1;
+    const FLOAT: i64 = 2;
+    const BOOL: i64 = 3;
+    const STR: i64 = 4;
+    const NULLABLE: i64 = 16;
+    let Some(ty) = text.and_then(Type::parse) else {
+        return ANY;
+    };
+    let (ty, nullable) = match &ty {
+        Type::Optional(inner) => ((**inner).clone(), NULLABLE),
+        other => (other.clone(), 0),
+    };
+    let base = match ty {
+        Type::Int => INT,
+        Type::Float => FLOAT,
+        Type::Bool => BOOL,
+        Type::String => STR,
+        _ => return ANY,
+    };
+    base | nullable
 }

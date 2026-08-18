@@ -114,7 +114,10 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore, depth: u32) -
                 fields.sort_by_key(|(left, _)| *left);
             } else {
                 let position = |name: &alloc::sync::Arc<str>| {
-                    declared.iter().position(|field| field == name).unwrap_or(usize::MAX)
+                    declared
+                        .iter()
+                        .position(|field| &field.name == name)
+                        .unwrap_or(usize::MAX)
                 };
                 fields.sort_by(|(left, _), (right, _)| {
                     position(left).cmp(&position(right)).then_with(|| left.cmp(right))
@@ -339,7 +342,10 @@ mod tests {
             Arc::new(DeclaredType::with_fields(
                 TypeScope::anonymous(),
                 Arc::<str>::from("P"),
-                declared.iter().map(|name| Arc::<str>::from(*name)).collect(),
+                declared
+                    .iter()
+                    .map(|name| crate::val::DeclaredField::new(Arc::<str>::from(*name), None))
+                    .collect(),
             )),
             crate::util::value_map::value_map_from_iter(
                 fields.iter().map(|(name, value)| (Arc::<str>::from(*name), *value)),

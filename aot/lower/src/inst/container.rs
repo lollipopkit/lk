@@ -810,6 +810,30 @@ pub(super) fn lower(
                 callee: AbiRef::new("map_h", "str_dyn_new"),
                 args: Vec::new(),
             });
+            // Struct provenance (plan J1): the type name drives static method
+            // devirtualization; a type with registered trait impls also marks
+            // the handle for boxed runtime dispatch.
+            //
+            // Marked *before* the fields are set, so the sets are measured
+            // against the declaration (`lkrt::lkdyn::check_declared_field`).
+            // `A { v: x }` with an untyped `x` is a store the type checker
+            // cannot see, exactly like `p["v"] = x` is.
+            let type_name = ssa.const_str_at(instr.b(), block, pc);
+            if let Some(type_name) = type_name {
+                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+                    let tid_v = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: tid_v,
+                        value: Const::I64(tid),
+                    });
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "obj_mark"),
+                        args: vec![map, tid_v],
+                    });
+                }
+                ssa.struct_types.insert(map, type_name);
+            }
             for i in 0..instr.c() as usize {
                 let key_reg = instr.b().wrapping_add(1).wrapping_add((i * 2) as u8);
                 let value_reg = key_reg.wrapping_add(1);
@@ -829,29 +853,6 @@ pub(super) fn lower(
                     callee: AbiRef::new("map_h", "str_dyn_set"),
                     args: vec![map, key_v, boxed],
                 });
-            }
-            // Struct provenance (plan J1): the type name drives static
-            // method devirtualization; a type with registered trait impls
-            // also marks the handle for boxed runtime dispatch.
-            let type_name = {
-                let tv = ssa.read(instr.b(), block, pc).ok().map(|(v, _)| v);
-                tv.and_then(|v| ssa.const_strs.get(&v).cloned())
-                    .or_else(|| ssa.reg_const_str(instr.b(), block))
-            };
-            if let Some(type_name) = type_name {
-                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
-                    let tid_v = ssa.new_val();
-                    insts.push(Inst::Const {
-                        dst: tid_v,
-                        value: Const::I64(tid),
-                    });
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("map_h", "obj_mark"),
-                        args: vec![map, tid_v],
-                    });
-                }
-                ssa.struct_types.insert(map, type_name);
             }
             ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
         }

@@ -2732,3 +2732,37 @@ match p {
 
 `<<=` / `>>=` 是**三个相邻的 token**:词法器从不发射移位,`<<` 是两个 `<`,所以 `<<=` 是
 `<` 接 `<=`。靠 span 相邻区分它和 `a < (b <= c)`,与 `Parser::peek_shift` 判断移位本身的方式相同。
+
+## 声明的字段类型是要执行的(2026-08-18)
+
+此前 `struct P { v: Int }` 的 `v` 可以装字符串,解释器不拦:
+
+```lk
+fn poison(p) { p["v"] = "s"; }
+let a = P { v: 1 };
+poison(a);
+println(a.v);        // "s"
+```
+
+类型检查器只能检查它**看得到**的写入;通过无类型绑定的写入它看不到。于是声明只是注释——
+而 AOT 想按声明类型给字段读定型时,这一点立刻变成静默错答(见 `docs/aot/aot-gaps-and-lkrt.md` §41)。
+
+现在四种写法都按声明检查,VM 与原生同一条规则、同一句话:
+
+| 写法 | 位置 |
+| --- | --- |
+| `p["v"] = x` / `p.v = x` | `exec::container` 的对象写入 / `map_h.str_dyn_set` |
+| `P { v: x }` | `read_object_fields` / NewObject 降级(**先打标记再写字段**) |
+| `P { ..m }` | `core_make_struct_builtin` / `map_h.obj_mark`(标记时校验已有字段) |
+
+`field \`v\` of P is declared Int, and a String cannot be stored in it`
+
+**只检查标量**(`Int` `Float` `Bool` `String` 及其可空形式)。容器的元素类型不是单个值携带的东西——
+`List<Int>` 和 `List<String>` 在运行期是同一个 `HeapValue::List`——所以容器字段、`Any`、联合、
+命名类型都不检查。剩下的正好是"写错了会静默损坏"的那一组。
+
+`Int` 满足 `Float` 字段,并且**仍然是 Int**:这门语言在类型边界上从不做隐式转换,
+`fn f(x: Float)` 收到 `1` 时 `typeof(x)` 也是 `Int`。字段这里保持一致。
+
+仍然没有执行的是**容器的元素类型**:`fn add(xs) { xs.push(B { … }); }` 能把一个 `B` 推进
+`List<A>`。这是同一类问题的另一半,单独作一项。

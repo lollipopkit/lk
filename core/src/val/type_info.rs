@@ -118,17 +118,51 @@ impl Default for TypeScope {
 pub struct DeclaredType {
     pub scope: TypeScope,
     pub name: Arc<str>,
-    /// The declaration's field names, in the order they were written — empty
-    /// when the declaration is not in reach (a struct from another module, or
-    /// an object built by a host).
+    /// The declaration's fields, in the order they were written — empty when
+    /// the declaration is not in reach (a struct from another module, or an
+    /// object built by a host).
     ///
-    /// Only `display` reads it, and only to print a value's fields the way its
-    /// type was written. Fields live in a hash map on the object, so without
-    /// this the order was the hasher's: `struct Range { start, end }` printed
-    /// `end` first, and a hasher change would have silently permuted every
-    /// struct in the language. It costs nothing per object — instances share
-    /// one `DeclaredType` by `Arc`.
-    pub fields: Arc<[Arc<str>]>,
+    /// `display` reads the order, to print a value's fields the way its type
+    /// was written: fields live in a map on the object, so without this the
+    /// order was the hasher's — `struct Range { start, end }` printed `end`
+    /// first, and a hasher change would have silently permuted every struct in
+    /// the language. The *declared type* rides along so a store can be checked
+    /// against it. It costs nothing per object — instances share one
+    /// `DeclaredType` by `Arc`.
+    pub fields: Arc<[DeclaredField]>,
+}
+
+/// One field of a declared type: the name it was written with, and the type it
+/// was written with when it had one.
+///
+/// `Eq`/`Hash` are over the **name** alone, which the derive cannot do (a
+/// `Type` is neither). That is not a shortcut: a declared type is identified by
+/// its scope and name, and within one of those a field name occurs once — two
+/// fields of one type that agree on the name are the same field.
+#[derive(Clone, Debug)]
+pub struct DeclaredField {
+    pub name: Arc<str>,
+    pub ty: Option<crate::val::Type>,
+}
+
+impl PartialEq for DeclaredField {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for DeclaredField {}
+
+impl core::hash::Hash for DeclaredField {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl DeclaredField {
+    pub fn new(name: Arc<str>, ty: Option<crate::val::Type>) -> Self {
+        Self { name, ty }
+    }
 }
 
 impl DeclaredType {
@@ -136,12 +170,21 @@ impl DeclaredType {
         Self {
             scope,
             name,
-            fields: Arc::from([] as [Arc<str>; 0]),
+            fields: Arc::from([] as [DeclaredField; 0]),
         }
     }
 
-    pub fn with_fields(scope: TypeScope, name: Arc<str>, fields: Arc<[Arc<str>]>) -> Self {
+    pub fn with_fields(scope: TypeScope, name: Arc<str>, fields: Arc<[DeclaredField]>) -> Self {
         Self { scope, name, fields }
+    }
+
+    /// The declared type of `field`, when the declaration is in reach and the
+    /// field was written with one.
+    pub fn field_type(&self, field: &str) -> Option<&crate::val::Type> {
+        self.fields
+            .iter()
+            .find(|declared| &*declared.name == field)
+            .and_then(|declared| declared.ty.as_ref())
     }
 }
 

@@ -1138,6 +1138,12 @@ pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
 /// `key` must be a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const c_char, value: crate::lkdyn::LkDyn) {
+    // A declared field is checked against the type it was declared with —
+    // the same rule the interpreter applies (`val::value_satisfies_declared`).
+    // Construction pays only the mark lookup: the object is marked *after* its
+    // fields are set, so an unmarked handle returns immediately.
+    // SAFETY: `key` is a NUL-terminated string, as documented.
+    unsafe { crate::lkdyn::check_declared_field_handle(handle, key, value) };
     if handle.is_null() {
         return;
     }
