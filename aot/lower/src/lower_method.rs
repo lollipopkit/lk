@@ -1579,12 +1579,9 @@ pub(crate) fn lower_method_dispatch(
                 callee: AbiRef::new("set", "clear"),
                 args: vec![receiver],
             });
-            let nil = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: nil,
-                value: Const::Nil,
-            });
-            (nil, Ty::Nil)
+            // The value is the receiver, as for a list and a map: `clear`
+            // hands the same container back, empty.
+            (receiver, receiver_ty)
         }
         // `s.byte_at(i)` — one byte as a number, the only string read that
         // allocates nothing. `Pure`, so the optimizer may hoist it out of a loop

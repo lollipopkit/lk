@@ -91,6 +91,9 @@ assert(cleared_map.clear() == {});
 assert(cleared_map.len() == 0);
 let cleared_list = [1, 2];
 assert(cleared_list.clear() == []);
+let cleared_set = Set([1, 2]);
+assert(cleared_set.clear() == Set([]));
+assert(cleared_set.len() == 0);
 
 // A map has `delete`, and does not have `remove`. The compiled build accepted
 // `remove` as a second spelling — so a program the interpreter refuses to run
@@ -98,3 +101,11 @@ assert(cleared_list.clear() == []);
 let with_key = {"a": 1};
 assert(with_key.delete("a") == 1);
 assert(with_key.len() == 0);
+
+// A refusal's message *is* the error, not something printed on the way to a
+// different one. `chunk(0)` used to print "size must be positive" on stderr and
+// then raise `runtime type error`, so the explanation and the catchable
+// sentence were two different strings.
+let chunk_error = "";
+try { [1, 2, 3].chunk(0); } catch e { chunk_error = "{}".format(e); }
+assert(chunk_error == "list.chunk() size must be positive");

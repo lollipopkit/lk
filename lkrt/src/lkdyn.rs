@@ -2054,14 +2054,16 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_closure(handle: *mut c_void, ini
 }
 
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.
-/// `size <= 0` is a VM error (loud failure).
+/// `size <= 0` raises the interpreter's sentence.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
     if size <= 0 {
-        crate::rt_eprintln!("list.chunk() size must be positive");
-        crate::panic::raise_str("runtime type error");
+        // The message *is* the error, as it is in the interpreter. Printing it
+        // and raising "runtime type error" put the explanation on stderr and a
+        // different sentence in the `catch`.
+        crate::panic::raise_str("list.chunk() size must be positive");
     }
     let chunks: Vec<LkDyn> = dyn_slice(handle)
         .chunks(size as usize)

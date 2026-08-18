@@ -1574,5 +1574,15 @@ fn describe(v: Area) -> Int { return v.area(); }
 
 装箱接收者那一批 0 分歧。
 
+把范围再推一层——**空接收者、越界与负下标、以及会改接收者的方法返回什么**——又出两条:
+
+- `Set.clear()` 也答 `nil`。list 和 map 各自修过一次,set 这条落下了:同一个约定分散在三个分支里,
+  改的时候没有一处会提醒还有第三处。
+- `[1,2,3].chunk(0)`:解释器抛 `list.chunk() size must be positive`,原生把这句**打到 stderr**,
+  再抛 `runtime type error`。于是解释和能被 `catch` 到的句子是两个不同的字符串。
+  `rt_eprintln!` + `raise_str("runtime type error")` 这个组合全仓只此一处,已改成消息本身就是错误。
+
+stdlib 模块那一面(`math` / `string` / `iter` / `bytes`,约 70 个调用)0 分歧。
+
 做法本身值得留着:能降级的方法名是从降级表的 match 分支里正则抽出来的,所以"表里写了什么"
 和"实际跑起来是什么"是对着的——这正是 §45 那种"写了但从没跑过"的反面。
