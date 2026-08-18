@@ -896,6 +896,44 @@ fn test_trait_impl_from_imported_file_dispatches() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A trait used as a **type** must accept an implementor from another file.
+///
+/// The trait, the struct and the impl's *methods* all crossed the boundary
+/// already; the relation "this type implements this trait" did not, because
+/// only the importing program's own statements were walked for it. So
+/// `render(v: Shape)` in an imported file reported "expected Shape, got Sq"
+/// for the very type that file declares an impl for — the feature worked
+/// within one file and nowhere else.
+#[test]
+fn test_trait_as_a_type_accepts_an_imported_implementor() {
+    let dir = unique_tmp_dir("cross_module_trait_type");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n\
+         fn describe(v: Area) -> Int { return v.area(); }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make, describe } from \"./shape.lk\";\nprintln(describe(make(5)));\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "a trait-typed parameter refused an imported implementor: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "25");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// One trait may be implemented for a builtin type only once across the whole
 /// program.
 ///

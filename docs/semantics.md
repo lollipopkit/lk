@@ -2664,6 +2664,12 @@ render(P { x: 4 })      // 此前:Argument 1 has the wrong type (expected Show, 
 是构造检查器时拷的,之后所有声明它都看不见。它只用来发 `T{n}` 编号,现在改成一个 `u32`
 计数器,registry 由 `solve_constraints` / `unify` 按引用传入。
 
+**跨模块也成立**(同日补)。trait、struct 和 impl 的**方法签名**本来就都过了模块边界,
+唯独"这个类型实现了这个 trait"这条关系没过——`seed_declared_types` 只登记 struct / trait / 别名。
+于是被导入文件里的 `fn describe(v: Area)` 对它自己声明了 impl 的那个类型报
+"expected Area, got Sq":这个特性在一个文件里成立,出了文件就不成立。
+`cli/tests/compile_cli_test.rs::test_trait_as_a_type_accepts_an_imported_implementor` 钉住了它。
+
 还有一条:trait 类型的接收者只能调用 trait 声明过的方法。此前 `v.nosuch()` 直接到运行期,
 而两个后端"发现"的方式不同,报的话也不同——解释器说 `P has no method 'nosuch'`,
 编译版说的是 map 属性那句。

@@ -20,7 +20,7 @@ use crate::stmt::{ImportSource, ImportStmt, Program, Stmt};
 use crate::syntax::{ParseOptions, parse_program_source};
 use crate::typ::declared_signature::signature_of_stmt;
 use crate::typ::{FunctionSig, TypeChecker};
-use crate::typ::{StructDef, TraitDef, TypeAlias};
+use crate::typ::{StructDef, TraitDef, TraitImpl, TypeAlias};
 use crate::val::Type;
 
 /// Registers a signature for every function `program` imports from a file.
@@ -193,6 +193,26 @@ fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
                 checker.registry_mut().register_type_alias(TypeAlias {
                     name: name.clone(),
                     target_type: target.clone(),
+                });
+            }
+            // Which imported type implements which imported trait. The
+            // *methods* crossed already (`seed_impl_methods`); the relation did
+            // not, so a trait written as a type accepted nothing from another
+            // module — `use "shapes"; shapes.render(c)` with `render(v: Shape)`
+            // reported "expected Shape, got Cat" for a `Cat` that implements it.
+            //
+            // No method indices, as in `predeclare_type_declarations`: they are
+            // the compiler's, and this runs before compilation.
+            Stmt::Impl {
+                trait_name: Some(trait_name),
+                target_type,
+                ..
+            } => {
+                let target_type = checker.resolve_aliases(target_type);
+                checker.registry_mut().register_trait_impl(TraitImpl {
+                    trait_name: trait_name.clone(),
+                    target_type,
+                    methods: hashbrown::HashMap::new(),
                 });
             }
             _ => {}
