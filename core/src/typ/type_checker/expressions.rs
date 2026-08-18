@@ -677,6 +677,9 @@ impl TypeChecker {
                 if let Some(result) = self.check_shift_builtin(func, args)? {
                     return Ok(result);
                 }
+                if let Some(result) = self.check_merge_fields_builtin(func, args)? {
+                    return Ok(result);
+                }
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
                 self.check_function_call(&func_expr, args)
@@ -745,6 +748,9 @@ impl TypeChecker {
                     // looked correct and changed nothing — the same trap the
                     // compiler's width inference fell into, in the same words.
                     if let Some(result) = self.check_shift_builtin(name, args)? {
+                        return Ok(result);
+                    }
+                    if let Some(result) = self.check_merge_fields_builtin(name, args)? {
                         return Ok(result);
                     }
                 }
@@ -1434,7 +1440,42 @@ impl TypeChecker {
         Ok(Type::MachineInt(kind))
     }
 
+    /// `P { ..base, … }`, whose base has to be something with fields.
+    ///
+    /// The spread desugars to `__lk_merge_fields(base, overlay)`, and nothing
+    /// looked at the base: `P { ..5 }` type-checked and died at run time with
+    /// `__lk_merge_fields base must be Object, Map, or Nil, got Int` — a
+    /// sentence naming the desugaring rather than what the reader wrote.
+    ///
+    /// `Any` and an unresolved variable stay permissive, as everywhere else:
+    /// those are the dynamic and inference paths.
+    fn check_merge_fields_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        if func != "__lk_merge_fields" || args.len() != 2 {
+            return Ok(None);
+        }
+        let base = self.check_expr(&args[0])?;
+        let overlay = self.check_expr(&args[1])?;
+        let spreadable = |ty: &Type| {
+            matches!(
+                self.resolve_aliases(ty),
+                Type::Any | Type::Unknown | Type::Variable(_) | Type::Nil | Type::Map(_, _) | Type::Named(_)
+            )
+        };
+        if !spreadable(&base) {
+            return Err(Self::type_err(
+                "a `..base` spread copies another value's fields, so the base has to be a struct, \
+                 a map, or nil",
+                None,
+                Some(base),
+                Some(args[0].as_ref().clone()),
+            ));
+        }
+        let _ = overlay;
+        Ok(Some(Type::Any))
+    }
+
     /// `a << b` / `a >> b`, whose result is `a`'s type when that is a machine
+    /// integer.    /// `a << b` / `a >> b`, whose result is `a`'s type when that is a machine
     /// integer.
     ///
     /// The shift *amount* is deliberately not constrained to the same width —

@@ -448,6 +448,20 @@ mod tests {
         assert!(check_program("struct P { x: Int, y: Int }\nlet p = P { x: 1, y: 3 };").is_ok());
     }
 
+    /// A `..base` spread needs a base with fields.
+    ///
+    /// The spread desugars to `__lk_merge_fields(base, overlay)` and nothing
+    /// looked at the base, so `P { ..5 }` checked clean and died at run time
+    /// with a sentence naming the desugaring rather than what was written.
+    #[test]
+    fn a_spread_base_must_have_fields() {
+        let error = check_program("struct P { x: Int }\nlet p = P { ..5 };").expect_err("5 has no fields to spread");
+        assert!(format!("{error:#}").contains("has to be a struct"), "{error:#}");
+        assert!(check_program("struct P { x: Int }\nlet base = P { x: 1 };\nlet q = P { ..base, x: 2 };").is_ok());
+        // A map is a base too, and so is `nil` (the empty one).
+        assert!(check_program("struct P { x: Int }\nlet q = P { ..{\"x\": 1} };").is_ok());
+    }
+
     /// A method the trait never declared is a check error too — the other half
     /// of the same rule, and it had the same hole.
     ///
