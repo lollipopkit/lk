@@ -2640,19 +2640,20 @@ pub(crate) fn lower_method_dispatch(
         //
         // Only after every real method arm has declined, so nothing here can
         // shadow a method.
-        (Ty::MapStrDyn | Ty::Dyn, _, _) => {
+        // A *boxed* receiver is deliberately not here. Its runtime type decides
+        // which method it is — `c.name.upper()` reads a struct field, so the
+        // receiver types `Dyn` and the interpreter dispatches `upper` on the
+        // String it holds. Taking the property path instead answered "a Map has
+        // no method `upper`" for a string that has one. The arm used to name an
+        // ABI function that does not exist, so the module failed MIR validation
+        // and every such program fell back — which hid the error and made the
+        // whole module unlowerable rather than this one call.
+        (Ty::MapStrDyn, _, _) => {
             let key = materialize_key(ssa, insts, globals, name);
             let property = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(property),
-                callee: AbiRef::new(
-                    if receiver_ty == Ty::Dyn { "dyn" } else { "map_h" },
-                    if receiver_ty == Ty::Dyn {
-                        "map_get"
-                    } else {
-                        "str_dyn_get"
-                    },
-                ),
+                callee: AbiRef::new("map_h", "str_dyn_get"),
                 args: vec![receiver, key],
             });
             let block_v = if args.is_empty() {

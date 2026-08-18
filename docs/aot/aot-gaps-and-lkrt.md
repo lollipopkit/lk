@@ -1534,3 +1534,19 @@ fn describe(v: Area) -> Int { return v.area(); }
 "没有污点"的寄存器上,方法看起来没碰 `self`。`cli/tests/bundle_container_parameter_test.rs`
 里正好有这个用例,它抓住了第一版的错误。现在 `GetFieldK` / `GetIndex` / `GetList` /
 `GetIndexStrI` 也传污点,读出来的东西属于被读的容器。
+
+## §45 那条 callable-property 分支从来没跑过(2026-08-18)
+
+`m.thing()`(`thing` 是 map 里一个装着函数的条目)的降级分支,对 `Ty::Dyn` 接收者发的是
+`dyn.map_get`——**ABI 里没有这个名字**。于是整个模块过不了 MIR 校验,那是模块级的回退,
+所以从来没有人看见过它:这条路一次都没跑过。
+
+打包放宽之后它才被够到。补上之后立刻暴露了它本来就错:`c.name.upper()` 读的是结构体字段,
+接收者因此是 `Dyn`,而这条分支是最后兜底的,于是把 `upper` 当成"map 里的可调用条目"去找,
+答了 `a Map has no method \`upper\``——解释器答的是 `A`。**这是错答,不是回退。**
+
+正确的做法是这条分支**不接受装箱接收者**:装箱值的运行期类型才决定 `upper` 是哪个方法,
+静态这一侧不知道,就该拒绝、回退,而不是猜一个。`Ty::MapStrDyn`(确实是 map)保留。
+
+教训:一个从未成功过的分支,和一个不存在的分支,外部看起来一样。补一个缺失的 ABI 名字之前,
+先问它当初为什么缺。

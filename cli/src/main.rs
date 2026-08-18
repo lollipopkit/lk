@@ -1985,6 +1985,20 @@ fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> boo
         "index_of",
         "count",
         "is_empty",
+        // The four method names only a `String` has (`builtin_method_sig`'s
+        // table is the source: every other name is shared with a list, a map or
+        // a set, and on one of those the same name may hand back a window into
+        // the receiver). A string is immutable and each of these builds a fresh
+        // value, so neither the write nor the retain this list guards against
+        // is possible.
+        //
+        // `fn label(c: Cfg) -> String { return c.name.upper(); }` is what
+        // needed them: reading a field of a parameter taints the result, so an
+        // ordinary string method on a struct field made the module unbundlable.
+        "upper",
+        "lower",
+        "trim",
+        "chars",
     ];
     PURE_READS.contains(&name) && !user_methods.contains(name)
 }
