@@ -11,6 +11,16 @@ impl TypeChecker {
         let Some(path) = access_segments(func) else {
             return Ok(None);
         };
+        // A `use math as m;` alias names the module it was bound to, so the
+        // member check below has something to look up.
+        let path: Vec<&str> = match path.split_first() {
+            Some((root, rest)) => {
+                let mut resolved = vec![self.resolve_stdlib_alias(root)];
+                resolved.extend_from_slice(rest);
+                resolved
+            }
+            None => path,
+        };
         let Some((module, field)) = canonical_stdlib_path(&path) else {
             return Ok(None);
         };

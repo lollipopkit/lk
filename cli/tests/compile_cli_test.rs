@@ -934,6 +934,41 @@ fn test_trait_as_a_type_accepts_an_imported_implementor() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// `lk check` follows a module alias when it checks a member.
+///
+/// `use math as m;` recorded the name it bound and not the module behind it,
+/// so `m.nope(1)` was checked against a module called `m` — which does not
+/// exist, so nothing was checked and the program died at run time with "nil is
+/// not a function". The unaliased spelling had been reporting this properly for
+/// a while, which is what made the gap easy to miss: one of the two forms
+/// worked.
+///
+/// A CLI test rather than a `core` one because the member table only exists
+/// where the standard library is linked.
+#[test]
+fn test_check_follows_a_module_alias() {
+    let dir = unique_tmp_dir("check_module_alias");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "bad.lk", "use math as m;\nprintln(m.nope(1));\n");
+    write_file(&dir, "good.lk", "use math as m;\nprintln(m.abs(0 - 3));\n");
+
+    let bad = run_cli(&dir, ["check", "bad.lk"]).output().expect("spawn check");
+    assert!(!bad.status.success(), "`m.nope` should not check");
+    let message = String::from_utf8_lossy(&bad.stderr).to_string() + &String::from_utf8_lossy(&bad.stdout);
+    assert!(message.contains("has no member `nope`"), "{message}");
+    // Named as `math`: the alias is how it was written, not what it is.
+    assert!(message.contains("`math`"), "{message}");
+
+    let good = run_cli(&dir, ["check", "good.lk"]).output().expect("spawn check");
+    assert!(
+        good.status.success(),
+        "`m.abs` should check: {}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A module whose functions call a *read-only* user method on a parameter is
 /// still bundlable.
 ///

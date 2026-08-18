@@ -572,6 +572,25 @@ impl TypeChecker {
                 }
                 if let Some(sd) = self.registry.get_struct(name) {
                     let schema = sd.fields.clone();
+                    // A field written twice. The second value is the one that
+                    // lands (the literal builds an ordered map, and a repeat
+                    // updates in place), so the first is a value nothing can
+                    // read — the same mistake a repeated parameter name or a
+                    // repeated binding in a pattern is, and refused for the
+                    // same reason.
+                    for (index, (fname, _)) in fields.iter().enumerate() {
+                        if fields.iter().take(index).any(|(earlier, _)| earlier == fname) {
+                            return Err(Self::type_err(
+                                &alloc::format!(
+                                    "field `{fname}` is written twice in this `{name}` literal — the second value \
+                                     replaces the first before anything can read it"
+                                ),
+                                None,
+                                None,
+                                Some(expr.clone()),
+                            ));
+                        }
+                    }
                     // Provided -> check existence and type
                     for (fname, fexpr) in fields {
                         let expected = schema.get(fname).cloned();

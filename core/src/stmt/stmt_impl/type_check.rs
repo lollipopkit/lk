@@ -959,10 +959,10 @@ impl Stmt {
                 // callable global — see `is_imported_stdlib_module`.
                 match import {
                     crate::stmt::ImportStmt::Module { module } => {
-                        type_checker.add_imported_stdlib_module(module.clone());
+                        type_checker.add_imported_stdlib_module(module.clone(), module.clone());
                     }
-                    crate::stmt::ImportStmt::ModuleAlias { alias, .. } => {
-                        type_checker.add_imported_stdlib_module(alias.clone());
+                    crate::stmt::ImportStmt::ModuleAlias { alias, module } => {
+                        type_checker.add_imported_stdlib_module(alias.clone(), module.clone());
                     }
                     // `use { a, b } from m;` binds the *members*, not the
                     // module, and a file import binds a namespace that

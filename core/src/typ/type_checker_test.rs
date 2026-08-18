@@ -435,6 +435,19 @@ mod tests {
         );
     }
 
+    /// A field written twice in a struct literal is a mistake, not a choice.
+    ///
+    /// The literal builds an ordered map and a repeat updates in place, so the
+    /// first value is one nothing can read — the same argument that refuses a
+    /// repeated parameter name and a repeated binding in a pattern.
+    #[test]
+    fn a_repeated_struct_literal_field_is_a_check_error() {
+        let error = check_program("struct P { x: Int, y: Int }\nlet p = P { x: 1, x: 2, y: 3 };")
+            .expect_err("`x` is written twice");
+        assert!(format!("{error:#}").contains("written twice"), "{error:#}");
+        assert!(check_program("struct P { x: Int, y: Int }\nlet p = P { x: 1, y: 3 };").is_ok());
+    }
+
     /// A method the trait never declared is a check error too — the other half
     /// of the same rule, and it had the same hole.
     ///

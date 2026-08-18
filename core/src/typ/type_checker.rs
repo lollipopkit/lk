@@ -180,7 +180,10 @@ pub struct TypeChecker {
     /// function: it is a Map"), the native backend ignored the import and
     /// called the builtin anyway, and `lk check` said nothing — one program,
     /// three answers. The check belongs here, before either engine runs.
-    imported_stdlib_modules: HashSet<String>,
+    /// The *module* each is bound to, so `use math as m;` can answer what `m`
+    /// is — an alias had the name recorded and not the module, so a member
+    /// check on it had nothing to look up.
+    imported_stdlib_modules: HashMap<String, String>,
     /// Bindings recorded as they are bound, when a caller asked to be told.
     ///
     /// `None` for the compiler's own runs: a check exists to produce an error or
@@ -290,7 +293,7 @@ impl TypeChecker {
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
             imported_members: HashMap::new(),
-            imported_stdlib_modules: HashSet::new(),
+            imported_stdlib_modules: HashMap::new(),
             observations: None,
             return_frames: Vec::new(),
             declared_returns: Vec::new(),
@@ -310,14 +313,26 @@ impl TypeChecker {
         self.imported_members.get(namespace)?.get(member).cloned()
     }
 
-    /// Records that `name` is bound to a standard library module.
-    pub fn add_imported_stdlib_module(&mut self, name: String) {
-        self.imported_stdlib_modules.insert(name);
+    /// Records that `name` is bound to the standard library module `module`
+    /// (the two differ for `use math as m;`).
+    pub fn add_imported_stdlib_module(&mut self, name: String, module: String) {
+        self.imported_stdlib_modules.insert(name, module);
     }
 
     /// Whether this name is bound to a standard library module here.
     pub(crate) fn is_imported_stdlib_module(&self, name: &str) -> bool {
-        self.imported_stdlib_modules.contains(name)
+        self.imported_stdlib_modules.contains_key(name)
+    }
+
+    /// The module a name is bound to, or the name itself when it binds nothing.
+    ///
+    /// `use math as m;` makes `m.nope(1)` a member check against `math`. It
+    /// used to be a check against a module called `m`, which does not exist, so
+    /// nothing was checked and the program died at run time with "nil is not a
+    /// function" — the sentence the unaliased spelling had already stopped
+    /// giving.
+    pub(crate) fn resolve_stdlib_alias<'a>(&'a self, name: &'a str) -> &'a str {
+        self.imported_stdlib_modules.get(name).map_or(name, String::as_str)
     }
 
     /// Whether this name is a namespace bound by `use * as name from "…"`.
