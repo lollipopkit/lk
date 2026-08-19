@@ -140,4 +140,28 @@ assert(message_for(6) == "< expected Int, Float, or String, got Nil and Int");
 assert(message_for(7) == ">= expected Int, Float, or String, got Int and Nil");
 assert(message_for(8) == "Add expected numbers or strings, got Nil and Nil");
 
+// 11. And nil travels through the *constructors* too
+//
+// A list literal, `insert`, and `join` each read a value and had their own idea
+// of what a value could be. `[xs[9], 1]` is `[nil, 1]` in the interpreter; the
+// compiled build refused to lower it at all, because the literal's element-type
+// list simply did not mention the nullable kinds. A typed list is the one
+// receiver that cannot take nil, and there the answer is to build the list to
+// hold anything — which is what the fixpoint does once the store says so.
+fn shapes(xs: List<Int>, upto: Int) -> String {
+    let built = [];
+    let joined = "";
+    let i = 0;
+    while i < upto {
+        built.push([xs[i], i]);
+        joined = joined + [xs[i]].join("") + ";";
+        i = i + 1;
+    }
+    let ordered = [9];
+    ordered.insert(0, xs[upto]);
+    return joined + " " + built.len() + " " + ordered.len();
+}
+assert(shapes([4, 5], 2) == "4;5; 2 2");
+assert(shapes([4], 2) == "4;nil; 2 2");
+
 println("null_coalescing: all assertions passed");

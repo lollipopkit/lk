@@ -1690,6 +1690,18 @@ pub(crate) fn lower_method_dispatch(
         // out, and raises rather than answering nil when the index is out of
         // range — so unlike `pop` its result is the element type, not a `Maybe`.
         (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "insert", [(at, _), (value, vty)]) => {
+            // A nullable value has no place in a typed list, and this arm would
+            // otherwise hand the carrier straight to `i64_insert` — caught, but
+            // by an argument-count mismatch inside the ABI rather than by
+            // anything that names the problem. Reported as a contradiction of
+            // the literal instead, which is also the fixpoint's cue to rebuild
+            // the list as a Dyn one and lower after all. `push` already does
+            // this; `insert` is the same store one method along.
+            if matches!(*vty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) && receiver_ty != Ty::ListDyn
+            {
+                return Err(crate::inst::container::carrier_contradicted(ssa, receiver, receiver_ty)
+                    .unwrap_or(Unsupported::TypeMismatch { pc }));
+            }
             let (callee, value) = match receiver_ty {
                 Ty::ListI64 => ("i64_insert", *value),
                 Ty::ListF64 => ("f64_insert", coerce_to_f64(ssa, insts, *value, *vty)),

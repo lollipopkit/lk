@@ -104,6 +104,15 @@ pub(super) fn lower(
                             // it windows — which is what the VM's
                             // `HeapValue::Slice` does.
                             | Ty::SliceI64
+                            // A nullable element boxes to nil when absent,
+                            // which is the element the VM puts there:
+                            // `[xs[9], 1]` is `[nil, 1]`. Their absence from
+                            // this list is the same mistake the typed maps
+                            // above were, one family later.
+                            | Ty::MaybeI64
+                            | Ty::MaybeF64
+                            | Ty::MaybeStr
+                            | Ty::MaybeBool
                     )
                 })
             {
