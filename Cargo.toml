@@ -62,7 +62,12 @@ anyhow = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml = "0"
-toml = "1"
+# `preserve_order`: a TOML document's tables come back in document order,
+# because an LK map's order is a contract (docs/semantics.md). Without it
+# `toml::Value` is a `BTreeMap` and a parsed table arrives alphabetised.
+# Unlike serde_json's same-named feature this costs nothing here — TOML
+# decoding is already `std`-only.
+toml = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 crc32fast = "1"
 ed25519-dalek = "2"

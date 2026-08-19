@@ -1,3 +1,16 @@
+//! A document's keys arrive in **document order**, for every format.
+//!
+//! An LK map's iteration and display order is the order a key was first written
+//! (`docs/semantics.md`), and for a parsed document that is the order it appears
+//! in. JSON used to sort them — `serde_json::Value` is a `BTreeMap` — and so did
+//! TOML; neither was a decision, only the default of the intermediate each went
+//! through. JSON is fixed by not using that intermediate ([`OrderedJson`]);
+//! TOML by its crate's `preserve_order`, which is free here because TOML
+//! decoding is `std`-only. YAML was already ordered.
+//!
+//! Writing is deliberately the other way (see [`super::ser`]): output is sorted
+//! so a config written twice is byte-identical.
+
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::util::value_map::value_map_new;
@@ -178,7 +191,7 @@ pub fn parse_runtime_with_format_into_heap(
 ) -> anyhow::Result<RuntimeVal> {
     match format {
         Format::Json => {
-            let value = serde_json::from_str::<serde_json::Value>(input).map_err(|e| anyhow::anyhow!(e))?;
+            let value: OrderedJson = serde_json::from_str(input).map_err(|e| anyhow::anyhow!(e))?;
             json_to_runtime(value, heap)
         }
         #[cfg(feature = "std")]
@@ -200,20 +213,99 @@ pub fn parse_runtime_with_format_into_heap(
     }
 }
 
-fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> anyhow::Result<RuntimeVal> {
+/// A JSON document with its objects still in **document order**.
+///
+/// `serde_json::Value` cannot be used here: its object is a `BTreeMap` unless
+/// the `preserve_order` feature is on, and that feature explicitly enables
+/// `std` — which this crate must build without (the bare-metal target keeps
+/// JSON). So a document round-tripped through it came back alphabetised, and an
+/// LK map's order is a *contract*: iteration and display follow the order a key
+/// was first written (`docs/semantics.md`).
+///
+/// Deserializing straight into a `Vec` of pairs keeps what serde already hands
+/// over in order — `MapAccess` yields entries as they appear — and costs
+/// nothing else: the pairs go into the LK map in the same walk the old code
+/// used.
+enum OrderedJson {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<OrderedJson>),
+    Object(Vec<(String, OrderedJson)>),
+}
+
+impl<'de> serde::Deserialize<'de> for OrderedJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = OrderedJson;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("any JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Int(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(i64::try_from(v).map_or(OrderedJson::Float(v as f64), OrderedJson::Int))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Float(v))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v.to_string()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(item) = seq.next_element()? {
+                    out.push(item);
+                }
+                Ok(OrderedJson::Array(out))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, value)) = map.next_entry::<String, OrderedJson>()? {
+                    out.push((key, value));
+                }
+                Ok(OrderedJson::Object(out))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn json_to_runtime(value: OrderedJson, heap: &mut HeapStore) -> anyhow::Result<RuntimeVal> {
     Ok(match value {
-        serde_json::Value::Null => RuntimeVal::Nil,
-        serde_json::Value::Bool(value) => RuntimeVal::Bool(value),
-        serde_json::Value::Number(value) => number_to_runtime(value.as_i64(), value.as_f64()),
-        serde_json::Value::String(value) => runtime_string_value(&value, heap),
-        serde_json::Value::Array(values) => {
+        OrderedJson::Null => RuntimeVal::Nil,
+        OrderedJson::Bool(value) => RuntimeVal::Bool(value),
+        OrderedJson::Int(value) => number_to_runtime(Some(value), None),
+        OrderedJson::Float(value) => number_to_runtime(None, Some(value)),
+        OrderedJson::Str(value) => runtime_string_value(&value, heap),
+        OrderedJson::Array(values) => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
                 out.push(json_to_runtime(value, heap)?);
             }
             RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
-        serde_json::Value::Object(values) => {
+        OrderedJson::Object(values) => {
             let mut entries = value_map_new();
             for (key, value) in values {
                 entries.insert(runtime_string_key(&key), json_to_runtime(value, heap)?);

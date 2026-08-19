@@ -29,4 +29,25 @@ let cfg = toml.parse(tml);
 let db_url = "${cfg.database.host}:${cfg.database.port}";
 assert(db_url == "localhost:5432");
 
+
+// A parsed document keeps the order it was written in — every format.
+//
+// An LK map's iteration order is the order a key was first written, and for a
+// document that is the order it appears. JSON and TOML both sorted instead, not
+// by decision but because the value type each was parsed through is a
+// `BTreeMap`. Writing is deliberately the other way: `stringify` sorts, so a
+// config written twice from the same data is byte-identical.
+use encoding;
+let from_json = encoding.json.parse("{\"beta\": 1, \"alpha\": 2, \"gamma\": 3}");
+assert(from_json.keys().join(",") == "beta,alpha,gamma");
+let from_yaml = encoding.yaml.parse("beta: 1\nalpha: 2\ngamma: 3\n");
+assert(from_yaml.keys().join(",") == "beta,alpha,gamma");
+let from_toml = encoding.toml.parse("beta = 1\nalpha = 2\ngamma = 3\n");
+assert(from_toml.keys().join(",") == "beta,alpha,gamma");
+
+// Nested objects too, and the sorted *output* is what it always was.
+let nested = encoding.json.parse("{\"z\": {\"y\": 1, \"x\": 2}}");
+assert(nested["z"].keys().join(",") == "y,x");
+assert(encoding.json.stringify({"b": 1, "a": 2}) == "{\"a\":2,\"b\":1}");
+
 println("yaml_toml: all assertions passed");

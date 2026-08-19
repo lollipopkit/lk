@@ -2,13 +2,18 @@
 //! crates and conversion rules of the VM's `core/src/val/de.rs`, so values —
 //! numbers, nesting, and **map iteration order** — match byte-for-byte.
 //!
-//! Order argument: the VM inserts each decoded object's entries, in the
-//! serde iteration order (serde_json `Value::Object` is a BTreeMap → sorted;
-//! serde_yaml `Mapping` and `toml::Table` preserve/sort per their own
-//! defaults — the same crates at the same lockfile versions produce the same
-//! sequence), into a fresh `FastHashMap` and rebuilds the typed map from
-//! *its* iteration (`typed_map_from_entries`). [`str_dyn_map_mirrored`]
-//! replays both stages.
+//! Order argument: the VM inserts each decoded object's entries, **in document
+//! order**, into a fresh `FastHashMap` and rebuilds the typed map from *its*
+//! iteration (`typed_map_from_entries`). [`str_dyn_map_mirrored`] replays both
+//! stages.
+//!
+//! Document order, and not the intermediate's: `serde_json::Value::Object` is a
+//! `BTreeMap`, so both sides used to hand back a document alphabetised — which
+//! contradicts the language's own rule that a map iterates in the order a key
+//! was first written. The VM stopped going through that value type
+//! ([`lk_core::val::de`]'s `OrderedJson`); this does the same, with the same
+//! visitor, because the two orders have to be the same order. TOML takes its
+//! crate's `preserve_order`; YAML's `Mapping` was already ordered.
 //!
 //! Arrays decode to dyn lists (the VM shapes uniform scalars into typed
 //! lists — indexing/len/eq agree; display quoting of a uniform *string*
@@ -95,14 +100,82 @@ fn dyn_number(int_value: Option<i64>, float_value: Option<f64>) -> LkDyn {
     }
 }
 
-fn json_to_dyn(value: serde_json::Value) -> LkDyn {
+/// A JSON document with its objects still in document order — the mirror of
+/// `lk_core::val::de`'s type of the same shape. See this module's note.
+enum OrderedJson {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<OrderedJson>),
+    Object(Vec<(String, OrderedJson)>),
+}
+
+impl<'de> serde::Deserialize<'de> for OrderedJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = OrderedJson;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("any JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Int(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(i64::try_from(v).map_or(OrderedJson::Float(v as f64), OrderedJson::Int))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Float(v))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v.to_string()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(item) = seq.next_element()? {
+                    out.push(item);
+                }
+                Ok(OrderedJson::Array(out))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, value)) = map.next_entry::<String, OrderedJson>()? {
+                    out.push((key, value));
+                }
+                Ok(OrderedJson::Object(out))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn json_to_dyn(value: OrderedJson) -> LkDyn {
     match value {
-        serde_json::Value::Null => LkDyn::NIL,
-        serde_json::Value::Bool(value) => dyn_bool(value),
-        serde_json::Value::Number(value) => dyn_number(value.as_i64(), value.as_f64()),
-        serde_json::Value::String(value) => dyn_str_of(&value),
-        serde_json::Value::Array(values) => dyn_list_of(values.into_iter().map(json_to_dyn).collect()),
-        serde_json::Value::Object(values) => dyn_map_of(values.into_iter().map(|(k, v)| (k, json_to_dyn(v))).collect()),
+        OrderedJson::Null => LkDyn::NIL,
+        OrderedJson::Bool(value) => dyn_bool(value),
+        OrderedJson::Int(value) => dyn_number(Some(value), None),
+        OrderedJson::Float(value) => dyn_number(None, Some(value)),
+        OrderedJson::Str(value) => dyn_str_of(&value),
+        OrderedJson::Array(values) => dyn_list_of(values.into_iter().map(json_to_dyn).collect()),
+        OrderedJson::Object(values) => dyn_map_of(values.into_iter().map(|(k, v)| (k, json_to_dyn(v))).collect()),
     }
 }
 
@@ -112,7 +185,7 @@ fn json_to_dyn(value: serde_json::Value) -> LkDyn {
 /// `text` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_json_parse(text: *const c_char) -> LkDyn {
-    match serde_json::from_str::<serde_json::Value>(input(text)) {
+    match serde_json::from_str::<OrderedJson>(input(text)) {
         Ok(value) => json_to_dyn(value),
         Err(_) => crate::panic::raise_str("Invalid JSON"),
     }

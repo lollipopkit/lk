@@ -2958,3 +2958,31 @@ let g =    || { let t=[]; defer t.push(1); return t.len(); };  // 1
 
 `examples/syntax/defer.lk` 里加了一对断言:同样的三行,一次写成闭包一次写成函数,
 断言两者相等 —— 和上一条浮点渲染一样,不需要知道正确答案就能发现分歧。
+
+## 解析出来的文档保持文档序(2026-08-20)
+
+map 的迭代与 display 顺序是"键第一次被写入的顺序"——这是契约。对一个**解析出来的**
+文档,那就是它在文档里出现的顺序。而 JSON 和 TOML 都是按字母排的:
+
+```lk
+use encoding;
+encoding.json.parse("{\"b\":1,\"a\":2}").keys()   // 之前 [a, b],现在 [b, a]
+encoding.toml.parse("b = 1\na = 2\n").keys()      // 同上
+```
+
+两处都不是决定,只是各自中间类型的默认:`serde_json::Value::Object` 与
+`toml::Value` 的表都是 `BTreeMap`。YAML 的 `Mapping` 本来就是有序的。
+
+- JSON:不再经过 `serde_json::Value`。`serde_json` 的 `preserve_order` 特性会**显式打开
+  `std`**,而这个 crate 必须能不带 std 构建(裸机保留 JSON),所以改成直接反序列化到一个
+  对象存 `Vec<(String, _)>` 的中间类型 —— serde 的 `MapAccess` 本来就按文档序交付。
+- TOML:用 crate 自己的 `preserve_order`。这里不花钱,TOML 解码本来就只在 std 下。
+
+**写出去的方向不动**,而且那是有意的(`core/src/val/ser.rs` 的模块注释):
+`stringify` 排序,所以同一份数据写两次字节相同、diff 得动,JSON 本身也不规定键序。
+读与写不冲突:写强加一个顺序让字节稳定,读报告它拿到的顺序。
+
+lkrt 那边跟着改了同一份(它的注释本来就写着"和 VM 逐字节一致"),
+第一版只改了 VM,`vm_native_sweep` 当场报 `yaml_toml.lk` 两个后端 stdout 不一致 ——
+这正是那条门禁存在的理由。
+

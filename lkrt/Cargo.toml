@@ -32,6 +32,9 @@ indexmap = { version = "2", default-features = false }
 # there instead. Uncontended on a single core, so the hot path stays cheap.
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Named directly for the ordered-object visitor in `encoding.rs`; serde_json
+# already pulls it in, this only makes the path available.
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 # Same crates the stdlib `hash` module uses, so a digest and its hex
 # rendering are byte-identical to the VM's.
 sha1 = { version = "0.10", default-features = false }
@@ -51,7 +54,8 @@ regex = { workspace = true, optional = true }
 # wording match. `std`-only: v4 needs the OS entropy source.
 uuid = { workspace = true, optional = true }
 serde_yaml = { version = "0.9", optional = true }
-toml = { version = "1", optional = true }
+# `preserve_order`, mirroring the VM: a decoded table keeps document order.
+toml = { version = "1", optional = true, features = ["preserve_order"] }
 # Same crate the stdlib datetime module uses, so native formatting/weekday
 # results are byte-identical to the VM.
 chrono = { workspace = true, optional = true }

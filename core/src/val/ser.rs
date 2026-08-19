@@ -33,6 +33,14 @@
 //! and JSON says nothing about key order anyway. It does mean `stringify` and
 //! `println` order a struct's fields differently — `println` shows the
 //! declaration order, which is what a reader wrote.
+//!
+//! **Reading is the other way round, on purpose.** [`super::de`] hands back a
+//! document's keys in the order the document has them, because an LK map's
+//! order is a contract and a parsed document has an order to keep. The two are
+//! not in tension: writing imposes an order so the bytes are stable, reading
+//! reports the order it was given. What *was* wrong is that reading used to sort
+//! too — not by decision, but because `serde_json::Value` is a `BTreeMap` and
+//! nobody had looked.
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
