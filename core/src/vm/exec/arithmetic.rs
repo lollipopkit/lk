@@ -203,6 +203,28 @@ impl Executor {
                 let list = self.add_list_values(lhs, rhs)?;
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(list)))
             }
+            // Two strings — the shape a loop that builds one is made of, and
+            // the shape that used to copy the accumulator *three times* per
+            // step: once for each side's `display_string`, once more into the
+            // `format!`, and once again into the `Arc`. Plus a fourth
+            // allocation the guard threw away, because asking "is this a
+            // string?" through `runtime_value_to_string` builds an `Arc` for a
+            // short one.
+            //
+            // Here it is one buffer of the exact size, filled once. The
+            // concatenation is still O(n) per step and so a loop is still
+            // quadratic — that is what a `String` is, and `join` is the answer
+            // to it.
+            //
+            // Measured, because the reasoning oversells it: interleaved
+            // min-of-nine on a 20k/40k/80k build gives 1.12x / 1.03x / 1.07x.
+            // Most of the time is the *allocator*, not the copying — ~70% of
+            // this loop is in libc — so removing two of three copies moves
+            // less than the count suggests. Making it linear needs a growable
+            // representation, which `HeapValue::String(Arc<str>)` is matched
+            // against in 125 places and mirrored in lkrt besides; that is a
+            // round of its own, not a line here.
+            _ if let Some(joined) = self.concat_string_operands(&lhs, &rhs) => self.runtime_value_from_string(joined),
             _ if self.runtime_value_to_string(&lhs)?.is_some() || self.runtime_value_to_string(&rhs)?.is_some() => {
                 let lhs = self.runtime_value_display_string(&lhs)?;
                 let rhs = self.runtime_value_display_string(&rhs)?;
@@ -878,6 +900,34 @@ impl Executor {
             }
             RuntimeListSnapshot::String(rhs) => Ok(lhs == &rhs[rhs_index]),
             _ => Ok(false),
+        }
+    }
+
+    /// Both operands as `&str` when both *are* strings, joined into one
+    /// exactly-sized buffer. `None` when either is not a string, which sends the
+    /// caller to the general display-concatenation path.
+    ///
+    /// Borrowed rather than cloned: a heap string reached through `Arc::clone`
+    /// costs a refcount, and a short one costs an allocation that is then thrown
+    /// away. Neither is needed to read a string's bytes.
+    fn concat_string_operands(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Option<Arc<str>> {
+        let (left, right) = (self.borrowed_str(lhs)?, self.borrowed_str(rhs)?);
+        let mut joined = String::with_capacity(left.len() + right.len());
+        joined.push_str(left);
+        joined.push_str(right);
+        Some(Arc::from(joined))
+    }
+
+    /// A string operand's bytes without copying them: the inline short form
+    /// borrows from the value, the heap form from the slot.
+    fn borrowed_str<'a>(&'a self, value: &'a RuntimeVal) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match self.state.heap.get(*handle)? {
+                HeapValue::String(value) => Some(value),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
