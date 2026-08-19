@@ -263,9 +263,16 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         }
     }
 
-    // Jumps must stay inside the body: a `break` out of a loop that encloses
-    // the `try` leaves the region, and an outlined body has nowhere to leave
-    // to.
+    // Jumps must stay inside the body. The shape that reaches here is a
+    // `break` or `continue` whose loop *encloses* the `try`: outlined, the body
+    // is a function of its own and has no loop to leave.
+    //
+    // `return` is not in this set — it is answered by the return channel
+    // (`body_returns`) — and a loop written *inside* the `try` is not either,
+    // since its jumps stay in the body. Naming the shape rather than the
+    // mechanism matters here because the message is what a reader gets from
+    // `lk compile object:`, where there is no fallback to hide it; the
+    // rearrangement that lowers is in the sentence.
     let mut consumed = vec![false; code_len];
     for pc in begin_pc + 1..body_end {
         let exit = crate::cfg::exit_of(pc, instrs, code_len, &mut consumed, &func.performance)?;
@@ -273,7 +280,9 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
             if target <= begin_pc || target > body_end {
                 return Err(Unsupported::TryRegion {
                     pc,
-                    reason: "the body jumps out of the region",
+                    reason: "a `break` or `continue` here belongs to a loop outside the `try`, and the body \
+                             becomes a function of its own with no loop to leave — writing \
+                             the loop inside the `try` lowers",
                 });
             }
         }

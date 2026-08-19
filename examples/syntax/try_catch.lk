@@ -168,4 +168,42 @@ fn fold_with(xs: List<Int>, f: (Int, Int) -> Int) -> Int {
 assert(apply_to([1, 2, 3], |x| x + 1) == [2, 3, 4]);
 assert(fold_with([1, 2, 3], |a, b| a + b) == 6);
 
+// A loop and a region, both ways round. The body of a `try` becomes a function
+// of its own, so a jump has to stay inside it: a loop *written inside* the
+// `try` keeps its own `break` and `continue`, while one that *encloses* the
+// `try` has neither to give — that shape runs, and runs on the interpreter,
+// but has no native form yet (`docs/aot/aot-gaps-and-lkrt.md` §47).
+fn scan(values: List<Int>) -> Int {
+    let seen = 0;
+    try {
+        for v in values {
+            if v < 0 { break; }
+            if v == 0 { continue; }
+            seen = seen + v;
+        }
+    } catch e {
+        seen = 0 - 1;
+    }
+    return seen;
+}
+assert(scan([1, 2, 3]) == 6);
+assert(scan([1, 0, 2]) == 3);
+assert(scan([1, 0 - 5, 9]) == 1);
+
+// The region inside the loop, with the jump belonging to the region's own body.
+fn tally_each(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { error("negative"); }
+            total = total + v;
+        } catch e {
+            total = total + 100;
+        }
+    }
+    return total;
+}
+assert(tally_each([1, 2]) == 3);
+assert(tally_each([1, 0 - 1, 2]) == 103);
+
 println("try/catch: ok");
