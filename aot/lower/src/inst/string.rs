@@ -131,17 +131,25 @@ pub(super) fn lower(
             // the arms above take, and the same one the VM takes now. They
             // materialize first because their elements are not a list handle;
             // one conversion, then the `i64` helper the values are.
-            let (handle, list_ty) = if matches!(list_ty, Ty::Bytes | Ty::SliceI64) {
+            // A boxed operand unboxes the same way, and reaches a helper that
+            // was already here: `dyn_join`. `join` being an opcode rather than a
+            // `CallMethodK` is why it did not — `METHOD_TABLE`'s `unbox_list`
+            // never sees it, so `fn show(xs) { return xs.join(", "); }`, which
+            // is how the method is usually written, refused while
+            // `["a"].join(", ")` lowered. `dyn.as_list` aborts on a non-list
+            // tag, the loud error the VM raises for the same call.
+            let (handle, list_ty) = if matches!(list_ty, Ty::Bytes | Ty::SliceI64 | Ty::Dyn) {
                 let list = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(list),
                     callee: match list_ty {
                         Ty::Bytes => AbiRef::new("bytes_h", "to_i64_list"),
+                        Ty::Dyn => AbiRef::new("dyn", "as_list"),
                         _ => AbiRef::new("slice_h", "i64_to_list"),
                     },
                     args: vec![handle],
                 });
-                (list, Ty::ListI64)
+                (list, if list_ty == Ty::Dyn { Ty::ListDyn } else { Ty::ListI64 })
             } else {
                 (handle, list_ty)
             };

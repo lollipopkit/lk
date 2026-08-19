@@ -999,6 +999,15 @@ fn differential_dyn_cross_function() {
                 "dyn_receiver_element_methods",
                 "fn probe(xs) { return \"\" + xs.first() + xs.last() + xs.index_of(1); }\nprintln(probe([3, 1, 2]));\nprintln(probe([3.5, 1.5]));\nprintln(probe([\"a\", \"b\"]));\nreturn 0;\n",
             ),
+            // `join` on a boxed receiver, which is an opcode rather than a
+            // method and so was never offered the method table's unbox. The
+            // renderings are the point: `-0.0`, the infinities and a nested
+            // container are where a second renderer would show, and there is no
+            // second renderer — the boxed path reaches the same `dyn_join`.
+            new(
+                "dyn_receiver_join",
+                "fn show(xs) { return xs.join(\"|\"); }\nprintln(show([2.0, -0.0, 0.5]));\nprintln(show([1, -1, 0]));\nprintln(show([\"a\", \"\", \"c\"]));\nprintln(show([true, false]));\nprintln(show([nil, 1, \"s\", 2.0, true]));\nprintln(show([[1, 2], [3]]));\nprintln(show([]));\nprintln(show([1.0 / 0.0, -1.0 / 0.0]));\nprintln(show([{\"k\": 1}]));\nreturn 0;\n",
+            ),
             // An all-nil branch join must not build a Nil-typed phi: it widens
             // to Dyn (boxed nil) and compares by tag.
             new(
