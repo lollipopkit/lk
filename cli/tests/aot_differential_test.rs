@@ -595,6 +595,13 @@ fn differential_strings() {
                 "an_absorbed_operand_widens_the_element_type",
                 "let xs: List<Int> = [1, 2] + 3;\nlet ys: List<Any> = [1, 2] + \"x\";\nprintln(xs);\nprintln(ys);\nreturn 0;\n",
             ),
+            // Three more names whose `ListDyn` arms were already there and
+            // whose method-table row was not, so a boxed receiver never
+            // reached them.
+            new(
+                "dyn_receiver_chunk_enumerate_flatten",
+                "fn c(xs) { return xs.chunk(2); }\nfn e(xs) { return xs.enumerate(); }\nfn fl(xs) { return xs.flatten(); }\nprintln(c([1, 2, 3]));\nprintln(c([\"a\", \"b\", \"c\"]));\nprintln(c([]));\nprintln(e([1, 2]));\nprintln(e([[1], [2]]));\nprintln(fl([[1], [2, 3]]));\nprintln(fl([[[1]], [[2]]]));\nreturn 0;\n",
+            ),
             new("const_ret", "return \"hello\";\n"),
             new("eq", "return \"hi\" == \"hi\";\n"),
             new("ne", "return \"hi\" != \"ho\";\n"),

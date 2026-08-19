@@ -1098,12 +1098,18 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("unique",    true,     true,  true),
     method_row("sort",      true,     true,  false),
     method_row("reverse",   true,     true,  false),
+    // NOT `unbox_list`, and the exception is worth naming: `slice` answers a
+    // *window* over the receiver, and `dyn.as_list` materializes a plain list
+    // for three of the four carriers — so unboxing changes the answer's kind.
+    // `"" + xs.slice(0, 1)` raises "object cannot be converted to string" in
+    // the VM, which is what a window does, and answered a list when this row
+    // said `true`.
     method_row("slice",     false,    true,  false),
-    method_row("enumerate", false,    false, true),
+    method_row("enumerate", true,     false, true),
     method_row("zip",       false,    false, true),
     method_row("chain",     true,     true,  true),
-    method_row("flatten",   false,    false, true),
-    method_row("chunk",     false,    false, true),
+    method_row("flatten",   true,     false, true),
+    method_row("chunk",     true,     false, true),
     // Answer an element, not a list, so `strlist` says nothing about them; they
     // are here for `unbox_list` alone. Their arms already accept `ListDyn` —
     // only the row was missing, so a boxed receiver refused at the tag guard it
