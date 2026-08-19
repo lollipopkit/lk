@@ -1996,13 +1996,46 @@ impl TypeChecker {
     }
 
     /// Check unary operation types
+    /// Whether a value of this type could be a `Bool` or a `Nil` at run time.
+    ///
+    /// `Optional(Int)` counts: it is nil sometimes, and `!x` on the nil is a
+    /// program that works. Only a type with no `Bool` and no `Nil` anywhere in
+    /// it is certainly wrong.
+    fn may_be_bool_or_nil(ty: &Type) -> bool {
+        match ty {
+            Type::Bool | Type::Nil | Type::Any | Type::Unknown | Type::Variable(_) => true,
+            Type::Optional(_) => true,
+            Type::Union(members) => members.iter().any(Self::may_be_bool_or_nil),
+            _ => false,
+        }
+    }
+
     fn check_unary_op(&mut self, op: &UnaryOp, expr: &Expr) -> Result<Type> {
         let expr_type = self.check_expr(expr)?;
 
         match op {
+            // `!` takes a `Bool` or a `Nil`, which is the runtime's rule
+            // (`Not expected Bool or Nil, got Int`) — and the checker used to
+            // accept *anything*, so `!5` passed `lk check` and raised when it
+            // ran. Its sibling `&&` has always been checked; only `!` was
+            // waved through.
+            //
+            // Rejected only when the operand *cannot* be either. A variable, an
+            // `Any`, or a union with a `Bool` or a `Nil` in it may still be one
+            // at run time, and this is a language where that is the ordinary
+            // case — the check names what is certainly wrong, not everything it
+            // cannot prove right.
             UnaryOp::Not => {
-                if matches!(self.resolve_aliases(&expr_type), Type::Variable(_)) {
+                let resolved = self.resolve_aliases(&expr_type);
+                if matches!(resolved, Type::Variable(_)) {
                     self.inference_engine.add_constraint(expr_type, Type::Any);
+                } else if !Self::may_be_bool_or_nil(&resolved) {
+                    return Err(Self::type_err(
+                        "Not expected Bool or Nil",
+                        Some(Type::Bool),
+                        Some(resolved.clone()),
+                        Some(expr.clone()),
+                    ));
                 }
                 Ok(Type::Bool)
             }

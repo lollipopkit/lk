@@ -133,6 +133,17 @@ const MUST_REFUSE: &[(&str, &str)] = &[
         "struct P { x: Int }\nlet p = P { x: \"s\" };\nprintln(p.x);\n",
     ),
     ("method on the wrong receiver", "println([1,2].upper());\n"),
+    // `!` takes a Bool or a Nil — the executors say so at run time
+    // (`Not expected Bool or Nil, got Int`) and the checker said nothing, so
+    // `!5` passed here and failed there. Its sibling `&&` was always checked;
+    // only `!` was waved through, which is why the pair is listed together.
+    ("not on an Int", "println(!5);\n"),
+    ("not on a String", "println(!\"a\");\n"),
+    (
+        "not on a function result",
+        "fn f() -> Int { return 1; }\nprintln(!f());\n",
+    ),
+    ("and on an Int", "println(5 && true);\n"),
 ];
 
 /// Valid programs, including the ones a stricter reading would reject.
@@ -179,6 +190,21 @@ const MUST_ACCEPT: &[(&str, &str)] = &[
     (
         "index is not nullable",
         "let m = {\"a\": 1};\nlet v: Int = m[\"a\"];\nprintln(v);\n",
+    ),
+    // The other direction of the `!` rule: refused only when the operand
+    // *cannot* be a Bool or a Nil. In a language where most values arrive
+    // untyped, anything else would refuse the ordinary case.
+    (
+        "not on an untyped parameter",
+        "fn f(v) -> Bool { return !v; }\nprintln(f(nil));\n",
+    ),
+    (
+        "not on a nullable Int",
+        "fn f(v: Int?) -> Bool { return !v; }\nprintln(f(nil));\n",
+    ),
+    (
+        "not on a container read",
+        "let m = {\"a\": true};\nprintln(!m[\"a\"]);\n",
     ),
 ];
 
