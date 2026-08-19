@@ -1734,3 +1734,49 @@ VM/native 逐行比对:50 个种子 × 5 个程序,0 分歧。61 程序 sweep、
 配一个测试(`a_live_runtime_borrow_is_visible_to_the_raise_path`),因为这个谓词唯一
 可能的失效方式就是恒返回 `false` —— 那样它不报错、不碍事、也不再是检查。
 真正要拦的那件事没法从测试里触发(按设计它会 abort 整个进程)。
+
+## §52 优化过的 `lk` 从来没被任何门禁跑过,里面有两个 bug(2026-08-19)
+
+起因是想给 channel 做个基准,顺手用 `--profile dist` 的 `lk` 编了个 `try` 程序。
+它没编出来 —— **编译器自己 panic 了**。
+
+### 一:`debug_assert_eq!` 里藏着副作用
+
+```rust
+debug_assert_eq!(body_index, sig.push_function(Vec::new(), Ty::Nil));
+```
+
+release 构建里 `debug_assert_eq!` 丢掉的是**整个表达式**,`push_function` 那次调用
+一起没了。于是签名表不为 try body 长出那一行,下一趟
+`sig.ret_types[body_index]` 越界 panic。
+
+也就是说:**任何含 `try` 的程序,在任何优化构建的 `lk` 上都编不过**,一直如此。
+debug 构建是好的 —— 而所有门禁用的都是 debug 构建。
+
+顺手把全仓 20 处 `debug_assert*` 逐个看了一遍,其余全是纯谓词,没有第二处。
+
+### 二:刷新的是 debug 归档,链接的是旁边那个
+
+改完 panic,生成的可执行文件死在 `SIGILL`。
+
+`native_executable.rs` 里 `lkrt_staticlib_path()` 先无条件 `build_lkrt_staticlib()`
+再搜索。注释写得很清楚,这次无条件重建是为了防止链到**陈旧**的归档
+(工具链换过之后两份 libstd 撞 `rust_eh_personality`)。但重建写死了
+`cargo build -p lkrt-cabi`(dev)和 `target/debug`,而搜索取的是**这个二进制自己
+所在目录**旁边的那份。于是对 `--release` / `--profile dist` 的 `lk` 来说,
+它刷新的归档不是它链接的归档 —— 那件它要防的事情正好发生了:
+dist 构建链到了前一天的 lkrt,里面 `lkrt_rt_try_region` 还是三参数带元数 switch 的旧签名
+(见 §49),`__builtin_trap()` 就是那声 `SIGILL`。
+
+改成按**自己所在目录对应的 profile** 重建(`cargo_profile_of`:`deps` 上跳一级,
+`debug` 目录对应 `dev` profile,其余同名),并且那句
+"building lkrt staticlib (one-time)…" 现在报的是真的 profile,也不再撒谎说"一次性"。
+
+### 门禁
+
+`check.yml` 新增一步:`cargo build --release -p lk-cli --features aot`,
+用它跑同一份覆盖率门禁(65/65),再把 `try_catch.lk` 和 `concurrency_demo.lk`
+的解释器输出与原生输出逐字节比一遍。
+
+用 release 不用 dist:dist 多的是全量 LTO,为的是这里不测的性能数字,却要多花几分钟;
+真正会**静默**改变行为的两件事 —— `debug_assertions` 关掉、优化打开 —— 两个 profile 是一样的。

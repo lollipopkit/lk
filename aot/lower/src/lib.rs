@@ -247,7 +247,18 @@ pub fn lower_bundled(
             let body_index = funcs.len() as u32;
             funcs.push(body);
             reachable.push(true);
-            debug_assert_eq!(body_index, sig.push_function(Vec::new(), Ty::Nil));
+            // Outside the assertion, because `debug_assert_eq!` discards its
+            // *whole expression* in a release build — the call included. Written
+            // as an assertion, the signature tables never grew a row for a try
+            // body in an optimized `lk`, and the next pass indexed
+            // `sig.ret_types[body_index]` one past the end: every `try` program
+            // panicked the compiler, in every build anyone ships. The debug
+            // build was fine, which is what every gate used.
+            let pushed = sig.push_function(Vec::new(), Ty::Nil);
+            assert_eq!(
+                body_index, pushed,
+                "a try body's index must be its row in the signature tables"
+            );
             sig.try_bodies.insert((scanning as u32, region.begin_pc), body_index);
             if region.body_returns {
                 sig.try_body_returns.insert(body_index);
