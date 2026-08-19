@@ -52,6 +52,21 @@ pub enum Unsupported {
         pc: usize,
         reason: &'static str,
     },
+    /// A method call the dispatch table has no arm for, naming *which* method
+    /// and *which* receiver.
+    ///
+    /// `CallShape`'s reason is a `&'static str`, so the one this replaces could
+    /// only say "no native lowering for this method on this receiver type" —
+    /// true of every unlowered call, and useless for finding the one in front of
+    /// you. The `bare-metal-x86` kernel refused on a call this way and the
+    /// message named neither half; the argument types are here too, because a
+    /// receiver's arm often matches on them.
+    UnsupportedMethod {
+        pc: usize,
+        method: String,
+        receiver: &'static str,
+        args: Vec<&'static str>,
+    },
     /// A `try` region whose shape would change meaning if the body were called
     /// instead of run in place. Carries *why*, because "opcode TryBegin is not
     /// natively lowerable" is what this replaces: it named a feature where the
@@ -205,6 +220,19 @@ impl Unsupported {
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
+            }
+            Unsupported::UnsupportedMethod {
+                pc,
+                method,
+                receiver,
+                args,
+            } => {
+                let args = if args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" with ({})", args.join(", "))
+                };
+                format!("no native lowering for `{receiver}.{method}(){args}` (at pc {pc})")
             }
             Unsupported::CallShape { pc, reason } => {
                 format!("the call at pc {pc} is not natively lowerable: {reason}")

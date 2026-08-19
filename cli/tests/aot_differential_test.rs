@@ -982,6 +982,15 @@ fn differential_dyn_cross_function() {
                 "maybe_ret_boxes",
                 "fn lookup(k) {\n  let m = {};\n  m.set(\"a\", 7);\n  return m.get(k);\n}\nprintln(lookup(\"a\"));\nprintln(lookup(\"zz\") == nil);\nreturn 0;\n",
             ),
+            // A boxed *receiver* reaches a list method. `chain` accepted a Dyn
+            // argument and not a Dyn receiver, so a list that is reset on one
+            // path, extended on another, and handed to a Dyn parameter — which
+            // is what a line buffer is — refused to lower. The `bare-metal-x86`
+            // kernel is written exactly this way and stopped compiling for it.
+            new(
+                "dyn_receiver_chain",
+                "fn emit(base, line) { return base + line.len(); }\nfn build(n) {\n  let line = [];\n  let out = 0;\n  let i = 0;\n  while (i < n) {\n    if (i % 4 == 0) { out = emit(out, line); line = []; }\n    else { line = line.chain([i]); }\n    i = i + 1;\n  }\n  return emit(out, line);\n}\nprintln(build(11));\nprintln(build(0));\nreturn 0;\n",
+            ),
             // An all-nil branch join must not build a Nil-typed phi: it widens
             // to Dyn (boxed nil) and compares by tag.
             new(
