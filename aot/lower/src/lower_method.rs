@@ -731,6 +731,103 @@ pub(crate) fn lower_list_hof_k(
 
 /// The shared per-(receiver type, method name, argument types) dispatch table.
 #[allow(clippy::too_many_arguments)]
+/// See the note at the top of [`lower_method_dispatch`].
+#[allow(clippy::too_many_arguments)]
+fn nullable_needle_in_typed_container(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    receiver: ValueId,
+    receiver_ty: Ty,
+    name: &str,
+    args: &[(ValueId, Ty)],
+    block: usize,
+    pc: usize,
+) -> Result<Option<Reg>, Unsupported> {
+    if !matches!(name, "contains" | "count" | "index_of") {
+        return Ok(None);
+    }
+    // A Dyn container holds nil, so its own arms box the carrier and answer
+    // truthfully; only the typed ones need this.
+    if matches!(receiver_ty, Ty::ListDyn | Ty::Dyn | Ty::MapStrDyn) {
+        return Ok(None);
+    }
+    let [(needle, needle_ty)] = args else {
+        return Ok(None);
+    };
+    let payload = match needle_ty {
+        Ty::MaybeI64 => Ty::I64,
+        Ty::MaybeF64 => Ty::F64,
+        Ty::MaybeStr => Ty::Str,
+        Ty::MaybeBool => Ty::Bool,
+        _ => return Ok(None),
+    };
+    let present = ssa.new_val();
+    insts.push(Inst::MaybePresent {
+        dst: present,
+        src: *needle,
+        maybe_ty: *needle_ty,
+    });
+    let value = ssa.new_val();
+    insts.push(Inst::MaybeValue {
+        dst: value,
+        src: *needle,
+        maybe_ty: *needle_ty,
+    });
+    let (found, found_ty) = lower_method_dispatch(
+        ssa,
+        insts,
+        globals,
+        receiver,
+        receiver_ty,
+        name,
+        &[(value, payload)],
+        block,
+        pc,
+    )?;
+    // What the same call answers when the needle is not there. `contains` and
+    // `count` say so with a constant; `index_of` says nil, which is a boxed
+    // value and selects component-wise like any other carrier.
+    let missing = match found_ty {
+        Ty::Bool => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(false),
+            });
+            dst
+        }
+        Ty::I64 => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::I64(0),
+            });
+            dst
+        }
+        Ty::Dyn => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(0),
+            });
+            crate::dyn_box::to_dyn(ssa, insts, raw, Ty::Nil, pc)?
+        }
+        // Some other answer shape: leave it to the ordinary arms, which will
+        // refuse rather than guess what "not found" means for it.
+        _ => return Ok(None),
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Select {
+        dst,
+        cond: present,
+        then_v: found,
+        else_v: missing,
+        ty: found_ty,
+    });
+    Ok(Some((dst, found_ty)))
+}
+
 pub(crate) fn lower_method_dispatch(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -742,6 +839,24 @@ pub(crate) fn lower_method_dispatch(
     block: usize,
     pc: usize,
 ) -> Result<Reg, Unsupported> {
+    // A nullable needle looked for in a *typed* container.
+    //
+    // `List<Int>` cannot hold nil, so an absent needle is simply not there:
+    // `contains` is false, `count` is zero, `index_of` is nil. The typed arms
+    // below all match the needle's type exactly, so a `Maybe<Int>` matched none
+    // of them and the whole module fell back — for a question whose answer was
+    // already known.
+    //
+    // Answered by asking with the payload and *selecting*, rather than by
+    // rebuilding the receiver as a Dyn list: the receiver is not the problem,
+    // and rebuilding it would turn a lookup into an allocation. The payload of
+    // an absent carrier is a value nobody wrote, so the search's answer on that
+    // path is discarded rather than trusted.
+    if let Some(result) =
+        nullable_needle_in_typed_container(ssa, insts, globals, receiver, receiver_ty, name, args, block, pc)?
+    {
+        return Ok(result);
+    }
     let result: Reg = match (receiver_ty, name, args) {
         // Boxed-element list long tail (runtime-polymorphic receivers).
         // `take` / `skip` over every carrier and both directions. Neither looks

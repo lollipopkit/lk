@@ -181,4 +181,30 @@ assert(describe(5) == "Int");
 assert(describe("s") == "String");
 assert(describe({}) == "Map");
 
+// 13. Looking for nil in a container that cannot hold it
+//
+// `List<Int>` has no nil in it, so an out-of-range needle is simply not found:
+// `contains` false, `count` zero, `index_of` nil. The typed lowering matched the
+// needle's type exactly, so a possibly-absent one matched nothing and the module
+// fell back — for a question whose answer was already known. It is answered by
+// asking with the payload and picking, not by rebuilding the list to hold
+// something it never receives.
+fn searches(xs: List<Int>, upto: Int) -> String {
+    let table = [7, 8, 7];
+    let found = 0;
+    let counted = 0;
+    let placed = 0;
+    let i = 0;
+    while i < upto {
+        if table.contains(xs[i]) { found = found + 1; }
+        counted = counted + table.count(xs[i]);
+        placed = placed + (table.index_of(xs[i]) ?? 50);
+        i = i + 1;
+    }
+    return found + "/" + counted + "/" + placed;
+}
+assert(searches([7, 8], 2) == "2/3/1");
+assert(searches([7, 8], 4) == "2/3/101");
+assert(searches([], 2) == "0/0/100");
+
 println("null_coalescing: all assertions passed");

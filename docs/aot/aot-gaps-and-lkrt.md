@@ -2090,3 +2090,23 @@ MIR 里看得很清楚:检查块算出了结果码,然后 `br` 到 return 块 �
 会把 `literal_carrier` 里**所有**同形状的 pc 都报出来 —— 所以 `f([1]); f(5)`
 也报"empty list literal",尽管那里根本没有空字面量。这条没改,
 它只是把话说得不准,不影响重试(重试的是同一批 pc)。
+
+## §60 在装不下 nil 的容器里找 nil(2026-08-20)
+
+§57 结尾列的第一条:`contains` / `count` / `index_of` 在**类型化**列表上遇到可空
+needle 就拒绝降级。类型化的那些 arm 都精确匹配 needle 的类型,`Maybe<Int>` 一条也不匹配。
+
+当时记的判断是对的:`List<Int>` 里永远不可能有 nil,所以"缺席就是没找到",
+**不必**把列表重建成 Dyn 载体 —— 接收者没有问题,重建它会把一次查找变成一次分配。
+
+做法是在方法分发的入口拦一次:把可空 needle 拆成 `present` 和 `value`,
+拿 `value` 走原来的类型化 arm,再按方法的"没找到"是什么去 `select`:
+`contains` 是 `false`,`count` 是 `0`,`index_of` 是 nil。
+缺席那条路上 `value` 是没人写过的值,所以它的答案是被**丢掉**的,不是被相信的。
+
+`Inst::Select` 本来就按分量选(Cranelift 没有聚合 select),所以 `index_of` 返回的
+`Dyn` 载体和标量走同一条路,三个方法一套代码。
+
+八种组合(`List<Int>` / `List<String>` / `List<Float>` / `Set` / Dyn 列表 × 三个方法)
+逐个对着解释器跑,全部一致;语料进了 `examples/syntax/null_coalescing.lk`。
+
