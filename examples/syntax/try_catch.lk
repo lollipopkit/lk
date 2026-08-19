@@ -332,4 +332,27 @@ fn scaled_report(count: Int, factor: Int, label: String) -> String {
 assert(scaled_report(3, 4, "x") == "x:- x:4 x:8 ");
 assert(scaled_report(2, 30, "y") == "y:- y:- ");
 
+// A handler with nothing in it, and a body that returns on one path only.
+//
+// The compiler emits no jump over an empty handler, because there is nothing to
+// jump over — and "the region's fallthrough is its handler" is *also* what a
+// body that returns on every path looks like. Reading the second from the first
+// is a mistake this shape is the witness for: the path that did *not* return
+// went straight to the return block and read a value nobody had parked. Every
+// other `try` above has a statement in its handler, which is why none of them
+// caught it.
+fn maybe_early(values: List<Int>, stop: Int) -> Int {
+    let seen = 0;
+    for v in values {
+        try {
+            if v == stop { return 0 - v; }
+            seen = seen + v;
+        } catch e { }
+    }
+    return seen;
+}
+assert(maybe_early([1, 2, 3], 9) == 6);
+assert(maybe_early([1, 2, 3], 2) == 0 - 2);
+assert(maybe_early([], 1) == 0);
+
 println("try/catch: ok");

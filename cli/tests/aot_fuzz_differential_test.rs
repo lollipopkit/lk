@@ -934,6 +934,28 @@ impl Generator {
                 let _ = writeln!(out, "println({probe}({arg}));");
             }
         }
+        // A `try` with an **empty** handler, and a body that returns on one
+        // path only.
+        //
+        // Every other generated `catch` has a statement in it, and that is what
+        // hid this: the compiler emits no jump over an empty handler, because
+        // there is nothing to jump over — so the region's fallthrough *is* its
+        // handler, which is also what "the body returns on every path" looks
+        // like. The lowering read the second from the first, skipped the
+        // did-it-return test, and returned a value nobody parked.
+        if self.rng.chance(35) {
+            let probe = self.fresh("fn_emptycatch");
+            let at = self.rng.below(4);
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n    let acc = 0;\n    for v in 0..4 {{\n        try {{\n            if (v == {at} && p0 > 0) {{ return v * 100; }}\n            acc = acc + v;\n        }} catch e {{ }}\n    }}\n    return acc;\n}}"
+            );
+            // Both the path that returns out of the region and the one that
+            // does not — the second is the one that was wrong.
+            for arg in [0u64, 1] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
         // A `try` whose body leaves through a jump that belongs to the loop
         // *outside* it. Natively the body is a function of its own, so a `break`
         // written there has no loop to leave: it reports which way it left

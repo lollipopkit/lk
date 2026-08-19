@@ -1385,8 +1385,8 @@ pub(crate) fn lower_function(
             Some(Exit::TryRegion {
                 body,
                 catch_reg,
-                handler: region_handler,
-                fallthrough: region_fallthrough,
+                handler: _region_handler,
+                fallthrough: _region_fallthrough,
             }) => {
                 // Run the body under a handler, and bind what it raised.
                 //
@@ -1670,18 +1670,10 @@ pub(crate) fn lower_function(
                     None => None,
                 };
                 if let Some(flag) = outcome_flag {
-                    // A body every path of which leaves has no jump over the
-                    // handler, so the region's "fallthrough" *is* the handler —
-                    // there is no ok edge to fall to, and the code-0 test is
-                    // answering a code that cannot occur. The dispatch starts at
-                    // the first real outcome instead, rather than sending a path
-                    // that did not raise into the handler.
-                    let always_leaves = region_handler == region_fallthrough;
                     try_exit_checks.push(TryExitCheck {
                         block: bi,
                         flag,
                         value: return_channel.map(|(_, value)| value),
-                        always_leaves,
                         escape_targets,
                     });
                 }
@@ -2402,15 +2394,22 @@ pub(crate) fn lower_function(
             });
         }
         // Code 0 is "the body fell off its end", the only outcome that resumes
-        // where the region left off. A body that leaves on every path has no
-        // such edge — the region's fallthrough *is* its handler — so the test
-        // would be asking about a code that cannot occur.
-        let check_term = if check.always_leaves {
-            Term::Br {
-                target: entry.0,
-                args: entry.1,
-            }
-        } else {
+        // where the region left off — so it is always asked.
+        //
+        // It used to be skipped when the region's fallthrough *was* its handler,
+        // on the reading that this means "the body leaves on every path, so
+        // there is no ok edge". That reading is wrong, and by one letter: what
+        // the condition actually detects is that the compiler emitted no jump
+        // over the handler — which is also true when the **handler is empty**,
+        // because jumping over nothing is nothing to emit. So
+        // `try { if c { return 7; } } catch e { }` skipped the test, went
+        // straight to the return block on the path that did *not* return, and
+        // read the parked value out of a cell still holding nil.
+        //
+        // Asking anyway costs one compare, on a path that has just returned
+        // from a call. When the body really does leave on every path, code 0
+        // cannot occur and the false edge is unreachable — valid, and dead.
+        let check_term = {
             let zero = ssa.new_val();
             check_insts.push(Inst::Const {
                 dst: zero,
@@ -2554,9 +2553,6 @@ struct TryExitCheck {
     flag: ValueId,
     /// The parked return value, for a body that `return`s.
     value: Option<ValueId>,
-    /// The body leaves on every path, so code 0 cannot occur and the region has
-    /// no ok edge to fall to.
-    always_leaves: bool,
     /// Where each escape code lands, in the parent's pc space.
     escape_targets: Vec<usize>,
 }

@@ -2030,3 +2030,40 @@ out.push(xs[9]);        // 解释器:塞进一个 nil。原生:Error: runtime er
   这个不对称是任意的,而 `{1: "a"}` 是一句普通的程序。
   lkrt 那边 `StrDynMap = FxMap<String, LkDyn>` 是真的只认字符串键,
   所以补这一条要新增一个运行时 map 类型加一整套 ABI 入口 —— 是个单独的活。
+
+## §58 空的 `catch` 让"body 每条路都离开"这个判断变成假的(2026-08-19)
+
+把 `defer` 和控制流的组合逐个探了一遍(8 种形状,VM 与严格原生逐字节比),
+出来一条错答。缩下来 `defer` 根本没参与:
+
+```lk
+fn f(n: Int) -> Int { try { if n > 0 { return 7; } } catch e { } return 5; }
+f(0)   // 解释器 5,原生 Error: runtime type error
+```
+
+`f(1)`(走 return 那条)两边都对,错的是**没有** return 的那条。
+
+MIR 里看得很清楚:检查块算出了结果码,然后 `br` 到 return 块 —— **一次都没测**。
+于是 `dyn.as_i64` 去读那个还是 nil 的值 cell。
+
+原因是 `always_leaves = region_handler == region_fallthrough`。这个条件真正检测的是
+"编译器没有发出跳过 handler 的那条 `Jmp`",而**handler 是空的**时候也没有 ——
+跳过空的东西没有东西可发。两件事被读成了一件。
+
+改法是把这个特判整个删掉:**结果码永远测**。body 真的每条路都离开时,码 0 不会出现,
+那条假边不可达 —— 合法,而且是死的。代价是一次比较,发生在一个刚从调用返回的位置上。
+
+### 为什么生成式差分没抓到
+
+它生成的每一个 `catch` 体里都有语句。已经补了一条"空 handler + 只有一条路 return"的形状
+(两个上界都跑:return 的那条和不 return 的那条,后者才是错的),
+语料也在 `examples/syntax/try_catch.lk` 里留了一份。
+
+### 同一轮的其它探测
+
+- **数值与浮点边界** 22 条(i64 最小值、回绕、除零、负数取模、NaN、-0、
+  1e-320、大整数与浮点的字符串化、移位、按位取反):全部一致。
+- **字符串与 Unicode** 24 条(多字节索引/切片/反转、emoji、`straße`.upper()、
+  负下标、越界、空分隔符、`\u{a0}` 的 trim、Unicode 比较):全部一致。
+
+这两族没有发现问题,记在这里是为了下次不用再探一遍。
