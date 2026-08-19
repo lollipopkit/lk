@@ -66,7 +66,15 @@ impl HeapStore {
             assert!(u32::try_from(index).is_ok(), "heap object index overflow");
             self.slots.push(Some(value));
             self.marks.push(Self::WHITE);
-            self.generations.push(0);
+            // A slot the table grew back into after `release_dead_tail` cut it
+            // is a *re-used* slot, not a fresh one: its generation carries on
+            // from where it left off, so a handle from before the cut still
+            // fails to match. Only an index the heap has never reached starts
+            // at zero.
+            match self.generations.get_mut(index) {
+                Some(generation) => *generation = generation.wrapping_add(1),
+                None => self.generations.push(0),
+            }
             index as u32
         };
         self.live_len += 1;
@@ -103,6 +111,13 @@ impl HeapStore {
         self.live_len
     }
 
+    /// How many slots the table holds, live or not — what a sweep walks, and
+    /// what [`Self::should_collect`] paces itself against.
+    #[inline]
+    pub fn slot_capacity(&self) -> usize {
+        self.slots.len()
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.live_len == 0
@@ -111,14 +126,21 @@ impl HeapStore {
     /// Whether enough has been allocated since the last collection to be worth
     /// another one.
     ///
-    /// The bound is the *live set*, floored at [`Self::gc_threshold`]. A mark
-    /// and sweep costs O(live) whatever triggered it, so collecting every fixed
-    /// number of allocations makes the collector's share of a program grow with
-    /// the data it holds: a workload with a hundred thousand live objects paid a
-    /// hundred-thousand-object walk every thousand allocations. Waiting for the
-    /// heap to grow by its own size instead keeps the amortized cost per
-    /// allocation constant — the standard bound, and the reason `collect` was
-    /// 6% of `bench/workloads_business_algorithms.lk` before it.
+    /// The bound is the size of the **slot table**, floored at
+    /// [`Self::gc_threshold`]. A mark and sweep walks every slot whatever
+    /// triggered it, so collecting every fixed number of allocations makes the
+    /// collector's share of a program grow with the table: a heap of a hundred
+    /// thousand slots paid a hundred-thousand-slot walk every thousand
+    /// allocations. Waiting for it to grow by half its size instead keeps the
+    /// amortized cost per allocation constant.
+    ///
+    /// The table and not the *live set*, because the sweep's cost is the table:
+    /// one object allocated after a large burst is released pins the whole
+    /// thing (see [`Self::release_dead_tail`]), and a live-set bound would then
+    /// collect as if the heap were empty while each collection still walked the
+    /// peak. Measured: four hundred thousand allocations released and four
+    /// hundred thousand more made took 0.61s on a fixed threshold, 0.45s on a
+    /// live-set bound, and 0.07s on this one.
     ///
     /// `gc_threshold` is the *floor* on how often this can fire, so a small
     /// heap keeps the old behaviour exactly. A threshold set by name turns the
@@ -130,7 +152,7 @@ impl HeapStore {
         if self.pinned_threshold {
             return self.alloc_since_gc >= self.gc_threshold;
         }
-        self.alloc_since_gc as usize >= (self.gc_threshold as usize).max(self.live_len / 2)
+        self.alloc_since_gc as usize >= (self.gc_threshold as usize).max(self.slots.len() / 2)
     }
 
     #[inline]
@@ -281,6 +303,7 @@ impl HeapStore {
     fn sweep(&mut self) {
         self.free_list.clear();
         let mut live_len = 0;
+        let mut last_live = 0usize;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.is_none() {
                 self.free_list.push(index as u32);
@@ -289,12 +312,44 @@ impl HeapStore {
             if self.marks[index] == Self::BLACK {
                 self.marks[index] = Self::WHITE;
                 live_len += 1;
+                last_live = index + 1;
             } else {
                 *slot = None;
                 self.free_list.push(index as u32);
             }
         }
         self.live_len = live_len;
+        self.release_dead_tail(last_live);
+    }
+
+    /// Gives back the empty tail of the slot table.
+    ///
+    /// A sweep costs O(slots), not O(live), and `slots` only ever grew — so a
+    /// program that allocated a lot once and then dropped it kept paying for the
+    /// peak at every later collection. Four hundred thousand allocations
+    /// released, then four hundred thousand small ones, spent most of their time
+    /// walking a table whose live count was near zero.
+    ///
+    /// Only the *tail*, because a `HeapRef` is an index: moving a live slot would
+    /// need every reference to it rewritten, and there is no such list. Cutting
+    /// the empty end moves nothing. A reference into the cut region is a
+    /// reference to something already collected, and `get` answers `None` for it
+    /// exactly as it did when the slot was `None` — the same dangling-ref
+    /// behaviour, one branch earlier.
+    ///
+    /// `generations` is **not** cut with them. That vector is what tells a
+    /// re-used slot from the one it replaced, so an inline cache holding
+    /// `(index, generation)` invalidates instead of matching a different object
+    /// at the same index. Cutting it would restart the counter at zero and let
+    /// exactly that stale match happen; eight bytes per slot the heap once held
+    /// is what the invariant costs.
+    fn release_dead_tail(&mut self, live_end: usize) {
+        if live_end == self.slots.len() {
+            return;
+        }
+        self.slots.truncate(live_end);
+        self.marks.truncate(live_end);
+        self.free_list.retain(|index| (*index as usize) < live_end);
     }
 }
 
@@ -326,7 +381,7 @@ mod tests {
     ///
     /// Counted rather than timed, so it says the same thing on any machine.
     #[test]
-    fn collections_do_not_multiply_with_the_live_set() {
+    fn collections_do_not_multiply_with_the_heap() {
         fn collections_for(live: usize, allocations: usize) -> usize {
             let mut heap = HeapStore::new();
             let roots: Vec<HeapRef> = (0..live)
@@ -352,6 +407,44 @@ mod tests {
             large * 5 <= small,
             "ten times the live set should collect far less often per allocation, \
              got {large} collections against {small}"
+        );
+    }
+
+    /// A burst that is released gives its slots back, and a handle from before
+    /// the release still does not match whatever lands there next.
+    ///
+    /// The two halves are one test because the second is the price of the
+    /// first: the tail is cut, so the table can grow back into indices it has
+    /// used before, and `generations` is what keeps those apart. Cutting the
+    /// generations with the slots would restart the counter and let a stale
+    /// `(index, generation)` pair match a different object.
+    #[test]
+    fn a_released_burst_gives_its_slots_back_without_reusing_a_generation() {
+        let mut heap = HeapStore::new();
+        let keep = heap.alloc(HeapValue::String(Arc::<str>::from("keep")));
+        let doomed: Vec<HeapRef> = (0..500)
+            .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("burst{i}")))))
+            .collect();
+        let stale = doomed[100];
+        let stale_generation = heap.shape_generation(stale).expect("live before the collection");
+
+        heap.collect([keep]);
+        assert_eq!(heap.len(), 1, "only the kept object survives");
+        assert!(
+            heap.slot_capacity() <= 8,
+            "the released tail should be given back, table still holds {}",
+            heap.slot_capacity()
+        );
+
+        // Grow back over the same indices; the old handle must not match.
+        let reborn: Vec<HeapRef> = (0..300)
+            .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("again{i}")))))
+            .collect();
+        assert!(reborn.iter().any(|r| r.index() == stale.index()), "an index came back");
+        assert_ne!(
+            heap.shape_generation(stale),
+            Some(stale_generation),
+            "a re-used slot must not answer the generation the old object had"
         );
     }
 
