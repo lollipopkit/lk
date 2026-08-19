@@ -610,6 +610,15 @@ fn differential_strings() {
             // read differently compiled, on a plain `List<Int>`, with no boxing
             // anywhere. The boxed carrier has to ask whether each element is an
             // Int at all, which is the second refusal.
+            // `datetime.parse` reads three shapes — a full datetime, a date
+            // alone at midnight, a time alone on the epoch day — and lkrt read
+            // one, so two of the three answered interpreted and failed
+            // compiled. The refusal names the value and the format rather than
+            // repeating chrono's phrasing about its own parser.
+            new(
+                "datetime_parse_reads_three_shapes",
+                "use datetime;\nfn p(v: String, f: String) -> String { try { return \"ok \" + datetime.parse(v, f); } catch e { return \"E: \" + e; } }\nprintln(p(\"2026-08-20 10:30:00\", \"%Y-%m-%d %H:%M:%S\"));\nprintln(p(\"2026-08-20\", \"%Y-%m-%d\"));\nprintln(p(\"10:30:00\", \"%H:%M:%S\"));\nprintln(p(\"nope\", \"%Y\"));\nreturn 0;\n",
+            ),
             new(
                 "to_bytes_refuses_in_the_interpreters_words",
                 "fn c(xs) -> String { try { return \"ok \" + xs.to_bytes(); } catch e { return \"E: \" + e; } }\nprintln(c([1, 2]));\nprintln(c([3, \"x\"].take(1)));\nprintln(c([300, \"y\"].take(1)));\nprintln(c([1, \"z\"]));\nprintln(c([1.5, \"w\"].take(1)));\nprintln(c([]));\nreturn 0;\n",

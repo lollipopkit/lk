@@ -724,8 +724,20 @@ pub unsafe extern "C" fn lkrt_datetime_format(timestamp: i64, format: *const c_c
     })
 }
 
-/// `datetime.parse(value, format)` — chrono naive parse anchored to UTC;
-/// a parse failure aborts (the VM's loud error).
+/// `datetime.parse(value, format)` — anchored to UTC; a parse failure aborts
+/// (the VM's loud error).
+///
+/// The three shapes `format` can write, tried in order: a full datetime, a
+/// date alone (midnight, which is what the format dropped), a time alone (that
+/// time on the epoch day). Only the first was here, so
+/// `datetime.parse("2026-08-20", "%Y-%m-%d")` answered interpreted and failed
+/// compiled — the stdlib module has said what the rule is above `parse_naive`
+/// the whole time.
+///
+/// The refusal names the value and the format, for the reason written there:
+/// chrono's own phrasing describes its parser's internal requirement ("input
+/// is not enough for unique date and time"), a sentence about a library the
+/// program never mentioned.
 ///
 /// # Safety
 /// Both pointers must be valid NUL-terminated C strings, or null (empty).
@@ -734,10 +746,23 @@ pub unsafe extern "C" fn lkrt_datetime_parse(value: *const c_char, format: *cons
     raising(|| {
         let value = c_str(value, "datetime.parse value")?;
         let format = c_str(format, "datetime.parse format")?;
-        let naive = chrono::NaiveDateTime::parse_from_str(value.as_str(), format.as_str())
-            .map_err(|err| format!("failed to parse datetime: {err}"))?;
+        let naive = parse_naive(value.as_str(), format.as_str())
+            .ok_or_else(|| format!("`{value}` does not match the format `{format}`"))?;
         Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc).timestamp())
     })
+}
+
+/// `stdlib/crates/datetime`'s `parse_naive`, mirrored.
+fn parse_naive(value: &str, format: &str) -> Option<chrono::NaiveDateTime> {
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, format) {
+        return Some(naive);
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, format) {
+        return Some(date.and_time(chrono::NaiveTime::MIN));
+    }
+    let time = chrono::NaiveTime::parse_from_str(value, format).ok()?;
+    let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)?.date_naive();
+    Some(epoch.and_time(time))
 }
 
 /// `datetime.day_of_week(timestamp)` — the stdlib module's mapping (Sun = 0).
