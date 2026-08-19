@@ -598,6 +598,31 @@ fn differential_strings() {
             // Three more names whose `ListDyn` arms were already there and
             // whose method-table row was not, so a boxed receiver never
             // reached them.
+            // `sort`, `min` and `max` on a list whose elements are not all one
+            // carrier. This is the whole of the cross-kind order, and it is the
+            // gate for it: the order is *imposed* rather than emergent, so a
+            // corpus shows everything a unit-level mirror would — unlike map
+            // iteration order, which needed `vm_mirror` because a hash layout
+            // can drift without any program saying so.
+            //
+            // Each line is one of the three things a copy of the VM's
+            // comparator would have got wrong. The rank tables: the VM keeps
+            // two and reaches the second only for two heap values, so they have
+            // to be shown to agree — a short string and a long one sort the
+            // same way against a list. The window: it is a list by content but
+            // shares a tag value with the end of the map range. The struct: it
+            // is a marked map in the runtime and a distinct heap kind in the
+            // VM, and it sorts *after* a plain map.
+            new(
+                "cross_kind_sort_order",
+                "struct P { x: Int }\nstruct Q { y: Int }\nfn s(xs) { return xs.sort(); }\nprintln(s([nil, true, 1, 2.5, \"ab\", [1], {\"k\": 1}]));\nprintln(s([{\"k\": 1}, [1], \"ab\", 2.5, 1, true, nil]));\nprintln(s([[2], [1, 0], [1], []]));\nprintln(s([[1, 2], [1, 2, 3], [1]]));\nprintln(s([\"b\", \"a\", \"a-long-string-past-seven\", \"B\"]));\nprintln(s([2, 1.5, 1, 2.0, 0.0, -0.0]));\nprintln(s([1, \"1\", true]));\nprintln(s([\"ab\".bytes(), [1], \"zz\"]));\nprintln(s([{\"k\": 1}, P { x: 1 }, [1], \"s\"]));\nprintln(s([P { x: 2 }, P { x: 1 }, Q { y: 1 }]));\nprintln(s([]));\nlet w = [1, 2, 3];\nprintln(s([w.slice(1, 3), [0], [1, 2]]));\nreturn 0;\n",
+            ),
+            // The two reductions that share the order, and the empty answer
+            // that no unboxed carrier can hold.
+            new(
+                "cross_kind_min_and_max",
+                "fn mn(xs) { return xs.min(); }\nfn mx(xs) { return xs.max(); }\nprintln(mn([3, 1.5, \"a\", nil]));\nprintln(mx([3, 1.5, \"a\", nil]));\nprintln(mn([[2], [1]]));\nprintln(mx([[2], [1]]));\nprintln(mn([]) == nil);\nprintln(mx([]) == nil);\nprintln(mn([true, nil, 0]));\nreturn 0;\n",
+            ),
             new(
                 "dyn_receiver_chunk_enumerate_flatten",
                 "fn c(xs) { return xs.chunk(2); }\nfn e(xs) { return xs.enumerate(); }\nfn fl(xs) { return xs.flatten(); }\nprintln(c([1, 2, 3]));\nprintln(c([\"a\", \"b\", \"c\"]));\nprintln(c([]));\nprintln(e([1, 2]));\nprintln(e([[1], [2]]));\nprintln(fl([[1], [2, 3]]));\nprintln(fl([[[1]], [[2]]]));\nreturn 0;\n",

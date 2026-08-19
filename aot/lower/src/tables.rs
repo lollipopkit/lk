@@ -1097,6 +1097,8 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("concat",    true,     true,  false),
     method_row("unique",    true,     true,  true),
     method_row("sort",      true,     true,  false),
+    method_row("min",       true,     false, true),
+    method_row("max",       true,     false, true),
     method_row("reverse",   true,     true,  false),
     // NOT `unbox_list`, and the exception is worth naming: `slice` answers a
     // *window* over the receiver, and `dyn.as_list` materializes a plain list

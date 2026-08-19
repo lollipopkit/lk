@@ -1499,6 +1499,128 @@ pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
 /// a boxed haystack needs — `"a" in c[0]` used to drop the whole program to the
 /// VM because the lowering had no arm for a `Dyn` haystack at all.
 ///
+/// How deep a value may nest before the comparison stops descending.
+///
+/// Mirrors `core::val::MAX_VALUE_DEPTH`. The VM's comparator answers rather
+/// than reports past this bound, and has to: `sort_by` wants an `Ordering`, and
+/// raising half way through a sort would leave the list rearranged anyway.
+const MAX_VALUE_DEPTH: u32 = 512;
+
+/// Where a value's *kind* sits in the sort order.
+///
+/// The VM keeps two tables — one over `RuntimeVal`, one over `HeapValue` — and
+/// reaches the second only for two heap values. Flattening them is sound
+/// because the two agree wherever both apply: a short string is
+/// `RuntimeVal::ShortStr` (4) against any heap value (5), and a long one is a
+/// heap `String` (0) against `Bytes` (1), `List` (2), `Map` (3) — the same
+/// relative order either way. Which representation a string happens to have is
+/// not something a program can see, and this is why.
+fn kind_rank(v: LkDyn) -> u8 {
+    // Checked before the map test: `DYN_SLICE` shares a value with
+    // `DYN_TMAP_END`, and `is_map_tag` excludes the end of the range for
+    // exactly that reason. A window is a list here as it is everywhere else.
+    if is_list_tag(v.tag) || v.tag == DYN_SLICE {
+        return 5;
+    }
+    if is_map_tag(v.tag) {
+        // A struct instance is a *marked map* in this runtime and a
+        // `HeapValue::Object` in the VM, which ranks above `Map`:
+        // `[{"k": 1}, P { x: 1 }].sort()` keeps that order and the other
+        // spelling reverses. The tag cannot tell the two apart; the mark can.
+        return if lkrt_dyn_obj_type_id(v) != 0 { 8 } else { 6 };
+    }
+    match v.tag {
+        DYN_NIL => 0,
+        DYN_BOOL => 1,
+        DYN_I64 | DYN_F64 => 2,
+        DYN_STR => 3,
+        DYN_BYTES => 4,
+        DYN_SET => 7,
+        DYN_CLOSURE => 9,
+        _ => 10,
+    }
+}
+
+/// A sequence's elements, whether it is a list carrier or a window.
+fn sequence_elements<'a>(v: LkDyn) -> alloc::borrow::Cow<'a, [LkDyn]> {
+    if v.tag == DYN_SLICE {
+        // SAFETY: a `DYN_SLICE` payload is a live window handle.
+        return alloc::borrow::Cow::Owned(
+            unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) }
+                .iter()
+                .map(|value| lkrt_dyn_from_i64(*value))
+                .collect(),
+        );
+    }
+    dyn_list_values(v)
+}
+
+/// The VM's `compare_runtime_values`, mirrored — the order `sort`, `min` and
+/// `max` use on a list whose elements are not all one carrier.
+///
+/// This is the mirror the boxed carrier was declined for, and the reasons it
+/// was declined are the three things below that a copy would have got wrong:
+/// the two rank tables are not one table until you check that they agree, a
+/// window is a list but shares a tag value with the end of the map range, and a
+/// struct is a marked map here and a distinct heap kind there.
+///
+/// Everything that is not nil, a bool, a number, a string or a sequence
+/// compares **by kind alone** — two maps are equal, two byte strings are equal,
+/// two structs are equal. That is the VM's rule and it is deliberate there: a
+/// map has no order against another map, and grouping them deterministically
+/// beats calling the comparison a failure.
+pub(crate) fn dyn_compare(a: LkDyn, b: LkDyn) -> core::cmp::Ordering {
+    dyn_compare_at(a, b, 0)
+}
+
+fn dyn_compare_at(a: LkDyn, b: LkDyn, depth: u32) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let (rank_a, rank_b) = (kind_rank(a), kind_rank(b));
+    if rank_a != rank_b {
+        return rank_a.cmp(&rank_b);
+    }
+    match rank_a {
+        0 => Ordering::Equal,
+        1 => (a.payload != 0).cmp(&(b.payload != 0)),
+        // Int and Float share a rank and compare as numbers, so `1 < 1.5 < 2`
+        // holds however each was written. Two Ints stay exact; anything else
+        // goes through the total float order, which is where NaN and `-0.0`
+        // are decided (see `lklist::compare_floats`).
+        2 => {
+            if a.tag == DYN_I64 && b.tag == DYN_I64 {
+                a.payload.cmp(&b.payload)
+            } else {
+                let as_f64 = |v: LkDyn| {
+                    if v.tag == DYN_I64 {
+                        v.payload as f64
+                    } else {
+                        v.f64_value()
+                    }
+                };
+                crate::lklist::compare_floats(as_f64(a), as_f64(b))
+            }
+        }
+        // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+        3 => unsafe { dyn_str(a).as_bytes().cmp(dyn_str(b).as_bytes()) },
+        // Lexicographic, and a prefix sorts before what extends it — which is
+        // what `==` already treats a list as.
+        5 => {
+            if depth >= MAX_VALUE_DEPTH {
+                return Ordering::Equal;
+            }
+            let (xs, ys) = (sequence_elements(a), sequence_elements(b));
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                let ordering = dyn_compare_at(*x, *y, depth + 1);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            xs.len().cmp(&ys.len())
+        }
+        _ => Ordering::Equal,
+    }
+}
+
 /// `receiver.contains(needle)` — the *method*, which is not `needle in receiver`.
 ///
 /// The two differ on exactly one carrier and it matters: the VM gives a map

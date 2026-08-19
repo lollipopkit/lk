@@ -73,19 +73,12 @@ const EXCLUDED: &[(&str, &str)] = &[
          window does, and answered a list when the row said `unbox_list`.",
     ),
     (
-        "sort",
-        "its order is `compare_runtime_values` across *kinds*, which needs two \
-         rank tables, a depth-limited recursive list comparison and the slice \
-         view — a mirror of that size wants its own conformance test (see \
-         `vm_mirror`), not a copy.",
-    ),
-    ("min", "same order as `sort`, same missing mirror."),
-    ("max", "same order as `sort`, same missing mirror."),
-    (
         "sum",
         "adds across kinds, which is `dyn.add` folded over the elements — \
          reachable, but it is a second summation rule until it is written \
-         against the VM's.",
+         against the VM's. `sort`, `min` and `max` were here for the neighbouring \
+         reason and are not any more: their order is mirrored as `dyn_compare` \
+         and gated by `cross_kind_sort_order`.",
     ),
     (
         "reduce",

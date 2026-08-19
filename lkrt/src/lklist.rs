@@ -1331,7 +1331,7 @@ list_slice!(
 /// killed the process; in the VM it killed the interpreter. Both sides now order
 /// NaN instead: all NaNs equal, every NaN greater than every number, `-0.0` and
 /// `0.0` still equal (which is what `==` says).
-fn compare_floats(left: f64, right: f64) -> core::cmp::Ordering {
+pub(crate) fn compare_floats(left: f64, right: f64) -> core::cmp::Ordering {
     match left.partial_cmp(&right) {
         Some(ordering) => ordering,
         None => match (left.is_nan(), right.is_nan()) {
@@ -1518,6 +1518,29 @@ list_sort!(
         }
     }),
     "`sort()` on a `List<str>`."
+);
+
+list_sort!(
+    lkrt_lklist_dyn_sort,
+    crate::lkdyn::LkDyn,
+    |values| values.sort_by(|left, right| crate::lkdyn::dyn_compare(*left, *right)),
+    "`sort()` on a boxed-element list — the VM's cross-kind order."
+);
+list_extreme!(
+    lkrt_lklist_dyn_min,
+    crate::lkdyn::LkDyn,
+    |value: &crate::lkdyn::LkDyn| *value,
+    |a: &crate::lkdyn::LkDyn, b: &crate::lkdyn::LkDyn| crate::lkdyn::dyn_compare(*a, *b),
+    false,
+    "`min()` on a boxed-element list."
+);
+list_extreme!(
+    lkrt_lklist_dyn_max,
+    crate::lkdyn::LkDyn,
+    |value: &crate::lkdyn::LkDyn| *value,
+    |a: &crate::lkdyn::LkDyn, b: &crate::lkdyn::LkDyn| crate::lkdyn::dyn_compare(*a, *b),
+    true,
+    "`max()` on a boxed-element list."
 );
 
 /// `xs.reverse()` — a fresh reversed copy (non-mutating, like the VM).

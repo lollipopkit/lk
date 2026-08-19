@@ -962,6 +962,33 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Dyn)
         }
+        // The boxed carrier joins `sort`, `min` and `max`: its order is
+        // `dyn_compare`, the VM's `compare_runtime_values` mirrored against the
+        // VM itself rather than copied from it. What made a copy the wrong
+        // shape is what the mirror had to get right — the VM keeps two rank
+        // tables and they have to be shown to agree, a window is a list but
+        // shares a tag value with the end of the map range, and a struct is a
+        // marked map here and a distinct heap kind there.
+        (Ty::ListDyn, "sort", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_sort"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "min" | "max", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", if name == "min" { "dyn_min" } else { "dyn_max" }),
+                args: vec![receiver],
+            });
+            // Boxed: an empty sequence answers nil, which no unboxed carrier
+            // can hold.
+            (dst, Ty::Dyn)
+        }
         (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "sort", []) => {
             let callee = match receiver_ty {
                 Ty::ListI64 => "i64_sort",

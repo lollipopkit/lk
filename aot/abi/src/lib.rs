@@ -274,6 +274,8 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_sum", lkrt_lklist_f64_sum, ReadsHost, [Ptr], F64);
             ("list_h", "i64_min", lkrt_lklist_i64_min, ReadsHost, [Ptr], DynVal);
             ("list_h", "i64_max", lkrt_lklist_i64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_min", lkrt_lklist_dyn_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_max", lkrt_lklist_dyn_max, ReadsHost, [Ptr], DynVal);
             ("list_h", "f64_min", lkrt_lklist_f64_min, ReadsHost, [Ptr], DynVal);
             ("list_h", "f64_max", lkrt_lklist_f64_max, ReadsHost, [Ptr], DynVal);
             ("list_h", "str_min", lkrt_lklist_str_min, ReadsHost, [Ptr], DynVal);
@@ -584,6 +586,10 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "f64_sort", lkrt_lklist_f64_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "str_sort", lkrt_lklist_str_sort, WritesHost, [Ptr], Ptr, Constructs);
+            // The boxed carrier, whose order is `dyn_compare` — the VM's
+            // cross-kind comparison, mirrored with a conformance test rather
+            // than copied (see `vm_mirror`).
+            ("list_h", "dyn_sort", lkrt_lklist_dyn_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "f64_reverse", lkrt_lklist_f64_reverse, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "str_reverse", lkrt_lklist_str_reverse, WritesHost, [Ptr], Ptr, Constructs);
