@@ -199,7 +199,19 @@ impl Compiler {
         self.lower_and_condition(ge_start, before_end)
     }
 
-    pub(super) fn lower_list_pattern_condition(&mut self, value: u16, fixed_len: usize) -> Result<u16> {
+    /// The shape test for a list pattern: it is a list, and its length fits.
+    ///
+    /// `exact` is what `..rest` decides. Without a rest pattern the length must
+    /// *equal* the number of sub-patterns; with one, the fixed part is a
+    /// minimum and the rest takes the tail.
+    ///
+    /// It used to be a minimum either way, which made `[]` match every list —
+    /// so `match xs { [] => …, [a] => …, [a, b] => … }` answered the first arm
+    /// for a list of any length, and every arm after it was dead. `[a]` matched
+    /// a two-element list for the same reason. Nothing documented that reading,
+    /// and every example in the corpus writes `..rest` when it means "at
+    /// least", which is exactly the distinction this argument restores.
+    pub(super) fn lower_list_pattern_condition(&mut self, value: u16, fixed_len: usize, exact: bool) -> Result<u16> {
         let is_list = self.alloc_reg();
         self.emit(Instr::abc(
             Opcode::IsList,
@@ -220,7 +232,7 @@ impl Compiler {
         self.set_register_kind(len, PerfValueKind::Int);
         let expected = self.lower_val(&LiteralVal::Int(fixed_len as i64))?;
         self.emit(Instr::abc(
-            Opcode::CmpGeInt,
+            if exact { Opcode::CmpInt } else { Opcode::CmpGeInt },
             checked_u8("pattern list condition", result)?,
             checked_u8("pattern list len", len)?,
             checked_u8("pattern list expected", expected)?,
@@ -374,7 +386,9 @@ impl Compiler {
         slots: &mut alloc::collections::VecDeque<u16>,
     ) -> Result<u16> {
         let shape = match pattern {
-            Pattern::List { patterns, .. } => self.lower_list_pattern_condition(value, patterns.len())?,
+            Pattern::List { patterns, rest } => {
+                self.lower_list_pattern_condition(value, patterns.len(), rest.is_none())?
+            }
             Pattern::Map { patterns, .. } => self.lower_map_pattern_condition(value, patterns)?,
             other => bail!("not a container pattern: {:?}", pattern_kind(other)),
         };

@@ -549,12 +549,12 @@ impl Compiler {
             }
             ForPattern::Ignore => Ok(()),
             ForPattern::Tuple(patterns) => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), true)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)
             }
             ForPattern::Array { patterns, rest: None } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), true)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)
             }
@@ -562,7 +562,7 @@ impl Compiler {
                 patterns,
                 rest: Some(rest),
             } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), false)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)?;
                 let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;

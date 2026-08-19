@@ -150,7 +150,7 @@ impl Compiler {
             }
             Pattern::Wildcard => Ok(()),
             Pattern::List { patterns, rest } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), rest.is_none())?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_let_sequence(patterns, value)?;
                 if let Some(rest) = rest {
