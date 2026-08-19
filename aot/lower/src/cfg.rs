@@ -38,7 +38,9 @@ pub(crate) fn block_span(exits: &[Option<Exit>], consumed: &[bool], start: usize
 pub(crate) fn exit_successors(exit: Option<Exit>, fallthrough: usize) -> Vec<usize> {
     match exit {
         None => vec![fallthrough],
-        Some(Exit::Ret(_)) => vec![],
+        // Both leave the function: an escape does it after writing the outcome
+        // code, so the *caller* takes the edge, not this one.
+        Some(Exit::Ret(_)) | Some(Exit::TryEscape { .. }) => vec![],
         Some(Exit::Jump(t)) => vec![t],
         Some(Exit::Cond { then_pc, else_pc, .. }) => vec![then_pc, else_pc],
         Some(Exit::FusedCmp { taken, fallthrough, .. })

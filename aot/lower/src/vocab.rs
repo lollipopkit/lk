@@ -285,6 +285,16 @@ pub(crate) enum Exit {
         handler: usize,
         fallthrough: usize,
     },
+    /// A `try` body leaving through a jump that belonged to the enclosing
+    /// function — a `break` or `continue` whose loop is outside the region.
+    ///
+    /// Only ever the exit of an escape trailer (`try_region::outline`), and only
+    /// inside an outlined body. It writes `code` into the outcome flag and
+    /// returns normally, so the trampoline still reports "did not raise"; the
+    /// caller's check block reads the code and takes the edge the jump named.
+    TryEscape {
+        code: i64,
+    },
     /// Fused `TestEqIntI2` + trailing `Jmp`: `r_a == imm_a && r_b == imm_b`
     /// falls through, anything else branches to `taken`. Consumes the `Jmp`.
     FusedCmp2 {

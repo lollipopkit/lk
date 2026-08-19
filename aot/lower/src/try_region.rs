@@ -82,6 +82,42 @@
 //! refuted were the two that inferred. Compiling was never the test; agreeing
 //! with the VM was, and the refutations were found by running the program.
 //!
+//! # Leaving the region
+//!
+//! A body can end four ways, and three of them are not "it finished". `return`
+//! belongs to the enclosing function; `break` and `continue` belong to a loop
+//! that encloses the region. All three are the same problem — a jump whose
+//! destination is in a frame the outlined body does not have — so they share one
+//! answer: an **outcome flag** cell the body writes on its way out (0 fell
+//! through, 1 returned, `2 + k` took the `k`th escape) and a check block behind
+//! the region's ok edge that reads it and takes the edge the body named.
+//!
+//! Two decisions in that are worth keeping:
+//!
+//! - **The escape is still a jump, right up to the end.** Each destination gets
+//!   a one-instruction trailer past the body's `Return0`, and the jumps that
+//!   took it are rewritten to point there. So a `break` stays an ordinary jump
+//!   through leader-finding, the CFG, and SSA construction, and only becomes a
+//!   flag write at the trailer. Intercepting the jump *instruction* instead
+//!   would have meant one rewrite per terminator shape, and would have been
+//!   silently wrong for the shape it forgot.
+//!
+//! - **The parent's edges are real edges.** The escape destinations are recorded
+//!   as successors of the region's block, so the phi operands they need are
+//!   built by the same machinery every other edge uses; the check block reads
+//!   them back with `args_to`. Nothing about a `break` out of a `try` is special
+//!   in the parent — it is one block's terminator having four successors instead
+//!   of two.
+//!
+//! What this cost, and what caught it: the region was looked up by the *block's*
+//! leader rather than the `TryBegin`'s pc, so `while c { i = i + 1; try { … } }`
+//! found no escapes, built a body declaring five parameters, and called it with
+//! four. That is not a link error — the trampoline takes the body's address and
+//! casts it — so it ran and dereferenced whatever the fifth register held.
+//! `clif.rs` now checks the call against the body's declared arity, and the
+//! generated corpus that found it compares against the VM rather than merely
+//! compiling.
+//!
 use lk_core::vm::{FunctionData, Instr, Opcode};
 
 use crate::Unsupported;
@@ -106,6 +142,26 @@ pub(crate) struct TryRegionShape {
     /// now: two more output cells (a flag and the value), set by the body and
     /// checked by the caller on the ok edge.
     pub(crate) body_returns: bool,
+    /// Where the body jumps to *outside* the region, distinct and in the order
+    /// first seen: a `break` or `continue` belonging to a loop that encloses the
+    /// `try`.
+    ///
+    /// Outlined, the body has no such loop, so each of these is one more
+    /// outcome the flag reports (code `2 + index`) and one more edge out of the
+    /// region's block in the parent.
+    pub(crate) escape_targets: Vec<usize>,
+    /// The jumps themselves: the parent pc of each, and which
+    /// `escape_targets` entry it takes.
+    pub(crate) escapes: Vec<TryEscape>,
+}
+
+/// One jump out of a region's body, and where it lands.
+pub(crate) struct TryEscape {
+    /// The `Jmp` itself, in the *parent's* pc space.
+    pub(crate) pc: usize,
+    /// An index into [`TryRegionShape::escape_targets`], which is also the
+    /// outcome code the flag carries, offset by 2.
+    pub(crate) target: usize,
 }
 
 /// Every register the body might write.
@@ -146,9 +202,35 @@ pub(crate) fn written_registers(instrs: &[Instr], start: usize, end: usize) -> V
 /// The rest of the tables stay default. They are the VM executor's, and an
 /// outlined body is never executed by the VM: it exists only in this crate's
 /// own function table.
+///
+/// # Escape trailers
+///
+/// A `break` or `continue` belonging to a loop outside the `try` jumps to a pc
+/// the body does not contain. Copied verbatim, that jump's *offset* would be
+/// resolved against the body's own code — landing on some unrelated instruction
+/// when the distance happens to fit, which is a wrong answer rather than a
+/// refusal. So each distinct destination gets a one-instruction trailer past the
+/// body's `Return0`, and every jump that took it is rewritten to point there.
+///
+/// The trailer's opcode is never executed: the parent's lowering replaces its
+/// exit with [`crate::Exit::TryEscape`], which writes the outcome code into the
+/// flag cell and returns. What the trailer buys is a *block* — so a jump out
+/// stays an ordinary jump, and every terminator shape (fused compare, `for`
+/// latch, plain `Jmp`) keeps working without a second mechanism.
 pub(crate) fn outline(parent: &FunctionData, region: &TryRegionShape) -> FunctionData {
     let mut code: Vec<u32> = parent.code[region.body_start..region.body_end].to_vec();
     code.push(Instr::abc(Opcode::Return0, 0, 0, 0).raw());
+    let trailer_base = code.len();
+    for _ in &region.escape_targets {
+        code.push(Instr::abc(Opcode::Return0, 0, 0, 0).raw());
+    }
+    for escape in &region.escapes {
+        let from = escape.pc - region.body_start;
+        let to = trailer_base + escape.target;
+        // `cfg::rel` reads `pc + 1 + offset`, so this is the inverse. Both fit
+        // an `i32` comfortably: `to` is bounded by the body's length.
+        code[from] = Instr::sj(Opcode::Jmp, (to as i64 - from as i64 - 1) as i32).raw();
+    }
     fn rebase<T: Clone>(table: &[Option<T>], start: usize, end: usize) -> Vec<Option<T>> {
         (start..end).map(|pc| table.get(pc).cloned().flatten()).collect()
     }
@@ -199,6 +281,32 @@ pub(crate) fn scan(func: &FunctionData, instrs: &[Instr]) -> Result<Vec<TryRegio
         let shape = shape_at(func, instrs, pc)?;
         inner_until = shape.body_end;
         regions.push(shape);
+    }
+    // An escape has to land somewhere the parent still *has* a block. Every
+    // region's body is consumed there — its instructions belong to the outlined
+    // function — so a jump into one would resolve to the block that region's
+    // `TryBegin` ends, and run it from the top. The spans are only all known
+    // once the scan is done, which is why this is here and not in `shape_at`.
+    let spans: Vec<(usize, usize)> = regions
+        .iter()
+        .map(|region| {
+            // Plus the `Jmp` over the handler, which the parent consumes too.
+            let last = match instrs.get(region.body_end + 1) {
+                Some(instr) if instr.opcode() == Opcode::Jmp => region.body_end + 1,
+                _ => region.body_end,
+            };
+            (region.body_start, last)
+        })
+        .collect();
+    for region in &regions {
+        for &target in &region.escape_targets {
+            if spans.iter().any(|&(start, end)| target >= start && target <= end) {
+                return Err(Unsupported::TryRegion {
+                    pc: region.begin_pc,
+                    reason: "the body jumps into another `try` region's body, which is a function of its own",
+                });
+            }
+        }
     }
     Ok(regions)
 }
@@ -263,26 +371,43 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         }
     }
 
-    // Jumps must stay inside the body. The shape that reaches here is a
-    // `break` or `continue` whose loop *encloses* the `try`: outlined, the body
-    // is a function of its own and has no loop to leave.
+    // A jump that leaves the body is a `break` or `continue` belonging to a loop
+    // that *encloses* the `try`. Outlined, the body has no such loop, so the
+    // jump becomes one more outcome the body reports and one more edge out of
+    // the region in the parent — the same channel a `return` already travels on,
+    // with the flag widened from "did it return" to "which way did it leave".
     //
-    // `return` is not in this set — it is answered by the return channel
-    // (`body_returns`) — and a loop written *inside* the `try` is not either,
-    // since its jumps stay in the body. Naming the shape rather than the
-    // mechanism matters here because the message is what a reader gets from
-    // `lk compile object:`, where there is no fallback to hide it; the
-    // rearrangement that lowers is in the sentence.
+    // Only an unconditional `Jmp` qualifies. That is what `break` and
+    // `continue` compile to — the condition in front of one is its own fused
+    // branch to a label *inside* the body — and it is the only shape whose whole
+    // terminator can be replaced by the trailer jump. A conditional whose taken
+    // edge leaves would need one edge rewritten and the other kept, so it says
+    // so rather than being approximated.
     let mut consumed = vec![false; code_len];
+    let mut escape_targets: Vec<usize> = Vec::new();
+    let mut escapes: Vec<TryEscape> = Vec::new();
     for pc in begin_pc + 1..body_end {
         let exit = crate::cfg::exit_of(pc, instrs, code_len, &mut consumed, &func.performance)?;
+        let leaves = |target: usize| target <= begin_pc || target > body_end;
+        if let Some(crate::Exit::Jump(target)) = exit
+            && leaves(target)
+        {
+            let index = match escape_targets.iter().position(|&t| t == target) {
+                Some(index) => index,
+                None => {
+                    escape_targets.push(target);
+                    escape_targets.len() - 1
+                }
+            };
+            escapes.push(TryEscape { pc, target: index });
+            continue;
+        }
         for target in crate::cfg::exit_successors(exit, pc + 1) {
-            if target <= begin_pc || target > body_end {
+            if leaves(target) {
                 return Err(Unsupported::TryRegion {
                     pc,
-                    reason: "a `break` or `continue` here belongs to a loop outside the `try`, and the body \
-                             becomes a function of its own with no loop to leave — writing \
-                             the loop inside the `try` lowers",
+                    reason: "a branch here leaves the `try` on one edge only, and the body becomes a \
+                             function of its own — an unconditional `break` or `continue` lowers",
                 });
             }
         }
@@ -296,5 +421,7 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         fallthrough,
         catch_reg: begin.a(),
         body_returns,
+        escape_targets,
+        escapes,
     })
 }

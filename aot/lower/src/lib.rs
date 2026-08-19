@@ -171,6 +171,7 @@ pub fn lower_bundled(
         try_body_raw_cells: std::collections::HashSet::new(),
         try_body_extra_cells: std::collections::HashMap::new(),
         try_body_returns: std::collections::HashSet::new(),
+        try_body_escapes: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         no_phi_provenance: std::collections::HashSet::new(),
@@ -250,6 +251,9 @@ pub fn lower_bundled(
             sig.try_bodies.insert((scanning as u32, region.begin_pc), body_index);
             if region.body_returns {
                 sig.try_body_returns.insert(body_index);
+            }
+            if !region.escape_targets.is_empty() {
+                sig.try_body_escapes.insert(body_index, region.escape_targets.len());
             }
             discover_try_params(&mut funcs, body_index, module, &mut sig);
         }

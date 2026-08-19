@@ -169,10 +169,12 @@ assert(apply_to([1, 2, 3], |x| x + 1) == [2, 3, 4]);
 assert(fold_with([1, 2, 3], |a, b| a + b) == 6);
 
 // A loop and a region, both ways round. The body of a `try` becomes a function
-// of its own, so a jump has to stay inside it: a loop *written inside* the
-// `try` keeps its own `break` and `continue`, while one that *encloses* the
-// `try` has neither to give — that shape runs, and runs on the interpreter,
-// but has no native form yet (`docs/aot/aot-gaps-and-lkrt.md` §47).
+// of its own when it is compiled natively, so a `break` written in it belongs to
+// a loop that function does not have. Both directions are here because they
+// lower by different means and only running them says so: a loop *written
+// inside* the `try` keeps its own jumps, and one that *encloses* the `try`
+// reports which way it left through the same channel a `return` uses
+// (`docs/aot/aot-gaps-and-lkrt.md` §47).
 fn scan(values: List<Int>) -> Int {
     let seen = 0;
     try {
@@ -205,5 +207,68 @@ fn tally_each(values: List<Int>) -> Int {
 }
 assert(tally_each([1, 2]) == 3);
 assert(tally_each([1, 0 - 1, 2]) == 103);
+
+// The jump belonging to the loop *outside* the region: one `break`, one
+// `continue`, and a raise in between, so the handler runs on the way past. Each
+// distinct destination is one more outcome the body reports, so the two here
+// and the ordinary fall-through are three answers on one flag.
+fn until_negative(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { break; }
+            if v == 0 { continue; }
+            if v == 13 { error("unlucky"); }
+            total = total + v;
+        } catch e {
+            total = total + 100;
+        }
+    }
+    return total;
+}
+assert(until_negative([1, 2, 3]) == 6);
+assert(until_negative([1, 0, 2]) == 3);
+assert(until_negative([1, 0 - 5, 9]) == 1);
+assert(until_negative([1, 13, 2]) == 103);
+
+// A `while` loop, where `continue` jumps *backwards* to the condition rather
+// than forwards to a latch — the same channel, a different destination.
+fn skip_evens(limit: Int) -> Int {
+    let total = 0;
+    let i = 0;
+    while i < limit {
+        i = i + 1;
+        try {
+            if i % 2 == 0 { continue; }
+            if i > 7 { break; }
+            total = total + i;
+        } catch e {
+            total = 0 - 1;
+        }
+    }
+    return total;
+}
+assert(skip_evens(10) == 16);
+assert(skip_evens(3) == 4);
+
+// And with a `return` in the same body: the flag carries four answers now, and
+// the one that returns also carries a value.
+fn first_over(values: List<Int>, bound: Int) -> Int {
+    let seen = 0;
+    for v in values {
+        try {
+            if v == 0 { continue; }
+            if v < 0 { break; }
+            if v > bound { return v; }
+            seen = seen + 1;
+        } catch e {
+            seen = 0;
+        }
+    }
+    return 0 - seen;
+}
+assert(first_over([1, 2, 9], 5) == 9);
+assert(first_over([1, 0, 2], 5) == 0 - 2);
+assert(first_over([1, 0 - 3, 9], 5) == 0 - 1);
 
 println("try/catch: ok");

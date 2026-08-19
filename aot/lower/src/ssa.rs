@@ -45,6 +45,10 @@ pub(crate) fn build_term(
         // and `Some` for a bare `return` in a Dyn-returning function (nil
         // crosses the call boundary boxed).
         Some(Exit::Ret(None)) | Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
+        // The outcome code was written into the flag cell by the block's own
+        // instructions; the body itself returns nothing, as it does on every
+        // other path.
+        Some(Exit::TryEscape { .. }) => Term::Ret(None),
         Some(Exit::Jump(pc)) => br(pc),
         Some(Exit::Cond { then_pc, else_pc, .. }) => {
             let cond = cond_val.expect("cond resolved");

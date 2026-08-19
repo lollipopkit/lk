@@ -107,6 +107,8 @@ struct ModuleCtx<'a> {
     /// Intra-module function return types, for binding a [`Inst::CallFn`] result
     /// as one value or a `{i64,i64}` pair.
     fn_rets: &'a HashMap<FuncId, Ty>,
+    /// Machine-word count of each function's signature (see `fn_arity`).
+    fn_arity: &'a HashMap<FuncId, usize>,
     helpers: &'a Helpers,
     /// Declared ABI runtime symbols, cached by C symbol name (declared lazily so
     /// a program that never calls one does not force its — possibly `DynVal` —
@@ -295,6 +297,12 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
     let mut fn_rets = HashMap::new();
+    // How many machine words each function's signature takes, so a try-region
+    // call can be checked against the body it names. Nothing else checks it: the
+    // trampoline takes the body's *address* and casts it to an arity the switch
+    // picked, so a caller passing one word too few reads a register the callee
+    // never wrote — a wild pointer, not a link error.
+    let mut fn_arity: HashMap<FuncId, usize> = HashMap::new();
     // Exported LK functions by the name the source gave them, so
     // `symbol_address("name")` can take the address of *this* function rather
     // than declaring an import that would have to guess a signature — and
@@ -317,6 +325,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         }
         fn_ids.insert(func.id, id);
         fn_rets.insert(func.id, func.ret);
+        fn_arity.insert(func.id, sig.params.len());
     }
     let helpers = Helpers::declare(&mut module)?;
 
@@ -386,6 +395,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
             let mut mctx = ModuleCtx {
                 module: &mut module,
                 fn_ids: &fn_ids,
+                fn_arity: &fn_arity,
                 fn_rets: &fn_rets,
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
@@ -902,6 +912,17 @@ impl Lower {
                 // holding, so the number itself is checked.
                 if args.len() > LK_TRY_MAX_ARGS {
                     return Err(ClifError::Unsupported("try-region arity over trampoline cap"));
+                }
+                // And that the count *agrees with the body*. The call goes
+                // through an address and a cast, so a disagreement is not a link
+                // error — the body reads a parameter register the caller never
+                // set. One `try` whose region was found at the wrong pc built
+                // exactly that: a five-parameter body called with four words,
+                // which ran and dereferenced whatever the fifth register held.
+                if mctx.fn_arity.get(func) != Some(&args.len()) {
+                    return Err(ClifError::Unsupported(
+                        "try-region call disagrees with the body's arity",
+                    ));
                 }
                 let slot_bytes = (args.len().max(1) * 8) as u32;
                 let args_slot =

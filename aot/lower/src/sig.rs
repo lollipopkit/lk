@@ -166,6 +166,21 @@ pub(crate) struct SigInfer {
     /// more output cells, a flag and the value. The body sets them and returns
     /// normally; the caller checks the flag on the ok edge and returns.
     pub(crate) try_body_returns: std::collections::HashSet<u32>,
+    /// How many escape trailers a try body ends with — one per distinct pc
+    /// outside the region that its `break`/`continue` jumps to
+    /// (`TryRegionShape::escape_targets`).
+    ///
+    /// The body cannot work this out for itself: the trailers are `Return0`
+    /// placeholders, and which of its instructions are trailers rather than code
+    /// is a fact about the *region*, which lives in the parent. The count is
+    /// enough — they are the last `n` instructions, and the outcome code of the
+    /// `k`th is `2 + k`.
+    ///
+    /// A body with any of these takes the outcome flag whether or not it also
+    /// `return`s; the value cell stays tied to [`SigInfer::try_body_returns`],
+    /// since a `break` carries nothing and the trampoline's argument budget is
+    /// eight.
+    pub(crate) try_body_escapes: std::collections::HashMap<u32, usize>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

@@ -586,6 +586,15 @@ pub(crate) fn lower_function(
     let mut exits: Vec<Option<Exit>> = (0..code_len)
         .map(|pc| exit_of(pc, &instrs, code_len, &mut consumed, &func.performance))
         .collect::<Result<Vec<_>, _>>()?;
+    // This function's own escape trailers, when it *is* a region's body: the
+    // last `n` instructions, placeholders whose real meaning is "write outcome
+    // code `2 + k` and return" (`try_region::outline`). They are jump targets
+    // like any other, which is the whole point — a `break` out of the region
+    // stays an ordinary jump right up to here.
+    let escape_trailers = sig.try_body_escapes.get(&func_index).copied().unwrap_or(0);
+    for k in 0..escape_trailers {
+        exits[code_len - escape_trailers + k] = Some(Exit::TryEscape { code: 2 + k as i64 });
+    }
     for region in &regions {
         // A body that writes a register the enclosing function already defined
         // would, outlined, write it in the *body's* frame and leave the
@@ -678,11 +687,9 @@ pub(crate) fn lower_function(
                     .sum()
             })
             .unwrap_or(0);
-        let channel = if sig.try_body_returns.contains(&body_index) {
-            2
-        } else {
-            0
-        };
+        // The outcome flag, plus the parked value for a body that `return`s.
+        let returns = sig.try_body_returns.contains(&body_index);
+        let channel = usize::from(returns || !region.escape_targets.is_empty()) + usize::from(returns);
         if inputs + cells.len() + channel > LK_TRY_MAX_ARGS {
             return Err(Unsupported::TryRegion {
                 pc: region.begin_pc,
@@ -713,7 +720,7 @@ pub(crate) fn lower_function(
     for (pc, exit) in exits.iter().enumerate() {
         match exit {
             None => {}
-            Some(Exit::Ret(_)) => {
+            Some(Exit::Ret(_)) | Some(Exit::TryEscape { .. }) => {
                 if pc + 1 < code_len {
                     leaders.insert(pc + 1);
                 }
@@ -744,6 +751,11 @@ pub(crate) fn lower_function(
             }) => {
                 mark_target(*handler, code_len, &mut leaders, &mut implicit_ret);
                 mark_target(*fallthrough, code_len, &mut leaders, &mut implicit_ret);
+                // Where the body's `break`/`continue` land: real edges out of
+                // this block, so real leaders.
+                for &target in escape_targets_at(&regions, pc) {
+                    mark_target(target, code_len, &mut leaders, &mut implicit_ret);
+                }
             }
         }
     }
@@ -783,8 +795,11 @@ pub(crate) fn lower_function(
         .collect();
     let mut successors: Vec<Vec<usize>> = vec![Vec::new(); total_blocks];
     for (bi, &(start, end)) in block_bounds.iter().enumerate() {
-        let (_, exit) = block_span(&exits, &consumed, start, end);
+        let (exit_pc, exit) = block_span(&exits, &consumed, start, end);
         successors[bi] = exit_successors(exit, end).into_iter().map(block_of).collect();
+        if matches!(exit, Some(Exit::TryRegion { .. })) {
+            successors[bi].extend(escape_targets_at(&regions, exit_pc).iter().copied().map(block_of));
+        }
     }
 
     // Blocks control can actually get to, from the entry. Code after a `return`
@@ -996,12 +1011,17 @@ pub(crate) fn lower_function(
         cell_handles.push((reg, pv));
     }
 
-    // A body that `return`s from the enclosing function takes two more cells:
-    // a flag saying it did, and the value. They come last, so nothing else
-    // shifts. (`SigInfer::try_body_returns`.)
-    let return_channel = sig.try_body_returns.contains(&func_index).then(|| {
+    // A body that leaves the enclosing function's control flow — `return`,
+    // `break`, `continue` — takes an outcome flag cell saying which, and a
+    // `return` takes a second cell for the value. They come last, so nothing
+    // else shifts. (`SigInfer::try_body_returns`, `try_body_escapes`.)
+    let body_returns = sig.try_body_returns.contains(&func_index);
+    let outcome_flag = (body_returns || escape_trailers > 0).then(|| {
         let flag = ssa.new_val();
         fn_params.push((flag, Ty::Cell));
+        flag
+    });
+    let return_channel = outcome_flag.filter(|_| body_returns).map(|flag| {
         let value = ssa.new_val();
         fn_params.push((value, Ty::Cell));
         (flag, value)
@@ -1086,10 +1106,10 @@ pub(crate) fn lower_function(
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
     let mut ret_ty: Option<Ty> = None;
     // Resolved terminator value reads (filled during each block's lowering).
-    // Regions whose body may `return` from this function: the ok edge gets a
-    // check block, and a `return` block behind it. Collected here and emitted
+    // Regions whose body may leave this function's control flow: the ok edge
+    // gets a check block, and a dispatch behind it. Collected here and emitted
     // after the block loop, where this function's own return type is known.
-    let mut try_return_checks: Vec<(usize, ValueId, ValueId, bool)> = Vec::new();
+    let mut try_exit_checks: Vec<TryExitCheck> = Vec::new();
     let mut ret_val: Vec<Option<ValueId>> = vec![None; total_blocks];
     let mut cond_val: Vec<Option<ValueId>> = vec![None; total_blocks];
 
@@ -1547,43 +1567,61 @@ pub(crate) fn lower_function(
                     call_args.push(handle);
                     cell_values.push((reg, handle, ty));
                 }
-                // The return channel: a flag cell (seeded false) and a value
-                // cell (seeded nil). Only for a body that `return`s — every
-                // other region passes exactly what it always did.
-                let return_channel = sig.try_body_returns.contains(&body).then(|| {
-                    let mut fresh_cell = |seed: Ty| -> Result<ValueId, Unsupported> {
-                        let raw = ssa.new_val();
-                        insts.push(Inst::Const {
-                            dst: raw,
-                            value: Const::I64(0),
-                        });
-                        let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, raw, seed, start)?;
-                        let handle = ssa.new_val();
-                        insts.push(Inst::Call {
-                            dst: Some(handle),
-                            callee: AbiRef::new("rt", "cell_new"),
-                            args: vec![boxed],
-                        });
-                        Ok(handle)
-                    };
-                    let flag = fresh_cell(Ty::I64)?;
-                    let value = fresh_cell(Ty::Nil)?;
+                // The outcome channel: a flag cell (seeded 0, "fell through")
+                // for a body that `return`s or carries a `break`/`continue`
+                // out, and a value cell (seeded nil) for the `return` alone.
+                // Every other region passes exactly what it always did.
+                // `body_end` is where the exit *is*, which for a region is its
+                // `TryBegin`; `start` is only the block's leader, and anything
+                // ahead of the `try` in the same block puts the two apart —
+                // `while c { i = i + 1; try { … } }` is enough.
+                let escape_targets: Vec<usize> = escape_targets_at(&regions, body_end).to_vec();
+                let body_returns = sig.try_body_returns.contains(&body);
+                let fresh_cell = |ssa: &mut Ssa, insts: &mut Vec<Inst>, seed: Ty| -> Result<ValueId, Unsupported> {
+                    let raw = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: raw,
+                        value: Const::I64(0),
+                    });
+                    let boxed = crate::dyn_box::to_dyn_any(ssa, insts, raw, seed, start)?;
+                    let handle = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(handle),
+                        callee: AbiRef::new("rt", "cell_new"),
+                        args: vec![boxed],
+                    });
+                    Ok(handle)
+                };
+                let outcome_flag = if body_returns || !escape_targets.is_empty() {
+                    let flag = fresh_cell(&mut ssa, &mut insts, Ty::I64)?;
                     call_args.push(flag);
-                    call_args.push(value);
-                    Ok::<_, Unsupported>((flag, value))
-                });
-                let return_channel = match return_channel {
-                    Some(result) => Some(result?),
+                    Some(flag)
+                } else {
+                    None
+                };
+                let return_channel = match outcome_flag.filter(|_| body_returns) {
+                    Some(flag) => {
+                        let value = fresh_cell(&mut ssa, &mut insts, Ty::Nil)?;
+                        call_args.push(value);
+                        Some((flag, value))
+                    }
                     None => None,
                 };
-                if let Some((flag, value)) = return_channel {
-                    // A body every path of which returns has no jump over the
+                if let Some(flag) = outcome_flag {
+                    // A body every path of which leaves has no jump over the
                     // handler, so the region's "fallthrough" *is* the handler —
-                    // there is no ok edge to fall to, and the check's else
-                    // branch is unreachable. It goes to the return block too,
-                    // rather than into the handler on a path that did not raise.
-                    let always_returns = region_handler == region_fallthrough;
-                    try_return_checks.push((bi, flag, value, always_returns));
+                    // there is no ok edge to fall to, and the code-0 test is
+                    // answering a code that cannot occur. The dispatch starts at
+                    // the first real outcome instead, rather than sending a path
+                    // that did not raise into the handler.
+                    let always_leaves = region_handler == region_fallthrough;
+                    try_exit_checks.push(TryExitCheck {
+                        block: bi,
+                        flag,
+                        value: return_channel.map(|(_, value)| value),
+                        always_leaves,
+                        escape_targets,
+                    });
                 }
                 let ok = ssa.new_val();
                 insts.push(Inst::TryRegionCall {
@@ -2057,6 +2095,28 @@ pub(crate) fn lower_function(
                 }
                 ret_val[bi] = Some(boxed);
             }
+            // An escape trailer: the jump that reached it was a `break` or a
+            // `continue` belonging to a loop outside this region. Write which
+            // one into the outcome flag and return normally — the trampoline
+            // reports "did not raise", and the caller's check block takes the
+            // edge from there.
+            Some(Exit::TryEscape { code }) => {
+                let flag = outcome_flag.ok_or(Unsupported::TryRegion {
+                    pc: start,
+                    reason: "an escape trailer without an outcome flag",
+                })?;
+                let raw = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: raw,
+                    value: Const::I64(code),
+                });
+                let marked = to_dyn_any(&mut ssa, &mut insts, raw, Ty::I64, start)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "cell_set"),
+                    args: vec![flag, marked],
+                });
+            }
             _ => {}
         }
         // What the terminator itself rebound — for a nested region, the
@@ -2098,13 +2158,25 @@ pub(crate) fn lower_function(
             *pc_to_block.range(..=pc).next_back().map(|(_, id)| id).unwrap()
         }
     };
-    // Two synthetic blocks per returning region, after every real block and the
-    // implicit-return block (the same allocation `implicit_ret_block` uses).
-    let synthetic_base = total_blocks as u32 + u32::from(implicit_ret_block.is_some());
-    let check_block_ids: Vec<u32> = (0..try_return_checks.len())
-        .map(|i| synthetic_base + (i as u32) * 2)
+    // Synthetic blocks per region that may leave, after every real block and the
+    // implicit-return block (the same allocation `implicit_ret_block` uses): a
+    // check block, one test block per outcome past the first, and a return block
+    // for a body that `return`s. Ids are handed out in the order the blocks are
+    // pushed, so the vector's index and the `BlockId` stay the same number.
+    let mut synthetic_next = total_blocks as u32 + u32::from(implicit_ret_block.is_some());
+    let check_layouts: Vec<CheckLayout> = try_exit_checks
+        .iter()
+        .map(|check| {
+            let outcomes = usize::from(check.value.is_some()) + check.escape_targets.len();
+            let layout = CheckLayout {
+                check: synthetic_next,
+                tests: (1..outcomes).map(|i| synthetic_next + i as u32).collect(),
+                ret: check.value.map(|_| synthetic_next + outcomes as u32),
+            };
+            synthetic_next += outcomes as u32 + u32::from(check.value.is_some());
+            layout
+        })
         .collect();
-    let ret_block_ids: Vec<u32> = check_block_ids.iter().map(|id| id + 1).collect();
     let mut forwarded_args: Vec<(usize, Vec<ValueId>, BlockId)> = Vec::new();
     let mut mir_blocks: Vec<Block> = Vec::with_capacity(total_blocks);
     for bi in 0..leader_vec.len() {
@@ -2134,13 +2206,13 @@ pub(crate) fn lower_function(
         // arguments. Rewriting the edge rather than re-keying the phis is what
         // keeps this local — the target's operands are still recorded against
         // this block, and this is where they are read from.
-        if let Some(index) = try_return_checks.iter().position(|(rb, _, _, _)| *rb == bi)
+        if let Some(index) = try_exit_checks.iter().position(|check| check.block == bi)
             && let Term::CondBr {
                 then_blk, then_args, ..
             } = &mut term
         {
             forwarded_args.push((index, core::mem::take(then_args), *then_blk));
-            *then_blk = BlockId(check_block_ids[index]);
+            *then_blk = BlockId(check_layouts[index].check);
         }
         let mut insts = std::mem::take(&mut block_insts[bi]);
         insts.extend(edge_tail);
@@ -2185,12 +2257,13 @@ pub(crate) fn lower_function(
         });
     }
 
-    // The check/return pair for each region whose body may return. Emitted here
-    // because the *enclosing* function's return type is only settled once every
-    // block has been lowered, and the parked value has to come back out of its
-    // cell as that type.
+    // The check/dispatch/return blocks for each region whose body may leave.
+    // Emitted here because the *enclosing* function's return type is only
+    // settled once every block has been lowered, and the parked value has to
+    // come back out of its cell as that type.
     let ret = ret_ty.unwrap_or(Ty::Nil);
-    for (index, (_, flag, value, always_returns)) in try_return_checks.iter().enumerate() {
+    for (index, check) in try_exit_checks.iter().enumerate() {
+        let layout = &check_layouts[index];
         let (_, fallthrough_args, fallthrough) = forwarded_args
             .iter()
             .find(|(i, _, _)| *i == index)
@@ -2201,50 +2274,119 @@ pub(crate) fn lower_function(
         check_insts.push(Inst::Call {
             dst: Some(raised),
             callee: AbiRef::new("rt", "cell_get"),
-            args: vec![*flag],
+            args: vec![check.flag],
         });
-        let as_int = ssa.new_val();
+        let code = ssa.new_val();
         check_insts.push(Inst::Call {
-            dst: Some(as_int),
+            dst: Some(code),
             callee: AbiRef::new("dyn", "as_i64"),
             args: vec![raised],
         });
-        let zero = ssa.new_val();
-        check_insts.push(Inst::Const {
-            dst: zero,
-            value: Const::I64(0),
-        });
-        let returned = ssa.new_val();
-        check_insts.push(Inst::Cmp {
-            dst: returned,
-            op: CmpOp::Ne,
-            float: false,
-            lhs: as_int,
-            rhs: zero,
-        });
+        // Where each outcome goes: `return` first (code 1), then the escapes in
+        // the order the region recorded them (code `2 + k`). An escape's edge
+        // carries the same phi operands the ok edge does — they leave the same
+        // block, from the same definitions — which is why they were recorded as
+        // successors of the region back in step 4.
+        let mut outcomes: Vec<(i64, BlockId, Vec<ValueId>)> = Vec::new();
+        if let Some(ret_block) = layout.ret {
+            outcomes.push((1, BlockId(ret_block), Vec::new()));
+        }
+        for (k, &target) in check.escape_targets.iter().enumerate() {
+            let block = block_id(target);
+            outcomes.push((
+                2 + k as i64,
+                BlockId(block),
+                crate::ssa::args_to(&ssa, check.block, block as usize),
+            ));
+        }
+        // The chain: the last outcome is whatever is left, so it needs no test
+        // of its own, and a lone outcome needs no test block at all.
+        let mut chain: Vec<Block> = Vec::new();
+        let entry = if outcomes.len() == 1 {
+            (outcomes[0].1, outcomes[0].2.clone())
+        } else {
+            (BlockId(layout.tests[0]), Vec::new())
+        };
+        for (i, test_block) in layout.tests.iter().enumerate() {
+            let mut insts = Vec::new();
+            let want = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: want,
+                value: Const::I64(outcomes[i].0),
+            });
+            let hit = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: hit,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: code,
+                rhs: want,
+            });
+            let (else_blk, else_args) = match layout.tests.get(i + 1) {
+                Some(next) => (BlockId(*next), Vec::new()),
+                None => (outcomes[i + 1].1, outcomes[i + 1].2.clone()),
+            };
+            chain.push(Block {
+                id: BlockId(*test_block),
+                params: Vec::new(),
+                insts,
+                term: Term::CondBr {
+                    cond: hit,
+                    then_blk: outcomes[i].1,
+                    then_args: outcomes[i].2.clone(),
+                    else_blk,
+                    else_args,
+                },
+            });
+        }
+        // Code 0 is "the body fell off its end", the only outcome that resumes
+        // where the region left off. A body that leaves on every path has no
+        // such edge — the region's fallthrough *is* its handler — so the test
+        // would be asking about a code that cannot occur.
+        let check_term = if check.always_leaves {
+            Term::Br {
+                target: entry.0,
+                args: entry.1,
+            }
+        } else {
+            let zero = ssa.new_val();
+            check_insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let left = ssa.new_val();
+            check_insts.push(Inst::Cmp {
+                dst: left,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: code,
+                rhs: zero,
+            });
+            Term::CondBr {
+                cond: left,
+                then_blk: entry.0,
+                then_args: entry.1,
+                else_blk: fallthrough,
+                else_args: fallthrough_args,
+            }
+        };
         mir_blocks.push(Block {
-            id: BlockId(check_block_ids[index]),
+            id: BlockId(layout.check),
             params: Vec::new(),
             insts: check_insts,
-            term: Term::CondBr {
-                cond: returned,
-                then_blk: BlockId(ret_block_ids[index]),
-                then_args: Vec::new(),
-                else_blk: if *always_returns {
-                    BlockId(ret_block_ids[index])
-                } else {
-                    fallthrough
-                },
-                else_args: if *always_returns { Vec::new() } else { fallthrough_args },
-            },
+            term: check_term,
         });
+        mir_blocks.extend(chain);
 
+        let (Some(ret_block), Some(value)) = (layout.ret, check.value) else {
+            continue;
+        };
         let mut ret_insts = Vec::new();
         let boxed = ssa.new_val();
         ret_insts.push(Inst::Call {
             dst: Some(boxed),
             callee: AbiRef::new("rt", "cell_get"),
-            args: vec![*value],
+            args: vec![value],
         });
         // This function may itself be a region's body, and then the `return` it
         // is about to perform is not its own either: it belongs to whoever is
@@ -2274,7 +2416,7 @@ pub(crate) fn lower_function(
                 args: vec![outer_flag, marked],
             });
             mir_blocks.push(Block {
-                id: BlockId(ret_block_ids[index]),
+                id: BlockId(ret_block),
                 params: Vec::new(),
                 insts: ret_insts,
                 term: Term::Ret(None),
@@ -2297,7 +2439,7 @@ pub(crate) fn lower_function(
             },
         };
         mir_blocks.push(Block {
-            id: BlockId(ret_block_ids[index]),
+            id: BlockId(ret_block),
             params: Vec::new(),
             insts: ret_insts,
             term: Term::Ret(returned_value),
@@ -2336,6 +2478,47 @@ pub(crate) fn lower_function(
         // `#[export]` on it would be a second name for the same symbol.
         export_name: if is_entry { None } else { func.export_name.clone() },
     })
+}
+
+/// One region whose body may leave the enclosing function's control flow.
+///
+/// The body ran inside the trampoline and returned normally, so the ok edge
+/// alone does not say what happened: the outcome flag does. This is what the
+/// check block behind that edge needs in order to ask.
+struct TryExitCheck {
+    /// The region's own block, whose ok edge is redirected to the check.
+    block: usize,
+    /// The flag cell: 0 fell through, 1 returned, `2 + k` took `escape_targets[k]`.
+    flag: ValueId,
+    /// The parked return value, for a body that `return`s.
+    value: Option<ValueId>,
+    /// The body leaves on every path, so code 0 cannot occur and the region has
+    /// no ok edge to fall to.
+    always_leaves: bool,
+    /// Where each escape code lands, in the parent's pc space.
+    escape_targets: Vec<usize>,
+}
+
+/// The synthetic blocks one [`TryExitCheck`] gets, in the order they are pushed.
+struct CheckLayout {
+    /// Reads the outcome code and separates "fell through" from the rest.
+    check: u32,
+    /// One per outcome past the first: the last outcome is whatever is left, so
+    /// it needs no test of its own.
+    tests: Vec<u32>,
+    /// Performs the parked `return`, for a body that has one.
+    ret: Option<u32>,
+}
+
+/// Where the region beginning at `pc` lets its body's `break`/`continue` out.
+///
+/// Empty for every region that has none, which is most of them — and empty for
+/// a pc that is not a region, so the caller can ask without checking first.
+fn escape_targets_at(regions: &[crate::try_region::TryRegionShape], pc: usize) -> &[usize] {
+    regions
+        .iter()
+        .find(|region| region.begin_pc == pc)
+        .map_or(&[][..], |region| &region.escape_targets)
 }
 
 /// A string constant as an SSA value, interned into the module's global table.
