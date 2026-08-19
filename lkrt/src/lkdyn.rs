@@ -1186,6 +1186,14 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
         // A window renders as the list it windows, which is what the VM shows.
         DYN_SLICE => out.push_str(&crate::lkslice::slice_text(v.payload as *mut c_void)),
         // SAFETY: the tag is only set by `lkrt_closure_new`.
+        //
+        // Which is in `lkclosure`, and that module is `std`-only: a closure
+        // *value* is deep-copied the way a channel payload is, and the deep-copy
+        // model lives with the channels. So without `std` this tag can never be
+        // set, and naming the module here made the whole crate fail to compile
+        // for a bare-metal target — the x86 kernel links `lkrt` without `std`
+        // and did not build at all.
+        #[cfg(feature = "std")]
         DYN_CLOSURE => out.push_str(&unsafe { crate::lkclosure::closure_text(v) }),
         other => {
             if raise_on_unknown {
@@ -1996,6 +2004,10 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
 ///
 /// # Safety
 /// `handle` must be a live dyn-list handle (or null); `callee` a `DYN_CLOSURE`.
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_map_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
     // Indexed, re-dereferencing the handle each step, for the reason the `*_fn`
@@ -2021,6 +2033,10 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_map_closure(handle: *mut c_void, callee
 ///
 /// # Safety
 /// As [`lkrt_lklist_dyn_map_closure`].
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_filter_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
     let len = dyn_slice(handle).len();
@@ -2047,6 +2063,10 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_closure(handle: *mut c_void, cal
 ///
 /// # Safety
 /// As [`lkrt_lklist_dyn_map_closure`].
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_closure(handle: *mut c_void, init: LkDyn, callee: LkDyn) -> LkDyn {
     let len = dyn_slice(handle).len();

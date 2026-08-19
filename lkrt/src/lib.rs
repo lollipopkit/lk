@@ -183,9 +183,8 @@ pub use lkdyn::{
     lkrt_dyn_method_missing, lkrt_dyn_mod, lkrt_dyn_mul, lkrt_dyn_neg, lkrt_dyn_not, lkrt_dyn_obj_type_id,
     lkrt_dyn_sub, lkrt_dyn_tag, lkrt_dyn_to_iter, lkrt_dyn_truthy, lkrt_dyn_type_name, lkrt_lklist_dyn_at,
     lkrt_lklist_dyn_chain, lkrt_lklist_dyn_chunk, lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display,
-    lkrt_lklist_dyn_enumerate, lkrt_lklist_dyn_eq, lkrt_lklist_dyn_filter_closure, lkrt_lklist_dyn_filter_fn,
-    lkrt_lklist_dyn_flatten, lkrt_lklist_dyn_join, lkrt_lklist_dyn_len, lkrt_lklist_dyn_map_closure,
-    lkrt_lklist_dyn_map_fn, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push, lkrt_lklist_dyn_reduce_closure,
+    lkrt_lklist_dyn_enumerate, lkrt_lklist_dyn_eq, lkrt_lklist_dyn_filter_fn, lkrt_lklist_dyn_flatten,
+    lkrt_lklist_dyn_join, lkrt_lklist_dyn_len, lkrt_lklist_dyn_map_fn, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,
     lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set, lkrt_lklist_dyn_slice, lkrt_lklist_dyn_slice_from,
     lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn,
     lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark, lkrt_struct_type_begin, lkrt_struct_type_field,
@@ -262,6 +261,12 @@ pub use net::{
     lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect, lkrt_tcp_read, lkrt_tcp_write_bytes,
     lkrt_tcp_write_str,
 };
+// The closure-callback entries are `std`-only, like `lkclosure` itself: a
+// closure value is deep-copied through the channel model, which needs an OS.
+// Listed apart rather than inside the block above, because a `cfg` cannot sit
+// on one name in a `use` list.
+#[cfg(feature = "std")]
+pub use lkdyn::{lkrt_lklist_dyn_filter_closure, lkrt_lklist_dyn_map_closure, lkrt_lklist_dyn_reduce_closure};
 pub use panic::{
     lkrt_rt_cell_get, lkrt_rt_cell_get_raw, lkrt_rt_cell_new, lkrt_rt_cell_new_raw, lkrt_rt_cell_set,
     lkrt_rt_cell_set_raw, lkrt_rt_current_error, lkrt_rt_handle_release, lkrt_rt_handle_release_deep,
