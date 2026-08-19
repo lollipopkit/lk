@@ -598,6 +598,16 @@ fn differential_strings() {
             // operand *wins* and the answer is a list, which is a different
             // operation; what changed is `Set`, a byte string, a window, a
             // struct and a map beside a string.
+            // A raise is *observable output*: `catch e { println(e) }` puts the
+            // message on stdout, so a guard the runtime does not have is a
+            // wrong answer and not a diagnostic difference. `repeat` was the
+            // one of the four negative-count guards that had none —
+            // `"ab".repeat(-1)` answered `""` compiled and stopped the program
+            // interpreted.
+            new(
+                "a_negative_count_raises_on_both_ends",
+                "fn t(s: String, n: Int) -> String { try { return \"ok[\" + s.take(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn k(s: String, n: Int) -> String { try { return \"ok[\" + s.skip(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn r(s: String, n: Int) -> String { try { return \"ok[\" + s.repeat(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn p(s: String, n: Int) -> String { try { return \"ok[\" + s.pad_right(n, \"-\") + \"]\"; } catch e { return \"E: \" + e; } }\nprintln(t(\"abc\", -1));\nprintln(k(\"abc\", -1));\nprintln(r(\"abc\", -1));\nprintln(p(\"abc\", -1));\nprintln(r(\"abc\", 0));\nprintln(r(\"abc\", 2));\nreturn 0;\n",
+            ),
             new(
                 "a_container_beside_a_string_renders",
                 "struct P { x: Int }\nprintln(\"\" + Set([1]));\nprintln(\"\" + \"ab\".bytes());\nprintln(\"v=\" + {\"k\": 1});\nprintln({\"k\": 1} + \"v=\");\nprintln(\"\" + P { x: 1 });\nlet w = [1, 2, 3].slice(0, 1);\nprintln(\"\" + w);\nreturn 0;\n",

@@ -364,13 +364,23 @@ pub unsafe extern "C" fn lkrt_str_reverse(s: *const c_char) -> *mut c_char {
     arena_c_string(CString::new(reversed).unwrap_or_default())
 }
 
-/// `s.repeat(n)` — `n <= 0` yields the empty string.
+/// `s.repeat(n)` — `n == 0` yields the empty string, `n < 0` raises.
+///
+/// This said "`n <= 0` yields the empty string", which is a rule the
+/// interpreter does not have: it raises for a negative count, the way
+/// `take`, `skip` and the `pad_*` widths all do. So `"ab".repeat(-1)`
+/// answered `""` compiled and stopped the program interpreted — the only one
+/// of the four guards that was not mirrored.
 ///
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_repeat(s: *const c_char, n: i64) -> *mut c_char {
-    if n <= 0 {
+    if n < 0 {
+        // Raised before anything is allocated: a raise longjmps past drops.
+        crate::panic::raise_str(&alloc::format!("string.repeat() count must be non-negative, got {n}"));
+    }
+    if n == 0 {
         return arena_c_string(CString::default());
     }
     arena_c_string(CString::new(view(s).repeat(n as usize)).unwrap_or_default())
