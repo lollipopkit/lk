@@ -18,10 +18,26 @@
 //!
 //! [`EXCLUDED`] is asserted in both directions. A name that starts lowering
 //! must leave the list, so it cannot quietly become a place to park failures.
+//!
+//! And the interpreter has to accept each probe first, which is a check on the
+//! *test* rather than on the compiler. Without it a probe with the wrong
+//! signature refuses to lower for a reason that has nothing to do with the
+//! receiver and lands in [`EXCLUDED`] looking like a finding: `reduce` is
+//! `reduce(initial, f)` and was written `reduce(f)`, so a name that lowers
+//! correctly sat in the list with an invented excuse; `to_bytes` was probed
+//! with floats it refuses. Two of the entries were about the probe.
 
 use std::path::Path;
 
-/// `(method, call)` for every read-only list method the VM dispatches.
+/// `(method, call, first, second)` for every read-only list method the VM
+/// dispatches — the call, and the two call-site arguments that join its
+/// receiver to `Dyn`.
+///
+/// The two arguments have to differ in *carrier*, which is what makes the
+/// parameter erase; a single `xs: Any` annotation does not do it, because the
+/// lowering specializes on the one call site it can see. `to_bytes` is why the
+/// pair is per-name rather than fixed: it wants Ints, so its second site is a
+/// mixed list narrowed back to one.
 ///
 /// Read from `core/src/vm/context/core_methods/list_dispatch.rs`, minus the six
 /// that mutate — `clear`, `insert`, `pop`, `push`, `remove_at`, `set` — which
@@ -29,35 +45,35 @@ use std::path::Path;
 /// list representations, so a write through it lands on the copy.
 /// `no_unbox_list_name_mutates_its_receiver` in the lowering says the same
 /// thing from the other side.
-const READ_ONLY: &[(&str, &str)] = &[
-    ("chunk", "chunk(2)"),
-    ("contains", "contains(1)"),
-    ("count", "count(1)"),
-    ("enumerate", "enumerate()"),
-    ("first", "first()"),
-    ("flatten", "flatten()"),
-    ("get", "get(0)"),
-    ("index_of", "index_of(1)"),
-    ("is_empty", "is_empty()"),
-    ("join", "join(\",\")"),
-    ("last", "last()"),
-    ("reverse", "reverse()"),
-    ("skip", "skip(1)"),
-    ("slice", "slice(0, 1)"),
-    ("sort", "sort()"),
-    ("sum", "sum()"),
-    ("take", "take(1)"),
-    ("to_bytes", "to_bytes()"),
-    ("unique", "unique()"),
-    ("zip", "zip([9])"),
+const READ_ONLY: &[(&str, &str, &str, &str)] = &[
+    ("chunk", "chunk(2)", "[1, 2]", "[1.5, 2.5]"),
+    ("contains", "contains(1)", "[1, 2]", "[1.5, 2.5]"),
+    ("count", "count(1)", "[1, 2]", "[1.5, 2.5]"),
+    ("enumerate", "enumerate()", "[1, 2]", "[1.5, 2.5]"),
+    ("first", "first()", "[1, 2]", "[1.5, 2.5]"),
+    ("flatten", "flatten()", "[1, 2]", "[1.5, 2.5]"),
+    ("get", "get(0)", "[1, 2]", "[1.5, 2.5]"),
+    ("index_of", "index_of(1)", "[1, 2]", "[1.5, 2.5]"),
+    ("is_empty", "is_empty()", "[1, 2]", "[1.5, 2.5]"),
+    ("join", "join(\",\")", "[1, 2]", "[1.5, 2.5]"),
+    ("last", "last()", "[1, 2]", "[1.5, 2.5]"),
+    ("reverse", "reverse()", "[1, 2]", "[1.5, 2.5]"),
+    ("skip", "skip(1)", "[1, 2]", "[1.5, 2.5]"),
+    ("slice", "slice(0, 1)", "[1, 2]", "[1.5, 2.5]"),
+    ("sort", "sort()", "[1, 2]", "[1.5, 2.5]"),
+    ("sum", "sum()", "[1, 2]", "[1.5, 2.5]"),
+    ("take", "take(1)", "[1, 2]", "[1.5, 2.5]"),
+    ("to_bytes", "to_bytes()", "[1, 2]", "[3, \"x\"].take(1)"),
+    ("unique", "unique()", "[1, 2]", "[1.5, 2.5]"),
+    ("zip", "zip([9])", "[1, 2]", "[1.5, 2.5]"),
     // Not in `list_dispatch` — they reach lists through the shared reduction
     // and iterator paths — but they are list methods a program writes, and
     // they are in the same position.
-    ("min", "min()"),
-    ("max", "max()"),
-    ("map", "map(|v| v)"),
-    ("filter", "filter(|v| true)"),
-    ("reduce", "reduce(|a, b| a)"),
+    ("min", "min()", "[1, 2]", "[1.5, 2.5]"),
+    ("max", "max()", "[1, 2]", "[1.5, 2.5]"),
+    ("map", "map(|v| v)", "[1, 2]", "[1.5, 2.5]"),
+    ("filter", "filter(|v| true)", "[1, 2]", "[1.5, 2.5]"),
+    ("reduce", "reduce(0, |a, b| a)", "[1, 2]", "[1.5, 2.5]"),
 ];
 
 /// Names that do not lower on a boxed receiver, and why.
@@ -73,12 +89,6 @@ const EXCLUDED: &[(&str, &str)] = &[
          window does, and answered a list when the row said `unbox_list`.",
     ),
     (
-        "reduce",
-        "has its `METHOD_TABLE` row; the `ListDyn` dispatch arm is missing. It \
-         folds with a *closure*, so unlike `sum` it is the call protocol that is \
-         missing rather than a rule.",
-    ),
-    (
         "to_bytes",
         "no `ListDyn` dispatch arm: `bytes_h.from_i64_list` takes the typed carrier, \
          and a boxed list has to check every element is an Int in byte range first.",
@@ -91,7 +101,7 @@ fn every_read_only_list_method_takes_a_boxed_receiver() {
     let mut unexpectedly_refused = Vec::new();
     let mut unexpectedly_lowered = Vec::new();
 
-    for (name, call) in READ_ONLY {
+    for (name, call, first, second) in READ_ONLY {
         // Two call sites with different element carriers join the parameter to
         // `Dyn`, which is the receiver type under test. Without the second
         // call the parameter would be inferred as one concrete list.
@@ -99,10 +109,27 @@ fn every_read_only_list_method_takes_a_boxed_receiver() {
         std::fs::write(
             &source,
             format!(
-                "fn probe(xs) {{\n    return xs.{call};\n}}\nprintln(probe([1, 2]));\nprintln(probe([1.5, 2.5]));\n"
+                "fn probe(xs) {{\n    return xs.{call};\n}}\nprintln(probe({first}));\nprintln(probe({second}));\n"
             ),
         )
         .expect("write probe");
+
+        // The interpreter has to accept it first. A probe with the wrong
+        // signature refuses to lower for a reason that has nothing to do with
+        // the receiver, and lands in `EXCLUDED` looking like a finding —
+        // `reduce` is `reduce(initial, f)` and was written `reduce(f)`, so a
+        // name that lowers correctly sat in the list with an invented excuse.
+        let interpreted = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg(source.to_str().expect("utf-8 path"))
+            .env("LK_FORCE_VM", "1")
+            .output()
+            .expect("run under the VM");
+        assert!(
+            interpreted.status.success(),
+            "the probe for `{name}` is not a program the interpreter accepts, so what it \
+             measures is the probe: {}",
+            String::from_utf8_lossy(&interpreted.stderr)
+        );
 
         let lowers = lowers_natively(&source, &dir.path().join(format!("{name}_exe")));
         let excluded = EXCLUDED.iter().any(|(excluded, _)| excluded == name);
