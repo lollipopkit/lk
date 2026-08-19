@@ -1559,110 +1559,127 @@ list_reverse!(
     "`reverse()` on a boxed-element list."
 );
 
-/// `xs.index_of(v)` — the first position holding `v`, or nil when absent.
+/// `xs.index_of(v)` and `xs.count(v)` — one scan per carrier, two accumulators.
 ///
-/// The element comparison is the carrier's own, and it has to be *the same one*
-/// its `contains` uses: in the VM both answer through one `typed_list_position`,
-/// so a mismatch here would make `xs.contains(v)` and `xs.index_of(v) != nil`
-/// disagree. Hence the comparison arrives as a function rather than being
-/// spelled inside the macro — for the boxed carrier that means `dyn_eq_inner`,
-/// which is now the equality `in` uses too.
-/// `xs.count(v)` per carrier — `index_of`'s sibling, sharing its element
-/// comparison so the two spellings of "which elements equal this" cannot
-/// drift apart.
-macro_rules! list_count {
-    ($name:ident, $elem:ty, $needle:ty, $eq:expr, $doc:literal) => {
-        #[doc = $doc]
+/// The VM writes them as a single `typed_list_scan` and says why above it:
+/// "`index_of` and `count` are the same scan with different accumulators, and
+/// writing them apart is how two spellings of one operation come to disagree".
+/// They were apart here — two macros — and had already diverged, not in the
+/// comparison but in *which carriers exist*: `index_of` had four and `count`
+/// had two, so `["a", "b"].count("a")` had nothing to lower to while
+/// `["a", "b"].index_of("a")` did. Generating both from one scan makes a
+/// carrier that answers one question answer the other by construction.
+///
+/// The scan owns the loop rather than taking an element predicate, which is
+/// what lets the string carrier walk to the needle's NUL once instead of once
+/// per element.
+macro_rules! list_scan {
+    ($index_of:ident, $count:ident, $elem:ty, $needle:ty, $scan:expr, $what:literal) => {
+        #[doc = concat!("`index_of` on ", $what, " — the first position holding the needle, or nil.")]
         /// # Safety
         /// `handle` must be a live list handle of the matching carrier, or null.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(handle: *mut c_void, needle: $needle) -> i64 {
-            if handle.is_null() {
-                return 0;
-            }
-            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
-            // constructor.
-            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
-            let eq: fn(&$elem, $needle) -> bool = $eq;
-            values.iter().filter(|value| eq(value, needle)).count() as i64
-        }
-    };
-}
-
-list_count!(
-    lkrt_lklist_i64_count,
-    i64,
-    i64,
-    |value, needle| *value == needle,
-    "`count` on a `List<i64>`."
-);
-list_count!(
-    lkrt_lklist_f64_count,
-    f64,
-    f64,
-    |value, needle| *value == needle,
-    "`count` on a `List<f64>`."
-);
-
-macro_rules! list_index_of {
-    ($name:ident, $elem:ty, $needle:ty, $position:expr, $doc:literal) => {
-        #[doc = $doc]
-        /// # Safety
-        /// `handle` must be a live list handle of the matching carrier, or null.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(handle: *mut c_void, needle: $needle) -> crate::lkdyn::LkDyn {
+        pub unsafe extern "C" fn $index_of(handle: *mut c_void, needle: $needle) -> crate::lkdyn::LkDyn {
             if handle.is_null() {
                 return crate::lkdyn::LkDyn::NIL;
             }
             // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
             // constructor.
             let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
-            let position: fn(&[$elem], $needle) -> Option<usize> = $position;
-            match position(values.as_slice(), needle) {
+            let scan: fn(&[$elem], $needle, &mut dyn FnMut(usize) -> bool) = $scan;
+            let mut found = None;
+            scan(values.as_slice(), needle, &mut |index| {
+                found = Some(index);
+                false
+            });
+            match found {
                 Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
                 None => crate::lkdyn::LkDyn::NIL,
             }
         }
+
+        #[doc = concat!("`count` on ", $what, " — how many elements equal the needle.")]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $count(handle: *mut c_void, needle: $needle) -> i64 {
+            if handle.is_null() {
+                return 0;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let scan: fn(&[$elem], $needle, &mut dyn FnMut(usize) -> bool) = $scan;
+            let mut found = 0i64;
+            scan(values.as_slice(), needle, &mut |_| {
+                found += 1;
+                true
+            });
+            found
+        }
     };
 }
 
-list_index_of!(
+list_scan!(
     lkrt_lklist_i64_index_of,
+    lkrt_lklist_i64_count,
     i64,
     i64,
-    |values, needle| values.iter().position(|value| *value == needle),
-    "`index_of` on a `List<i64>`."
-);
-list_index_of!(
-    lkrt_lklist_f64_index_of,
-    f64,
-    f64,
-    |values, needle| values.iter().position(|value| *value == needle),
-    "`index_of` on a `List<f64>`. An `Int` needle is coerced by the lowering, \
-     the same way `contains` takes one."
-);
-list_index_of!(
-    lkrt_lklist_str_index_of,
-    *const c_char,
-    *const c_char,
-    |values, needle| {
-        if needle.is_null() {
-            return None;
+    |values, needle, on_match| {
+        for (index, value) in values.iter().enumerate() {
+            if *value == needle && !on_match(index) {
+                return;
+            }
         }
-        // Converted once, not per element: `CStr::from_ptr` walks to the NUL.
-        let needle = unsafe { CStr::from_ptr(needle) };
-        values
-            .iter()
-            .position(|&p| !p.is_null() && unsafe { CStr::from_ptr(p) } == needle)
     },
-    "`index_of` on a `List<str>`."
+    "a `List<i64>`"
 );
-list_index_of!(
+list_scan!(
+    lkrt_lklist_f64_index_of,
+    lkrt_lklist_f64_count,
+    f64,
+    f64,
+    |values, needle, on_match| {
+        for (index, value) in values.iter().enumerate() {
+            if *value == needle && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a `List<f64>` (an `Int` needle is coerced by the lowering, the way `contains` takes one)"
+);
+list_scan!(
+    lkrt_lklist_str_index_of,
+    lkrt_lklist_str_count,
+    *const c_char,
+    *const c_char,
+    |values, needle, on_match| {
+        if needle.is_null() {
+            return;
+        }
+        // Once, not per element: `CStr::from_ptr` walks to the NUL.
+        let needle = unsafe { CStr::from_ptr(needle) };
+        for (index, &p) in values.iter().enumerate() {
+            if !p.is_null() && unsafe { CStr::from_ptr(p) } == needle && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a `List<str>`"
+);
+list_scan!(
     lkrt_lklist_dyn_index_of,
+    lkrt_lklist_dyn_count,
     crate::lkdyn::LkDyn,
     crate::lkdyn::LkDyn,
-    |values, needle| values.iter().position(|&e| crate::lkdyn::dyn_eq_inner(e, needle)),
-    "`index_of` on a boxed-element list."
+    |values, needle, on_match| {
+        for (index, &value) in values.iter().enumerate() {
+            if crate::lkdyn::dyn_eq_inner(value, needle) && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a boxed-element list"
 );
 
 /// Creates a fresh, empty `f64` list handle.

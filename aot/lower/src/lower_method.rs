@@ -998,6 +998,29 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::I64)
         }
+        (Ty::ListStr, "count", [(value, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        // The two carriers `count` was missing while `index_of` — the same scan
+        // in the VM, and now the same scan here — had them. A needle of any
+        // type is a question a boxed list can answer, so it boxes rather than
+        // being restricted the way the typed arms above are.
+        (Ty::ListDyn, "count", [(value, vty)]) => {
+            let boxed = to_dyn(ssa, insts, *value, *vty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_count"),
+                args: vec![receiver, boxed],
+            });
+            (dst, Ty::I64)
+        }
         (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "reverse", []) => {
             let callee = match receiver_ty {
                 Ty::ListI64 => "i64_reverse",

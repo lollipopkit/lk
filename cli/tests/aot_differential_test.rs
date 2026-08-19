@@ -253,6 +253,14 @@ fn differential_equality_and_unique() {
                 "index_of_nested_and_across_int_float",
                 "return [[[1], [2]].index_of([2]), [1, \"x\", 2].index_of(2.0)];\n",
             ),
+            // `count` and `index_of` are one scan in the VM. They were two here
+            // and had diverged in which carriers exist, so a `List<str>` could
+            // be searched but not counted. Every carrier, and a boxed receiver
+            // for each, since that is the spelling that had nothing at all.
+            new(
+                "count_every_carrier",
+                "fn n(xs, v) { return xs.count(v); }\nreturn [\n  n([1, 2, 1], 1), n([1.5, 2.5, 1.5], 1.5), n([\"a\", \"b\", \"a\"], \"a\"),\n  n([[1], [2], [1]], [1]), n([1, \"a\", 1.0], 1), n([], 1),\n  [1, 2, 1].count(1), [\"a\", \"b\", \"a\"].count(\"a\"),\n  [1.5, 1.5].count(1.5), [[1], [1]].count([1]),\n];\n",
+            ),
             // The exception, and the reason the comparison is not simply `==`
             // everywhere: a byte string holds byte values, so the VM asks for an
             // Int and answers false for anything else — where a list of the same

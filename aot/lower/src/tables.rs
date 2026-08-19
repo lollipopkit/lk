@@ -1112,6 +1112,7 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("first",     true,     false, true),
     method_row("last",      true,     false, false),
     method_row("index_of",  true,     false, false),
+    method_row("count",     true,     false, false),
     method_row("has",       false,    false, false),
     method_row("keys",      false,    false, false),
     method_row("values",    false,    false, false),

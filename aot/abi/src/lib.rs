@@ -567,7 +567,9 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_count", lkrt_lklist_f64_count, ReadsHost, [Ptr, F64], I64, Borrowed);
             ("list_h", "f64_index_of", lkrt_lklist_f64_index_of, ReadsHost, [Ptr, F64], DynVal, Borrowed);
             ("list_h", "str_index_of", lkrt_lklist_str_index_of, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("list_h", "str_count", lkrt_lklist_str_count, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "dyn_index_of", lkrt_lklist_dyn_index_of, ReadsHost, [Ptr, DynVal], DynVal, Borrowed);
+            ("list_h", "dyn_count", lkrt_lklist_dyn_count, ReadsHost, [Ptr, DynVal], I64, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
             // The other carriers, sharing `slice_bounds` with the one above:
