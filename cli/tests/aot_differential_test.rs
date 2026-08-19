@@ -627,6 +627,22 @@ fn differential_strings() {
                 "a_negative_count_raises_on_both_ends",
                 "fn t(s: String, n: Int) -> String { try { return \"ok[\" + s.take(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn k(s: String, n: Int) -> String { try { return \"ok[\" + s.skip(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn r(s: String, n: Int) -> String { try { return \"ok[\" + s.repeat(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn p(s: String, n: Int) -> String { try { return \"ok[\" + s.pad_right(n, \"-\") + \"]\"; } catch e { return \"E: \" + e; } }\nprintln(t(\"abc\", -1));\nprintln(k(\"abc\", -1));\nprintln(r(\"abc\", -1));\nprintln(p(\"abc\", -1));\nprintln(r(\"abc\", 0));\nprintln(r(\"abc\", 2));\nreturn 0;\n",
             ),
+            // `-` removes a *single* value too: `xs - v` drops the first
+            // element equal to `v`, `m - k` drops that key. The VM has an arm
+            // for each beside the two-container ones, and nothing could reach
+            // either — the checker refused the shape, so the lowering had none
+            // and `lkrt_dyn_sub` raised. All three had to open together.
+            new(
+                "removing_a_single_value",
+                "println([1, 2, 1] - [1]);\nprintln([1, 2, 1] - 1);\nprintln([\"a\", \"b\"] - \"a\");\nprintln([1.5, 2.5] - 1.5);\nprintln([1] - 1.5);\nprintln([[1], [2]] - [[1]]);\nprintln([1, \"a\"] - 1);\nprintln({\"a\": 1, \"b\": 2} - {\"a\": 1});\nprintln({\"a\": 1, \"b\": 2} - \"a\");\nprintln({\"a\": 1} - 1);\nprintln({\"a\": 1} - nil);\nprintln({\"a\": 1} - true);\nreturn 0;\n",
+            ),
+            // …and erased, where a key that cannot be one still raises: a map's
+            // members are keyed by nil, Bool, Int and String, so `m - 1.5` is a
+            // question with no answer rather than a removal of nothing.
+            new(
+                "removing_a_single_value_erased",
+                "fn s(a: Any, b: Any) -> String { try { let r: Any = a - b; let _ = r; return \"ok\"; } catch e { return \"E: \" + e; } }\nprintln(s([1, 2, 1], 1));\nprintln(s([1, 2], \"s\"));\nprintln(s([[1], [2]], [1]));\nprintln(s({\"a\": 1}, \"a\"));\nprintln(s({\"a\": 1}, 1.5));\nprintln(s({\"a\": 1}, [1]));\nreturn 0;\n",
+            ),
             new(
                 "a_container_beside_a_string_renders",
                 "struct P { x: Int }\nprintln(\"\" + Set([1]));\nprintln(\"\" + \"ab\".bytes());\nprintln(\"v=\" + {\"k\": 1});\nprintln({\"k\": 1} + \"v=\");\nprintln(\"\" + P { x: 1 });\nlet w = [1, 2, 3].slice(0, 1);\nprintln(\"\" + w);\nreturn 0;\n",

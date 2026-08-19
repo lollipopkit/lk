@@ -890,6 +890,44 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
             payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
         };
     }
+    // The single-value forms, which the VM has as their own arms beside the two
+    // above: `xs - v` drops the *first* element equal to `v` and `m - k` drops
+    // that one key. Nothing could reach them here, because the checker refused
+    // the shape before either executor saw it — so all three places had to be
+    // opened together or the fix would have been a divergence.
+    if is_list_tag(a.tag) {
+        let mut removed = false;
+        let kept: Vec<LkDyn> = dyn_list_values(a)
+            .iter()
+            .filter(|value| {
+                if !removed && dyn_eq_inner(**value, b) {
+                    removed = true;
+                    return false;
+                }
+                true
+            })
+            .copied()
+            .collect();
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(kept) as i64,
+        };
+    }
+    if is_map_tag(a.tag) {
+        // `key_from_dyn` raises for a value that cannot be a key, which is the
+        // VM's `runtime_map_key_from_value` doing the same thing: a map's
+        // members are keyed by nil, Bool, Int and String, so `m - 1.5` is a
+        // question with no answer rather than a removal of nothing.
+        let drop = crate::vm_mirror::key_from_dyn(b);
+        let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
+            .into_iter()
+            .filter(|(key, _)| *key != drop)
+            .collect();
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+        };
+    }
     binary_type_error("Sub", "expected numbers or list/map lhs", a, b)
 }
 

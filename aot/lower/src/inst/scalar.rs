@@ -540,9 +540,13 @@ pub(super) fn lower(
             // for the reason the merge below does: the answer is built by
             // filtering, in the left's own order.
             let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
-            if op == Opcode::SubInt
-                && ((is_list(lty_raw) && is_list(rty_raw)) || (is_str_map(lty_raw) && is_str_map(rty_raw)))
-            {
+            // The *left* side decides, because that is how the VM dispatches
+            // `-`: a list on the left removes, whether the right is a list or a
+            // single value, and a map on the left removes keys the same way.
+            // Requiring both sides to be containers left the single-value forms
+            // with no lowering — they had no checker either, so nothing could
+            // reach them until now.
+            if op == Opcode::SubInt && (is_list(lty_raw) || is_str_map(lty_raw)) {
                 let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                 let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
                 let boxed = ssa.new_val();
@@ -915,7 +919,27 @@ pub(super) fn lower(
             // parenthesised half to a float constant. The interpreter answers
             // that by falling back to its dynamic form, so this does too — the
             // same `dyn.*` route the `Dyn` case below already takes.
-            if lty == Ty::Dyn || rty == Ty::Dyn || lty == Ty::Str || rty == Ty::Str {
+            // A container operand is the same situation one step further: the
+            // compiler picks the float opcode from *one* operand, so
+            // `[1.5, 2.5] - 1.5` arrives here as a `SubFloat` over a list and a
+            // float. The Int family routes those through `dyn.*`; without the
+            // same route the shape had no lowering at all, and it is the
+            // ordinary spelling of removing a float from a list of them.
+            let container = |t: Ty| {
+                matches!(
+                    t,
+                    Ty::ListI64
+                        | Ty::ListF64
+                        | Ty::ListStr
+                        | Ty::ListDyn
+                        | Ty::MapStrI64
+                        | Ty::MapStrF64
+                        | Ty::MapStrBool
+                        | Ty::MapStrDyn
+                )
+            };
+            if lty == Ty::Dyn || rty == Ty::Dyn || lty == Ty::Str || rty == Ty::Str || container(lty) || container(rty)
+            {
                 let lhs = to_dyn(ssa, insts, lv, lty, pc)?;
                 let rhs = to_dyn(ssa, insts, rv, rty, pc)?;
                 let helper = match op {

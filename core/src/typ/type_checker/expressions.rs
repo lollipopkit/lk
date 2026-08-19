@@ -1326,7 +1326,17 @@ impl TypeChecker {
             BinOp::Sub => {
                 let left_resolved = self.resolve_aliases(&left_type);
                 let right_resolved = self.resolve_aliases(&right_type);
-                if matches!(left_resolved, Type::List(_)) || matches!(right_resolved, Type::List(_)) {
+                // A `Tuple` is a list here for the reason it is one in `+`:
+                // a heterogeneous literal is still a list, and leaving it out
+                // sent `[1, "a"] - 1` to the numeric rule.
+                //
+                // The *left* side decides. `1 - [1]` is not a removal — it is a
+                // number minus a list, which raises — so only a list on the
+                // left routes here, unlike `+` where either side wins.
+                if matches!(left_resolved, Type::List(_) | Type::Tuple(_)) {
+                    return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(right_resolved, Type::List(_) | Type::Tuple(_)) {
                     return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
                 }
                 if matches!(left_resolved, Type::Map(_, _)) || matches!(right_resolved, Type::Map(_, _)) {
@@ -1617,6 +1627,27 @@ impl TypeChecker {
         }
     }
 
+    /// A `Tuple` read as the list it is, everything else unchanged.
+    ///
+    /// A heterogeneous list *literal* infers to `Tuple`, and a tuple is a list
+    /// everywhere else — it indexes, has a `len`, iterates, is `in`-searchable.
+    /// The container operators are where it kept being left out.
+    fn as_list_type(&mut self, ty: &Type) -> Type {
+        match self.resolve_aliases(ty) {
+            Type::Tuple(elems) => {
+                let elem = elems
+                    .iter()
+                    .fold(None, |acc: Option<Type>, e| match acc {
+                        None => Some(e.clone()),
+                        Some(acc) => Some(self.wider_of(&acc, e)),
+                    })
+                    .unwrap_or(Type::Any);
+                Type::List(Box::new(elem))
+            }
+            other => other,
+        }
+    }
+
     /// Whichever of the two subsumes the other, or `Any` when neither does.
     ///
     /// The rule `check_list_addition` uses for a concatenation's element type,
@@ -1662,14 +1693,22 @@ impl TypeChecker {
         right_expr: &Expr,
         right_ty: &Type,
     ) -> Result<Type> {
-        match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
-            (Type::List(left_inner), Type::List(_)) => Ok(Type::List(left_inner)),
+        let left_resolved = self.as_list_type(left_ty);
+        match (left_resolved, self.resolve_aliases(right_ty)) {
+            (Type::List(left_inner), Type::List(_) | Type::Tuple(_)) => Ok(Type::List(left_inner)),
             // Same rule again. The known side's element type does not survive
             // an erased operand, so the result is the widest list.
             (Type::List(inner), Type::Any) => Ok(Type::List(inner)),
-            (Type::Any, Type::List(_)) | (Type::Any, Type::Any) => Ok(Type::List(Box::new(Type::Any))),
-            (Type::List(_), other) | (other, Type::List(_)) => Err(Self::type_err(
-                "list removal requires both operands to be lists",
+            (Type::Any, Type::List(_) | Type::Tuple(_)) | (Type::Any, Type::Any) => Ok(Type::List(Box::new(Type::Any))),
+            // `xs - v` removes the first element equal to `v`. The VM has an
+            // arm for it (`remove_first_list_value`) beside the list-minus-list
+            // one, and so does `lkrt_dyn_sub`; only the checker refused, which
+            // is the defect `Any + Any` map merge was. Removal never introduces
+            // an element, so nothing widens — the receiver's type is kept, as
+            // this function's doc already says.
+            (Type::List(inner), _) => Ok(Type::List(inner)),
+            (other, Type::List(_) | Type::Tuple(_)) => Err(Self::type_err(
+                "list removal requires a list on the left",
                 Some(Type::List(Box::new(Type::Any))),
                 Some(other),
                 Some(Expr::Bin(
@@ -1693,8 +1732,16 @@ impl TypeChecker {
     ) -> Result<Type> {
         match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
             (Type::Map(left_key, left_value), Type::Map(_, _)) => Ok(Type::Map(left_key, left_value)),
+            // `m - k` removes that one key, the VM's arm beside the
+            // map-minus-map one. Only a *key* type: the members of a map are
+            // keyed by nil, Bool, Int and String, and anything else raises when
+            // the key is built — which is why this is narrower than the list
+            // rule above rather than the same shape.
+            (Type::Map(key, value), Type::Nil | Type::Bool | Type::Int | Type::String | Type::Any) => {
+                Ok(Type::Map(key, value))
+            }
             (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
-                "map removal requires both operands to be maps",
+                "map removal requires a map or a key on the right",
                 Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
                 Some(other),
                 Some(Expr::Bin(
@@ -1714,25 +1761,8 @@ impl TypeChecker {
         right_expr: &Expr,
         right_ty: &Type,
     ) -> Result<Type> {
-        // A `Tuple` is a list whose element types were written out one by one,
-        // so it answers this question as the list it is. Collapsing it here
-        // rather than adding tuple shapes to every arm below keeps the rule in
-        // one place — and the collapse is the same `wider_of` the arms use.
-        let mut as_list = |checker: &mut Self, ty: &Type| match checker.resolve_aliases(ty) {
-            Type::Tuple(elems) => {
-                let elem = elems
-                    .iter()
-                    .fold(None, |acc: Option<Type>, e| match acc {
-                        None => Some(e.clone()),
-                        Some(acc) => Some(checker.wider_of(&acc, e)),
-                    })
-                    .unwrap_or(Type::Any);
-                Type::List(Box::new(elem))
-            }
-            other => other,
-        };
-        let left_resolved = as_list(self, left_ty);
-        let right_resolved = as_list(self, right_ty);
+        let left_resolved = self.as_list_type(left_ty);
+        let right_resolved = self.as_list_type(right_ty);
         match (left_resolved, right_resolved) {
             (Type::List(left_inner), Type::List(right_inner)) => {
                 // `wider_of`, whose doc has said all along that it is "the rule

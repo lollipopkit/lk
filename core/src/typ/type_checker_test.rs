@@ -1302,6 +1302,37 @@ mod tests {
         check_program("let m = {\"a\": 1};\nlet c = 1 + m;\nprintln(c);\n")
             .expect_err("a number and a map is neither a merge nor a concatenation");
     }
+    /// `-` removes one value as well as a whole container.
+    ///
+    /// The VM has four subtraction arms — list minus list, list minus value,
+    /// map minus map, map minus key — and the checker accepted two. So
+    /// `[1, 2, 1] - 1` and `{"a": 1} - "a"` were "requires both operands to be
+    /// lists"/"maps", naming a rule neither executor has.
+    ///
+    /// The map side is narrower than the list side and has to be: a map's
+    /// members are keyed by nil, Bool, Int and String, and anything else raises
+    /// when the key is built.
+    #[test]
+    fn removal_takes_a_single_value_too() {
+        assert_eq!(
+            infer("[1, 2, 1] - 1"),
+            Type::List(Box::new(Type::Int)),
+            "removal never introduces an element, so the type is unchanged"
+        );
+        assert_eq!(
+            infer("[1, \"a\"] - 1"),
+            Type::List(Box::new(Type::Any)),
+            "a heterogeneous literal is a list here too"
+        );
+        assert_eq!(
+            infer("{\"a\": 1} - \"a\""),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+            "…and the map keeps both of its types"
+        );
+        check_program("let m = {\"a\": 1};\nlet c = m - 1.5;\nprintln(c);\n")
+            .expect_err("a Float cannot be a key, so it cannot be removed");
+        check_program("let c = 1 - [1];\nprintln(c);\n").expect_err("a number minus a list is not a removal");
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first
