@@ -2030,6 +2030,38 @@ fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> boo
 /// method is assumed to mutate), or passing one to a function that does — the
 /// last of which is why this is a fixpoint over the module's own functions.
 #[cfg(feature = "aot")]
+/// Builtins that provably cannot keep or write through an argument.
+///
+/// Every operator LK desugars into a call, plus the handful that only look at a
+/// value. Listed rather than inferred, and in the safe direction: a name missing
+/// from here costs a module that is needlessly not bundled, a name wrongly in it
+/// costs a wrong answer.
+fn builtin_only_reads(name: &str) -> bool {
+    matches!(
+        name,
+        "__lk_shl"
+            | "__lk_shr"
+            | "__lk_shr_u"
+            | "__lk_bit_and"
+            | "__lk_bit_or"
+            | "__lk_bit_xor"
+            | "__lk_bit_not"
+            | "__lk_lt_u"
+            | "__lk_div_u"
+            | "__lk_mod_u"
+            | "__lk_u64_to_float"
+            | "__lk_u64_str"
+            | "typeof"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "print"
+            | "println"
+            | "panic"
+            | "error"
+    )
+}
+
 fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
     use lk_core::vm::{Instr, Opcode};
 
@@ -2121,6 +2153,9 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                 .filter_map(|i| u8::try_from(i).ok().map(|reg| (reg, i as usize)))
                 .filter(|(reg, _)| container_regs[fi].contains(reg))
                 .collect();
+            // Which global name a register was loaded from, for the indirect
+            // call below.
+            let mut global_of: std::collections::HashMap<u8, &str> = std::collections::HashMap::new();
             let mark = |slot: usize, unsafe_params: &mut Vec<Vec<bool>>, changed: &mut bool| {
                 if let Some(flag) = unsafe_params[fi].get_mut(slot)
                     && !*flag
@@ -2129,7 +2164,7 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     *changed = true;
                 }
             };
-            for raw in &function.code {
+            for (pc, raw) in function.code.iter().enumerate() {
                 let Ok(instr) = Instr::try_from_raw(*raw) else {
                     continue;
                 };
@@ -2143,6 +2178,29 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                         } else {
                             tainted.remove(&instr.a());
                         }
+                        // Which global a register came from travels with it: a
+                        // call's callee is *moved* into the window's base, so
+                        // without this the call below cannot name what it calls.
+                        match global_of.get(&instr.b()).copied() {
+                            Some(name) => global_of.insert(instr.a(), name),
+                            None => global_of.remove(&instr.a()),
+                        };
+                    }
+                    Opcode::GetGlobal => {
+                        // The slot is the compiler's fact where there is one;
+                        // the instruction's `bx` is a placeholder the executor
+                        // also declines to trust
+                        // (`global_slot_from_fact_cache_or_instr`).
+                        let slot = function
+                            .performance
+                            .global_op(pc)
+                            .map(|fact| fact.slot)
+                            .unwrap_or_else(|| instr.bx());
+                        match module.globals.get(slot as usize) {
+                            Some(name) => global_of.insert(instr.a(), name.as_str()),
+                            None => global_of.remove(&instr.a()),
+                        };
+                        tainted.remove(&instr.a());
                     }
                     // A container *read out of* a tainted container is part of
                     // it: `self.items` is the caller's list, so a push through
@@ -2213,6 +2271,51 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                             mark(slot, &mut unsafe_params, &mut changed);
                         }
                     }
+                    // A fresh scalar written into a register replaces whatever
+                    // was there, taint included.
+                    //
+                    // Nothing used to say so: taint was dropped only where it
+                    // was also propagated (`Move` and the container reads), so a
+                    // register that had once held an element read out of a
+                    // parameter stayed tainted through every later use of that
+                    // register — and the bytecode reuses registers hard.
+                    //
+                    // Listed, not inferred, and in the safe direction: a missed
+                    // mutation is a wrong answer, an extra one only a refusal.
+                    // So this names opcodes whose `a` is a value they have just
+                    // computed, and leaves alone every opcode whose `a` is a
+                    // *receiver*.
+                    Opcode::LoadInt
+                    | Opcode::LoadFloat
+                    | Opcode::LoadString
+                    | Opcode::AddInt
+                    | Opcode::SubInt
+                    | Opcode::MulInt
+                    | Opcode::DivInt
+                    | Opcode::ModInt
+                    | Opcode::AddIntI
+                    | Opcode::MulIntI
+                    | Opcode::ModIntI
+                    | Opcode::AddFloat
+                    | Opcode::SubFloat
+                    | Opcode::MulFloat
+                    | Opcode::DivFloat
+                    | Opcode::ModFloat
+                    | Opcode::CmpInt
+                    | Opcode::CmpNeInt
+                    | Opcode::CmpLtInt
+                    | Opcode::CmpLeInt
+                    | Opcode::CmpGtInt
+                    | Opcode::CmpGeInt
+                    | Opcode::Not
+                    | Opcode::Neg
+                    | Opcode::Len
+                    | Opcode::Contains
+                    | Opcode::ToString
+                    | Opcode::ConcatString => {
+                        tainted.remove(&instr.a());
+                        global_of.remove(&instr.a());
+                    }
                     // A direct call passes registers `b+1..b+1+argc`; taint
                     // flows to the callee's parameter of the same position.
                     Opcode::CallDirect => {
@@ -2233,6 +2336,21 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     }
                     // An indirect call could be anything, including a closure
                     // that keeps the handle.
+                    // A call through a register: the callee is whatever that
+                    // register holds, so an argument handed to it is assumed to
+                    // be kept — unless the register can be named and names a
+                    // builtin that provably only reads.
+                    //
+                    // The operators are why this matters. `(bits >> shift) & 1`
+                    // desugars to calls of `__lk_shr` and `__lk_bit_and`, so a
+                    // value read out of a container parameter and then shifted
+                    // looked exactly like one handed to an unknown function —
+                    // and `drivers/text`, whose own comment reads "`font` is
+                    // only ever read, which is what keeps this module
+                    // bundlable", could not be bundled. That is what stopped
+                    // `bare-metal-x86` from building.
+                    Opcode::Call | Opcode::CallNamed
+                        if global_of.get(&instr.a()).copied().is_some_and(builtin_only_reads) => {}
                     Opcode::Call | Opcode::CallNamed => {
                         let base = instr.a();
                         for offset in 1..=instr.c() {
