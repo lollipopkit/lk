@@ -1101,9 +1101,17 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("slice",     false,    true,  false),
     method_row("enumerate", false,    false, true),
     method_row("zip",       false,    false, true),
-    method_row("chain",     false,    false, true),
+    method_row("chain",     true,     true,  true),
     method_row("flatten",   false,    false, true),
     method_row("chunk",     false,    false, true),
+    // Answer an element, not a list, so `strlist` says nothing about them; they
+    // are here for `unbox_list` alone. Their arms already accept `ListDyn` —
+    // only the row was missing, so a boxed receiver refused at the tag guard it
+    // was entitled to pass. `pop` shares the `first`/`last` arm and is *not*
+    // here: it mutates, which `no_unbox_list_name_mutates_its_receiver` forbids.
+    method_row("first",     true,     false, true),
+    method_row("last",      true,     false, false),
+    method_row("index_of",  true,     false, false),
     method_row("has",       false,    false, false),
     method_row("keys",      false,    false, false),
     method_row("values",    false,    false, false),

@@ -1899,29 +1899,10 @@ pub(crate) fn lower_method_dispatch(
         // decided whether it stayed native. Both arms were subsumed by this one;
         // deleting them is the fix, not adding two more.
         (
-            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn,
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
             "chain" | "concat",
             [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn)],
         ) => {
-            // A boxed *receiver* is ordinary for the same reason a boxed
-            // argument is, and was accepted on only one side: a list carried
-            // through a loop-header phi that merges two carriers is seen as
-            // `Dyn`, so `line = line.chain([46])` — reset to `[]` on one path and
-            // extended on another — refused. The `bare-metal-x86` kernel is
-            // written that way and stopped compiling for it. Unboxing through
-            // the tag guard is the same loud failure the VM gives for a
-            // non-list, so nothing is guessed here either.
-            let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn {
-                let dst = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(dst),
-                    callee: AbiRef::new("dyn", "as_list"),
-                    args: vec![receiver],
-                });
-                (dst, Ty::ListDyn)
-            } else {
-                (receiver, receiver_ty)
-            };
             // A boxed argument is ordinary here: a callee's return type is
             // *observed*, and a long `a.chain(b).chain(c)…` chain can see one of
             // its operands as `Dyn` before the fixpoint has settled. Unboxing

@@ -991,6 +991,14 @@ fn differential_dyn_cross_function() {
                 "dyn_receiver_chain",
                 "fn emit(base, line) { return base + line.len(); }\nfn build(n) {\n  let line = [];\n  let out = 0;\n  let i = 0;\n  while (i < n) {\n    if (i % 4 == 0) { out = emit(out, line); line = []; }\n    else { line = line.chain([i]); }\n    i = i + 1;\n  }\n  return emit(out, line);\n}\nprintln(build(11));\nprintln(build(0));\nreturn 0;\n",
             ),
+            // The rest of the boxed-receiver names whose arms already accepted
+            // `ListDyn` and whose method-table row was missing, so the receiver
+            // never reached them. `index_of` is here for its absent answer too:
+            // a miss is nil, and nil has to survive the unboxed path.
+            new(
+                "dyn_receiver_element_methods",
+                "fn probe(xs) { return \"\" + xs.first() + xs.last() + xs.index_of(1); }\nprintln(probe([3, 1, 2]));\nprintln(probe([3.5, 1.5]));\nprintln(probe([\"a\", \"b\"]));\nreturn 0;\n",
+            ),
             // An all-nil branch join must not build a Nil-typed phi: it widens
             // to Dyn (boxed nil) and compares by tag.
             new(
