@@ -42,11 +42,6 @@ const HYBRID_ARG_SIZE: usize = 16;
 /// Byte offset of the value field within an `LkHybridArg`.
 const HYBRID_ARG_VALUE_OFFSET: i32 = 8;
 
-/// How many machine words the `try`-region trampoline's arity switch covers
-/// (`lkrt/src/try_trampoline.c`). Its `default` arm is `__builtin_trap()`, so a
-/// call built past this is a crashing binary rather than a rejected program.
-const LK_TRY_MAX_ARGS: usize = 8;
-
 /// Why a MIR shape is not (yet) lowerable through the Cranelift path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClifError {
@@ -297,12 +292,42 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
     let mut fn_rets = HashMap::new();
-    // How many machine words each function's signature takes, so a try-region
+    // How many machine words each function's parameters take, so a try-region
     // call can be checked against the body it names. Nothing else checks it: the
-    // trampoline takes the body's *address* and casts it to an arity the switch
-    // picked, so a caller passing one word too few reads a register the callee
-    // never wrote — a wild pointer, not a link error.
+    // trampoline takes the body's *address* and casts it, so a caller passing
+    // one word too few leaves the body reading a slot nobody wrote — a wild
+    // pointer, not a link error.
     let mut fn_arity: HashMap<FuncId, usize> = HashMap::new();
+    // The bodies of `try` regions, recognized by the only thing that makes a
+    // function one: something calls it as a region body. Derived rather than
+    // recorded, so there is no second place that could disagree.
+    //
+    // They take their parameters through a pointer to the caller's word buffer
+    // instead of one machine parameter each (see `body_signature`), which is
+    // what lets a region cross any number of values: the alternative was a
+    // hand-written arity switch in `lkrt/src/try_trampoline.c` and a cap the
+    // lowering had to budget against.
+    let try_bodies: std::collections::HashSet<FuncId> = mir
+        .functions
+        .iter()
+        .flat_map(|func| func.blocks.iter().flat_map(|block| block.insts.iter()))
+        .filter_map(|inst| match inst {
+            Inst::TryRegionCall { func, .. } => Some(*func),
+            _ => None,
+        })
+        .collect();
+    // A body is *only* ever called through the trampoline. If something also
+    // calls it directly, the two call sites disagree about the signature and one
+    // of them is wrong — say so rather than emit both.
+    for func in &mir.functions {
+        for inst in func.blocks.iter().flat_map(|block| block.insts.iter()) {
+            if let Inst::CallFn { func: callee, .. } = inst
+                && try_bodies.contains(callee)
+            {
+                return Err(ClifError::Unsupported("a try body is also called directly"));
+            }
+        }
+    }
     // Exported LK functions by the name the source gave them, so
     // `symbol_address("name")` can take the address of *this* function rather
     // than declaring an import that would have to guess a signature — and
@@ -316,6 +341,12 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
             // with the function's own signature. This is how a board names LK
             // code — an interrupt vector or a C caller cannot reach `lk_fn_7`.
             (exported.clone(), Linkage::Export, signature_of(func, cc)?)
+        } else if try_bodies.contains(&func.id) {
+            (
+                format!("lk_fn_{}", func.id.0),
+                Linkage::Local,
+                body_signature(func, cc)?,
+            )
         } else {
             (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
         };
@@ -325,7 +356,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         }
         fn_ids.insert(func.id, id);
         fn_rets.insert(func.id, func.ret);
-        fn_arity.insert(func.id, sig.params.len());
+        fn_arity.insert(func.id, param_words(func)?);
     }
     let helpers = Helpers::declare(&mut module)?;
 
@@ -387,6 +418,8 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         let mut ctx = module.make_context();
         ctx.func.signature = if is_entry {
             main_signature(cc)
+        } else if try_bodies.contains(&func.id) {
+            body_signature(func, cc)?
         } else {
             signature_of(func, cc)?
         };
@@ -406,7 +439,15 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 hybrid_argbuf,
                 vm_functions: &mir.vm_functions,
             };
-            build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx, is_entry, mir.abi_version)?;
+            build_function(
+                func,
+                &mut ctx.func,
+                &mut fb_ctx,
+                &mut mctx,
+                is_entry,
+                try_bodies.contains(&func.id),
+                mir.abi_version,
+            )?;
         }
         module.define_function(fn_ids[&func.id], &mut ctx)?;
         module.clear_context(&mut ctx);
@@ -519,16 +560,62 @@ pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature
     Ok(sig)
 }
 
+/// How many machine words a function's parameters occupy.
+///
+/// The same count either way it is passed: one Cranelift parameter each in the
+/// ordinary signature, one eight-byte slot each in a try body's word buffer.
+fn param_words(func: &MirFunction) -> Result<usize, ClifError> {
+    let mut words = 0;
+    for (_, ty) in &func.params {
+        words += ty_clif_parts(*ty)?.len();
+    }
+    Ok(words)
+}
+
+/// The signature of a `try` region's body: one pointer to the caller's word
+/// buffer, and nothing back.
+///
+/// The caller spills every crossing value into a stack buffer already — that is
+/// what `lkrt_rt_try_region` is handed — so the words are in memory before the
+/// call whichever way the body reads them. Taking them one Cranelift parameter
+/// each meant a C trampoline reloading the buffer into registers through a
+/// hand-written arity switch, which cost a round trip and put a **cap** on how
+/// many values a region could cross: past eight the switch trapped, so the
+/// lowering refused. Reading them out of the buffer directly removes both.
+///
+/// Every parameter is exactly one word by construction (`function.rs` splits a
+/// carrier into two `I64` and declares an `F64` as `I64`), which is checked here
+/// rather than assumed — the buffer has no way to say that a slot was two.
+fn body_signature(func: &MirFunction, call_conv: CallConv) -> Result<Signature, ClifError> {
+    for (_, ty) in &func.params {
+        if ty_clif_parts(*ty)?.len() != 1 {
+            return Err(ClifError::Unsupported(
+                "a try body parameter is wider than a machine word",
+            ));
+        }
+    }
+    if func.ret != Ty::Nil {
+        return Err(ClifError::Unsupported("a try body returns a value"));
+    }
+    let mut sig = Signature::new(call_conv);
+    sig.params.push(AbiParam::new(types::I64));
+    Ok(sig)
+}
+
 /// Lower a MIR function body into `clif_func`. When `is_entry`, `clif_func` must
 /// be the program `main` (`() -> i32`): its entry block gets an `rt_begin`
 /// prologue and its returns print the top-level result before `ret 0`, matching
-/// the string-IR backend.
+/// the string-IR backend. When `via_argv`, the function is a `try` region's body
+/// and its parameters are read out of the pointer it is handed
+/// (see [`body_signature`]).
+#[allow(clippy::too_many_arguments)]
 fn build_function(
     func: &MirFunction,
     clif_func: &mut Function,
     fb_ctx: &mut FunctionBuilderContext,
     mctx: &mut ModuleCtx,
     is_entry: bool,
+    via_argv: bool,
     abi_version: i64,
 ) -> Result<(), ClifError> {
     let mut builder = FunctionBuilder::new(clif_func, fb_ctx);
@@ -559,11 +646,24 @@ fn build_function(
     builder.append_block_params_for_function_params(entry);
     // Bind the function-signature params to the entry block's params, consuming
     // one or two Cranelift params per MIR value (carriers are a pair).
+    //
+    // A try body's single parameter is the *address* of its words instead, so
+    // the binding is a load per parameter and has to wait until the builder is
+    // positioned in a block — it happens at the top of the loop below.
     let entry_params: Vec<Value> = builder.block_params(entry).to_vec();
-    let mut cursor = 0;
-    for (vid, ty) in &func.params {
-        lower.bind_params(*vid, *ty, &entry_params, &mut cursor)?;
-    }
+    let argv = if via_argv {
+        Some(
+            *entry_params
+                .first()
+                .ok_or(ClifError::Unsupported("try body has no argv"))?,
+        )
+    } else {
+        let mut cursor = 0;
+        for (vid, ty) in &func.params {
+            lower.bind_params(*vid, *ty, &entry_params, &mut cursor)?;
+        }
+        None
+    };
     // Non-entry blocks carry the SSA phi params as block params (each carrier phi
     // is two Cranelift block params).
     for block in &func.blocks {
@@ -583,6 +683,27 @@ fn build_function(
     for block in &func.blocks {
         let cb = lower.blocks[&block.id];
         builder.switch_to_block(cb);
+        // A try body reads its parameters out of the caller's word buffer. Each
+        // slot is a full machine word, so the load is `i64` and a narrower
+        // declared type (a `Bool`, which Cranelift compares as `i8`) is reduced
+        // from it — rather than loading at the declared width, which would be
+        // reading whichever end of the slot the machine happens to put first.
+        if block.id == func.entry
+            && let Some(argv) = argv
+        {
+            for (index, (vid, ty)) in func.params.iter().enumerate() {
+                let word = builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::trusted(), argv, (index * 8) as i32);
+                let want = ty_to_clif(*ty)?;
+                let value = match want {
+                    types::I64 => word,
+                    types::F64 => builder.ins().bitcast(types::F64, MemFlagsData::new(), word),
+                    narrower => builder.ins().ireduce(narrower, word),
+                };
+                lower.set1(*vid, value);
+            }
+        }
         // The entry/`main` guards against ABI drift before any user code runs.
         if is_entry && block.id == func.entry {
             let check = mctx.abi_func(resolve_abi("lkrt", "rt_begin")?)?;
@@ -904,21 +1025,13 @@ impl Lower {
                     .ok_or(ClifError::Unsupported("try body is not a declared function"))?;
                 let reference = mctx.module.declare_func_in_func(callee, b.func);
                 let body_addr = b.ins().func_addr(types::I64, reference);
-                // The inputs travel as machine words in a stack buffer, which
-                // is what the trampoline's arity switch reads them back out of
-                // — and that switch has a `default` arm that traps. Refusing
-                // here is what keeps the trap unreachable: the lowering budgets
-                // for the cap, but a budget is an estimate of a number this is
-                // holding, so the number itself is checked.
-                if args.len() > LK_TRY_MAX_ARGS {
-                    return Err(ClifError::Unsupported("try-region arity over trampoline cap"));
-                }
-                // And that the count *agrees with the body*. The call goes
-                // through an address and a cast, so a disagreement is not a link
-                // error — the body reads a parameter register the caller never
-                // set. One `try` whose region was found at the wrong pc built
-                // exactly that: a five-parameter body called with four words,
-                // which ran and dereferenced whatever the fifth register held.
+                // The inputs travel as machine words in a stack buffer, which is
+                // what the body reads them back out of. The count has to agree
+                // with what the body expects: the call goes through an address
+                // and a cast, so a disagreement is not a link error — the body
+                // loads a slot nobody wrote. One `try` whose region was found at
+                // the wrong pc built exactly that: a five-word body called with
+                // four, which ran and dereferenced whatever the fifth slot held.
                 if mctx.fn_arity.get(func) != Some(&args.len()) {
                     return Err(ClifError::Unsupported(
                         "try-region call disagrees with the body's arity",
@@ -932,10 +1045,9 @@ impl Lower {
                     b.ins().stack_store(word, args_slot, (i * 8) as i32);
                 }
                 let argv = b.ins().stack_addr(types::I64, args_slot, 0);
-                let argc = b.ins().iconst(types::I64, args.len() as i64);
-                let tramp = mctx.raw_func("lkrt_rt_try_region", &[types::I64; 3], &[types::I64])?;
+                let tramp = mctx.raw_func("lkrt_rt_try_region", &[types::I64; 2], &[types::I64])?;
                 let tramp_ref = mctx.module.declare_func_in_func(tramp, b.func);
-                let call = b.ins().call(tramp_ref, &[body_addr, argc, argv]);
+                let call = b.ins().call(tramp_ref, &[body_addr, argv]);
                 let ok = *b
                     .inst_results(call)
                     .first()

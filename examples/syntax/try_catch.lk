@@ -271,4 +271,35 @@ assert(first_over([1, 2, 9], 5) == 9);
 assert(first_over([1, 0, 2], 5) == 0 - 2);
 assert(first_over([1, 0 - 3, 9], 5) == 0 - 1);
 
+// A region that crosses a lot: eight inputs of five different kinds, five
+// variables the body assigns and the function reads afterwards, and an outcome
+// channel carrying `continue`, `break` and `return`. The body of this one is a
+// function of twenty-nine parameters when it is compiled natively, which is only
+// interesting because the count used to be capped at eight.
+fn crowded(a: Int, b: Int, c: Int, d: Float, flag: Bool, tag: String) -> Int {
+    let p = 0;
+    let q = 0;
+    let r = 0;
+    let s = 0;
+    let t = 0;
+    for i in 0..5 {
+        try {
+            p = p + a + i;
+            q = q + b;
+            r = r + c;
+            s = s + tag.len();
+            if flag { t = t + 1; }
+            if d > 1.5 { t = t + 10; }
+            if i == 2 { continue; }
+            if i == 4 { break; }
+            if p > 900 { return 0 - 1; }
+        } catch e {
+            p = 0 - 99;
+        }
+    }
+    return p + q + r + s + t;
+}
+assert(crowded(1, 2, 3, 2.5, true, "abcd") == 115);
+assert(crowded(9, 8, 7, 0.5, false, "xy") == 140);
+
 println("try/catch: ok");

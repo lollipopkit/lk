@@ -1661,10 +1661,31 @@ VM/native 逐行比对:50 个种子 × 5 个程序,0 分歧。61 程序 sweep、
 `clif.rs` 现在把 try-region 调用的字数和被调 body 声明的字数对一遍。这条检查此前不存在,
 而且没有别的东西能替代它:签名不经过 Cranelift 的类型检查。
 
-### 下一块
+## §49 try body 自己读参数缓冲,元数上限随之消失(2026-08-19)
 
-`too many values cross the region boundary` 现在是唯一剩下的原因(13/121)。
-`LK_TRY_MAX_ARGS = 8` 来自 `lkrt/src/try_trampoline.c` 里手写的元数 switch。
-调用方**本来就**把参数摊在一个栈缓冲里传 `argv` 过去,switch 只是再把它们装回寄存器;
-让 body 直接收 `argv` 指针、自己按偏移读,既去掉了这个上限,也少一轮搬运。
-留给单独一轮:那要改 codegen 里 try body 的签名生成,和这一轮的控制流改动无关。
+§48 之后唯一剩下的阻塞原因是 `too many values cross the region boundary`(13/121)。
+`LK_TRY_MAX_ARGS = 8` 不是 ABI 约束,是 `lkrt/src/try_trampoline.c` 里一段手写 switch
+的长度:它把 body 的地址强转成九种 `(long long, …)` 原型之一,`default` 是
+`__builtin_trap()`,所以降级那一侧必须先算好字数再拒绝。
+
+关键事实是**调用方本来就把参数摊在一个栈缓冲里**——`lkrt_rt_try_region` 收到的就是
+那个 `argv`。switch 做的事情只是把已经在内存里的字再装回寄存器。于是让 body 直接收
+`argv` 指针、按偏移把自己的参数读出来:
+
+- `body_signature`(`aot/codegen/src/clif.rs`)给 try body 一个 `(i64) -> ()` 的签名。
+  哪些函数是 try body 不是记下来的,是**从 `Inst::TryRegionCall` 反推的**——
+  成为 try body 的唯一条件就是有人这样调它,所以没有第二处可以对不上。
+  同一个函数如果还被普通 `CallFn` 调用,两处签名必然有一处是错的,直接报错。
+- 每个参数正好一个机器字(carrier 在 `function.rs` 里已经拆成两个 `I64`,`F64` 声明成
+  `I64`),这一点在 `body_signature` 里**检查**而不是假定:缓冲没有办法表示"这一格是两个字"。
+- 读出来一律按 `i64` 读,再按声明类型收窄(`Bool` 在 Cranelift 里是 `i8`)。
+  按声明宽度直接读会依赖机器把哪一端放在前面。
+- switch、`LK_TRY_MAX_ARGS`(两份)、以及 trampoline 的 `argc` 参数一起删掉。
+
+结果:同一份 121 程序语料 **121/121 原生化**;一个跨 8 个输入 + 多个 cell + 出口通道的
+区域,body 声明了 **29 个参数**,和解释器逐行一致。50 个种子 × 5 个程序 0 分歧,
+覆盖率门禁 65/65,61 程序 sweep、五个种子的生成式差分、
+`cargo test --workspace --all-features` 全绿。VM 不受影响(改动只在 `aot/` 和 `lkrt/`)。
+
+顺带被这条检查拦住的一类:参数类型是 `Nil` 的 body。`signature_of` 会给它 0 个 Cranelift
+参数,而调用方照样推一个字进缓冲——以前是静默错位,现在直接拒绝。

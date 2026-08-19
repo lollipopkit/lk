@@ -314,11 +314,6 @@ fn crosses_as_two_words(ty: Ty) -> bool {
     }
 }
 
-/// How many machine words the `try`-region trampoline's arity switch covers
-/// (`lkrt/src/try_trampoline.c`), mirrored from the codegen constant of the
-/// same name — the lowering refuses a region past it so codegen never has to.
-const LK_TRY_MAX_ARGS: usize = 8;
-
 /// The closure identity a region input names, when it is one.
 ///
 /// Asked *before* the register is read, because reading it is what fails: a
@@ -660,42 +655,6 @@ pub(crate) fn lower_function(
             }
         }
         cells.sort_unstable();
-        // The trampoline passes machine words and its arity switch caps them at
-        // `LK_TRY_MAX_ARGS`; past that its `default` arm traps, so the count has
-        // to be exact rather than indicative. Everything that becomes an
-        // argument is counted: each input — a lambda one contributing a word per
-        // capture and nothing for its identity — each cell, and the two-cell
-        // return channel.
-        //
-        // It used to count inputs and cells only. A body with seven inputs that
-        // also returned built a nine-argument call, and the program compiled,
-        // linked, and died on `SIGILL` the first time the region ran.
-        let inputs: usize = sig
-            .try_body_params
-            .get(&body_index)
-            .map(|params| {
-                params
-                    .iter()
-                    .map(|reg| match try_body_lambda(sig, body_index, *reg) {
-                        Some(identity) => identity.captures as usize,
-                        // A carrier crosses as two words.
-                        None => match sig.try_body_param_tys.get(&(body_index, *reg)) {
-                            Some(ty) if crosses_as_two_words(*ty) => 2,
-                            _ => 1,
-                        },
-                    })
-                    .sum()
-            })
-            .unwrap_or(0);
-        // The outcome flag, plus the parked value for a body that `return`s.
-        let returns = sig.try_body_returns.contains(&body_index);
-        let channel = usize::from(returns || !region.escape_targets.is_empty()) + usize::from(returns);
-        if inputs + cells.len() + channel > LK_TRY_MAX_ARGS {
-            return Err(Unsupported::TryRegion {
-                pc: region.begin_pc,
-                reason: "too many values cross the region boundary",
-            });
-        }
         sig.try_body_cells.insert(body_index, cells);
         let body = sig
             .try_bodies
