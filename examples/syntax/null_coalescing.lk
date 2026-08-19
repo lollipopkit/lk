@@ -164,4 +164,21 @@ fn shapes(xs: List<Int>, upto: Int) -> String {
 assert(shapes([4, 5], 2) == "4;5; 2 2");
 assert(shapes([4], 2) == "4;nil; 2 2");
 
+// 12. One parameter, a list at one call and a number at another
+//
+// An unannotated parameter accepts both — every other pair already did, and an
+// *empty* list was the exception: `f([]); f(5)` was rejected with `Cannot unify
+// Int with List<'T2>` while `f([1]); f(5)` was accepted, the same program with
+// one element in it. The empty literal's element type is still a variable, and
+// the widening that turns two observations into a union refused to widen
+// anything containing one.
+fn describe(v) -> String {
+    if v == nil { return "nil"; }
+    return typeof(v);
+}
+assert(describe([]) == "List");
+assert(describe(5) == "Int");
+assert(describe("s") == "String");
+assert(describe({}) == "Map");
+
 println("null_coalescing: all assertions passed");

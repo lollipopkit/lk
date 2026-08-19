@@ -2067,3 +2067,26 @@ MIR 里看得很清楚:检查块算出了结果码,然后 `br` 到 return 块 �
   负下标、越界、空分隔符、`\u{a0}` 的 trim、Unicode 比较):全部一致。
 
 这两族没有发现问题,记在这里是为了下次不用再探一遍。
+
+## §59 最后一趟的可重试发现,第三种漏了(2026-08-20)
+
+上面那条类型错误修好之后,`fn f(v) { … } f([]); f(5);` 还是不原生化,报
+"empty list literal(s) at pc [4] were mis-guessed (retried as Dyn)" ——
+一句**定点内部的话**漏到了用户面前,而且重试并没有发生。
+
+`lower_bundled` 结尾那段注释已经把道理写清楚了:定点收敛 → `refine_signatures` 跑一次 →
+最后一趟按细化后的签名降级,而**只有在最后一趟才出现**的发现没有下一趟可去,
+所以那里专门收集了一批可重试的失败再走一遍。收集的名单上有
+`DynLoopPhi` 和 `ParamCarrierContradicted`,**没有** `LiteralElemTypeContradicted`
+(也没有 `PhiProvenance`)。
+
+空的 `[]` 的元素类型是靠"往后找第一次 push"猜的;函数里根本没有 push 时没有任何证据,
+猜的就是默认载体。而"这个参数是 Dyn"正是 `refine_signatures` 才定下来的,
+于是矛盾**只在最后一趟可见**,而那里没人听。
+
+两种都补进名单了。`f([]); f(5)` 现在原生化,和解释器一致。
+
+顺带记一条**诊断本身的毛病**:`carrier_contradicted` 在句柄不是已知字面量时,
+会把 `literal_carrier` 里**所有**同形状的 pc 都报出来 —— 所以 `f([1]); f(5)`
+也报"empty list literal",尽管那里根本没有空字面量。这条没改,
+它只是把话说得不准,不影响重试(重试的是同一批 pc)。

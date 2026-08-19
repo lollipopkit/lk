@@ -797,11 +797,25 @@ impl TypeInferenceEngine {
             _ => return None,
         };
         let incoming = Self::normalize_union(self.apply_substitution(incoming));
-        if incoming.contains_variables() {
+        let bound = Self::normalize_union(self.apply_substitution(&self.substitutions.get(var)?.clone()));
+        if bound == incoming {
             return None;
         }
-        let bound = self.substitutions.get(var)?.clone();
-        if bound.contains_variables() || bound == incoming {
+        // A *bare* variable is what "inference has not finished deciding"
+        // means: it has no shape yet, so widening against it would decide
+        // something ordinary unification is still entitled to decide.
+        //
+        // A **constructed** type that merely contains variables is a different
+        // thing, and both sides used to be refused for it. `List<'T2>` — what an
+        // empty literal gives — has its shape settled: it is a list, and a list
+        // never unifies with an `Int` however `'T2` turns out. So refusing did
+        // not defer a decision, it reported a conflict. `f([]); f(5)` failed
+        // with `Cannot unify Int with List<'T2>` while `f([1]); f(5)` was
+        // accepted — the same program with one element in it, and the
+        // difference decided by which of the two constraints the solver
+        // happened to pop first. The inner variable survives into the union and
+        // is substituted later like any other.
+        if matches!(bound, Type::Variable(_)) || matches!(incoming, Type::Variable(_)) {
             return None;
         }
         // `Any` already accepts everything; widening it says nothing new.

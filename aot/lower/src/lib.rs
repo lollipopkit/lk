@@ -645,18 +645,33 @@ pub fn lower_bundled(
     let (mut globals, mut functions, failures) = {
         enum Retriable {
             LoopPhi(usize, usize),
+            PhiProvenance(usize, usize),
             ParamCarrier(u8),
+            LiteralElemType(Vec<usize>),
         }
         let retriable: Vec<(usize, Retriable)> = failures
             .iter()
             .filter_map(|(fi, err)| match err {
                 Unsupported::DynLoopPhi { block, slot } => Some((*fi, Retriable::LoopPhi(*block, *slot))),
+                Unsupported::PhiProvenance { block, slot } => Some((*fi, Retriable::PhiProvenance(*block, *slot))),
                 // A push that widens a parameter's carrier is discovered only
                 // here: the fixpoint wipes its parameter observations once, so
                 // a callee reached only through a call site's observation is
                 // lowered against the `I64` default in every pass and never
                 // sees the typed carrier its caller passes.
                 Unsupported::ParamCarrierContradicted { param } => Some((*fi, Retriable::ParamCarrier(*param))),
+                // The third of the same kind, and it was missing. An empty `[]`
+                // is guessed from a lookahead for the first push into it; with
+                // no push in the function there is no evidence, so the guess is
+                // the default carrier — and a call site that hands it to a
+                // `Dyn` parameter contradicts that guess. Refinement is what
+                // makes the parameter `Dyn`, so the contradiction is *only*
+                // visible in the final pass, where nothing was listening.
+                // `fn f(v) { … } f([]); f(5);` — a list and a non-list at one
+                // parameter, which is an ordinary program — refused to lower.
+                Unsupported::LiteralElemTypeContradicted { pcs } => {
+                    Some((*fi, Retriable::LiteralElemType(pcs.clone())))
+                }
                 _ => None,
             })
             .collect();
@@ -668,8 +683,16 @@ pub fn lower_bundled(
                     Retriable::LoopPhi(block, slot) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
                     }
+                    Retriable::PhiProvenance(block, slot) => {
+                        sig.no_phi_provenance.insert((fi as u32, block, slot));
+                    }
                     Retriable::ParamCarrier(param) => {
                         sig.dyn_params.insert((fi as u32, param));
+                    }
+                    Retriable::LiteralElemType(pcs) => {
+                        for pc in pcs {
+                            sig.dyn_literals.insert((fi as u32, pc));
+                        }
                     }
                 }
             }
