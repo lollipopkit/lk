@@ -274,6 +274,24 @@ impl Executor {
             RuntimeVal::Int(value) => Ok(value.to_string()),
             RuntimeVal::Float(value) => Ok(value.to_string()),
             RuntimeVal::ShortStr(value) => Ok(value.as_str().to_string()),
+            // A container renders the way `print` renders it — the same
+            // correction interpolation already took, and for the same reason.
+            // The comment above `runtime_value_to_display_string` counts three
+            // ways to print one value, two of which worked; `+` is a fourth,
+            // and it was the one still failing:
+            //
+            //     println(xs)          → [1,2]
+            //     println("{}", xs)    → [1,2]
+            //     println("${xs}")     → [1,2]
+            //     println("" + xs)     → failed, at run time
+            //
+            // A list operand never reaches here — a list wins over a string and
+            // the answer is a list — so what this changes is `Set`, `Bytes`, a
+            // window, a struct and a callable, none of which had any meaning
+            // under `+` at all.
+            //
+            // The other caller is the "X is not a function" message, where
+            // raising replaced the diagnostic with a worse one.
             RuntimeVal::Obj(handle) => match self
                 .state
                 .heap
@@ -281,10 +299,7 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(value.to_string()),
-                other => bail!(
-                    "object cannot be converted to string: {:?}",
-                    HeapValue::type_name(other)
-                ),
+                _ => crate::vm::exec::display::runtime_display_value(value, &self.state.heap),
             },
         }
     }

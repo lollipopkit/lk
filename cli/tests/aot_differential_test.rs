@@ -591,6 +591,23 @@ fn differential_strings() {
             ),
             // …and the element type the checker gives the answer holds up when
             // it is written down.
+            // A container beside a string in `+` renders the way `print`
+            // renders it. Four ways to print one value and this was the one
+            // that failed — `println(xs)`, `println("{}", xs)` and
+            // `println("${xs}")` all worked. A list is not here because a list
+            // operand *wins* and the answer is a list, which is a different
+            // operation; what changed is `Set`, a byte string, a window, a
+            // struct and a map beside a string.
+            new(
+                "a_container_beside_a_string_renders",
+                "struct P { x: Int }\nprintln(\"\" + Set([1]));\nprintln(\"\" + \"ab\".bytes());\nprintln(\"v=\" + {\"k\": 1});\nprintln({\"k\": 1} + \"v=\");\nprintln(\"\" + P { x: 1 });\nlet w = [1, 2, 3].slice(0, 1);\nprintln(\"\" + w);\nreturn 0;\n",
+            ),
+            // …and through an erased operand, which is the path that already
+            // answered while the typed one refused to lower.
+            new(
+                "a_container_beside_a_string_renders_erased",
+                "struct P { x: Int }\nfn j(a, b) { return a + b; }\nprintln(j(\"v=\", {\"k\": 1}));\nprintln(j(\"\", Set([1])));\nprintln(j(\"\", \"ab\".bytes()));\nprintln(j(\"\", P { x: 1 }));\nprintln(j({\"k\": 1}, \"v=\"));\nprintln(j(\"\", [1, 2]));\nreturn 0;\n",
+            ),
             new(
                 "an_absorbed_operand_widens_the_element_type",
                 "let xs: List<Int> = [1, 2] + 3;\nlet ys: List<Any> = [1, 2] + \"x\";\nprintln(xs);\nprintln(ys);\nreturn 0;\n",

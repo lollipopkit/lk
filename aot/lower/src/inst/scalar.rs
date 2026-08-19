@@ -650,6 +650,37 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::ListDyn));
                 return Ok(());
             }
+            // A string on one side and a container on the other: the container
+            // renders the way `print` renders it. Reached only after the list
+            // and map arms above, so what is left is a `Set`, a byte string, a
+            // window, a struct or a callable — none of which had any meaning
+            // under `+` until the VM's concat started rendering them, the same
+            // correction interpolation took earlier.
+            //
+            // `dyn.add` already did this correctly for a boxed operand, so a
+            // program whose types were erased answered while the same program
+            // with known types refused to lower.
+            if op == Opcode::AddInt && ((lty_raw == Ty::Str) != (rty_raw == Ty::Str)) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "add"),
+                    args: vec![lhs, rhs],
+                });
+                // A string operand with no list in sight makes the answer a
+                // string, so it unboxes rather than staying `Dyn` — every later
+                // read then stays on the typed path.
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "as_str"),
+                    args: vec![boxed],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Str));
+                return Ok(());
+            }
             if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
                 let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                 let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;

@@ -1284,6 +1284,24 @@ mod tests {
         )
         .expect_err("merging into an erased map does not narrow it");
     }
+    /// A map beside a string is a concatenation, not a failed merge.
+    ///
+    /// `"v=" + {"k": 1}` was "map merge requires both operands to be maps" —
+    /// a message naming an operation the program had not written — while both
+    /// executors render the map, the way `"${m}"` does. The other containers
+    /// were never refused here, so the checker rejected one of the five kinds
+    /// that behave identically.
+    ///
+    /// A non-string, non-map operand is still an error, and the runtime agrees:
+    /// `1 + {"k": 1}` raises there.
+    #[test]
+    fn a_map_beside_a_string_concatenates() {
+        assert_eq!(infer("\"v=\" + {\"a\": 1}"), Type::String, "the map renders");
+        assert_eq!(infer("{\"a\": 1} + \"v=\""), Type::String, "from either side");
+        check_program("let m = {\"a\": 1};\nprintln(\"v=\" + m);\n").expect("a map joins a string");
+        check_program("let m = {\"a\": 1};\nlet c = 1 + m;\nprintln(c);\n")
+            .expect_err("a number and a map is neither a merge nor a concatenation");
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first

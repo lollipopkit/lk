@@ -1596,6 +1596,13 @@ impl TypeChecker {
             (Type::Map(_, _), Type::Any) | (Type::Any, Type::Map(_, _)) | (Type::Any, Type::Any) => {
                 Ok(Type::Map(Box::new(Type::Any), Box::new(Type::Any)))
             }
+            // A string on the other side is not a failed merge, it is a
+            // *concatenation* — the map renders the way `print` renders it, the
+            // same as `"${m}"`. This refused while the executors answered, and
+            // the message named an operation the program had not written:
+            // `"v=" + {"k": 1}` was "map merge requires both operands to be
+            // maps".
+            (Type::Map(_, _), Type::String) | (Type::String, Type::Map(_, _)) => Ok(Type::String),
             (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
                 "map merge requires both operands to be maps",
                 Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
