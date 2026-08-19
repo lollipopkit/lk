@@ -934,6 +934,34 @@ impl Generator {
                 let _ = writeln!(out, "println({probe}({arg}));");
             }
         }
+        // A `try` whose body leaves through a jump that belongs to the loop
+        // *outside* it. Natively the body is a function of its own, so a `break`
+        // written there has no loop to leave: it reports which way it left
+        // through a flag the caller dispatches on. Three exits — `break`,
+        // `continue`, `return` — plus the ordinary fall-through and a raise, so
+        // every arm of that dispatch is taken.
+        //
+        // The loop kind is drawn because `continue` does not land in the same
+        // place in each: a `for` range jumps forward to the latch, a `while`
+        // jumps backward to the condition, and the first version of this got the
+        // second one wrong.
+        if self.rng.chance(45) {
+            let probe = self.fresh("fn_tryescape");
+            let brk = self.rng.below(4) + 4;
+            let skip = self.rng.below(3) + 1;
+            let bail = self.rng.below(3) + 5;
+            let header = match self.rng.below(2) {
+                0 => "for v in 0..9 {".to_string(),
+                _ => "let v = 0 - 1;\n    while v < 8 {\n        v = v + 1;".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n    let acc = 0;\n    {header}\n        try {{\n            acc = acc + v;\n            if (v == {skip}) {{ continue; }}\n            if (v == 7) {{ error(\"raised\"); }}\n            if (v == {brk}) {{ break; }}\n            if (v == {bail} && p0 > 0) {{ return acc * 10; }}\n            acc = acc + 1;\n        }} catch e {{\n            acc = acc + 100;\n        }}\n    }}\n    return acc;\n}}"
+            );
+            for arg in [0u64, 1] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
 
         // A closure used as a *value* — in a list, pushed, iterated and called
         // back. Everything else the generator makes of a lambda is built and
@@ -1087,6 +1115,14 @@ impl Generator {
 
 struct CaseOutcome {
     compared: bool,
+    /// The program compiled *fully native* — neither bridged nor dropped to the
+    /// Tier 0 VM bundle.
+    ///
+    /// Counted separately from `compared` because a fallback still compiles,
+    /// still runs, and still answers correctly: a lowering regression is
+    /// invisible to a differential comparison by construction. `compared` alone
+    /// would stay at its floor while every generated program ran on the VM.
+    fully_native: bool,
 }
 
 /// Runs a command to completion with a hard timeout, killing the child on
@@ -1183,8 +1219,12 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
             .trim()
             .to_string();
         println!("  unsupported [{name}]: {reason}");
-        return CaseOutcome { compared: false };
+        return CaseOutcome {
+            compared: false,
+            fully_native: false,
+        };
     }
+    let fully_native = !exe_stderr.contains("Tier 1 hybrid") && !exe_stderr.contains("falling back");
     // A program with a hybrid helper either bridges it ("Tier 1 hybrid") or
     // falls back whole to Tier 0 for some *other* ineligible shape ("falling
     // back") — but it must never compile fully native: that means the
@@ -1225,7 +1265,10 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         native.status,
         String::from_utf8_lossy(&native.stderr)
     );
-    CaseOutcome { compared: true }
+    CaseOutcome {
+        compared: true,
+        fully_native,
+    }
 }
 
 /// `lk compile` builds the lk-api staticlib on demand *inside the compile
@@ -1263,6 +1306,7 @@ fn fuzz_differential_vm_vs_native() {
     fs::create_dir_all(&dir).expect("create tmp dir");
 
     let mut compared = 0_u64;
+    let mut fully_native = 0_u64;
     for case in 0..cases {
         let case_seed = seed.wrapping_add(case);
         let mut generator = Generator::new(case_seed);
@@ -1271,6 +1315,9 @@ fn fuzz_differential_vm_vs_native() {
         let outcome = run_case(&dir, &name, &source, case_seed, expect_hybrid);
         if outcome.compared {
             compared += 1;
+        }
+        if outcome.fully_native {
+            fully_native += 1;
         }
         // Drop this case's artifacts before generating the next one. Keeping
         // them all until the end costs ~30 MB per case under a sanitizer, so a
@@ -1281,14 +1328,31 @@ fn fuzz_differential_vm_vs_native() {
         let _ = fs::remove_file(dir.join(format!("{name}.lkm")));
     }
 
-    println!("fuzz differential: {compared}/{cases} cases natively compared (seed {seed:#x})");
+    println!(
+        "fuzz differential: {compared}/{cases} cases compared, {fully_native} of them fully native (seed {seed:#x})"
+    );
     let _ = fs::remove_dir_all(&dir);
 
-    // The generator targets the MIR-lowerable subset; if almost nothing lowers
+    // The generator targets the MIR-lowerable subset; if almost nothing compiles
     // any more, the fuzz has silently degraded into a VM-only smoke test.
     assert!(
         compared * 4 >= cases,
-        "only {compared}/{cases} generated programs lowered natively; the generator or the \
+        "only {compared}/{cases} generated programs compiled; the generator or the \
          MIR pipeline coverage has regressed"
+    );
+    // And a second floor on the number that lowered *fully native*. A program
+    // that drops to the hybrid bridge or the Tier 0 bundle still compiles, still
+    // runs, and still agrees with the VM — so the comparison above cannot see a
+    // lowering regression at all, and the count above would not move if every
+    // generated program started running on the VM. The floor is a fifth,
+    // deliberately far below what is measured: the generator emits
+    // deliberately-unlowerable hybrid helpers, so the real ratio is a property
+    // of the generator rather than a gate, and it moves with the seed (13–19 of
+    // 40 over six seeds when this was written). What the floor catches is a
+    // collapse, which goes to nearly zero rather than drifting.
+    assert!(
+        fully_native * 5 >= compared,
+        "only {fully_native}/{compared} compiled programs lowered fully native; native coverage \
+         has regressed behind a fallback that still answers correctly"
     );
 }
