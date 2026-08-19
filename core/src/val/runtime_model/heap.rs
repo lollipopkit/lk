@@ -103,9 +103,24 @@ impl HeapStore {
         self.live_len == 0
     }
 
+    /// Whether enough has been allocated since the last collection to be worth
+    /// another one.
+    ///
+    /// The bound is the *live set*, floored at [`Self::gc_threshold`]. A mark
+    /// and sweep costs O(live) whatever triggered it, so collecting every fixed
+    /// number of allocations makes the collector's share of a program grow with
+    /// the data it holds: a workload with a hundred thousand live objects paid a
+    /// hundred-thousand-object walk every thousand allocations. Waiting for the
+    /// heap to grow by its own size instead keeps the amortized cost per
+    /// allocation constant — the standard bound, and the reason `collect` was
+    /// 6% of `bench/workloads_business_algorithms.lk` before it.
+    ///
+    /// `gc_threshold` stays the *floor*, which is what makes it still mean
+    /// something for a small heap: a test that sets it to 1 collects at every
+    /// allocation until there is a live set to speak of.
     #[inline]
     pub fn should_collect(&self) -> bool {
-        self.alloc_since_gc >= self.gc_threshold
+        self.alloc_since_gc as usize >= (self.gc_threshold as usize).max(self.live_len / 2)
     }
 
     #[inline]
@@ -280,6 +295,46 @@ mod tests {
         val::{ErrorVal, StreamCursorValue, StreamValue, Type},
         vm::RuntimeModuleState,
     };
+
+    /// The collector's share of a program must not grow with the data it holds.
+    ///
+    /// A mark and sweep costs O(live) whatever triggered it, so a *fixed*
+    /// allocation threshold makes total GC work O(allocations x live) — a
+    /// program with a large live set paid a full walk every thousand
+    /// allocations. Scaling the trigger with the live set makes it O(1)
+    /// amortized per allocation, which is what this measures: ten times the
+    /// live set must not mean ten times the collections per allocation.
+    ///
+    /// Counted rather than timed, so it says the same thing on any machine.
+    #[test]
+    fn collections_do_not_multiply_with_the_live_set() {
+        fn collections_for(live: usize, allocations: usize) -> usize {
+            let mut heap = HeapStore::new();
+            let roots: Vec<HeapRef> = (0..live)
+                .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("live{i}")))))
+                .collect();
+            let mut collections = 0;
+            for i in 0..allocations {
+                heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("tmp{i}"))));
+                if heap.should_collect() {
+                    heap.collect(roots.iter().copied());
+                    collections += 1;
+                }
+            }
+            collections
+        }
+        // Ten times the live set, the same number of allocations. With a fixed
+        // threshold both answers are the same and the *work* is ten times as
+        // much; scaling the trigger trades that for a tenth of the collections.
+        let small = collections_for(2_000, 20_000);
+        let large = collections_for(20_000, 20_000);
+        assert!(small > 0, "the small heap has to collect at all, got {small}");
+        assert!(
+            large * 5 <= small,
+            "ten times the live set should collect far less often per allocation, \
+             got {large} collections against {small}"
+        );
+    }
 
     #[test]
     fn heap_store_returns_stable_refs() {
