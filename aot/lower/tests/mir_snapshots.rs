@@ -133,6 +133,7 @@ fn list_literal_and_dynamic_index() {
         "let xs = [10, 20, 30];\nlet i = 0;\nlet s = 0;\nwhile (i < 3) { s = s + xs[i]; i = i + 1; }\nreturn s;\n",
         r#"
 mir module (abi v1)
+global g0 = "Add expected numbers or strings, got Int and Nil"
 fn f0() -> i64 entry {
 bb0():
   v0 = call list_h.i64_new()
@@ -153,11 +154,15 @@ bb1(v8: i64, v11: list<i64>, v13: i64):
   condbr v10, bb2(), bb3()
 bb2():
   v12 = list.i64.get_maybe v11, v8
-  v14 = maybe.i64.unwrap v12
-  v15 = int.add v13, v14
-  v16 = const.i64 1
-  v17 = int.add v8, v16
-  br bb1(v17, v11, v15)
+  v14 = maybe.present<maybe<i64>> v12
+  v15 = zext.bool v14
+  v16 = const.str g0
+  call rt.maybe_guard(v15, v16)
+  v17 = maybe.value<maybe<i64>> v12
+  v18 = int.add v13, v17
+  v19 = const.i64 1
+  v20 = int.add v8, v19
+  br bb1(v20, v11, v18)
 bb3():
   ret v13
 }

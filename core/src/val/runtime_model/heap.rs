@@ -29,6 +29,10 @@ pub struct HeapStore {
     live_len: usize,
     alloc_since_gc: u32,
     gc_threshold: u32,
+    /// An embedder asked for a specific threshold, so the live-set scaling in
+    /// [`Self::should_collect`] is off: a number given by name means that
+    /// number, not a floor under a policy the caller did not ask for.
+    pinned_threshold: bool,
 }
 
 impl HeapStore {
@@ -46,6 +50,7 @@ impl HeapStore {
             live_len: 0,
             alloc_since_gc: 0,
             gc_threshold: Self::DEFAULT_GC_THRESHOLD,
+            pinned_threshold: false,
         }
     }
 
@@ -115,11 +120,16 @@ impl HeapStore {
     /// allocation constant — the standard bound, and the reason `collect` was
     /// 6% of `bench/workloads_business_algorithms.lk` before it.
     ///
-    /// `gc_threshold` stays the *floor*, which is what makes it still mean
-    /// something for a small heap: a test that sets it to 1 collects at every
-    /// allocation until there is a live set to speak of.
+    /// `gc_threshold` is the *floor* on how often this can fire, so a small
+    /// heap keeps the old behaviour exactly. A threshold set by name turns the
+    /// scaling off entirely (`pinned_threshold`): an embedder that asks to
+    /// collect every allocation is asking for a policy, not for a floor under
+    /// one.
     #[inline]
     pub fn should_collect(&self) -> bool {
+        if self.pinned_threshold {
+            return self.alloc_since_gc >= self.gc_threshold;
+        }
         self.alloc_since_gc as usize >= (self.gc_threshold as usize).max(self.live_len / 2)
     }
 
@@ -131,6 +141,7 @@ impl HeapStore {
     #[inline]
     pub fn set_gc_threshold(&mut self, threshold: u32) {
         self.gc_threshold = threshold.max(1);
+        self.pinned_threshold = true;
     }
 
     /// Mark and sweep.
@@ -150,9 +161,17 @@ impl HeapStore {
     /// The worklist also lets edges land straight in it, so marking no longer
     /// allocates a fresh `Vec` per object visited.
     pub fn collect(&mut self, roots: impl IntoIterator<Item = HeapRef>) {
-        for mark in &mut self.marks {
-            *mark = Self::WHITE;
-        }
+        // No whitening pass. Every mark is already `WHITE` when a collection
+        // starts, and the three places that could say otherwise all maintain
+        // it: `sweep` turns each surviving `BLACK` back, a swept slot was never
+        // marked in the first place, and both `alloc` paths write `WHITE`. The
+        // loop that used to be here walked every slot the heap had *ever* held
+        // to write a value each of them already had — the same O(slots) the
+        // sweep costs, spent twice.
+        debug_assert!(
+            self.marks.iter().all(|mark| *mark == Self::WHITE),
+            "a collection starts from an all-white heap"
+        );
         let mut worklist: Vec<HeapRef> = roots.into_iter().collect();
         let mut runtime_callables = Vec::new();
         while let Some(reference) = worklist.pop() {
