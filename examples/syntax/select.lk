@@ -94,4 +94,46 @@ let nested = select {
 };
 assert(nested == 3);
 
+// --- the blocking form that actually blocks ---
+// Every `select` above is answered by an arm that is *already* ready, so none
+// of them ever parks — and parking is where a `select` has to be woken by
+// another thread. That matters to more than `select`: a sender only broadcasts
+// when something is parked (`BLOCKED_SELECTS` in `lkrt/src/chan.rs`), because
+// doing it unconditionally was 58% of a channel program with no `select` in it.
+// If the hand-off is ever wrong in the direction that skips a wake, this hangs
+// rather than printing a wrong number, which the corpus timeout reports.
+//
+// Unbuffered channels, so each producer waits for a taker: over a hundred
+// rounds the loop below parks many times. The totals are deterministic even
+// though the interleaving is not.
+use task;
+fn feed(c: Channel<Any>, n: Int) -> Int {
+    let i = 0;
+    while i < n {
+        send(c, i);
+        i = i + 1;
+    }
+    return n;
+}
+let left = chan(0);
+let right = chan(0);
+let rounds = 50;
+let lt = spawn(|| feed(left, rounds));
+let rt = spawn(|| feed(right, rounds));
+let from_left = 0;
+let from_right = 0;
+let taken = 0;
+while taken < rounds * 2 {
+    let which = select {
+        case v <- recv(left) => 0;
+        case v <- recv(right) => 1;
+    };
+    if which == 0 { from_left = from_left + 1; } else { from_right = from_right + 1; }
+    taken = taken + 1;
+}
+assert(task.await(lt) == rounds);
+assert(task.await(rt) == rounds);
+assert(from_left == rounds);
+assert(from_right == rounds);
+
 println("select: ok");

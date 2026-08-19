@@ -1780,3 +1780,56 @@ dist 构建链到了前一天的 lkrt,里面 `lkrt_rt_try_region` 还是三参�
 
 用 release 不用 dist:dist 多的是全量 LTO,为的是这里不测的性能数字,却要多花几分钟;
 真正会**静默**改变行为的两件事 —— `debug_assertions` 关掉、优化打开 —— 两个 profile 是一样的。
+
+## §53 一个没有 `select` 的 channel 程序,一半时间花在 select 的唤醒上(2026-08-19)
+
+`send`/`recv` 各 300k 次的原生程序,`perf` 的结果:
+
+| | 占比 |
+| --- | --- |
+| `syscall`(futex) | 40% |
+| `lkrt::chan::notify_selects` | 18% |
+| `lkrt::chan::channel` | 12% |
+| `SipHash`(registry 的默认 hasher) | 2% |
+
+程序里**一个 `select` 都没有**。三处都改了,同一个基准 0.14s → 0.016s(每次操作
+230ns → 26ns,**8.75×**)。
+
+### 一:没有 select 在等的时候不广播
+
+`notify_selects()` 每次 send/recv 都取一把进程全局互斥锁、加一、`notify_all`。
+现在先读一个 `BLOCKED_SELECTS: AtomicUsize`,为零直接返回。
+
+跳过是安全的,靠的是顺序:通知方走到这里时**已经**放开了自己 channel 的 `state` 锁,
+改动已经发布;而 `select` 是在**轮询之前**就把计数加上去的。所以如果这里读到零,
+那次加一在 `SeqCst` 全序里排在后面,它之后的轮询要取 channel 锁,
+就一定看得到刚才那次改动。要么通知方叫醒它,要么它根本不会睡。
+
+代价是 `select` 里的 raise 会跳过 RAII 的减一(longjmp 不跑析构)。所以顺手把
+`select$block` 里所有会 raise 的事情——arm 形状校验、`own` 深拷贝、以及
+`channel(id)` 解析——全挪到轮询循环**之前**的预处理里,循环里只剩一处
+"send on closed channel",那一处显式 `drop(parked)`。
+把 channel 解析提前还顺带把全局 registry 锁从轮询循环里拿掉了(原先每轮每条 arm 一次)。
+
+### 二:没人在等的时候不 futex
+
+`Condvar::notify_one` 在 Linux 上无论有没有人 park 都会发 `futex_wake`。
+`ChanState` 现在带 `recv_waiters` / `send_waiters`,只在锁里读写,所以是精确的:
+等待方在 `wait` 释放锁**之前**加一,通知方持锁读到零就意味着没人在等、
+也没人能在不经过这把锁的情况下开始等。
+
+### 三:registry 是个稠密整数表,不该是 HashMap
+
+id 来自一次 `fetch_add`,而且从不删除(channel 活到进程结束,和 lkrt 其余部分一样)。
+`Mutex<HashMap<i64, _>>` + 默认 hasher 换成 `RwLock<Vec<Option<Arc<ChanInner>>>>`,
+按 `id - 1` 索引:一次读锁 + 一次边界检查。`Option` 是因为 id 在插入取锁之前就发出去了,
+两个线程同时建 channel 可能乱序到达。
+
+### 语料补了一条:真的会 park 的 `select`
+
+`examples/syntax/select.lk` 里此前每一个 `select` 都有一条**已经就绪**的 arm,
+所以从来没有真正阻塞过——而阻塞正是上面这三条改动唯一会出错的地方,
+出错的形式是**挂住**,不是答错。现在加了两个 producer 对着无缓冲 channel 喂 50 轮、
+主线程用无 default 的 `select` 收 100 次:总数确定,交错不确定。
+另外本地跑了多生产者/多消费者压测(无缓冲 + 小缓冲 + close 唤醒阻塞接收方)
+原生 20 次、阻塞 `select` 20 次,无挂起无错答。

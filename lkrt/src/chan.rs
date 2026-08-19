@@ -16,8 +16,8 @@
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_void};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, is_list_tag};
 use crate::lkmap::StrDynMap;
@@ -129,6 +129,20 @@ pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
 struct ChanState {
     queue: VecDeque<OwnedVal>,
     closed: bool,
+    /// How many threads are inside `recv_cv.wait` / `send_cv.wait` on this
+    /// channel.
+    ///
+    /// Kept in the state rather than in an atomic because it is only ever read
+    /// and written under `state`, which makes it exact for free: a waiter
+    /// increments it before `wait` releases the lock, so a notifier holding the
+    /// lock and seeing zero knows nobody is waiting *and* nobody can start
+    /// without going through it.
+    ///
+    /// The point is the syscall. `Condvar::notify_one` on Linux issues a
+    /// `futex_wake` whether or not anything is parked, and a send/receive loop
+    /// spent a third of its time in that syscall waking nobody.
+    recv_waiters: usize,
+    send_waiters: usize,
 }
 
 struct ChanInner {
@@ -144,9 +158,25 @@ struct ChanInner {
     requested: i64,
 }
 
-fn registry() -> &'static Mutex<HashMap<i64, Arc<ChanInner>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<i64, Arc<ChanInner>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// Every channel ever created, indexed by `id - 1`.
+///
+/// A `Vec` rather than a map because ids come from one `fetch_add` and nothing
+/// is ever removed — a channel outlives the program, which is the same arena
+/// model the rest of lkrt uses. Lookup is then a bounds check and an `Arc`
+/// clone, and it takes a *read* lock, so two threads on two channels do not
+/// serialize on each other.
+///
+/// It was a `Mutex<HashMap<i64, _>>` with the default hasher. Every send and
+/// every receive resolves its channel through here, so each one paid a
+/// process-global mutex plus a SipHash of an `i64` — 28% of a send/receive loop
+/// between them, to look up a dense integer.
+///
+/// `Option` because ids are handed out before the insert takes the lock, so two
+/// threads creating channels can arrive out of order and leave a hole for the
+/// slower one to fill.
+fn registry() -> &'static RwLock<Vec<Option<Arc<ChanInner>>>> {
+    static REGISTRY: OnceLock<RwLock<Vec<Option<Arc<ChanInner>>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
 /// Process-global select wake-up: a generation counter bumped (and
@@ -160,6 +190,32 @@ struct SelectGen {
     cv: Condvar,
 }
 
+/// How many `select`s are parked on [`SelectGen`] right now.
+///
+/// Read by every send and receive so that a program with no `select` in it pays
+/// one relaxed load instead of a process-global mutex and a `notify_all`. That
+/// was not a rounding error: on a send/receive loop with no `select` anywhere,
+/// `notify_selects` and the futex calls its broadcast made were **58% of the
+/// program** — a global serialization point on the hot path of a feature the
+/// program did not use.
+static BLOCKED_SELECTS: AtomicUsize = AtomicUsize::new(0);
+
+/// A `select` counted in [`BLOCKED_SELECTS`] for as long as this is alive.
+struct SelectParked;
+
+impl SelectParked {
+    fn enter() -> Self {
+        BLOCKED_SELECTS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for SelectParked {
+    fn drop(&mut self) {
+        BLOCKED_SELECTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn select_gen() -> &'static SelectGen {
     static INSTANCE: OnceLock<SelectGen> = OnceLock::new();
     INSTANCE.get_or_init(|| SelectGen {
@@ -169,7 +225,19 @@ fn select_gen() -> &'static SelectGen {
 }
 
 /// Signals every blocked `select` that some channel changed state.
+///
+/// Skipping the broadcast when nothing is parked is safe, and the ordering is
+/// what makes it so. A notifier reaches here having *already* released its
+/// channel's `state` guard, so its change is published; a `select` increments
+/// [`BLOCKED_SELECTS`] *before* reading the generation and polling. So if the
+/// load below sees zero, the increment that would have made it one comes later
+/// in the `SeqCst` total order — and the poll that follows that increment takes
+/// the channel lock, and therefore sees the change this notifier just made.
+/// Either the notifier wakes the select, or the select was never going to sleep.
 fn notify_selects() {
+    if BLOCKED_SELECTS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
     let wake = select_gen();
     {
         let mut generation = wake.lock.lock().expect("select generation poisoned");
@@ -183,7 +251,14 @@ fn channel(id: i64) -> Arc<ChanInner> {
     // raise longjmps to the nearest handler, skipping Rust drops — a live
     // guard would leave the *global* registry locked forever, deadlocking
     // every later channel operation once the raise is caught.
-    let found = registry().lock().expect("channel registry poisoned").get(&id).cloned();
+    let found = usize::try_from(id).ok().and_then(|id| {
+        registry()
+            .read()
+            .expect("channel registry poisoned")
+            .get(id.checked_sub(1)?)
+            .cloned()
+            .flatten()
+    });
     match found {
         Some(inner) => inner,
         None => crate::panic::raise_str("Channel not found"),
@@ -212,13 +287,22 @@ pub extern "C" fn lkrt_chan_new(capacity: i64) -> i64 {
         state: Mutex::new(ChanState {
             queue: VecDeque::new(),
             closed: false,
+            recv_waiters: 0,
+            send_waiters: 0,
         }),
         recv_cv: Condvar::new(),
         send_cv: Condvar::new(),
         cap: Some((capacity as usize).max(1)),
         requested: capacity,
     });
-    registry().lock().expect("channel registry poisoned").insert(id, inner);
+    {
+        let mut table = registry().write().expect("channel registry poisoned");
+        let slot = id as usize - 1;
+        if table.len() <= slot {
+            table.resize(slot + 1, None);
+        }
+        table[slot] = Some(inner);
+    }
     id
 }
 
@@ -237,12 +321,17 @@ pub extern "C" fn lkrt_chan_send(id: i64, value: LkDyn) {
         }
         if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
             state.queue.push_back(owned);
+            let wake = state.recv_waiters > 0;
             drop(state);
-            inner.recv_cv.notify_one();
+            if wake {
+                inner.recv_cv.notify_one();
+            }
             notify_selects();
             return;
         }
+        state.send_waiters += 1;
         state = inner.send_cv.wait(state).expect("channel poisoned");
+        state.send_waiters -= 1;
     }
 }
 
@@ -254,8 +343,11 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
     let mut state = inner.state.lock().expect("channel poisoned");
     loop {
         if let Some(value) = state.queue.pop_front() {
+            let wake = state.send_waiters > 0;
             drop(state);
-            inner.send_cv.notify_one();
+            if wake {
+                inner.send_cv.notify_one();
+            }
             notify_selects();
             return materialize(&value);
         }
@@ -263,7 +355,9 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
             drop(state);
             crate::panic::raise_str("receive on closed channel");
         }
+        state.recv_waiters += 1;
         state = inner.recv_cv.wait(state).expect("channel poisoned");
+        state.recv_waiters -= 1;
     }
 }
 
@@ -272,9 +366,17 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_close(id: i64) {
     let inner = channel(id);
-    inner.state.lock().expect("channel poisoned").closed = true;
-    inner.recv_cv.notify_all();
-    inner.send_cv.notify_all();
+    let (wake_recv, wake_send) = {
+        let mut state = inner.state.lock().expect("channel poisoned");
+        state.closed = true;
+        (state.recv_waiters > 0, state.send_waiters > 0)
+    };
+    if wake_recv {
+        inner.recv_cv.notify_all();
+    }
+    if wake_send {
+        inner.send_cv.notify_all();
+    }
     notify_selects();
 }
 
@@ -309,7 +411,9 @@ fn spawn_timer(duration_ms: i64, after: bool) -> i64 {
         // which is the timer's cue to do nothing.
         if !state.closed && inner.cap.is_none_or(|cap| state.queue.len() < cap) {
             state.queue.push_back(own(value));
-            inner.recv_cv.notify_all();
+            if state.recv_waiters > 0 {
+                inner.recv_cv.notify_all();
+            }
         }
         drop(state);
         own(crate::lkdyn::lkrt_dyn_from_nil())
@@ -341,8 +445,11 @@ pub extern "C" fn lkrt_chan_try_send(id: i64, value: LkDyn) -> i64 {
     }
     if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
         state.queue.push_back(owned);
+        let wake = state.recv_waiters > 0;
         drop(state);
-        inner.recv_cv.notify_one();
+        if wake {
+            inner.recv_cv.notify_one();
+        }
         notify_selects();
         1
     } else {
@@ -357,8 +464,11 @@ pub extern "C" fn lkrt_chan_try_recv(id: i64) -> LkDyn {
     let inner = channel(id);
     let mut state = inner.state.lock().expect("channel poisoned");
     if let Some(value) = state.queue.pop_front() {
+        let wake = state.send_waiters > 0;
         drop(state);
-        inner.send_cv.notify_one();
+        if wake {
+            inner.send_cv.notify_one();
+        }
         notify_selects();
         return materialize(&value);
     }
@@ -436,45 +546,69 @@ pub unsafe extern "C" fn lkrt_chan_select(
         ];
         arena_handle(list)
     };
-    // Pre-validate arm kinds and deep-copy the armed send payloads *before*
-    // any channel lock is taken: `own` and the shape guards raise, and a
-    // longjmp past a live `MutexGuard` would leave that channel locked
-    // forever (the blocking send/recv paths follow the same
-    // drop-before-raise discipline). A send arm's copy is taken exactly
-    // once, up front; the retry loop consumes it on delivery.
-    let mut kinds = Vec::with_capacity(len);
+    // Everything that can raise, and everything that does not change between
+    // polls, happens here — before any channel lock is taken and before this
+    // call registers itself as a parked select.
+    //
+    // Raising is the original reason: `own` and the shape guards raise, and a
+    // longjmp past a live `MutexGuard` would leave that channel locked forever
+    // (the blocking send/recv paths follow the same drop-before-raise
+    // discipline). A send arm's copy is taken exactly once, up front; the retry
+    // loop consumes it on delivery.
+    //
+    // Resolving the channels here as well does two more things. It keeps the
+    // *global registry* mutex out of the poll loop, which used to take it once
+    // per armed arm per round. And it leaves the loop below with only one raise
+    // in it, which matters because a raise skips the parked-select bookkeeping
+    // (see `SelectParked`) — one site is a thing that can be got right by
+    // reading, a site per arm is not.
+    //
+    // A *disarmed* arm is not resolved and not shape-checked, because it was
+    // not before: `select { c1 <- v if false, … }` naming a channel that does
+    // not exist is a program the VM runs.
+    let mut arms: Vec<Option<(i64, Arc<ChanInner>)>> = Vec::with_capacity(len);
     let mut owned_sends: Vec<Option<OwnedVal>> = Vec::with_capacity(len);
     for index in 0..len {
         let kind = match types[index].tag {
             DYN_I64 if matches!(types[index].payload, 0 | 1) => types[index].payload,
             _ => crate::panic::raise_str("select$block: invalid arm entry types"),
         };
+        // Guard must be exactly `true` (the VM normalizes to Bool).
         let armed = guards[index].tag == DYN_BOOL && guards[index].payload != 0;
         owned_sends.push((kind == 1 && armed).then(|| own(values[index])));
-        kinds.push(kind);
+        arms.push(armed.then(|| {
+            let id = match channels[index].tag {
+                DYN_I64 => channels[index].payload,
+                _ => crate::panic::raise_str("select$block: invalid channel arm"),
+            };
+            (kind, channel(id))
+        }));
     }
+    let any_armed = arms.iter().any(Option::is_some);
     loop {
+        // Registered *before* the poll, which is what lets a notifier skip its
+        // broadcast when this counter reads zero — see `notify_selects` for the
+        // ordering argument. Dropped on every way out of this loop body,
+        // including the `return`s inside the poll.
+        let parked = SelectParked::enter();
         // Read the wake-up generation *before* polling: a channel op that
         // lands mid-poll bumps it, so the wait below returns immediately
         // instead of missing the change.
         let round_gen = *select_gen().lock.lock().expect("select generation poisoned");
         for index in 0..len {
-            // Guard must be exactly `true` (the VM normalizes to Bool).
-            if !(guards[index].tag == DYN_BOOL && guards[index].payload != 0) {
+            let Some((kind, inner)) = &arms[index] else {
                 continue;
-            }
-            let id = match channels[index].tag {
-                DYN_I64 => channels[index].payload,
-                _ => crate::panic::raise_str("select$block: invalid channel arm"),
             };
-            let kind = kinds[index];
-            let inner = channel(id);
+            let (kind, inner) = (*kind, inner.clone());
             let mut state = inner.state.lock().expect("channel poisoned");
             match kind {
                 0 => {
                     if let Some(value) = state.queue.pop_front() {
+                        let wake = state.send_waiters > 0;
                         drop(state);
-                        inner.send_cv.notify_one();
+                        if wake {
+                            inner.send_cv.notify_one();
+                        }
                         notify_selects();
                         let payload = arena_handle(vec![
                             LkDyn {
@@ -515,13 +649,22 @@ pub unsafe extern "C" fn lkrt_chan_select(
                 1 => {
                     if state.closed {
                         drop(state);
+                        // The one raise left inside the poll. A raise longjmps
+                        // past Rust drops, so the registration has to come off
+                        // by hand — otherwise this select stays counted as
+                        // parked forever and every channel operation in the
+                        // process goes back to broadcasting.
+                        drop(parked);
                         crate::panic::raise_str("send on closed channel");
                     }
                     if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
                         let owned = owned_sends[index].take().expect("armed send payload pre-owned");
                         state.queue.push_back(owned);
+                        let wake = state.recv_waiters > 0;
                         drop(state);
-                        inner.recv_cv.notify_one();
+                        if wake {
+                            inner.recv_cv.notify_one();
+                        }
                         notify_selects();
                         return result(false, index as i64, LkDyn::NIL);
                     }
@@ -534,7 +677,7 @@ pub unsafe extern "C" fn lkrt_chan_select(
         if has_default != 0 {
             return result(true, -1, LkDyn::NIL);
         }
-        if len == 0 || !guards.iter().any(|g| g.tag == DYN_BOOL && g.payload != 0) {
+        if !any_armed {
             // Every arm disabled and no default: the VM yields nil-ish;
             // mirror its documented "all guards off → nil" rule by
             // reporting the default shape.
