@@ -892,13 +892,17 @@ fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
                 buf.format(*value),
             ))
         }
-        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => {
-            let mut buf = ryu::Buffer::new();
-            Some(LiteralVal::concat_strings(
-                lhs.as_str().expect("checked string"),
-                buf.format(*value),
-            ))
-        }
+        // `to_string`, not `ryu`. A float's rendering is Rust's `Display`
+        // (`docs/semantics.md`), which lkrt is aligned to byte for byte —
+        // `ryu` is a *shortest round-trip* formatter and answers differently:
+        // `3.0` where `Display` says `3`, `1e300` where it says three hundred
+        // digits. Folding used it, so `"" + 1.0e300` and
+        // `let x = 1.0e300; "" + x` were the same expression with two answers,
+        // decided by whether the operand happened to be a literal.
+        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => Some(LiteralVal::concat_strings(
+            lhs.as_str().expect("checked string"),
+            &value.to_string(),
+        )),
         (LiteralVal::Int(value), rhs) if rhs.as_str().is_some() => {
             let mut buf = itoa::Buffer::new();
             Some(LiteralVal::concat_strings(
@@ -906,13 +910,10 @@ fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
                 rhs.as_str().expect("checked string"),
             ))
         }
-        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => {
-            let mut buf = ryu::Buffer::new();
-            Some(LiteralVal::concat_strings(
-                buf.format(*value),
-                rhs.as_str().expect("checked string"),
-            ))
-        }
+        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => Some(LiteralVal::concat_strings(
+            &value.to_string(),
+            rhs.as_str().expect("checked string"),
+        )),
         _ => None,
     }
 }

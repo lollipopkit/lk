@@ -336,12 +336,50 @@ impl Executor {
     }
 
     #[inline]
+    /// The float family's fast path, falling back to the dynamic form the way
+    /// the int family already does.
+    ///
+    /// The compiler picks `AddFloat` when it can see a `Float` operand, and it
+    /// does not check what the *other* one is: `"" + (1.0 + 2.0)` folds the
+    /// parenthesised half to a float constant and then adds a string to it. The
+    /// int twin has always dispatched — `AddInt` on a non-int pair calls
+    /// `dynamic_add` — so `"" + (1 + 2)` was fine and the float spelling of the
+    /// same program raised `register 3 expected Int or Float: got String`, at
+    /// run time, past a `lk check` that said nothing.
+    ///
+    /// Falling back rather than fixing the selection, because the selection is
+    /// a *guess about types* and this is the place that knows: the guard is
+    /// already here (it is what raised), so the cold arm costs nothing the
+    /// error did not.
     pub(super) fn float_binary(&mut self, instr: Instr, op: impl FnOnce(f64, f64) -> f64) -> Result<()> {
-        let lhs = self.read_number(instr.b())?;
-        let rhs = self.read_number(instr.c())?;
-        self.write(instr.a(), RuntimeVal::Float(op(lhs, rhs)))?;
+        let (dst, lhs_idx, rhs_idx) = self.stack_abc_indices(instr)?;
+        let pair = (
+            self.number_value(&self.state.stack[lhs_idx]).ok(),
+            self.number_value(&self.state.stack[rhs_idx]).ok(),
+        );
+        let (Some(lhs), Some(rhs)) = pair else {
+            return self.dynamic_float_fallback(instr);
+        };
+        self.state.stack[dst] = RuntimeVal::Float(op(lhs, rhs));
         self.pc += 1;
         Ok(())
+    }
+
+    /// What a float opcode means when its operands are not both numbers: the
+    /// same thing its int twin means, which is the dynamic operation.
+    #[cold]
+    fn dynamic_float_fallback(&mut self, instr: Instr) -> Result<()> {
+        match instr.opcode() {
+            Opcode::AddFloat => self.dynamic_add(instr),
+            Opcode::SubFloat => self.dynamic_sub(instr),
+            // `*` has no `dynamic_mul` of its own; the numeric form is what
+            // `MulInt` falls back to, and a non-numeric operand raises there
+            // with the same wording the interpreter gives everywhere else.
+            Opcode::MulFloat => self.dynamic_numeric_binary(instr, |l, r| l.wrapping_mul(r), |l, r| l * r),
+            Opcode::DivFloat => self.dynamic_div(instr),
+            Opcode::ModFloat => self.dynamic_mod(instr),
+            other => bail!("{other:?} is not a float arithmetic opcode"),
+        }
     }
 
     #[inline]

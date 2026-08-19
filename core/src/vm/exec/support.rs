@@ -3,7 +3,7 @@ use crate::compat::prelude::*;
 use alloc::sync::Arc;
 use core::ops::Range;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use crate::{
     val::{HeapStore, RuntimeVal, TypedList},
@@ -303,13 +303,6 @@ impl Executor {
                 self.value_type_name(other)
             ),
         }
-    }
-
-    #[inline]
-    pub(super) fn read_number(&self, register: u8) -> Result<f64> {
-        let index = self.stack_index(register)?;
-        self.number_value(&self.state.stack[index])
-            .map_err(|err| anyhow!("register {} expected Int or Float: {err}", register))
     }
 
     pub(super) fn number_value(&self, value: &RuntimeVal) -> Result<f64> {

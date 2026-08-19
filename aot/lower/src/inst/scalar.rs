@@ -849,7 +849,13 @@ pub(super) fn lower(
             // through the `dyn.*` helpers, same as the Int family above.
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
-            if lty == Ty::Dyn || rty == Ty::Dyn {
+            // A `Str` operand is a *string* operation, not a float one: the
+            // compiler picks a float opcode from one operand's type without
+            // looking at the other, and `"" + (1.0 + 2.0)` folds its
+            // parenthesised half to a float constant. The interpreter answers
+            // that by falling back to its dynamic form, so this does too — the
+            // same `dyn.*` route the `Dyn` case below already takes.
+            if lty == Ty::Dyn || rty == Ty::Dyn || lty == Ty::Str || rty == Ty::Str {
                 let lhs = to_dyn(ssa, insts, lv, lty, pc)?;
                 let rhs = to_dyn(ssa, insts, rv, rty, pc)?;
                 let helper = match op {
