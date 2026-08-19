@@ -78,8 +78,11 @@ const EXCLUDED: &[(&str, &str)] = &[
          folds with a *closure*, so unlike `sum` it is the call protocol that is \
          missing rather than a rule.",
     ),
-    ("to_bytes", "no `ListDyn` dispatch arm."),
-    ("zip", "no `ListDyn` dispatch arm."),
+    (
+        "to_bytes",
+        "no `ListDyn` dispatch arm: `bytes_h.from_i64_list` takes the typed carrier, \
+         and a boxed list has to check every element is an Int in byte range first.",
+    ),
 ];
 
 #[test]

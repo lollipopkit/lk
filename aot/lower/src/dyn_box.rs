@@ -104,6 +104,20 @@ pub(crate) fn to_dyn_list_handle(
     ty: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
+    // A boxed value is a list handle one tag guard away, and every caller that
+    // wanted one wrote that guard itself — `chain` did, inline, and `zip` did
+    // not, which is the whole of why `xs.zip(ys)` refused when `ys` was a
+    // parameter. `dyn.as_list` aborts on a non-list tag, the loud error the VM
+    // raises for the same call.
+    if ty == Ty::Dyn {
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_list"),
+            args: vec![v],
+        });
+        return Ok(unboxed);
+    }
     let converter = match ty {
         Ty::ListDyn => return Ok(v),
         Ty::ListI64 => "i64_to_dyn",

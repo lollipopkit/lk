@@ -1109,7 +1109,7 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     // said `true`.
     method_row("slice",     false,    true,  false),
     method_row("enumerate", true,     false, true),
-    method_row("zip",       false,    false, true),
+    method_row("zip",       true,     false, true),
     method_row("chain",     true,     true,  true),
     method_row("flatten",   true,     false, true),
     method_row("chunk",     true,     false, true),

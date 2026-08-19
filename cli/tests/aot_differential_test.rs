@@ -640,6 +640,13 @@ fn differential_strings() {
                 "dyn_receiver_is_empty",
                 "fn e(c) { return c.is_empty(); }\nprintln(e([1, 2]));\nprintln(e([]));\nprintln(e([1.5]));\nprintln(e({\"k\": 1}));\nprintln(e({}));\nprintln(e(\"ab\"));\nprintln(e(\"\"));\nreturn 0;\n",
             ),
+            // `zip` had the `ListDyn` receiver arm and refused anyway, because
+            // its *argument* was boxed and only `chain` had written the unbox
+            // out. It is `to_dyn_list_handle`'s now, so both spellings reach it.
+            new(
+                "dyn_receiver_zip",
+                "fn z(xs, ys) { return xs.zip(ys); }\nprintln(z([1, 2], [3, 4]));\nprintln(z([1, 2], [\"a\", \"b\"]));\nprintln(z([1.5], [2.5]));\nprintln(z([], [1]));\nprintln(z([1, 2, 3], [9]));\nprintln(z([[1]], [[2]]));\nreturn 0;\n",
+            ),
             new(
                 "dyn_receiver_chunk_enumerate_flatten",
                 "fn c(xs) { return xs.chunk(2); }\nfn e(xs) { return xs.enumerate(); }\nfn fl(xs) { return xs.flatten(); }\nprintln(c([1, 2, 3]));\nprintln(c([\"a\", \"b\", \"c\"]));\nprintln(c([]));\nprintln(e([1, 2]));\nprintln(e([[1], [2]]));\nprintln(fl([[1], [2, 3]]));\nprintln(fl([[[1]], [[2]]]));\nreturn 0;\n",
