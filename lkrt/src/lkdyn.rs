@@ -859,7 +859,7 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
         let drop = dyn_list_values(b);
         let kept: Vec<LkDyn> = dyn_list_values(a)
             .iter()
-            .filter(|value| !drop.iter().any(|other| contains_eq(**value, *other)))
+            .filter(|value| !drop.iter().any(|other| dyn_eq_inner(**value, *other)))
             .copied()
             .collect();
         return LkDyn {
@@ -966,7 +966,7 @@ pub unsafe extern "C" fn lkrt_dyn_eq(a: LkDyn, b: LkDyn) -> i64 {
     i64::from(dyn_eq_inner(a, b))
 }
 
-fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
+pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
     if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
         return match (x, y) {
             (Numeric::Int(x), Numeric::Int(y)) => x == y,
@@ -1492,11 +1492,34 @@ pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
 ///
 /// A map answers **key** membership (a stored nil still counts, which is why it
 /// is not get-then-test); every other container answers element membership
-/// under [`contains_eq`]. Both are what the unboxed spellings already do; this
+/// under [`dyn_eq_inner`] — with a byte string excepted below, the only carrier
+/// the VM searches by a different rule. Both are what the unboxed spellings
+/// already do; this
 /// is the one entry point that can pick between them at run time, which is what
 /// a boxed haystack needs — `"a" in c[0]` used to drop the whole program to the
 /// VM because the lowering had no arm for a `Dyn` haystack at all.
 ///
+/// `receiver.contains(needle)` — the *method*, which is not `needle in receiver`.
+///
+/// The two differ on exactly one carrier and it matters: the VM gives a map
+/// `in` (asking after a key) and gives it no `contains` method at all, so
+/// `m.contains("k")` raises there. `lkrt_dyn_contains` is the operator and
+/// answers for a map; lowering it for the method would have made a native
+/// build answer `true` where the VM stops the program.
+///
+/// Every other carrier the operator accepts, the method accepts too, so this
+/// rejects the map tag and defers.
+///
+/// # Safety
+/// `v` and `needle` must be live `LkDyn` values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_seq_contains(v: LkDyn, needle: LkDyn) -> i64 {
+    if is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    unsafe { lkrt_dyn_contains(v, needle) }
+}
+
 /// # Safety
 /// The payload must be a live handle of the carrier its tag names.
 #[unsafe(no_mangle)]
@@ -1508,7 +1531,7 @@ pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
         return i64::from(map_entries(v).contains_key(&crate::vm_mirror::key_from_dyn(needle)));
     }
     if is_list_tag(v.tag) {
-        return i64::from(dyn_list_values(v).iter().any(|&e| contains_eq(e, needle)));
+        return i64::from(dyn_list_values(v).iter().any(|&e| dyn_eq_inner(e, needle)));
     }
     match v.tag {
         // A string's members are its substrings, which is what the unboxed
@@ -1518,15 +1541,23 @@ pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
         DYN_SLICE => {
             // SAFETY: a `DYN_SLICE` payload is a live window handle.
             let window = unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) };
-            i64::from(window.iter().any(|&e| contains_eq(lkrt_dyn_from_i64(e), needle)))
+            i64::from(window.iter().any(|&e| dyn_eq_inner(lkrt_dyn_from_i64(e), needle)))
         }
+        // A byte string is the one carrier whose membership is *not* `==`:
+        // the VM asks `RuntimeVal::Int(byte)` and answers false for everything
+        // else, so `97.0 in "ab".bytes()` is false while `97.0 in [97]` is
+        // true. Spelled out rather than delegated, because delegating is
+        // exactly what made it wrong the other way.
         DYN_BYTES => {
             let bytes = crate::lkbytes::bytes_slice(v.payload as *mut c_void);
-            i64::from(
-                bytes
-                    .iter()
-                    .any(|&b| contains_eq(lkrt_dyn_from_i64(i64::from(b)), needle)),
-            )
+            let Some(byte) = (if needle.tag == DYN_I64 {
+                u8::try_from(needle.payload).ok()
+            } else {
+                None
+            }) else {
+                return 0;
+            };
+            i64::from(bytes.contains(&byte))
         }
         _ => crate::panic::raise_str("runtime type error"),
     }
@@ -1814,57 +1845,14 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_eq(a: *mut c_void, b: *mut c_void) -> i
     i64::from(lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(&x, &y)| dyn_eq_inner(x, y)))
 }
 
-/// The VM's `Contains` (`in`) equality on a Mixed list is `RuntimeVal`'s
-/// *derived* `PartialEq` — strictly same-variant: no Int/Float coercion
-/// (`1.0 in [1, 2]` is false, unlike `==`), floats by value (`0.0 == -0.0`,
-/// `NaN != NaN`, unlike `unique()`'s to_bits), ShortStr (≤7 bytes) by
-/// content, heap objects (lists/maps/longer strings) by handle.
-pub(crate) fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
-    if a.tag != b.tag {
-        return false;
-    }
-    match a.tag {
-        DYN_NIL => true,
-        DYN_BOOL | DYN_I64 => a.payload == b.payload,
-        DYN_F64 => a.f64_value() == b.f64_value(),
-        DYN_STR => {
-            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
-            if sa.len() <= 7 && sb.len() <= 7 {
-                sa == sb
-            } else {
-                a.payload == b.payload
-            }
-        }
-        // Every heap carrier compares by handle, not just the two that had a
-        // tag when this was written — so this is the *default*, and the list
-        // is of what is excluded. Enumerating the included tags instead is
-        // what left `Set`, `Bytes`, windows and typed maps out for as long as
-        // they existed, and then `Function` after them.
-        //
-        // `_ => false` meant a `Set`, a `Bytes`, a window or a typed map was
-        // **never** in any list, however the program got it there:
-        //
-        // ```lk
-        // let b = "ab".bytes();
-        // let xs = [b];
-        // b in xs            // true interpreted, false compiled
-        // ```
-        //
-        // Those four carriers box *in place* — the tag is the only thing that
-        // changed — so their payload is the same handle the VM compares, and
-        // the arm above was already the right answer for them. They were simply
-        // added to the tag space (see `DYN_SET`, `DYN_TMAP_BASE`, `DYN_SLICE`)
-        // without this match being revisited.
-        //
-        // `DYN_RAW` stays out: it parks a handle that is not a value, and
-        // reading one as a value is a loud failure by design.
-        DYN_RAW => false,
-        _ => a.payload == b.payload,
-    }
-}
-
-/// `needle in xs` under [`contains_eq`] (the `in` operator's semantics —
-/// *not* `dyn_eq_inner`, which is the `==` operator's).
+/// `needle in xs` under [`dyn_eq_inner`].
+///
+/// `in` and `==` were two rules here and are one in the VM: `list_contains`'s
+/// mixed arm calls `runtime_values_equal`, the function `==` calls, and says
+/// above itself that it used to be handle identity and that
+/// `[1, 2] in [[1, 2], [3]]` answered false for it. This mirror kept the rule
+/// the VM had dropped, so that line — and `-`, and `index_of` — answered false
+/// compiled and true interpreted.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
@@ -1873,7 +1861,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_contains(handle: *mut c_void, value: Lk
         return 0;
     }
     let values = unsafe { &*(handle as *mut Vec<LkDyn>) };
-    i64::from(values.iter().any(|&e| contains_eq(e, value)))
+    i64::from(values.iter().any(|&e| dyn_eq_inner(e, value)))
 }
 
 fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {
@@ -2518,24 +2506,20 @@ mod tests {
         );
     }
 
-    /// `in` compares a heap value by handle — every heap carrier, not two.
+    /// `in` finds every heap carrier, and finds it by content.
     ///
-    /// `contains_eq`'s catch-all answered `false`, so a `Set`, a `Bytes`, a
-    /// window or a typed map was never in any list:
+    /// Two separate defects met here. A catch-all arm answered `false` for any
+    /// tag added after it was written, so a `Set`, a `Bytes`, a window or a
+    /// typed map was never in any list at all. Under it, the arms that did
+    /// answer compared heap values by *handle* — which the VM had already
+    /// stopped doing, so `[1, 2] in [[1, 2], [3]]` was false compiled and true
+    /// interpreted.
     ///
-    /// ```lk
-    /// let b = "ab".bytes();
-    /// let xs = [b];
-    /// b in xs            // true interpreted, false compiled
-    /// ```
-    ///
-    /// These four box *in place*, so the payload is the same handle the VM
-    /// compares — the existing arm was already right for them. They were added
-    /// to the tag space and this match was not revisited, which is the failure
-    /// mode a catch-all arm has: a new tag joins the "not equal to anything"
-    /// bucket silently.
+    /// Both are gone by delegating to `dyn_eq_inner`, so the assertion that
+    /// matters is the one this test could not make before: a carrier equals a
+    /// *different* handle holding the same bytes.
     #[test]
-    fn every_heap_carrier_is_found_by_handle() {
+    fn every_heap_carrier_is_found_by_content() {
         // SAFETY: both pointers are live NUL-terminated literals.
         let (bytes, other_bytes) = unsafe {
             (
@@ -2554,15 +2538,16 @@ mod tests {
             lkrt_dyn_from_slice(window),
             lkrt_dyn_from_typed_map(tmap, crate::lkmap::KIND_STR_I64),
         ] {
-            assert!(
-                contains_eq(boxed, boxed),
-                "tag {} must find itself by handle",
-                boxed.tag
-            );
+            assert!(dyn_eq_inner(boxed, boxed), "tag {} must find itself", boxed.tag);
         }
 
-        // …and a *different* handle of the same carrier is still not it.
-        assert!(!contains_eq(
+        // A second handle over the same bytes is the same value — the VM says
+        // `"ab".bytes() in ["ab".bytes()]`, two allocations, is true.
+        let same = unsafe { crate::lkbytes::lkrt_lkbytes_from_str(c"ab".as_ptr()) };
+        assert!(dyn_eq_inner(lkrt_dyn_from_bytes(bytes), lkrt_dyn_from_bytes(same)));
+
+        // …and different bytes are still not it.
+        assert!(!dyn_eq_inner(
             lkrt_dyn_from_bytes(bytes),
             lkrt_dyn_from_bytes(other_bytes)
         ));

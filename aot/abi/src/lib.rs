@@ -798,6 +798,7 @@ macro_rules! for_each_abi_fn {
             // run-time choice — the lowering had no `Dyn` arm at all, so the
             // whole program fell back.
             ("dyn", "contains", lkrt_dyn_contains, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "seq_contains", lkrt_dyn_seq_contains, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "map_pairs", lkrt_dyn_map_pairs, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "map_keys", lkrt_dyn_map_keys, WritesHost, [DynVal], Ptr, Constructs);
             ("dyn", "map_values", lkrt_dyn_map_values, WritesHost, [DynVal], Ptr, Constructs);

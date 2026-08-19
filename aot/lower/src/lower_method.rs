@@ -1157,6 +1157,36 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
+        (Ty::Dyn, "contains", [(needle, nty)]) => {
+            // The one container name that must *not* take the method table's
+            // `unbox_list`: `contains` answers for maps, sets, strings, windows
+            // and bytes too, and unboxing to a list would abort on all of them.
+            // `dyn.seq_contains` is the `in` operator's runtime dispatch minus
+            // the map: the VM gives a map `in` and gives it no `contains`
+            // method, so the operator's own entry would answer where the VM
+            // raises.
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("dyn", "seq_contains"),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
         (Ty::Bytes, "slice", [(from, Ty::I64)]) => {
             let end = ssa.new_val();
             insts.push(Inst::Call {

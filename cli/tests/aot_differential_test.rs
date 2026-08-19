@@ -226,6 +226,42 @@ fn differential_equality_and_unique() {
                 "str_first_last_multibyte",
                 "let s = \"中文abc\";\nreturn [s.first(), s.last(), \"\".first()];\n",
             ),
+            // `in` on a heap element. The VM compares these by value and this
+            // runtime compared them by handle, so each of these answered false
+            // compiled and true interpreted — and `-` and `index_of`, which
+            // share the comparison, answered with it.
+            new(
+                "in_nested_list",
+                "return [[1, 2] in [[1, 2], [3]], [] in [[]], [1, 2] in [[1, 2, 3]]];\n",
+            ),
+            new("in_nested_map", "return {\"k\": 1} in [{\"k\": 1}];\n"),
+            new(
+                "in_two_handles_one_value",
+                "let a = \"ab\".bytes();\nlet b = \"ab\".bytes();\nreturn [a in [b], a == b];\n",
+            ),
+            // A mixed list compares its elements the way `==` does, which
+            // includes reading an Int and a Float as one number.
+            new(
+                "in_mixed_list_across_int_float",
+                "return [1.0 in [1, \"a\"], 1 in [1.0, \"a\"]];\n",
+            ),
+            new(
+                "sub_removes_nested",
+                "return [[[1], [2], [3]] - [[2]], [{\"k\": 1}, {\"j\": 2}] - [{\"k\": 1}]];\n",
+            ),
+            new(
+                "index_of_nested_and_across_int_float",
+                "return [[[1], [2]].index_of([2]), [1, \"x\", 2].index_of(2.0)];\n",
+            ),
+            // The exception, and the reason the comparison is not simply `==`
+            // everywhere: a byte string holds byte values, so the VM asks for an
+            // Int and answers false for anything else — where a list of the same
+            // numbers reads a Float as one of them. A boxed haystack is what
+            // picks between the two at run time.
+            new(
+                "in_bytes_wants_an_int_where_a_list_takes_a_float",
+                "let c = [\"ab\".bytes(), [97, 98]];\nreturn [97 in c[0], 97.0 in c[0], 99 in c[0], 97 in c[1], 97.0 in c[1]];\n",
+            ),
         ],
     );
 }

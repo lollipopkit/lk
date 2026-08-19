@@ -307,7 +307,7 @@ mod write {
             // `value has no JSON form` here. `DYN_SLICE` was added to the tag
             // space after this match was written and the catch-all swallowed
             // it — the third arm in this runtime to lose a carrier that way
-            // (see `contains_eq`, and `container_ty` in the lowering).
+            // (see `lkrt_dyn_contains`, and `container_ty` in the lowering).
             DYN_SLICE => {
                 let mut out = Vec::new();
                 // SAFETY: a `DYN_SLICE` payload is a live window handle — the

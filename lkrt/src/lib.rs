@@ -189,7 +189,10 @@ pub use lkdyn::{
     lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn,
     lkrt_lklist_str_to_dyn, lkrt_lkmap_obj_mark, lkrt_struct_type_begin, lkrt_struct_type_field,
 };
-pub use lkdyn::{lkrt_dyn_contains, lkrt_dyn_from_typed_list, lkrt_dyn_is_list, lkrt_dyn_is_map, lkrt_dyn_list_push};
+pub use lkdyn::{
+    lkrt_dyn_contains, lkrt_dyn_from_typed_list, lkrt_dyn_is_list, lkrt_dyn_is_map, lkrt_dyn_list_push,
+    lkrt_dyn_seq_contains,
+};
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_dyn_clear, lkrt_lklist_dyn_drop_last, lkrt_lklist_dyn_index_of,
     lkrt_lklist_dyn_insert, lkrt_lklist_dyn_remove_at, lkrt_lklist_dyn_reverse, lkrt_lklist_dyn_skip,

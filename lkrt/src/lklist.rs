@@ -1565,8 +1565,8 @@ list_reverse!(
 /// its `contains` uses: in the VM both answer through one `typed_list_position`,
 /// so a mismatch here would make `xs.contains(v)` and `xs.index_of(v) != nil`
 /// disagree. Hence the comparison arrives as a function rather than being
-/// spelled inside the macro — for the boxed carrier that means `contains_eq`
-/// (the `in` operator's equality), not `dyn_eq_inner`.
+/// spelled inside the macro — for the boxed carrier that means `dyn_eq_inner`,
+/// which is now the equality `in` uses too.
 /// `xs.count(v)` per carrier — `index_of`'s sibling, sharing its element
 /// comparison so the two spellings of "which elements equal this" cannot
 /// drift apart.
@@ -1661,7 +1661,7 @@ list_index_of!(
     lkrt_lklist_dyn_index_of,
     crate::lkdyn::LkDyn,
     crate::lkdyn::LkDyn,
-    |values, needle| values.iter().position(|&e| crate::lkdyn::contains_eq(e, needle)),
+    |values, needle| values.iter().position(|&e| crate::lkdyn::dyn_eq_inner(e, needle)),
     "`index_of` on a boxed-element list."
 );
 
