@@ -1707,3 +1707,30 @@ VM/native 逐行比对:50 个种子 × 5 个程序,0 分歧。61 程序 sweep、
 同一轮里给生成器加了 §48 那个形状:`try` 体里的 `break` / `continue` 属于外层循环,
 循环种类(`for` 区间 / `while`)是抽的——`continue` 在两种循环里落点不同,
 `while` 是往回跳到条件,而第一版实现正好把这一种写错了。
+
+## §51 "raise 前必须放掉 runtime borrow"这条规矩,现在自己会说话(2026-08-19)
+
+`lkrt/src/panic.rs` 顶上写着一条硬规矩:raise 会 `_longjmp` 过所有 Rust 帧,
+所以**不能在 `with_runtime` 的借用还活着的时候 raise** —— `RefMut` 不会析构,
+借用标志一直是置位的。
+
+逐个查了一遍,今天这条规矩是成立的,而且成立的方式很整齐:
+
+| 位置 | 怎么保证的 |
+| --- | --- |
+| `net.rs` / `host.rs` / `io.rs` / `encoding.rs` 等 | 全部包在 `abi::raising` / `status` 里:闭包返回 `Result`,`?` 是普通返回,析构照跑,raise 发生在闭包**外面** |
+| `chan.rs` | 直接调 `raise_str`,但每处前面都有显式 `drop(state)`;`own()`(会 raise)在取锁**之前**调用 |
+| `lkdyn.rs` 的 41 处 raise | `with_obj_type_marks` / `with_struct_types` 的闭包全是纯 map 操作,raise 都在闭包返回之后 |
+| `panic.rs` 自己 | 只碰自己的 `RefCell` |
+
+问题不在有没有错,而在**这条规矩只由"读代码时小心"来保证**。违反了也不会当场炸:
+炸的是**下一次** runtime 操作,可能在任意远的地方,报 "already mutably borrowed",
+读起来像是那段无关代码的 bug。
+
+所以 `raise_current` 现在先问一句 `state::runtime_borrow_is_live()`,是就打印
+"这是 lkrt 的 bug,raise 的那个入口必须先放掉 runtime borrow" 然后 abort。
+代价可以忽略:raise 路径本来就在做 `CString` 分配和一次 `longjmp`。
+
+配一个测试(`a_live_runtime_borrow_is_visible_to_the_raise_path`),因为这个谓词唯一
+可能的失效方式就是恒返回 `false` —— 那样它不报错、不碍事、也不再是检查。
+真正要拦的那件事没法从测试里触发(按设计它会 abort 整个进程)。

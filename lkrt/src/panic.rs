@@ -199,6 +199,20 @@ pub extern "C" fn lkrt_rt_current_error() -> LkDyn {
 }
 
 fn raise_current(value: LkDyn) -> ! {
+    // The rule at the top of this module, asked rather than trusted. A raise
+    // taken with a runtime borrow live does not fail here — it fails at the next
+    // runtime operation, which is somewhere else entirely and reads as a bug in
+    // whatever code happened to be next. Saying it at the raise is the
+    // difference between a name and a puzzle.
+    #[cfg(feature = "std")]
+    if crate::state::runtime_borrow_is_live() {
+        crate::rt_eprintln!(
+            "lkrt: a raise was taken while a runtime borrow was live; the borrow would never be \
+             released. This is an lkrt bug — the entry that raised must drop its runtime borrow \
+             first (see `raising` in abi.rs)."
+        );
+        crate::abi::flush_and_abort()
+    }
     with_current_error(|slot| slot.set(value));
     let target = with_handlers(|handlers| handlers.pop());
     match target {

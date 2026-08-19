@@ -377,12 +377,19 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
     // the region in the parent — the same channel a `return` already travels on,
     // with the flag widened from "did it return" to "which way did it leave".
     //
-    // Only an unconditional `Jmp` qualifies. That is what `break` and
-    // `continue` compile to — the condition in front of one is its own fused
-    // branch to a label *inside* the body — and it is the only shape whose whole
-    // terminator can be replaced by the trailer jump. A conditional whose taken
-    // edge leaves would need one edge rewritten and the other kept, so it says
-    // so rather than being approximated.
+    // Only an unconditional `Jmp` qualifies, and it is the only shape the
+    // compiler produces: a `break` is a statement, so it is emitted as a jump to
+    // a patched label, and the condition in front of it becomes a fused branch
+    // that skips *over* that jump. Probed rather than assumed —
+    // `if c { break; }`, `if c { … } else { break; }`, `if !(c) { … } else {
+    // continue; }`, a `||` condition, a divisibility test, a nil test, and a
+    // `while` written inside the region all put the escape in a `Jmp` of its own.
+    //
+    // The rejection below is what makes that a safe thing to rely on rather than
+    // a thing to hope for: a conditional whose taken edge left would need one
+    // edge rewritten and the other kept, and it says so instead of being
+    // approximated. If the compiler ever does fuse one, the coverage gate turns
+    // red on a refusal — not on a wrong answer.
     let mut consumed = vec![false; code_len];
     let mut escape_targets: Vec<usize> = Vec::new();
     let mut escapes: Vec<TryEscape> = Vec::new();
