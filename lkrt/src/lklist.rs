@@ -1520,6 +1520,47 @@ list_sort!(
     "`sort()` on a `List<str>`."
 );
 
+/// `xs.sum()` on a boxed-element list.
+///
+/// Two accumulators rather than one, and that is the VM's, not a convenience:
+/// an `Int` element advances *both* the wrapping integer total and the float
+/// one, so the float sum is over every element in written order. Promoting on
+/// the first float instead would fold a different sequence, and float addition
+/// is not associative — `[1e308, 1.0, -1e308]` is where the two disagree.
+///
+/// # Safety
+/// `handle` must be a live boxed list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_sum(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    use crate::lkdyn::{DYN_F64, DYN_I64};
+    if handle.is_null() {
+        return crate::lkdyn::lkrt_dyn_from_i64(0);
+    }
+    // SAFETY: `handle` addresses a `Vec<LkDyn>` from the boxed constructor.
+    let values: &Vec<crate::lkdyn::LkDyn> = unsafe { &*(handle as *mut Vec<crate::lkdyn::LkDyn>) };
+    let mut total_int: i64 = 0;
+    let mut total_float = 0.0f64;
+    let mut saw_float = false;
+    for value in values {
+        match value.tag {
+            DYN_I64 => {
+                total_int = total_int.wrapping_add(value.payload);
+                total_float += value.payload as f64;
+            }
+            DYN_F64 => {
+                saw_float = true;
+                total_float += value.f64_value();
+            }
+            _ => crate::lkdyn::raise_sum_wants_numbers(*value),
+        }
+    }
+    if saw_float {
+        crate::lkdyn::lkrt_dyn_from_f64(total_float)
+    } else {
+        crate::lkdyn::lkrt_dyn_from_i64(total_int)
+    }
+}
+
 list_sort!(
     lkrt_lklist_dyn_sort,
     crate::lkdyn::LkDyn,

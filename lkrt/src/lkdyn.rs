@@ -236,7 +236,7 @@ impl LkDyn {
         payload: 0,
     };
 
-    fn f64_value(self) -> f64 {
+    pub(crate) fn f64_value(self) -> f64 {
         f64::from_bits(self.payload as u64)
     }
 
@@ -447,6 +447,15 @@ fn struct_type_name(v: LkDyn) -> Option<String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_type_name(v: LkDyn) -> *mut c_char {
     arena_c_string(CString::new(kind_name(v)).unwrap_or_default())
+}
+
+/// `list.sum()`'s refusal, in the VM's wording — the message names the element
+/// that is not a number, which is the only thing that makes it actionable.
+pub(crate) fn raise_sum_wants_numbers(value: LkDyn) -> ! {
+    crate::panic::raise_str(&format!(
+        "list.sum() adds numbers, and this list holds a {}",
+        kind_name(value)
+    ))
 }
 
 /// A binary type error in the VM's wording. `verb` is the operator as the VM

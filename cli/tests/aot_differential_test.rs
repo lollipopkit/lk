@@ -623,6 +623,23 @@ fn differential_strings() {
                 "cross_kind_min_and_max",
                 "fn mn(xs) { return xs.min(); }\nfn mx(xs) { return xs.max(); }\nprintln(mn([3, 1.5, \"a\", nil]));\nprintln(mx([3, 1.5, \"a\", nil]));\nprintln(mn([[2], [1]]));\nprintln(mx([[2], [1]]));\nprintln(mn([]) == nil);\nprintln(mx([]) == nil);\nprintln(mn([true, nil, 0]));\nreturn 0;\n",
             ),
+            // `sum` folds with *two* accumulators because the VM does: an Int
+            // element advances the integer total and the float one both, so
+            // the float sum runs over every element in written order.
+            // Promoting on the first float folds a different sequence, and
+            // float addition is not associative. The refusal names the element
+            // that is not a number, in the VM's words.
+            new(
+                "dyn_receiver_sum",
+                "fn s(xs) { return \"\" + s2(xs); }\nfn s2(xs) { return xs.sum(); }\nprintln(s([1, 2, 3]));\nprintln(s([1.5, 2.5]));\nprintln(s([1, 2.5]));\nprintln(s([]));\nprintln(s([1e308, 1.0, -1e308]));\nprintln(s([-1, 1]));\nreturn 0;\n",
+            ),
+            // `is_empty` takes `dyn.len_of` rather than the method table's
+            // unbox, because this arm serves maps too and unboxing one to a
+            // list aborts. It is the dispatch `xs.len()` already takes.
+            new(
+                "dyn_receiver_is_empty",
+                "fn e(c) { return c.is_empty(); }\nprintln(e([1, 2]));\nprintln(e([]));\nprintln(e([1.5]));\nprintln(e({\"k\": 1}));\nprintln(e({}));\nprintln(e(\"ab\"));\nprintln(e(\"\"));\nreturn 0;\n",
+            ),
             new(
                 "dyn_receiver_chunk_enumerate_flatten",
                 "fn c(xs) { return xs.chunk(2); }\nfn e(xs) { return xs.enumerate(); }\nfn fl(xs) { return xs.flatten(); }\nprintln(c([1, 2, 3]));\nprintln(c([\"a\", \"b\", \"c\"]));\nprintln(c([]));\nprintln(e([1, 2]));\nprintln(e([[1], [2]]));\nprintln(fl([[1], [2, 3]]));\nprintln(fl([[[1]], [[2]]]));\nreturn 0;\n",

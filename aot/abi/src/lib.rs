@@ -274,6 +274,7 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_sum", lkrt_lklist_f64_sum, ReadsHost, [Ptr], F64);
             ("list_h", "i64_min", lkrt_lklist_i64_min, ReadsHost, [Ptr], DynVal);
             ("list_h", "i64_max", lkrt_lklist_i64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_sum", lkrt_lklist_dyn_sum, ReadsHost, [Ptr], DynVal);
             ("list_h", "dyn_min", lkrt_lklist_dyn_min, ReadsHost, [Ptr], DynVal);
             ("list_h", "dyn_max", lkrt_lklist_dyn_max, ReadsHost, [Ptr], DynVal);
             ("list_h", "f64_min", lkrt_lklist_f64_min, ReadsHost, [Ptr], DynVal);

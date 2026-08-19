@@ -73,18 +73,11 @@ const EXCLUDED: &[(&str, &str)] = &[
          window does, and answered a list when the row said `unbox_list`.",
     ),
     (
-        "sum",
-        "adds across kinds, which is `dyn.add` folded over the elements — \
-         reachable, but it is a second summation rule until it is written \
-         against the VM's. `sort`, `min` and `max` were here for the neighbouring \
-         reason and are not any more: their order is mirrored as `dyn_compare` \
-         and gated by `cross_kind_sort_order`.",
-    ),
-    (
         "reduce",
-        "has its `METHOD_TABLE` row; the `ListDyn` dispatch arm is missing.",
+        "has its `METHOD_TABLE` row; the `ListDyn` dispatch arm is missing. It \
+         folds with a *closure*, so unlike `sum` it is the call protocol that is \
+         missing rather than a rule.",
     ),
-    ("is_empty", "no `ListDyn` dispatch arm."),
     ("to_bytes", "no `ListDyn` dispatch arm."),
     ("zip", "no `ListDyn` dispatch arm."),
 ];

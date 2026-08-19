@@ -978,6 +978,17 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        (Ty::ListDyn, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_sum"),
+                args: vec![receiver],
+            });
+            // Boxed: `Int` unless an element was a Float, which is decided per
+            // list rather than per carrier.
+            (dst, Ty::Dyn)
+        }
         (Ty::ListDyn, "min" | "max", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1064,12 +1075,26 @@ pub(crate) fn lower_method_dispatch(
             (dst, receiver_ty)
         }
         // `.is_empty()` — `len == 0` over the same per-type len ABI.
+        //
+        // A boxed receiver takes `dyn.len_of` rather than the method table's
+        // `unbox_list`, for the reason `contains` does: this arm serves maps
+        // too, and unboxing one to a list aborts. `len_of` is the dispatch
+        // `xs.len()` already takes on a boxed receiver, so the two spellings
+        // answer through one function.
         (
-            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrDyn,
+            Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::ListDyn
+            | Ty::MapStrI64
+            | Ty::MapStrF64
+            | Ty::MapStrDyn
+            | Ty::Dyn,
             "is_empty",
             [],
         ) => {
             let (module, len_fn) = match receiver_ty {
+                Ty::Dyn => ("dyn", "len_of"),
                 Ty::ListI64 => ("list_h", "i64_len"),
                 Ty::ListF64 => ("list_h", "f64_len"),
                 Ty::ListStr => ("list_h", "str_len"),
