@@ -818,7 +818,15 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
             payload: ptr as i64,
         };
     }
-    crate::panic::raise_str("runtime type error")
+    // The one arm of this family that still said "runtime type error", while
+    // `sub`, `mul`, `div` and `mod` next door all name the operands through
+    // `binary_type_error`. `nil + 1` therefore read
+    // `Add expected numbers or strings, got Nil and Int` on the interpreter and
+    // `runtime error` compiled — the same program, two sentences, and the
+    // compiled one says nothing a reader can act on. It went unnoticed because
+    // nothing reached it: boxing a bounds-checked element refused to lower at
+    // all until `to_dyn` learned the nullable carriers.
+    binary_type_error("Add", "expected numbers or strings", a, b)
 }
 
 /// A map of any representation as `(key, value)` pairs under the general key,

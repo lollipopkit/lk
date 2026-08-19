@@ -849,7 +849,7 @@ pub(super) fn lower(
                 // `to_dyn_any`: a dynamically indexed field value arrives as
                 // a `Maybe` carrier and boxes through `from_maybe_*` (nil
                 // stays nil, like the VM's absent-element field value).
-                let boxed = to_dyn_any(ssa, insts, vv, vty, pc)?;
+                let boxed = to_dyn(ssa, insts, vv, vty, pc)?;
                 // `A { v: x }` with an untyped `x` is a store the type checker
                 // cannot see, exactly like `p["v"] = x` is — so it is measured
                 // against the declaration. Only when the value's own type does
@@ -896,7 +896,7 @@ pub(super) fn lower(
             // because that guard has to materialize one.
             if list_ty == Ty::Dyn {
                 let (value, value_ty) = ssa.read(instr.b(), block, pc)?;
-                let boxed = to_dyn_any(ssa, insts, value, value_ty, pc)?;
+                let boxed = to_dyn(ssa, insts, value, value_ty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("dyn", "list_push"),
@@ -916,7 +916,7 @@ pub(super) fn lower(
                             .unwrap_or(Unsupported::TypeMismatch { pc }),
                     );
                 }
-                let boxed = to_dyn_any(ssa, insts, value, value_ty, pc)?;
+                let boxed = to_dyn(ssa, insts, value, value_ty, pc)?;
                 let (module, name) = if list_ty == Ty::Dyn {
                     ("dyn", "list_push")
                 } else {
@@ -937,6 +937,11 @@ pub(super) fn lower(
                 |ssa: &Ssa| carrier_contradicted_here_or_at_callers(ssa, func, instr.a(), handle, list_ty);
             match list_ty {
                 Ty::ListI64 => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
                         Ok(v) => v,
                         Err(e) => return Err(keep_discovery(e, guess_wrong(ssa))),
@@ -948,6 +953,11 @@ pub(super) fn lower(
                     });
                 }
                 Ty::ListF64 => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
                         return Err(guess_wrong(ssa).unwrap_or(Unsupported::TypeMismatch { pc }));
@@ -963,6 +973,11 @@ pub(super) fn lower(
                     // Stored strings are arena-owned (interned constants or
                     // register-visible arena strings), alive until exit, so the
                     // pointer push involves no ownership transfer.
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc) {
                         Ok(v) => v,
                         Err(e) => return Err(keep_discovery(e, guess_wrong(ssa))),
@@ -973,9 +988,17 @@ pub(super) fn lower(
                         args: vec![handle, value],
                     });
                 }
-                // Mixed list: any boxable value pushes as a Dyn carrier.
+                // Mixed list: any boxable value pushes as a Dyn carrier —
+                // including a nullable one, which pushes **nil**.
+                //
+                // Read raw rather than through `read_scalar`: that narrows a
+                // carrier by asserting it is present, which is right where a
+                // number is required and wrong here. A Dyn list holds nil, and
+                // the VM puts nil in it, so `out.push(xs[i])` past the end of
+                // `xs` appended nil on the interpreter and *raised* compiled —
+                // a program that ran one way and died the other.
                 Ty::ListDyn => {
-                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
                     let boxed = to_dyn(ssa, insts, bv, bty, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1403,9 +1426,9 @@ pub(super) fn lower(
             // side has no carrier to check it against.
             if list_ty == Ty::Dyn {
                 let (kv, kty) = ssa.read(instr.b(), block, pc)?;
-                let key = to_dyn_any(ssa, insts, kv, kty, pc)?;
+                let key = to_dyn(ssa, insts, kv, kty, pc)?;
                 let (cv, cty) = ssa.read(instr.c(), block, pc)?;
-                let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
+                let boxed = to_dyn(ssa, insts, cv, cty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("dyn", "index_set"),
@@ -1420,8 +1443,12 @@ pub(super) fn lower(
             // retry below would have had nowhere to land.
             if list_ty == Ty::MapStrDyn {
                 let key = read_map_key(ssa, insts, instr.b(), block, Ty::Str, pc)?;
-                let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
-                let boxed = to_dyn_any(ssa, insts, cv, cty, pc)?;
+                // Raw, not `read_scalar`: a boxed map holds nil, so a nullable
+                // value stores as nil rather than asserting it is present. Same
+                // divergence the `ListDyn` push had — `m[k] = xs[i]` past the
+                // end of `xs` stored nil on the interpreter and raised compiled.
+                let (cv, cty) = ssa.read(instr.c(), block, pc)?;
+                let boxed = to_dyn(ssa, insts, cv, cty, pc)?;
                 // As in `SetFieldK`: a store into a declared field is measured
                 // against the declaration. The key here may be computed, so
                 // the constant-code form only applies when it is not.
@@ -1431,7 +1458,7 @@ pub(super) fn lower(
                     // the one store shape that asks at run time — and only in
                     // a module that declares a typed field at all.
                     None if sig.traits.struct_field_codes.values().any(|&code| code != DECLARED_ANY) => {
-                        let key_dyn = to_dyn_any(ssa, insts, key, Ty::Str, pc)?;
+                        let key_dyn = to_dyn(ssa, insts, key, Ty::Str, pc)?;
                         insts.push(Inst::Call {
                             dst: None,
                             callee: AbiRef::new("obj_ty", "check_marked_dyn"),
@@ -1448,6 +1475,9 @@ pub(super) fn lower(
                 return Ok(());
             }
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
+                if let Some(e) = nullable_into_typed_carrier(ssa, func, instr.c(), block, instr.a(), handle, list_ty) {
+                    return Err(e);
+                }
                 let key = read_map_key(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let (set_fn, value) = match (list_ty, cty) {
@@ -1482,6 +1512,11 @@ pub(super) fn lower(
             };
             match list_ty {
                 Ty::ListI64 => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.c(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1507,6 +1542,11 @@ pub(super) fn lower(
                 // two lines therefore stayed native or did not for a reason no
                 // program can observe.
                 Ty::ListStr => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.c(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1516,7 +1556,7 @@ pub(super) fn lower(
                 }
                 Ty::ListDyn => {
                     let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
-                    let value = crate::dyn_box::to_dyn_any(ssa, insts, cv, cty, pc)?;
+                    let value = crate::dyn_box::to_dyn(ssa, insts, cv, cty, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "dyn_set"),
@@ -1645,6 +1685,15 @@ pub(super) fn lower(
                 // map was built from — the same situation a push contradicting
                 // a list literal is, and the same answer: name the literal so
                 // the fixpoint rebuilds it with a Dyn carrier.
+                Ty::MapStrI64
+                    if nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, map_ty)
+                        .is_some() =>
+                {
+                    return Err(
+                        nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, map_ty)
+                            .expect("just checked"),
+                    );
+                }
                 Ty::MapStrI64 => match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
                     Ok(v) => ("str_i64_set", v),
                     Err(e) => {
@@ -1655,6 +1704,10 @@ pub(super) fn lower(
                     }
                 },
                 Ty::MapStrF64 => {
+                    if let Some(e) = nullable_into_typed_carrier(ssa, func, instr.b(), block, instr.a(), handle, map_ty)
+                    {
+                        return Err(e);
+                    }
                     let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
                         return Err(
@@ -1668,7 +1721,7 @@ pub(super) fn lower(
                 // map): any boxable value stores boxed, insert-or-update.
                 Ty::MapStrDyn => {
                     let (bv, bty) = ssa.read(instr.b(), block, pc)?;
-                    ("str_dyn_set", to_dyn_any(ssa, insts, bv, bty, pc)?)
+                    ("str_dyn_set", to_dyn(ssa, insts, bv, bty, pc)?)
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
@@ -1698,7 +1751,7 @@ pub(super) fn lower(
             // keys, every other container its elements.
             if list_ty == Ty::Dyn {
                 let (nv, nty) = ssa.read(instr.b(), block, pc)?;
-                let needle = to_dyn_any(ssa, insts, nv, nty, pc)?;
+                let needle = to_dyn(ssa, insts, nv, nty, pc)?;
                 let raw = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(raw),
@@ -2006,6 +2059,42 @@ pub(super) fn lower(
 /// no warning, while `let t = b; acc.push(t);` — the same program with a `Move`
 /// in the way — was correct. A `ReferenceAsValue` is the same kind of thing: it
 /// names a register the caller can be asked about, not a type that is wrong.
+/// A nullable value on its way *into* a typed container, which cannot hold one.
+///
+/// The store paths read their value through `read_scalar`/`read_typed_scalar`,
+/// which narrows a carrier by asserting it is present. That is right where a
+/// number is required and wrong here: the VM's list and map hold nil, so
+/// `out.push(xs[i])` past the end of `xs` appends nil there — while the
+/// compiled program asserted, found the value absent, and raised. Nothing
+/// static caught it, because a `Maybe<Int>` narrows to `Int` and `Int` is
+/// exactly what the carrier wants.
+///
+/// So the *carrier* is what is wrong: a container that receives a nullable
+/// value has to be a Dyn one. Reported as a contradiction of the literal it was
+/// built from, which is the fixpoint's existing way of rebuilding it — the same
+/// answer a push of a genuinely unboxable type already gets.
+fn nullable_into_typed_carrier(
+    ssa: &Ssa,
+    func: &FunctionData,
+    value_reg: u8,
+    block: usize,
+    receiver_reg: u8,
+    handle: ValueId,
+    carrier: Ty,
+) -> Option<Unsupported> {
+    let ty = ssa.peek(value_reg, block).map(|(_, ty)| ty)?;
+    if !matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+        return None;
+    }
+    carrier_contradicted_here_or_at_callers(ssa, func, receiver_reg, handle, carrier).or(Some(
+        Unsupported::OperandType {
+            pc: 0,
+            want: "a Dyn container, which is the only kind that holds nil",
+            got: lk_aot_mir::ty_name(ty),
+        },
+    ))
+}
+
 fn keep_discovery(original: Unsupported, carrier: Option<Unsupported>) -> Unsupported {
     match original {
         Unsupported::UndefinedOperand { .. } | Unsupported::ReferenceAsValue { .. } => original,

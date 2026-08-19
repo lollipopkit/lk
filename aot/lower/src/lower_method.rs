@@ -333,10 +333,10 @@ pub(crate) fn lower_trait_method_k(
         for i in 0..argc {
             raw_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
         }
-        let self_arg = to_dyn_any(ssa, insts, receiver, receiver_ty, pc)?;
+        let self_arg = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
         let mut args = Vec::with_capacity(argc);
         for (v, ty) in raw_args {
-            args.push(to_dyn_any(ssa, insts, v, ty, pc)?);
+            args.push(to_dyn(ssa, insts, v, ty, pc)?);
         }
         let dst = ssa.new_val();
         insts.push(Inst::TraitDispatch {
@@ -649,7 +649,7 @@ pub(crate) fn lower_list_hof_k(
                 };
                 let (init_raw, init_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
                 let list = dyn_list_of(ssa, insts, receiver)?;
-                let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
+                let init = to_dyn(ssa, insts, init_raw, init_ty, pc)?;
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
@@ -716,7 +716,7 @@ pub(crate) fn lower_list_hof_k(
                 return Err(Unsupported::TypeMismatch { pc });
             }
             let list = dyn_list_of(ssa, insts, receiver)?;
-            let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
+            let init = to_dyn(ssa, insts, init_raw, init_ty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
@@ -1449,7 +1449,7 @@ pub(crate) fn lower_method_dispatch(
         // what — a key or a value?" is a real question; `in` works on all of
         // them. See `docs/semantics.md`.
         (Ty::Set, "contains" | "add" | "delete", [(v, vty)]) => {
-            let boxed = to_dyn_any(ssa, insts, *v, *vty, pc)?;
+            let boxed = to_dyn(ssa, insts, *v, *vty, pc)?;
             let abi_name = match name {
                 "contains" => "has",
                 "add" => "add",
@@ -2635,7 +2635,7 @@ pub(crate) fn lower_method_dispatch(
                     args: Vec::new(),
                 });
                 for &(v, ty) in args {
-                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                    let boxed = to_dyn(ssa, insts, v, ty, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("rt", "spawn_args_push"),

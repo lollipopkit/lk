@@ -188,7 +188,7 @@ pub(crate) fn coerce_arg(
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
     if want == Ty::Dyn && ty != Ty::Dyn {
-        return to_dyn_any(ssa, insts, v, ty, pc);
+        return to_dyn(ssa, insts, v, ty, pc);
     }
     if ty != want {
         return Err(Unsupported::TypeMismatch { pc });
@@ -196,11 +196,22 @@ pub(crate) fn coerce_arg(
     Ok(v)
 }
 
-/// [`to_dyn`] extended to the nullable carriers: a `Maybe` boxes to its
-/// payload's tag when present and to nil when absent (`dyn.from_maybe_*`),
-/// preserving VM call semantics — a nil argument arrives as nil instead of
-/// hitting the scalar-context unwrap abort.
-pub(crate) fn to_dyn_any(
+/// Boxes a typed value into a `Dyn`.
+///
+/// A nullable carrier boxes to its payload's tag when present and to **nil**
+/// when absent (`dyn.from_maybe_*`), because that is what the value *is*: the
+/// VM has no `Maybe`, it has nil, and a carrier is this backend's way of
+/// carrying "the VM would have nil here". Boxing is the point at which that
+/// distinction stops mattering.
+///
+/// This used to be two functions — one that refused a carrier and one that did
+/// not — and every site except the call-argument marshaller reached for the
+/// refusing one. So `xs[i] + 1` with a bounds-checked element, which is what
+/// indexing *is*, dropped a whole module to the VM rather than lowering; the
+/// refusal was never a semantic choice, only an unfinished match. A scalar
+/// context still aborts on an absent value, but it reaches that through
+/// `convert`'s unwrap, not through here.
+pub(crate) fn to_dyn(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     v: ValueId,
@@ -212,7 +223,7 @@ pub(crate) fn to_dyn_any(
         Ty::MaybeF64 => "from_maybe_f64",
         Ty::MaybeStr => "from_maybe_str",
         Ty::MaybeBool => "from_maybe_bool",
-        _ => return to_dyn(ssa, insts, v, ty, pc),
+        _ => return to_dyn_plain(ssa, insts, v, ty, pc),
     };
     let value = ssa.new_val();
     insts.push(Inst::MaybeValue {
@@ -240,13 +251,10 @@ pub(crate) fn to_dyn_any(
     Ok(boxed)
 }
 
-pub(crate) fn to_dyn(
-    ssa: &mut Ssa,
-    insts: &mut Vec<Inst>,
-    v: ValueId,
-    ty: Ty,
-    pc: usize,
-) -> Result<ValueId, Unsupported> {
+/// [`to_dyn`] for everything that is not a nullable carrier. Only [`to_dyn`]
+/// calls it; the split exists so the carrier arms have somewhere to fall
+/// through to.
+fn to_dyn_plain(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
     let from = match ty {
         Ty::Dyn => return Ok(v),
         Ty::I64 => "from_i64",

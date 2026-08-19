@@ -60,4 +60,51 @@ if (maybe_empty) {
     assert(true);
 }
 
+// 9. An out-of-range read *is* nil, everywhere it lands
+//
+// Reading past the end of a container gives nil — and nil is a value, so it
+// goes into a list, into a map, compares unequal to everything, and renders as
+// `nil` in a string. All four of those raised on a compiled build while the
+// interpreter ran them: the native lowering was narrowing "possibly nil" to
+// "definitely present" by asserting, which is right where a *number* is
+// required and wrong everywhere else. A typed container is the one place that
+// genuinely cannot hold nil, and there the list is built to hold anything.
+fn past_the_end(xs: List<Int>, upto: Int) -> String {
+    let seen = [];
+    let index = {};
+    let text = "";
+    let equal = 0;
+    let i = 0;
+    while i < upto {
+        seen.push(xs[i]);
+        index["at" + i] = xs[i];
+        text = text + "|" + xs[i];
+        if xs[i] == 7 { equal = equal + 1; }
+        if xs[i] != 7 { equal = equal + 10; }
+        i = i + 1;
+    }
+    return text + " " + seen.len() + " " + index.len() + " " + equal;
+}
+assert(past_the_end([7, 8], 2) == "|7|8 2 2 11");
+assert(past_the_end([7, 8], 4) == "|7|8|nil|nil 4 4 31");
+assert(past_the_end([], 2) == "|nil|nil 2 2 20");
+
+// Arithmetic is the exception, and it is an exception in the interpreter too:
+// using nil as a number is an error there, so it is one here.
+fn sums_or_fails(xs: List<Int>, upto: Int) -> Int {
+    let total = 0;
+    let i = 0;
+    try {
+        while i < upto {
+            total = total + xs[i];
+            i = i + 1;
+        }
+    } catch e {
+        return 0 - total;
+    }
+    return total;
+}
+assert(sums_or_fails([1, 2], 2) == 3);
+assert(sums_or_fails([1, 2], 3) == 0 - 3);
+
 println("null_coalescing: all assertions passed");

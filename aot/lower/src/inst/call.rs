@@ -337,7 +337,7 @@ pub(super) fn lower(
                                     let content =
                                         join_cell_content(sig.cell_capture_tys.get(&(fidx, k)).copied(), cur_ty);
                                     sig.cell_capture_tys.insert((fidx, k), content);
-                                    let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
+                                    let boxed = to_dyn(ssa, insts, cur, cur_ty, pc)?;
                                     let cell = ssa.new_val();
                                     insts.push(Inst::Call {
                                         dst: Some(cell),

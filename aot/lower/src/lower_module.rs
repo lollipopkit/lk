@@ -689,7 +689,7 @@ pub(crate) fn lower_module_abi_call(
         // other than 7 being an unboxed Int.
         if *want == Ty::Dyn {
             let (v, ty) = ssa.read(arg_reg, block, pc)?;
-            args.push(to_dyn_any(ssa, insts, v, ty, pc)?);
+            args.push(to_dyn(ssa, insts, v, ty, pc)?);
             continue;
         }
         args.push(ssa.read_typed(arg_reg, block, *want, pc)?);

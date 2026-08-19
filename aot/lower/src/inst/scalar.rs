@@ -483,7 +483,16 @@ pub(super) fn lower(
                 // list operand makes it a list. A loop accumulator stays
                 // same-typed through its phi either way, since both sides of
                 // the phi come out of this arm.
-                if op == Opcode::AddInt && matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str)) {
+                // A nullable operand joins this arm for the same reason it
+                // joins the equality one: absent *is* nil, and the VM renders
+                // nil as `nil` here rather than refusing. `"[" + xs[9] + "]"`
+                // is `[nil]` on the interpreter and raised compiled.
+                let nullable_operand = |ty| matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool);
+                if op == Opcode::AddInt
+                    && (matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str))
+                        || (lty_raw == Ty::Str && nullable_operand(rty_raw))
+                        || (nullable_operand(lty_raw) && rty_raw == Ty::Str))
+                {
                     let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                     let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
                     let dst = ssa.new_val();
@@ -913,6 +922,88 @@ pub(super) fn lower(
                         ssa.write(instr.a(), block, (dst, Ty::Bool));
                     }
                 }
+                return Ok(());
+            }
+            // A nullable operand against a *non-nil* one. An absent carrier is
+            // nil, and nil equals nothing — so `xs[oob] == 4` is `false` and
+            // `!= 4` is `true`, which is what the VM answers. The scalar read
+            // below would instead assert the carrier present and raise, on a
+            // program the interpreter runs to completion.
+            //
+            // Only the equalities. An *ordered* compare against nil is an error
+            // in the VM too (`< expected Int, Float, or String, got Nil and
+            // Int`), so asserting presence there fails on the same programs.
+            let nullable = |ty| matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool);
+            if (nullable(lty_raw) || nullable(rty_raw)) && matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                let cop = cmp_op(op);
+                // The common shape — an integer element against an integer —
+                // stays typed: present *and* equal, one extra `and` rather than
+                // two boxes and a call. `xs[i] == k` in a search loop is this.
+                if let (Ty::MaybeI64, Ty::I64) | (Ty::I64, Ty::MaybeI64) = (lty_raw, rty_raw) {
+                    let (carrier, carrier_ty, plain) = if nullable(lty_raw) {
+                        (lv_raw, lty_raw, rv_raw)
+                    } else {
+                        (rv_raw, rty_raw, lv_raw)
+                    };
+                    let present = ssa.new_val();
+                    insts.push(Inst::MaybePresent {
+                        dst: present,
+                        src: carrier,
+                        maybe_ty: carrier_ty,
+                    });
+                    let value = ssa.new_val();
+                    insts.push(Inst::MaybeValue {
+                        dst: value,
+                        src: carrier,
+                        maybe_ty: carrier_ty,
+                    });
+                    let same = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst: same,
+                        op: CmpOp::Eq,
+                        float: false,
+                        lhs: value,
+                        rhs: plain,
+                    });
+                    let equal = ssa.new_val();
+                    insts.push(Inst::BoolAnd {
+                        dst: equal,
+                        lhs: present,
+                        rhs: same,
+                    });
+                    if cop == CmpOp::Ne {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Not { dst, src: equal });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    } else {
+                        ssa.write(instr.a(), block, (equal, Ty::Bool));
+                    }
+                    return Ok(());
+                }
+                // Anything else boxes and asks the runtime, which is where the
+                // VM's equality rules live.
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", "eq"),
+                    args: vec![lhs, rhs],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: if cop == CmpOp::Ne { CmpOp::Eq } else { CmpOp::Ne },
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
             // A Dyn (or mixed-list) operand: box the other side and compare

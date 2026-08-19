@@ -38,7 +38,7 @@ pub(crate) fn lower_builtin_call(
                 });
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "raise_dyn"),
@@ -238,7 +238,7 @@ pub(crate) fn lower_builtin_call(
             }
             let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
             let (v, ty) = ssa.read(base.wrapping_add(2), block, pc)?;
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("chan", "send"),
@@ -471,8 +471,8 @@ pub(crate) fn lower_builtin_call(
                 // Maybe is nil: `assert_eq(m.get(missing), 3)` fails loud on
                 // both sides).
                 _ if dyn_boxable_ty(lty) && dyn_boxable_ty(rty) => {
-                    let lb = to_dyn_any(ssa, insts, lv, lty, pc)?;
-                    let rb = to_dyn_any(ssa, insts, rv, rty, pc)?;
+                    let lb = to_dyn(ssa, insts, lv, lty, pc)?;
+                    let rb = to_dyn(ssa, insts, rv, rty, pc)?;
                     let eq = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(eq),
@@ -795,7 +795,7 @@ pub(crate) fn lower_builtin_call(
                 // type mark; guessing `Map` here would be a wrong answer half
                 // the time.
                 Ty::MapStrDyn | Ty::Dyn => {
-                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                    let boxed = to_dyn(ssa, insts, v, ty, pc)?;
                     let dst = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(dst),

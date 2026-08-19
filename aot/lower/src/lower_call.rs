@@ -72,7 +72,7 @@ pub(crate) fn lower_spawn(
                     ssa.read_slot(slot, block, pc)?
                 }
             };
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "spawn_args_push"),
@@ -349,7 +349,7 @@ pub(crate) fn lower_user_call(
             // Nullable shapes have no typed capture form: box to Dyn, so the
             // eventual consumer joins its parameter to Dyn like any call site.
             let (v, ty) = if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                (to_dyn_any(ssa, insts, v, ty, pc)?, Ty::Dyn)
+                (to_dyn(ssa, insts, v, ty, pc)?, Ty::Dyn)
             } else {
                 (v, ty)
             };
@@ -776,7 +776,7 @@ pub(crate) fn materialize_closure(
                         },
                     });
                 };
-                let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                let boxed = to_dyn(ssa, insts, v, ty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("rt", "spawn_args_push"),
@@ -793,7 +793,7 @@ pub(crate) fn materialize_closure(
                     ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
                 }
             };
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "spawn_args_push"),
@@ -883,7 +883,7 @@ pub(crate) fn lower_dyn_call_to(
     let callee = if callee_ty == Ty::Dyn {
         callee
     } else {
-        to_dyn_any(ssa, insts, callee, callee_ty, pc)?
+        to_dyn(ssa, insts, callee, callee_ty, pc)?
     };
     let args = if argc == 0 {
         let null = ssa.new_val();
@@ -901,7 +901,7 @@ pub(crate) fn lower_dyn_call_to(
         });
         for i in 0..argc {
             let (v, ty) = ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?;
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "spawn_args_push"),

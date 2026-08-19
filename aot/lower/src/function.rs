@@ -266,7 +266,7 @@ fn mirror_cells(
                 reason: "a nil-seeded register is assigned a typed list, which cannot be boxed in place",
             });
         }
-        let boxed = crate::dyn_box::to_dyn_any(ssa, insts, value, ty, pc)?;
+        let boxed = crate::dyn_box::to_dyn(ssa, insts, value, ty, pc)?;
         insts.push(Inst::Call {
             dst: None,
             callee: AbiRef::new("rt", "cell_set"),
@@ -1295,7 +1295,7 @@ pub(crate) fn lower_function(
                 // the trampoline reports "did not raise". The caller checks the
                 // flag on the ok edge.
                 let parked = if let Some((flag, slot)) = return_channel {
-                    let boxed = to_dyn_any(&mut ssa, &mut insts, v, ty, start)?;
+                    let boxed = to_dyn(&mut ssa, &mut insts, v, ty, start)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("rt", "cell_set"),
@@ -1306,7 +1306,7 @@ pub(crate) fn lower_function(
                         dst: one,
                         value: Const::I64(1),
                     });
-                    let marked = to_dyn_any(&mut ssa, &mut insts, one, Ty::I64, start)?;
+                    let marked = to_dyn(&mut ssa, &mut insts, one, Ty::I64, start)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("rt", "cell_set"),
@@ -1345,7 +1345,7 @@ pub(crate) fn lower_function(
                     // the Dyn arms (plan M4.2 cross-function Dyn flow).
                     let force_dyn = !is_entry && sig.dyn_rets.contains(&func_index);
                     let (v, ty) = if force_dyn && ty != Ty::Dyn {
-                        (to_dyn_any(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                        (to_dyn(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
                     } else {
                         (v, ty)
                     };
@@ -1426,7 +1426,7 @@ pub(crate) fn lower_function(
                             let content =
                                 join_cell_content(sig.try_body_cell_input_tys.get(&(body, reg)).copied(), cur_ty);
                             sig.try_body_cell_input_tys.insert((body, reg), content);
-                            let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, cur, cur_ty, start)?;
+                            let boxed = crate::dyn_box::to_dyn(&mut ssa, &mut insts, cur, cur_ty, start)?;
                             let handle = ssa.new_val();
                             insts.push(Inst::Call {
                                 dst: Some(handle),
@@ -1569,7 +1569,7 @@ pub(crate) fn lower_function(
                             reason: "the body assigns a value that cannot be read back out of a cell",
                         });
                     }
-                    let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, v, ty, start)?;
+                    let boxed = crate::dyn_box::to_dyn(&mut ssa, &mut insts, v, ty, start)?;
                     let handle = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(handle),
@@ -1595,7 +1595,7 @@ pub(crate) fn lower_function(
                         dst: raw,
                         value: Const::I64(0),
                     });
-                    let boxed = crate::dyn_box::to_dyn_any(ssa, insts, raw, seed, start)?;
+                    let boxed = crate::dyn_box::to_dyn(ssa, insts, raw, seed, start)?;
                     let handle = ssa.new_val();
                     insts.push(Inst::Call {
                         dst: Some(handle),
@@ -2172,7 +2172,7 @@ pub(crate) fn lower_function(
                     dst: raw,
                     value: Const::I64(code),
                 });
-                let marked = to_dyn_any(&mut ssa, &mut insts, raw, Ty::I64, start)?;
+                let marked = to_dyn(&mut ssa, &mut insts, raw, Ty::I64, start)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("rt", "cell_set"),
@@ -2471,7 +2471,7 @@ pub(crate) fn lower_function(
                 dst: one,
                 value: Const::I64(1),
             });
-            let marked = to_dyn_any(&mut ssa, &mut ret_insts, one, Ty::I64, 0)?;
+            let marked = to_dyn(&mut ssa, &mut ret_insts, one, Ty::I64, 0)?;
             ret_insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "cell_set"),

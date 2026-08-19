@@ -162,7 +162,7 @@ pub(super) fn lower(
                             }
                             return Err(Unsupported::TypeMismatch { pc });
                         }
-                        let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                        let boxed = to_dyn(ssa, insts, v, ty, pc)?;
                         insts.push(Inst::Call {
                             dst: None,
                             callee: AbiRef::new("rt", "cell_set"),
@@ -300,7 +300,7 @@ pub(super) fn lower(
                 });
             }
             let v = if slot_ty == Ty::Dyn && ty != Ty::Dyn {
-                to_dyn_any(ssa, insts, v, ty, pc)?
+                to_dyn(ssa, insts, v, ty, pc)?
             } else {
                 v
             };
