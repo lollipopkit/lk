@@ -970,6 +970,44 @@ pub(crate) fn lower_function(
         cell_handles.push((reg, pv));
     }
 
+    // The enclosing function's captures, when this body is a region's. They come
+    // before the outcome channel and are declared here rather than with the
+    // body's own captures (it has none) because they have to occupy capture
+    // indices `0..n` — a `LoadCapture k` inside the body is the *enclosing*
+    // closure's `k`. See `SigInfer::try_body_outer_captures`.
+    let outer_capture_tys: Vec<Ty> = sig
+        .try_body_outer_captures
+        .get(&func_index)
+        .cloned()
+        .unwrap_or_default();
+    let mut outer_capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(outer_capture_tys.len());
+    for &cty in &outer_capture_tys {
+        // The same two shapes a region input crosses in: one machine word, or a
+        // carrier's two raw words reassembled before the body's first
+        // instruction. An `F64` declares `I64` and bit-casts, for the reason in
+        // `crosses_as_word`.
+        if crosses_as_two_words(cty) {
+            let lo = ssa.new_val();
+            fn_params.push((lo, Ty::I64));
+            let hi = ssa.new_val();
+            fn_params.push((hi, Ty::I64));
+            let carrier = ssa.new_val();
+            entry_carriers.push((carrier, lo, hi, cty));
+            outer_capture_params.push((carrier, cty));
+            continue;
+        }
+        let cv = ssa.new_val();
+        if cty == Ty::F64 {
+            fn_params.push((cv, Ty::I64));
+            let f = ssa.new_val();
+            entry_bitcasts.push((f, cv));
+            outer_capture_params.push((f, Ty::F64));
+            continue;
+        }
+        fn_params.push((cv, cty));
+        outer_capture_params.push((cv, cty));
+    }
+
     // A body that leaves the enclosing function's control flow — `return`,
     // `break`, `continue` — takes an outcome flag cell saying which, and a
     // `return` takes a second cell for the value. They come last, so nothing
@@ -1016,7 +1054,22 @@ pub(crate) fn lower_function(
     // An environment that is entirely static references carries nothing at
     // runtime, so it is not declared at all (`SigInfer::captures_all_static`).
     let erased_environment = sig.captures_all_static(func_index as usize, capture_count);
-    let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
+    let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count + outer_capture_params.len());
+    // A try body's capture list *is* the enclosing function's, so these go in
+    // first and keep their indices. `capture_count` is zero for such a body, so
+    // the loop below adds nothing after them.
+    for (k, &(cv, cty)) in outer_capture_params.iter().enumerate() {
+        capture_params.push((cv, cty));
+        if cty == Ty::Cell {
+            ssa.cellparam_content.insert(
+                k,
+                sig.try_body_outer_cell_tys
+                    .get(&(func_index, k))
+                    .copied()
+                    .unwrap_or(Ty::Dyn),
+            );
+        }
+    }
     for k in 0..capture_count {
         let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
@@ -1551,6 +1604,56 @@ pub(crate) fn lower_function(
                     });
                     Ok(handle)
                 };
+                // The enclosing function's captures, so a `LoadCapture k`
+                // inside the body resolves to the same thing it means out here.
+                // Positional and unconditional: index `k` has to stay index `k`,
+                // and a statically-known capture carries a dead word rather than
+                // shifting the ones after it — the same trade
+                // `ClosureCapture::StaticRef` already makes at an ordinary call.
+                //
+                // Refused for a goroutine's body: there a capture's current
+                // value lives in a thread-private slot rather than in the
+                // parameter, so handing the parameter on would pass the value it
+                // had at the spawn and hide every write since.
+                if !capture_params.is_empty() {
+                    if spawned_isolate {
+                        return Err(Unsupported::TryRegion {
+                            pc: start,
+                            reason: "the region is inside a goroutine body, whose captures are thread-private                                      copies rather than the cells they came from",
+                        });
+                    }
+                    let mut tys = Vec::with_capacity(capture_params.len());
+                    for (k, &(cv, cty)) in capture_params.iter().enumerate() {
+                        if let Some(callable) = sig.ref_captures.get(&(func_index, k)).cloned() {
+                            sig.ref_captures.insert((body, k), callable);
+                        }
+                        if let Some(&content) = ssa.cellparam_content.get(&k) {
+                            sig.try_body_outer_cell_tys.insert((body, k), content);
+                        }
+                        // A two-register carrier crosses as its two raw words
+                        // and is put back together at the body's entry, exactly
+                        // as a region input does.
+                        if crosses_as_two_words(cty) {
+                            let mut word = |half| {
+                                let dst = ssa.new_val();
+                                insts.push(Inst::CarrierWord { dst, src: cv, half });
+                                dst
+                            };
+                            call_args.push(word(lk_aot_mir::CarrierHalf::Lo));
+                            call_args.push(word(lk_aot_mir::CarrierHalf::Hi));
+                        } else if crosses_as_word(cty) {
+                            call_args.push(cv);
+                        } else {
+                            return Err(Unsupported::OperandType {
+                                pc: start,
+                                want: "machine word",
+                                got: lk_aot_mir::ty_name(cty),
+                            });
+                        }
+                        tys.push(cty);
+                    }
+                    sig.try_body_outer_captures.insert(body, tys);
+                }
                 let outcome_flag = if body_returns || !escape_targets.is_empty() {
                     let flag = fresh_cell(&mut ssa, &mut insts, Ty::I64)?;
                     call_args.push(flag);

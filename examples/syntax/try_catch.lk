@@ -302,4 +302,34 @@ fn crowded(a: Int, b: Int, c: Int, d: Float, flag: Bool, tag: String) -> Int {
 assert(crowded(1, 2, 3, 2.5, true, "abcd") == 115);
 assert(crowded(9, 8, 7, 0.5, false, "xy") == 140);
 
+// A region inside a *closure*, reading what the closure captured. The body is
+// outlined into a function of its own, and that function has no captures of its
+// own — so a capture read inside it has to be handed the enclosing closure's,
+// positionally, or index 0 means something else entirely. Three kinds here,
+// because they cross differently: a number, a string, and a container.
+fn scaled_report(count: Int, factor: Int, label: String) -> String {
+    let bounds = [2, 20];
+    let out = "";
+    let describe = |v| {
+        let text = "";
+        try {
+            let scaled = v * factor;
+            if scaled < bounds[0] { error("under"); }
+            if scaled > bounds[1] { error("over"); }
+            text = label + ":" + scaled;
+        } catch e {
+            text = label + ":-";
+        }
+        return text;
+    };
+    let i = 0;
+    while i < count {
+        out = out + describe(i) + " ";
+        i = i + 1;
+    }
+    return out;
+}
+assert(scaled_report(3, 4, "x") == "x:- x:4 x:8 ");
+assert(scaled_report(2, 30, "y") == "y:- y:- ");
+
 println("try/catch: ok");

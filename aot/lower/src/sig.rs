@@ -181,6 +181,26 @@ pub(crate) struct SigInfer {
     /// since a `break` carries nothing and the trampoline's argument budget is
     /// eight.
     pub(crate) try_body_escapes: std::collections::HashMap<u32, usize>,
+    /// The *enclosing* function's captures, handed to a try body so its
+    /// `LoadCapture k` has somewhere to resolve.
+    ///
+    /// A body is outlined with `capture_count == 0`, so its own capture list
+    /// held only the region's cell inputs — and `LoadCapture 0` inside it either
+    /// found nothing (a refusal) or, with enough cell inputs, would have found
+    /// the wrong one. That made a `try` inside *any* capturing closure
+    /// unlowerable, which is most closures: `spawn(|| { try { … } catch e { … }
+    /// })` is the ordinary way to write a goroutine that handles its own errors.
+    ///
+    /// Passed positionally and always, not on demand: the body's capture indices
+    /// are the enclosing function's, so index `k` has to be index `k`. A
+    /// statically-known capture still occupies a slot and carries a dead word,
+    /// the same way `ClosureCapture::StaticRef` already does at an ordinary call.
+    pub(crate) try_body_outer_captures: std::collections::HashMap<u32, Vec<Ty>>,
+    /// What a `Cell`-typed [`SigInfer::try_body_outer_captures`] entry holds,
+    /// copied from what the enclosing function reads it as — so the body's
+    /// arithmetic on a captured variable is typed the same way the enclosing
+    /// closure's is, rather than falling back to `Dyn`.
+    pub(crate) try_body_outer_cell_tys: std::collections::HashMap<(u32, usize), Ty>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

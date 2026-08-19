@@ -1833,3 +1833,59 @@ id 来自一次 `fetch_add`,而且从不删除(channel 活到进程结束,和 lk
 主线程用无 default 的 `select` 收 100 次:总数确定,交错不确定。
 另外本地跑了多生产者/多消费者压测(无缓冲 + 小缓冲 + close 唤醒阻塞接收方)
 原生 20 次、阻塞 `select` 20 次,无挂起无错答。
+
+## §54 `try` 在闭包里读不到闭包捕获的东西(2026-08-19)
+
+写 §53 的压测时随手写了 `spawn(|| { try { got = recv(c); } catch e { … } })`,
+它不原生化。缩下来是这么一条:
+
+```lk
+fn outer(k: Int) -> Int {
+    let f = || { let got = 0; try { got = k + 1; } catch e { got = 0 - 1; } return got; };
+    return f();
+}
+```
+
+`try` 的 body 被外联成一个自己的函数,而 `outline` 给它 `capture_count == 0`。
+body 里的 `LoadCapture 0` 于是去查 body 自己的 capture 列表——那里面只有区域的
+cell 输入。要么查不到(报 `BadConst`,今天就是这样),要么 cell 输入够多、
+**查到另一个**。也就是说这条不只是覆盖缺口,它还是一条潜在的静默错答。
+
+由于捕获正是闭包的意义所在,这条实际上等于:**`try` 写在任何有捕获的闭包里都不原生化**。
+`spawn(|| { try { … } })` —— 一个自己处理错误的 goroutine —— 正好是最常见的写法。
+
+### 改法
+
+body 的 capture 列表**就是**外层函数的:在 `fn_params` 里(输出 cell 之后、出口通道
+之前)按位置声明外层的每一个捕获,并让它们占据 capture 索引 `0..n`,
+后面才是这个区域自己的 cell 输入。索引 `k` 必须还是索引 `k`,所以是**按位置、
+无条件**传的:一个静态已知的捕获也占一格,传一个死的字——和普通调用点上
+`ClosureCapture::StaticRef` 已经在做的交易一样。同时把外层的 `ref_captures`
+和 cell 内容类型按新索引复制过去,这样 body 里对捕获变量的算术还是有类型的,
+不会退回 `Dyn`。
+
+两种宽度都支持:一个字直接传;两寄存器的 carrier(`Dyn` / `Maybe`)拆成两个字、
+在 body 入口拼回去——和区域输入用的是同一套 `entry_carriers`。
+
+一条明确的拒绝:**外层是 goroutine body 时不做**。那里捕获的当前值在线程私有的槽里,
+不在参数里,把参数传下去会传成 spawn 那一刻的值,把之后所有写入都藏起来。
+
+### 数
+
+生成 60 个"闭包捕获 1..4 个变量(Int / String / List),`try` 里读它们"的程序:
+
+| | 原生化 | 分歧 |
+| --- | --- | --- |
+| 改之前 | **0 / 60** | — |
+| 改之后 | **60 / 60** | 0 |
+
+第一版漏了一件事,是 §49 那条元数检查当场抓住的:`Dyn` 捕获是两个字,
+`body_signature` 报 "a try body parameter is wider than a machine word"。
+那条检查写下来不到一天就付清了。
+
+### 还没做的
+
+body 里**写**捕获变量(`StoreCellVal` 打到一个按值传的捕获参数上)仍然拒绝,
+消息是既有的 "no write-back path"。按值捕获本来就没有回写路径,
+要做就得让区域的写入反过来把外层的捕获提升成 cell(`require_cell_capture`
+现在只对函数自己的 body 起作用)。是拒绝而不是错答,单独一轮做。
