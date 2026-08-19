@@ -1554,8 +1554,10 @@ pub(super) fn lower(
                         args: vec![handle, index, value],
                     });
                 }
+                // Raw, not `read_scalar`: a Dyn list holds nil, and the VM
+                // puts nil in it (`xs[0] = ys[oob]`).
                 Ty::ListDyn => {
-                    let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                    let (cv, cty) = ssa.read(instr.c(), block, pc)?;
                     let value = crate::dyn_box::to_dyn(ssa, insts, cv, cty, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1564,6 +1566,11 @@ pub(super) fn lower(
                     });
                 }
                 Ty::MapI64I64 => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.c(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1572,6 +1579,11 @@ pub(super) fn lower(
                     });
                 }
                 Ty::MapI64F64 => {
+                    if let Some(e) =
+                        nullable_into_typed_carrier(ssa, func, instr.c(), block, instr.a(), handle, list_ty)
+                    {
+                        return Err(e);
+                    }
                     let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                     if !matches!(cty, Ty::I64 | Ty::F64) {
                         return Err(Unsupported::TypeMismatch { pc });

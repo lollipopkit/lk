@@ -10,6 +10,104 @@ pub(crate) fn coerce_to_f64(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty
     f
 }
 
+/// The language's name for a value of `ty` — what the VM's error messages say.
+///
+/// Not `lk_aot_mir::ty_name`, which answers this backend's carrier names
+/// (`list<i64>`, `maybe<i64>`). A program never wrote those; it wrote `List`.
+pub(crate) fn language_type_name(ty: Ty) -> &'static str {
+    match ty {
+        Ty::Nil => "Nil",
+        Ty::Bool | Ty::MaybeBool => "Bool",
+        Ty::I64 | Ty::MaybeI64 => "Int",
+        Ty::F64 | Ty::MaybeF64 => "Float",
+        Ty::Str | Ty::MaybeStr => "String",
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => "List",
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => "Map",
+        Ty::Set => "Set",
+        Ty::Bytes => "Bytes",
+        Ty::Cell | Ty::Dyn => "Object",
+    }
+}
+
+/// Reads a register in a scalar context, raising `message` — verbatim — if the
+/// value turns out to be nil.
+///
+/// The difference from [`read_scalar`] is the sentence. That one narrows a
+/// carrier through `lkrt_maybe_*_unwrap`, which is handed a value and a bit and
+/// so can only say `"runtime error"`; the interpreter, at the same point, names
+/// the operator and both operand types. So `try { xs[9] + 1 } catch e { e }`
+/// read two different strings depending on which backend ran it — a difference a
+/// program can see, not just a reader.
+///
+/// The sentence is built by the caller, where the operator and the other
+/// operand's type are still known, and interned as a constant. Nothing about the
+/// present path changes: the guard is a compare and a cold call, and the value
+/// comes out of the carrier exactly as before.
+pub(crate) fn read_scalar_saying(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+    message: &str,
+) -> Result<Reg, Unsupported> {
+    let (v, ty) = ssa.read(reg, block, pc)?;
+    let payload = match ty {
+        Ty::MaybeI64 => Ty::I64,
+        Ty::MaybeF64 => Ty::F64,
+        Ty::MaybeStr => Ty::Str,
+        Ty::MaybeBool => Ty::Bool,
+        // Not nullable: the guard would have nothing to check.
+        _ => return read_scalar(ssa, insts, reg, block, pc),
+    };
+    let present = ssa.new_val();
+    insts.push(Inst::MaybePresent {
+        dst: present,
+        src: v,
+        maybe_ty: ty,
+    });
+    let wide = ssa.new_val();
+    insts.push(Inst::ZextBool {
+        dst: wide,
+        src: present,
+    });
+    let text = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: text,
+        value: Const::Str(GlobalId(crate::prescan::intern_global(globals, message))),
+    });
+    insts.push(Inst::Call {
+        dst: None,
+        callee: AbiRef::new("rt", "maybe_guard"),
+        args: vec![wide, text],
+    });
+    let value = ssa.new_val();
+    insts.push(Inst::MaybeValue {
+        dst: value,
+        src: v,
+        maybe_ty: ty,
+    });
+    // A `MaybeBool` payload is the 0/1 word; re-typed the way `read_scalar` does.
+    if payload == Ty::Bool {
+        let zero = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: zero,
+            value: Const::I64(0),
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Cmp {
+            dst,
+            op: CmpOp::Ne,
+            float: false,
+            lhs: value,
+            rhs: zero,
+        });
+        return Ok((dst, Ty::Bool));
+    }
+    Ok((value, payload))
+}
+
 /// Reads a register for a **scalar** (arithmetic/comparison/call/store) context,
 /// narrowing a [`Ty::MaybeI64`] to `I64` via a present-asserting unwrap
 /// ([`Inst::UnwrapMaybeI64`], which aborts if absent — matching the VM's halt on

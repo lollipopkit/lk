@@ -290,6 +290,31 @@ pub unsafe extern "C" fn lkrt_rt_raise_msg(message: *const c_char) {
     raise_current(crate::lkdyn::lkrt_dyn_from_str(owned))
 }
 
+/// Raises `message` when a nullable carrier turned out to be absent.
+///
+/// The counterpart of the `lkrt_maybe_*_unwrap` family, for the sites that know
+/// what the interpreter would have said. Those helpers raise a fixed
+/// `"runtime error"` because they are handed a value and a bit and nothing else;
+/// this one is handed the sentence, built where the operator and both operand
+/// types are still known. `try { xs[9] + 1 } catch e { e }` therefore reads the
+/// same on both backends, which it did not.
+///
+/// # Safety
+/// `message` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_maybe_guard(present: i64, message: *const c_char) {
+    if present != 0 {
+        return;
+    }
+    if message.is_null() {
+        raise_str("runtime error");
+    }
+    // SAFETY: caller passes a NUL-terminated string; the copy outlives the
+    // raising frame because it goes into the arena.
+    let text = unsafe { core::ffi::CStr::from_ptr(message) }.to_owned();
+    raise_current(crate::lkdyn::lkrt_dyn_from_str(arena_c_string(text)))
+}
+
 // ── Mutable capture cells ───────────────────────────────────────────────
 // The VM promotes a local assigned inside a closure to an `UpvalCell` (a
 // shared mutable box). Natively a cell is an arena-owned `LkDyn` slot passed

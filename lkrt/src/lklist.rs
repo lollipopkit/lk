@@ -1124,12 +1124,19 @@ pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
     value
 }
 
-/// Unwraps a `Maybe<i64>` in a scalar (arithmetic/comparison) context: returns
-/// `value` when `present != 0`, otherwise `abort()`s. This matches the VM, which
-/// *halts* when a `nil` (out-of-range) element is used numerically (e.g.
-/// `xs[oob] + 1`) — so an out-of-range index in arithmetic is a loud abort, never a
-/// silent wrong value. In a `for x in xs` loop the index is always in range, so the
-/// guard never fires.
+/// Unwraps a `Maybe<i64>` in a scalar context: returns `value` when
+/// `present != 0`, otherwise raises.
+///
+/// The interpreter does **not** halt here, which this used to say: it raises a
+/// catchable error naming the operator and both operand types, so
+/// `try { xs[9] + 1 } catch e { e }` is a string a program can read. This helper
+/// is handed a value and a bit and can only say `"runtime error"`, which is a
+/// different string — so arithmetic and comparison now go through
+/// `lkrt_rt_maybe_guard` instead, which is handed the sentence itself, built
+/// where the operator and the operand types are still known. What is left
+/// reaching here is the contexts that have no operator to name.
+///
+/// In a `for x in xs` loop the index is always in range, so neither fires.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_i64_unwrap(value: i64, present: i64) -> i64 {
     if present == 0 {

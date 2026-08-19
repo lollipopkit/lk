@@ -1955,3 +1955,51 @@ out.push(xs[9]);        // 解释器:塞进一个 nil。原生:Error: runtime er
 但真正走到的是 `read_scalar` 的断言,而 `read_scalar` 有 **94 个调用点**,
 都不知道自己在为哪个运算符读值。要按 VM 的逐运算符措辞对上,得把上下文串下去 ——
 单独一轮做,不在这一轮顺手改。
+
+## §56 被 catch 到的那句话,两个后端终于一样(2026-08-19)
+
+§55 结尾记了一条没做的:nil 参与算术时两边都 raise,但话不一样 ——
+解释器说 `Add expected numbers or strings, got Nil and Int`,原生说 `runtime error`。
+当时的判断是"`read_scalar` 有 94 个调用点,把上下文串下去代价太大"。
+
+那个判断错在**串错了东西**。要串的不是上下文,是**那句话本身**,
+而且只要串到真正知道它的那几个地方。
+
+### 做法
+
+- lkrt 多一个入口:`lkrt_rt_maybe_guard(present, message)`,`present == 0` 就 raise
+  `message`。**一个**入口,不分类型 —— 它只看那一位,值由 `maybe.value` 自己取。
+- `convert::read_scalar_saying(..., message)`:可空载体走 guard + `maybe.value`,
+  其余类型原样交给 `read_scalar`。94 个调用点一个没动。
+- `inst/scalar.rs` 的算术与有序比较两处,在读出**两侧的声明类型之后**构造那句话,
+  作为常量 intern 进去。运算符和两个操作数的类型名在那里都是静态已知的,
+  而这正是解释器那句话里的全部内容 —— 所以 lkrt 里**没有**一张消息表可以和执行器漂移。
+- 两侧**都**可空是静态句子唯一给不对的情况(第二个操作数在不在只有运行时知道),
+  那一种装箱交给 `dyn.*` 按值格式化。
+
+措辞是**逐个探出来的**,不是从源码读的:5 个算术运算符 × 4 个有序比较 × 左右两侧,
+共 18 条,逐条对着解释器跑。三种句式:`+` 和 `-` 各自说自己收什么,其余共用一句。
+
+### 结果
+
+18 条逐字节一致。`try { xs[9] + 1 } catch e { e }` 两边都是
+`Add expected numbers or strings, got Nil and Int` —— 这是个**值**,不是诊断细节。
+
+`examples/syntax/null_coalescing.lk` 里加了 9 条断言(含两侧都 nil 的那条),
+所以这条一致性此后由差分门禁盯着。
+
+### 顺带
+
+- lkrt 里那句"这匹配 VM,VM 在 nil 参与算术时**halt**"是**假的** —— 解释器
+  raise 的是一个可以被 catch 的值。注释已改,并指向新的 guard。
+- **没有性能代价**,量过:同一 profile 的两个二进制,8000 万次
+  `for x in xs { s = s + x }`,改前 0.17s,改后 0.17s。guard 是"看一位、冷调用",
+  和原先的 unwrap 一样;值由纯 extract 取出。
+
+### 顺手补完的落点
+
+§55 那一族又扫了两轮(每种落点单独一个程序,VM 与严格原生逐字节比):
+`out[0] = xs[越界]`(Dyn 列表的**下标赋值**,push 修了它没修)是第五条错答,已修;
+`Map<Int,Int>` / `Map<Int,Float>` / `List<Int>` 的下标赋值补上了载体推翻检查。
+现在两轮扫描 30 种落点,0 分歧,剩下的全是 NOLOWER(拒绝,安全):
+列表字面量里的 nil、`insert`、`contains`、`join`、`Map<Int,_>` 的存。

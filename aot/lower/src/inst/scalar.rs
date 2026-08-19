@@ -462,184 +462,229 @@ pub(super) fn lower(
             // A Dyn operand routes both sides through the `dyn.*` helpers,
             // which carry the same promotion rules at runtime (`/` always
             // Float, type errors abort like the VM). Result stays `Ty::Dyn`.
+            //
+            // The raw reads stay in scope past the arms below: the nullable
+            // handling further down needs both operands' *declared* types to
+            // build the sentence the interpreter would have raised.
+            let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
+            let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+            // `Str + Dyn`: the VM only accepts Str + Str here (anything
+            // else is a loud error), so unbox the Dyn side through the
+            // `as_str` tag guard (same loud failure) and emit a *typed*
+            // concat — the result stays `Str`, keeping a loop
+            // accumulator (`acc += s[i]`) same-typed through its phi.
+            // `Str + Dyn`: ask the runtime, which is where the VM's rule
+            // lives (`dyn.add` mirrors `Executor::dynamic_add`). This used
+            // to unbox the Dyn side with `as_str` — a *raise* unless it
+            // happened to hold a string — on the belief that the VM "only
+            // accepts Str + Str here". It does not: `"v=" + x` with a boxed
+            // Int is `v=1`, and `"p=" + xs` with a boxed list is the list
+            // `["p=", 1, 2]`, because a list operand outranks a string one.
+            // The old arm aborted both.
+            //
+            // The result is `Dyn` rather than `Str` for the same reason: a
+            // list operand makes it a list. A loop accumulator stays
+            // same-typed through its phi either way, since both sides of
+            // the phi come out of this arm.
+            // A nullable operand joins this arm for the same reason it
+            // joins the equality one: absent *is* nil, and the VM renders
+            // nil as `nil` here rather than refusing. `"[" + xs[9] + "]"`
+            // is `[nil]` on the interpreter and raised compiled.
+            let nullable_operand = |ty| matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool);
+            if op == Opcode::AddInt
+                && (matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str))
+                    || (lty_raw == Ty::Str && nullable_operand(rty_raw))
+                    || (nullable_operand(lty_raw) && rty_raw == Ty::Str))
             {
-                let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
-                let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
-                // `Str + Dyn`: the VM only accepts Str + Str here (anything
-                // else is a loud error), so unbox the Dyn side through the
-                // `as_str` tag guard (same loud failure) and emit a *typed*
-                // concat — the result stays `Str`, keeping a loop
-                // accumulator (`acc += s[i]`) same-typed through its phi.
-                // `Str + Dyn`: ask the runtime, which is where the VM's rule
-                // lives (`dyn.add` mirrors `Executor::dynamic_add`). This used
-                // to unbox the Dyn side with `as_str` — a *raise* unless it
-                // happened to hold a string — on the belief that the VM "only
-                // accepts Str + Str here". It does not: `"v=" + x` with a boxed
-                // Int is `v=1`, and `"p=" + xs` with a boxed list is the list
-                // `["p=", 1, 2]`, because a list operand outranks a string one.
-                // The old arm aborted both.
-                //
-                // The result is `Dyn` rather than `Str` for the same reason: a
-                // list operand makes it a list. A loop accumulator stays
-                // same-typed through its phi either way, since both sides of
-                // the phi come out of this arm.
-                // A nullable operand joins this arm for the same reason it
-                // joins the equality one: absent *is* nil, and the VM renders
-                // nil as `nil` here rather than refusing. `"[" + xs[9] + "]"`
-                // is `[nil]` on the interpreter and raised compiled.
-                let nullable_operand = |ty| matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool);
-                if op == Opcode::AddInt
-                    && (matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str))
-                        || (lty_raw == Ty::Str && nullable_operand(rty_raw))
-                        || (nullable_operand(lty_raw) && rty_raw == Ty::Str))
-                {
-                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
-                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("dyn", "add"),
-                        args: vec![lhs, rhs],
-                    });
-                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
-                    return Ok(());
-                }
-                // `Str + scalar` / `scalar + Str`: display-concatenate, the
-                // VM's fourth `dynamic_add` case. Statically known on both
-                // sides, so it needs no runtime dispatch — and it had no arm at
-                // all, which took `println(1 + "ab")` down with it.
-                if op == Opcode::AddInt
-                    && matches!((lty_raw, rty_raw), (Ty::Str, _) | (_, Ty::Str))
-                    && matches!(lty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
-                    && matches!(rty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
-                    && (lty_raw, rty_raw) != (Ty::Str, Ty::Str)
-                {
-                    let (l, l_fresh) = to_display_str(ssa, insts, globals, lv_raw, lty_raw, false, pc)?;
-                    let dst = concat_display(ssa, insts, globals, l, rv_raw, rty_raw, false, pc)?;
-                    if l_fresh {
-                        free_owned_str(insts, l);
-                    }
-                    ssa.write(instr.a(), block, (dst, Ty::Str));
-                    return Ok(());
-                }
-                // `map + map` merges, the right side winning. Both operands
-                // box and the runtime does it, because the answer's key and
-                // value types are the two operands' widened — there is no
-                // typed carrier for "either of these" — and because the fill
-                // *sequence* is the contract (`lkrt_dyn_add` replays the VM's).
-                //
-                // Only string-keyed maps: the boxed map carrier is
-                // string-keyed, so an int-keyed merge has nowhere to land and
-                // keeps falling back rather than answering `{"3": 1}` where the
-                // VM answers `{3: 1}`.
-                let is_str_map = |t: Ty| matches!(t, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn);
-                // `xs - ys` / `m - n` removes, and both go through the runtime
-                // for the reason the merge below does: the answer is built by
-                // filtering, in the left's own order.
-                let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
-                if op == Opcode::SubInt
-                    && ((is_list(lty_raw) && is_list(rty_raw)) || (is_str_map(lty_raw) && is_str_map(rty_raw)))
-                {
-                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
-                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
-                    let boxed = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(boxed),
-                        callee: AbiRef::new("dyn", "sub"),
-                        args: vec![lhs, rhs],
-                    });
-                    let (unbox, out_ty) = if is_list(lty_raw) {
-                        ("as_list", Ty::ListDyn)
-                    } else {
-                        ("as_map", Ty::MapStrDyn)
-                    };
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("dyn", unbox),
-                        args: vec![boxed],
-                    });
-                    ssa.write(instr.a(), block, (dst, out_ty));
-                    return Ok(());
-                }
-                if op == Opcode::AddInt && is_str_map(lty_raw) && is_str_map(rty_raw) {
-                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
-                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
-                    let boxed = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(boxed),
-                        callee: AbiRef::new("dyn", "add"),
-                        args: vec![lhs, rhs],
-                    });
-                    // The answer is always a `str -> Dyn` map, so unbox to the
-                    // typed handle rather than leaving it `Dyn` — every later
-                    // read then stays on the typed path.
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("dyn", "as_map"),
-                        args: vec![boxed],
-                    });
-                    ssa.write(instr.a(), block, (dst, Ty::MapStrDyn));
-                    return Ok(());
-                }
-                // `list + list` concatenates into a fresh list (the VM's
-                // AddInt dispatch; the `[a, ..spread, b]` literal desugars to
-                // an `+` chain). Same-typed operands keep the typed carrier —
-                // display stays typed-exact (a `List<str>` result still
-                // quotes) — while a Dyn/mixed side chains boxed (the VM's
-                // Mixed result displays bare, matching `dyn_chain`).
-                let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
-                let list_chain = |lty: Ty, rty: Ty| match (lty, rty) {
-                    _ if op != Opcode::AddInt => None,
-                    (Ty::ListI64, Ty::ListI64) => Some(("i64_chain", Ty::ListI64)),
-                    (Ty::ListF64, Ty::ListF64) => Some(("f64_chain", Ty::ListF64)),
-                    (Ty::ListStr, Ty::ListStr) => Some(("str_chain", Ty::ListStr)),
-                    // Cross-typed operands chain boxed — the VM's result is a
-                    // Mixed list (bare-text display), exactly `dyn_chain`.
-                    (l, r) if is_list(l) && is_list(r) => Some(("dyn_chain", Ty::ListDyn)),
-                    _ => None,
-                };
-                if let Some((helper, out_ty)) = list_chain(lty_raw, rty_raw) {
-                    let (lhs, rhs) = if out_ty == Ty::ListDyn {
-                        (
-                            to_dyn_list_handle(ssa, insts, lv_raw, lty_raw, pc)?,
-                            to_dyn_list_handle(ssa, insts, rv_raw, rty_raw, pc)?,
-                        )
-                    } else {
-                        (lv_raw, rv_raw)
-                    };
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("list_h", helper),
-                        args: vec![lhs, rhs],
-                    });
-                    ssa.write(instr.a(), block, (dst, out_ty));
-                    return Ok(());
-                }
-                if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
-                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
-                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
-                    let helper = match op {
-                        Opcode::AddInt => "add",
-                        Opcode::SubInt => "sub",
-                        Opcode::MulInt => "mul",
-                        Opcode::DivInt => "div",
-                        _ => "mod",
-                    };
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("dyn", helper),
-                        args: vec![lhs, rhs],
-                    });
-                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
-                    return Ok(());
-                }
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "add"),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
             }
-            let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
-            let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+            // `Str + scalar` / `scalar + Str`: display-concatenate, the
+            // VM's fourth `dynamic_add` case. Statically known on both
+            // sides, so it needs no runtime dispatch — and it had no arm at
+            // all, which took `println(1 + "ab")` down with it.
+            if op == Opcode::AddInt
+                && matches!((lty_raw, rty_raw), (Ty::Str, _) | (_, Ty::Str))
+                && matches!(lty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                && matches!(rty_raw, Ty::Str | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                && (lty_raw, rty_raw) != (Ty::Str, Ty::Str)
+            {
+                let (l, l_fresh) = to_display_str(ssa, insts, globals, lv_raw, lty_raw, false, pc)?;
+                let dst = concat_display(ssa, insts, globals, l, rv_raw, rty_raw, false, pc)?;
+                if l_fresh {
+                    free_owned_str(insts, l);
+                }
+                ssa.write(instr.a(), block, (dst, Ty::Str));
+                return Ok(());
+            }
+            // `map + map` merges, the right side winning. Both operands
+            // box and the runtime does it, because the answer's key and
+            // value types are the two operands' widened — there is no
+            // typed carrier for "either of these" — and because the fill
+            // *sequence* is the contract (`lkrt_dyn_add` replays the VM's).
+            //
+            // Only string-keyed maps: the boxed map carrier is
+            // string-keyed, so an int-keyed merge has nowhere to land and
+            // keeps falling back rather than answering `{"3": 1}` where the
+            // VM answers `{3: 1}`.
+            let is_str_map = |t: Ty| matches!(t, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn);
+            // `xs - ys` / `m - n` removes, and both go through the runtime
+            // for the reason the merge below does: the answer is built by
+            // filtering, in the left's own order.
+            let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+            if op == Opcode::SubInt
+                && ((is_list(lty_raw) && is_list(rty_raw)) || (is_str_map(lty_raw) && is_str_map(rty_raw)))
+            {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "sub"),
+                    args: vec![lhs, rhs],
+                });
+                let (unbox, out_ty) = if is_list(lty_raw) {
+                    ("as_list", Ty::ListDyn)
+                } else {
+                    ("as_map", Ty::MapStrDyn)
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", unbox),
+                    args: vec![boxed],
+                });
+                ssa.write(instr.a(), block, (dst, out_ty));
+                return Ok(());
+            }
+            if op == Opcode::AddInt && is_str_map(lty_raw) && is_str_map(rty_raw) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "add"),
+                    args: vec![lhs, rhs],
+                });
+                // The answer is always a `str -> Dyn` map, so unbox to the
+                // typed handle rather than leaving it `Dyn` — every later
+                // read then stays on the typed path.
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "as_map"),
+                    args: vec![boxed],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::MapStrDyn));
+                return Ok(());
+            }
+            // `list + list` concatenates into a fresh list (the VM's
+            // AddInt dispatch; the `[a, ..spread, b]` literal desugars to
+            // an `+` chain). Same-typed operands keep the typed carrier —
+            // display stays typed-exact (a `List<str>` result still
+            // quotes) — while a Dyn/mixed side chains boxed (the VM's
+            // Mixed result displays bare, matching `dyn_chain`).
+            let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+            let list_chain = |lty: Ty, rty: Ty| match (lty, rty) {
+                _ if op != Opcode::AddInt => None,
+                (Ty::ListI64, Ty::ListI64) => Some(("i64_chain", Ty::ListI64)),
+                (Ty::ListF64, Ty::ListF64) => Some(("f64_chain", Ty::ListF64)),
+                (Ty::ListStr, Ty::ListStr) => Some(("str_chain", Ty::ListStr)),
+                // Cross-typed operands chain boxed — the VM's result is a
+                // Mixed list (bare-text display), exactly `dyn_chain`.
+                (l, r) if is_list(l) && is_list(r) => Some(("dyn_chain", Ty::ListDyn)),
+                _ => None,
+            };
+            if let Some((helper, out_ty)) = list_chain(lty_raw, rty_raw) {
+                let (lhs, rhs) = if out_ty == Ty::ListDyn {
+                    (
+                        to_dyn_list_handle(ssa, insts, lv_raw, lty_raw, pc)?,
+                        to_dyn_list_handle(ssa, insts, rv_raw, rty_raw, pc)?,
+                    )
+                } else {
+                    (lv_raw, rv_raw)
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", helper),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, out_ty));
+                return Ok(());
+            }
+            if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let helper = match op {
+                    Opcode::AddInt => "add",
+                    Opcode::SubInt => "sub",
+                    Opcode::MulInt => "mul",
+                    Opcode::DivInt => "div",
+                    _ => "mod",
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // A nullable operand reads through the guard that carries the
+            // interpreter's own sentence, so `try { xs[9] + 1 } catch e { e }`
+            // is the same string on both backends. Both sides nullable is the
+            // one case a *static* sentence cannot get right — the VM names both
+            // operands, and whether the second one is absent is only known at
+            // run time — so that one boxes and asks `dyn.*`, which formats it
+            // from the values.
+            let nullable = |ty| matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool);
+            if nullable(lty_raw) && nullable(rty_raw) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let helper = match op {
+                    Opcode::AddInt => "add",
+                    Opcode::SubInt => "sub",
+                    Opcode::MulInt => "mul",
+                    Opcode::DivInt => "div",
+                    _ => "mod",
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            let say = |absent_left: bool| {
+                let (l, r) = if absent_left {
+                    ("Nil", language_type_name(rty_raw))
+                } else {
+                    (language_type_name(lty_raw), "Nil")
+                };
+                arith_operand_message(op, l, r)
+            };
+            let (lv, lty) = if nullable(lty_raw) {
+                read_scalar_saying(ssa, insts, globals, instr.b(), block, pc, &say(true))?
+            } else {
+                read_scalar(ssa, insts, instr.b(), block, pc)?
+            };
+            let (rv, rty) = if nullable(rty_raw) {
+                read_scalar_saying(ssa, insts, globals, instr.c(), block, pc, &say(false))?
+            } else {
+                read_scalar(ssa, insts, instr.c(), block, pc)?
+            };
             match (lty, rty) {
                 // `/` yields a `Float` even for two `Int`s — the rule the
                 // checker, the constant folder and the `dyn` helpers above all
@@ -1043,8 +1088,60 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
-            let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
-            let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+            // Only the *ordered* compares reach here with a nullable operand —
+            // the equalities were answered above — and an ordered compare
+            // against nil is an error in the interpreter too. Same treatment as
+            // arithmetic: carry the interpreter's own sentence, and let the
+            // both-nullable case be formatted from the values by `dyn.*`.
+            if nullable_cmp(lty_raw) && nullable_cmp(rty_raw) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let helper = match cmp_op(op) {
+                    CmpOp::Lt => "lt",
+                    CmpOp::Le => "le",
+                    CmpOp::Gt => "gt",
+                    _ => "ge",
+                };
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            let ordered_say = |absent_left: bool| {
+                let (l, r) = if absent_left {
+                    ("Nil", language_type_name(rty_raw))
+                } else {
+                    (language_type_name(lty_raw), "Nil")
+                };
+                format!("{} expected Int, Float, or String, got {l} and {r}", compare_symbol(op))
+            };
+            let (lv, lty) = if nullable_cmp(lty_raw) {
+                read_scalar_saying(ssa, insts, globals, instr.b(), block, pc, &ordered_say(true))?
+            } else {
+                read_scalar(ssa, insts, instr.b(), block, pc)?
+            };
+            let (rv, rty) = if nullable_cmp(rty_raw) {
+                read_scalar_saying(ssa, insts, globals, instr.c(), block, pc, &ordered_say(false))?
+            } else {
+                read_scalar(ssa, insts, instr.c(), block, pc)?
+            };
             let (float, lhs, rhs) = match (lty, rty) {
                 (Ty::I64, Ty::I64) => (false, lv, rv),
                 // Bool equality (`b == true`): widen to i64 (the integer
@@ -1329,4 +1426,39 @@ fn eq_kind(ty: Ty) -> Option<u8> {
         Ty::Bytes => 7,
         _ => return None,
     })
+}
+
+/// The sentence the interpreter raises when an arithmetic operand is the wrong
+/// kind, for the operator `op` and the two operand type names.
+///
+/// Three shapes, and they are the interpreter's own: `+` and `-` each name what
+/// they accept (a list or map may be added or subtracted), and the rest share
+/// the generic one. Probed against a running interpreter rather than read off
+/// its source, operator by operator and side by side.
+fn arith_operand_message(op: Opcode, lhs: &str, rhs: &str) -> String {
+    match op {
+        Opcode::AddInt => format!("Add expected numbers or strings, got {lhs} and {rhs}"),
+        Opcode::SubInt => format!("Sub expected numbers or list/map lhs, got {lhs} and {rhs}"),
+        Opcode::MulInt => format!("* expects Int or Float, got {lhs} and {rhs}"),
+        Opcode::DivInt => format!("/ expects Int or Float, got {lhs} and {rhs}"),
+        _ => format!("% expects Int or Float, got {lhs} and {rhs}"),
+    }
+}
+
+/// Whether `ty` is a nullable carrier — the shape a bounds-checked read has.
+fn nullable_cmp(ty: Ty) -> bool {
+    matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool)
+}
+
+/// The symbol a comparison opcode was written as. The interpreter names the
+/// operator a program wrote, not the typed opcode the compiler chose.
+fn compare_symbol(op: Opcode) -> &'static str {
+    match op {
+        Opcode::CmpLtInt => "<",
+        Opcode::CmpLeInt => "<=",
+        Opcode::CmpGtInt => ">",
+        Opcode::CmpGeInt => ">=",
+        Opcode::CmpNeInt => "!=",
+        _ => "==",
+    }
 }

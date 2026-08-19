@@ -107,4 +107,37 @@ fn sums_or_fails(xs: List<Int>, upto: Int) -> Int {
 assert(sums_or_fails([1, 2], 2) == 3);
 assert(sums_or_fails([1, 2], 3) == 0 - 3);
 
+// 10. And the sentence that error carries is the same sentence either way
+//
+// A caught error is a *value*, so which words it contains is part of what the
+// program computes — not a diagnostic detail. The compiled build used to answer
+// `runtime error` for all of these while the interpreter named the operator and
+// both operands, so this comparison failed on one backend and passed on the
+// other. Both sides of each operator, because the message says which one was
+// nil.
+fn message_for(pick: Int) -> String {
+    let xs = [1];
+    let ys = [2];
+    return try {
+        if pick == 0 { xs[9] + 1 } else
+        if pick == 1 { 1 + xs[9] } else
+        if pick == 2 { xs[9] - 1 } else
+        if pick == 3 { xs[9] * 1 } else
+        if pick == 4 { xs[9] / 1 } else
+        if pick == 5 { xs[9] % 1 } else
+        if pick == 6 { xs[9] < 1 } else
+        if pick == 7 { 1 >= xs[9] } else
+        { xs[9] + ys[9] }
+    } catch e { e };
+}
+assert(message_for(0) == "Add expected numbers or strings, got Nil and Int");
+assert(message_for(1) == "Add expected numbers or strings, got Int and Nil");
+assert(message_for(2) == "Sub expected numbers or list/map lhs, got Nil and Int");
+assert(message_for(3) == "* expects Int or Float, got Nil and Int");
+assert(message_for(4) == "/ expects Int or Float, got Nil and Int");
+assert(message_for(5) == "% expects Int or Float, got Nil and Int");
+assert(message_for(6) == "< expected Int, Float, or String, got Nil and Int");
+assert(message_for(7) == ">= expected Int, Float, or String, got Int and Nil");
+assert(message_for(8) == "Add expected numbers or strings, got Nil and Nil");
+
 println("null_coalescing: all assertions passed");

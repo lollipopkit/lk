@@ -192,6 +192,12 @@ macro_rules! for_each_abi_fn {
             ("rt", "current_error", lkrt_rt_current_error, ReadsHost, [], DynVal);
             ("rt", "raise_dyn", lkrt_rt_raise_dyn, WritesHost, [DynVal], Nil);
             ("rt", "raise_msg", lkrt_rt_raise_msg, WritesHost, [StrPtr], Nil);
+            // The present-bit of a nullable carrier, checked with the sentence
+            // to raise if it is not set. The sentence is a *compile-time*
+            // constant: the lowering knows the operator and both operand types,
+            // which is exactly what the VM's message names, so there is no
+            // table of messages here to drift from the one in the executor.
+            ("rt", "maybe_guard", lkrt_rt_maybe_guard, WritesHost, [I64, StrPtr], Nil);
             ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
             // The raw-handle family: a typed container parked as-is, because
             // boxing one is an element-wise copy. Tag-checked at both ends.
