@@ -148,17 +148,100 @@ fn descend(stmt: &mut Stmt) -> Result<(), String> {
             Ok(())
         }
         // `try { … } catch e { … }` — an expression now, so it arrives wrapped.
-        Stmt::Expr { value: expr, .. } => match expr.as_mut() {
-            Expr::Try { body, handler, .. } => {
-                for inner in body.iter_mut().chain(handler.iter_mut()) {
+        Stmt::Expr { value: expr, .. } => descend_expr(expr),
+        Stmt::Let { value, .. } | Stmt::Return { value: Some(value), .. } => descend_expr(value),
+        _ => Ok(()),
+    }
+}
+
+/// Walks an expression for the two things that carry statements: a closure body
+/// and a `try` region.
+///
+/// A closure is where this was missing. `descend` handled `Stmt::Function`, but
+/// a lambda is an *expression*, so `let f = || { defer …; return …; };` reached
+/// neither the rewrite nor the stray check — the `defer` was compiled as an
+/// ordinary statement and ran *in place*. Written in a named function the same
+/// three lines returned `0`; written in a closure they returned `1`, because the
+/// release had already happened when the return expression was evaluated.
+///
+/// The match has no wildcard on purpose. What went wrong here is a shape nobody
+/// listed, and a `_` arm is how the next one gets in.
+fn descend_expr(expr: &mut Expr) -> Result<(), String> {
+    match expr {
+        Expr::Closure { body, .. } => {
+            if let Expr::Block(statements) = body.as_mut() {
+                rewrite_sequence(statements)?;
+                for inner in statements.iter_mut() {
                     reject_stray(inner)?;
                     descend(inner)?;
                 }
-                Ok(())
+                return Ok(());
             }
-            _ => Ok(()),
-        },
-        _ => Ok(()),
+            descend_expr(body)
+        }
+        Expr::Try { body, handler, .. } => {
+            for inner in body.iter_mut().chain(handler.iter_mut()) {
+                reject_stray(inner)?;
+                descend(inner)?;
+            }
+            Ok(())
+        }
+        // An expression-level block is a statement sequence that is *not* a
+        // function body, so a `defer` in it has no way out of its own: rejected
+        // like any other stray.
+        Expr::Block(statements) => {
+            for inner in statements.iter_mut() {
+                reject_stray(inner)?;
+                descend(inner)?;
+            }
+            Ok(())
+        }
+        Expr::Bin(left, _, right)
+        | Expr::And(left, right)
+        | Expr::Or(left, right)
+        | Expr::NullishCoalescing(left, right)
+        | Expr::Access(left, right)
+        | Expr::OptionalAccess(left, right) => {
+            descend_expr(left)?;
+            descend_expr(right)
+        }
+        Expr::Unary(_, inner) | Expr::Paren(inner) | Expr::Unsafe(inner) | Expr::Cast(inner, _) => descend_expr(inner),
+        Expr::Conditional(cond, then_expr, else_expr) => {
+            descend_expr(cond)?;
+            descend_expr(then_expr)?;
+            descend_expr(else_expr)
+        }
+        Expr::List(items) => items.iter_mut().try_for_each(|item| descend_expr(item)),
+        Expr::Map(entries) => entries.iter_mut().try_for_each(|(key, value)| {
+            descend_expr(key)?;
+            descend_expr(value)
+        }),
+        Expr::StructLiteral { fields, .. } => fields.iter_mut().try_for_each(|(_, value)| descend_expr(value)),
+        Expr::Call(_, args) => args.iter_mut().try_for_each(|arg| descend_expr(arg)),
+        Expr::CallExpr(callee, args) => {
+            descend_expr(callee)?;
+            args.iter_mut().try_for_each(|arg| descend_expr(arg))
+        }
+        Expr::CallNamed(callee, positional, named) => {
+            descend_expr(callee)?;
+            positional.iter_mut().try_for_each(|arg| descend_expr(arg))?;
+            named.iter_mut().try_for_each(|(_, arg)| descend_expr(arg))
+        }
+        Expr::Range { start, end, step, .. } => {
+            for part in [start, end, step].into_iter().flatten() {
+                descend_expr(part)?;
+            }
+            Ok(())
+        }
+        Expr::TemplateString(parts) => parts.iter_mut().try_for_each(|part| match part {
+            crate::expr::TemplateStringPart::Expr(inner) => descend_expr(inner),
+            crate::expr::TemplateStringPart::Literal(_) => Ok(()),
+        }),
+        Expr::Match { value, arms } => {
+            descend_expr(value)?;
+            arms.iter_mut().try_for_each(|arm| descend_expr(&mut arm.body))
+        }
+        Expr::Var(_) | Expr::Literal(_) => Ok(()),
     }
 }
 

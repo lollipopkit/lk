@@ -82,4 +82,36 @@ fn only_at_the_end(events: List<Int>) -> Int {
 
 println(only_at_the_end(events));
 println(events.len());
+
+// A closure defers on the way out of the *closure*, and the value it returns is
+// computed first — the same rule a named function follows.
+//
+// It did not. `descend` in the desugar walked into `Stmt::Function` and a lambda
+// is an *expression*, so a closure body reached neither the rewrite nor the
+// check that rejects a misplaced `defer`: the statement was simply compiled
+// where it stood and ran before the return expression was evaluated. The same
+// three lines answered 0 in a function and 1 in a closure.
+fn closure_defer_runs_last() -> Int {
+    let trace = [];
+    let body = || {
+        defer trace.push(1);
+        return trace.len();
+    };
+    let during = body();
+    return during * 10 + trace.len();
+}
+assert(closure_defer_runs_last() == 1);
+
+// And the same three lines written as a named function agree.
+fn body_as_function(t: List<Int>) -> Int {
+    defer t.push(1);
+    return t.len();
+}
+fn named_defer_runs_last() -> Int {
+    let trace = [];
+    let during = body_as_function(trace);
+    return during * 10 + trace.len();
+}
+assert(named_defer_runs_last() == 1);
+
 println("defer: ok");
