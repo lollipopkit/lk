@@ -1196,6 +1196,94 @@ mod tests {
             "unexpected message: {err}"
         );
     }
+    /// A list operand absorbs the other one, and the checker had to be told.
+    ///
+    /// The same defect as map merge, one operator over: both executors put the
+    /// other operand into the list — `"p=" + [1, 2]` is `["p=", 1, 2]`, which
+    /// `lkrt_dyn_add` states as the rule — and only the checker refused, and
+    /// only when it could see the types.
+    ///
+    /// The heterogeneous literal is the case that made it worse than a
+    /// refusal. `[1, "a"]` infers to a `Tuple`, which is a list everywhere else
+    /// but was not routed to this rule, so `"" + [1, "a"]` fell through to the
+    /// string path and was typed `String` — a wrong type, which propagates,
+    /// where a refusal would only have stopped.
+    #[test]
+    fn a_list_operand_absorbs_the_other_one() {
+        check_program("println(\"p=\" + [1, 2]);\n").expect("a string joins a list");
+        check_program("println([1, 2] + \"x\");\n").expect("…from the other side too");
+        check_program("println(1 + [2, 3]);\n").expect("so does a number");
+        check_program("println(nil + [1]);\n").expect("and nil");
+        check_program("println([1] + {\"k\": 2});\n").expect("and a map");
+
+        assert_eq!(
+            infer("[1, 2] + 3"),
+            Type::List(Box::new(Type::Int)),
+            "an Int joining a `List<Int>` keeps the element type"
+        );
+        assert_eq!(
+            infer("[1, 2] + \"x\""),
+            Type::List(Box::new(Type::Any)),
+            "an element type that subsumes neither widens to Any"
+        );
+        assert_eq!(
+            infer("\"\" + [1, \"a\"]"),
+            Type::List(Box::new(Type::Any)),
+            "a heterogeneous literal is a list here, not a string"
+        );
+    }
+    /// A concatenation's element type is the *wider* side.
+    ///
+    /// `wider_of`'s doc has said all along that it is "the rule
+    /// `check_list_addition` uses", and `check_list_addition` spelled out the
+    /// opposite tie-break: it picked whichever side was assignable *to* the
+    /// other, which is the narrower one. `Int` is assignable to `Float`, so a
+    /// list holding `1.5` was typed `List<Int>` and the annotation was
+    /// accepted:
+    ///
+    ///     let v: List<Int> = [1] + [1.5];   // accepted
+    ///     let n: Int = v[1];                // accepted
+    ///     typeof(v[1])                      // Float
+    ///
+    /// The map merge, which does call `wider_of`, answered `Map<String, Float>`
+    /// for the same pair — one rule, two answers, and the doc pointing at the
+    /// wrong one.
+    ///
+    /// `wider_of` had its own hole under it: `is_assignable(Any, Int)` is true,
+    /// because an `Any` may be passed where an `Int` is expected, so asking it
+    /// the subsumption question answered "`Int` is wider". `Any` is answered
+    /// before asking now.
+    #[test]
+    fn a_concatenation_takes_the_wider_element_type() {
+        assert_eq!(
+            infer("[1] + [1.5]"),
+            Type::List(Box::new(Type::Float)),
+            "an Int list joined to a Float list holds Floats"
+        );
+        assert_eq!(
+            infer("[1] + [1]"),
+            Type::List(Box::new(Type::Int)),
+            "…and one type on both sides is unchanged"
+        );
+        assert_eq!(
+            infer("[\"a\"] + [1]"),
+            Type::List(Box::new(Type::Any)),
+            "neither subsumes the other"
+        );
+        check_program("let v: List<Int> = [1] + [1.5];\nprintln(v);\n")
+            .expect_err("a list holding 1.5 is not a List<Int>");
+
+        // The same rule, and the same `Any`, through the map merge.
+        assert_eq!(
+            infer("{\"a\": 1} + {\"b\": 1.5}"),
+            Type::Map(Box::new(Type::String), Box::new(Type::Float)),
+            "the merge already took the wider side"
+        );
+        check_program(
+            "fn f(m: Map<String, Any>) -> Int {\n  let v: Map<String, Int> = m + {\"a\": 1};\n  println(v);\n  return 0;\n}\nf({});\n",
+        )
+        .expect_err("merging into an erased map does not narrow it");
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first

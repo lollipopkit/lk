@@ -1262,7 +1262,17 @@ impl TypeChecker {
             BinOp::Add => {
                 let left_resolved = self.resolve_aliases(&left_type);
                 let right_resolved = self.resolve_aliases(&right_type);
-                if matches!(left_resolved, Type::List(_)) || matches!(right_resolved, Type::List(_)) {
+                // A `Tuple` is what a heterogeneous list *literal* infers to,
+                // and it is a list everywhere else — it indexes, has a `len`,
+                // iterates and is `in`-searchable. Leaving it out here did not
+                // merely refuse a program: `"" + [1, "a"]` fell through to the
+                // string path and was typed `String`, while both executors
+                // answer the list `["", 1, "a"]`. A wrong type is worse than a
+                // refusal, because it propagates — `let v: String = ...` passed
+                // `lk check` and held a list.
+                if matches!(left_resolved, Type::List(_) | Type::Tuple(_))
+                    || matches!(right_resolved, Type::List(_) | Type::Tuple(_))
+                {
                     return self.check_list_addition(left_expr, &left_type, right_expr, &right_type);
                 }
                 // Two maps merge, the right side winning. Both executors have
@@ -1605,7 +1615,26 @@ impl TypeChecker {
     /// The rule `check_list_addition` uses for a concatenation's element type,
     /// named once now that the map merge needs it for both halves of its key
     /// and value.
+    ///
+    /// `Any` is answered before asking, because `is_assignable` reads it in the
+    /// other direction: an `Any` may be used *where any type is expected*, so
+    /// `is_assignable(Any, Int)` is true and the subsumption question comes
+    /// back "`Int` is wider". It is not — `Any` is the one that holds anything,
+    /// and taking `Int` from it is how a merged `Map<String, Any>` was typed
+    /// `Map<String, Int>` and then held a string:
+    ///
+    /// ```lk
+    /// fn f(m: Map<String, Any>) -> Int {
+    ///     let v: Int = (m + {"a": 1})["z"];   // accepted, held "not an int"
+    ///     return 0;
+    /// }
+    /// ```
+    ///
+    /// The escape hatch is for *passing* a value, not for narrowing one.
     fn wider_of(&mut self, left: &Type, right: &Type) -> Type {
+        if matches!(left, Type::Any) || matches!(right, Type::Any) {
+            return Type::Any;
+        }
         if self.is_assignable(left, right) {
             right.clone()
         } else if self.is_assignable(right, left) {
@@ -1678,17 +1707,40 @@ impl TypeChecker {
         right_expr: &Expr,
         right_ty: &Type,
     ) -> Result<Type> {
-        let left_resolved = self.resolve_aliases(left_ty);
-        let right_resolved = self.resolve_aliases(right_ty);
+        // A `Tuple` is a list whose element types were written out one by one,
+        // so it answers this question as the list it is. Collapsing it here
+        // rather than adding tuple shapes to every arm below keeps the rule in
+        // one place — and the collapse is the same `wider_of` the arms use.
+        let mut as_list = |checker: &mut Self, ty: &Type| match checker.resolve_aliases(ty) {
+            Type::Tuple(elems) => {
+                let elem = elems
+                    .iter()
+                    .fold(None, |acc: Option<Type>, e| match acc {
+                        None => Some(e.clone()),
+                        Some(acc) => Some(checker.wider_of(&acc, e)),
+                    })
+                    .unwrap_or(Type::Any);
+                Type::List(Box::new(elem))
+            }
+            other => other,
+        };
+        let left_resolved = as_list(self, left_ty);
+        let right_resolved = as_list(self, right_ty);
         match (left_resolved, right_resolved) {
             (Type::List(left_inner), Type::List(right_inner)) => {
-                let elem_ty = if self.is_assignable(left_inner.as_ref(), right_inner.as_ref()) {
-                    (*left_inner).clone()
-                } else if self.is_assignable(right_inner.as_ref(), left_inner.as_ref()) {
-                    (*right_inner).clone()
-                } else {
-                    Type::Any
-                };
+                // `wider_of`, whose doc has said all along that it is "the rule
+                // `check_list_addition` uses" — while this spelled out the
+                // opposite tie-break and picked the *narrower* side in both
+                // branches. `Int <: Float`, so `[1] + [1.5]` was typed
+                // `List<Int>` and held `1.5`:
+                //
+                //     let v: List<Int> = [1] + [1.5];   // accepted
+                //     let n: Int = v[1];                // accepted
+                //     typeof(v[1])                      // Float
+                //
+                // The map merge, which does call `wider_of`, answered
+                // `Map<String, Float>` for the same pair of types.
+                let elem_ty = self.wider_of(left_inner.as_ref(), right_inner.as_ref());
                 Ok(Type::List(Box::new(elem_ty)))
             }
             // One erased operand is the same rule `in` follows: `Any` is a
@@ -1697,26 +1749,26 @@ impl TypeChecker {
             (Type::List(_), Type::Any) | (Type::Any, Type::List(_)) | (Type::Any, Type::Any) => {
                 Ok(Type::List(Box::new(Type::Any)))
             }
-            (Type::List(_), other) => Err(Self::type_err(
-                "List concatenation requires both operands to be lists",
-                Some(Type::List(Box::new(Type::Any))),
-                Some(other),
-                Some(Expr::Bin(
-                    Box::new(left_expr.clone()),
-                    BinOp::Add,
-                    Box::new(right_expr.clone()),
-                )),
-            )),
-            (other, Type::List(_)) => Err(Self::type_err(
-                "List concatenation requires both operands to be lists",
-                Some(Type::List(Box::new(Type::Any))),
-                Some(other),
-                Some(Expr::Bin(
-                    Box::new(left_expr.clone()),
-                    BinOp::Add,
-                    Box::new(right_expr.clone()),
-                )),
-            )),
+            // A list operand absorbs the other one, in position: the VM's
+            // `Add` prepends for `"p=" + [1, 2]` and appends for
+            // `[1, 2] + "x"`, and `lkrt_dyn_add` says the rule out loud —
+            // "a list operand wins over a string one, so `"p=" + [1, 2]` is
+            // the list `["p=", 1, 2]` and not the text `p=[1,2]`".
+            //
+            // Both executors have answered this all along and only the checker
+            // refused, and only when it could see the types — so the same
+            // expression ran with `Any` operands and was a type error with
+            // known ones. That is the defect `Any + Any` map merge was fixed
+            // for, stated the same way: `lk check` answers the executors'
+            // question, and a rule neither executor has is as much a defect as
+            // a missing one.
+            //
+            // No operand kind is excluded, because none raises: a set, a byte
+            // string, a map and a nil all land in the list beside the elements.
+            (Type::List(inner), other) | (other, Type::List(inner)) => {
+                let elem = self.wider_of(inner.as_ref(), &other);
+                Ok(Type::List(Box::new(elem)))
+            }
             _ => Err(Self::type_err(
                 "List concatenation requires both operands to be lists",
                 Some(Type::List(Box::new(Type::Any))),

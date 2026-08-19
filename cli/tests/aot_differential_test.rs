@@ -579,6 +579,22 @@ fn differential_strings() {
                 "concat_with_an_erased_operand",
                 "fn app(xs: Any) -> Int {\n  println(xs + [7]);\n  return 0;\n}\napp([1, 2]);\napp([1.5, 2.5]);\nreturn 0;\n",
             ),
+            // A list operand absorbs the other one, in position — the VM's
+            // rule, which `lkrt_dyn_add` states, and which only the checker
+            // refused. A heterogeneous literal is the case that mattered most:
+            // it infers to a `Tuple`, so it missed the list rule entirely and
+            // `"" + [1, "a"]` was typed `String` while both executors answered
+            // a list.
+            new(
+                "a_list_operand_absorbs_the_other",
+                "println(\"p=\" + [1, 2]);\nprintln([1, 2] + \"x\");\nprintln(\"\" + [1, \"a\"]);\nprintln([1, \"a\"] + \"z\");\nprintln(1 + [2, 3]);\nprintln([2, 3] + 1);\nprintln(nil + [1]);\nprintln([1] + nil);\nprintln([1] + {\"k\": 2});\nprintln({\"k\": 2} + [1]);\nreturn 0;\n",
+            ),
+            // …and the element type the checker gives the answer holds up when
+            // it is written down.
+            new(
+                "an_absorbed_operand_widens_the_element_type",
+                "let xs: List<Int> = [1, 2] + 3;\nlet ys: List<Any> = [1, 2] + \"x\";\nprintln(xs);\nprintln(ys);\nreturn 0;\n",
+            ),
             new("const_ret", "return \"hello\";\n"),
             new("eq", "return \"hi\" == \"hi\";\n"),
             new("ne", "return \"hi\" != \"ho\";\n"),

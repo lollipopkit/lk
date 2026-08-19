@@ -621,6 +621,35 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, out_ty));
                 return Ok(());
             }
+            // `list + anything` and `anything + list`: the other operand joins
+            // the list, in position. This is the VM's rule and `lkrt_dyn_add`
+            // states it — "a list operand wins over a string one, so
+            // `"p=" + [1, 2]` is the list `["p=", 1, 2]` and not the text
+            // `p=[1,2]`" — and neither had a lowering, because the checker used
+            // to refuse the shape whenever it could see the types. It no longer
+            // does, so an accepted program that fell to the VM now stays here.
+            //
+            // The answer is always a list, so it unboxes to the typed handle
+            // the way the map merge above does, and every later read stays on
+            // the typed path.
+            if op == Opcode::AddInt && (is_list(lty_raw) != is_list(rty_raw)) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "add"),
+                    args: vec![lhs, rhs],
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![boxed],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                return Ok(());
+            }
             if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
                 let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                 let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
