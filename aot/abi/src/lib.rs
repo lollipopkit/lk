@@ -264,6 +264,7 @@ macro_rules! for_each_abi_fn {
             ("bytes_h", "unique", lkrt_lkbytes_unique, WritesHost, [Ptr], Ptr, Constructs);
             ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
             ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
+            ("bytes_h", "from_dyn_list", lkrt_lkbytes_from_dyn_list, WritesHost, [Ptr], Ptr);
             ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
             // The three reductions. `min`/`max` answer nil on an empty
             // sequence, so they box; `sum` answers `0` and does not.

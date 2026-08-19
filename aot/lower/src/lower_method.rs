@@ -2480,6 +2480,15 @@ pub(crate) fn lower_method_dispatch(
         }
         // `xs.to_bytes()` — the inverse of `b.to_list()`, and the body behind
         // the `bytes.from_list(xs)` spelling.
+        (Ty::ListDyn, "to_bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_dyn_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
         (Ty::ListI64, "to_bytes", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

@@ -403,7 +403,7 @@ pub(crate) fn kind_name_of(v: LkDyn) -> String {
     kind_name(v)
 }
 
-fn kind_name(v: LkDyn) -> String {
+pub(crate) fn kind_name(v: LkDyn) -> String {
     // A marked struct instance answers the name it was *declared* with. The
     // mirrored function got this right and this one did not, so `typeof(p)` on
     // a struct read `Map` compiled and `P` interpreted, and a type error

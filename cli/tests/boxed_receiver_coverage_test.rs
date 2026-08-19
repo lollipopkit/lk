@@ -80,20 +80,13 @@ const READ_ONLY: &[(&str, &str, &str, &str)] = &[
 ///
 /// Each is a decision, not a gap left open. Removing a name from here means it
 /// now lowers, which the test below also checks — a stale exclusion fails.
-const EXCLUDED: &[(&str, &str)] = &[
-    (
-        "slice",
-        "answers a *window* over the receiver, and `dyn.as_list` materializes a \
+const EXCLUDED: &[(&str, &str)] = &[(
+    "slice",
+    "answers a *window* over the receiver, and `dyn.as_list` materializes a \
          plain list for three of the four carriers — so unboxing changes the \
          answer's kind. `\"\" + xs.slice(0, 1)` raises in the VM, which is what a \
          window does, and answered a list when the row said `unbox_list`.",
-    ),
-    (
-        "to_bytes",
-        "no `ListDyn` dispatch arm: `bytes_h.from_i64_list` takes the typed carrier, \
-         and a boxed list has to check every element is an Int in byte range first.",
-    ),
-];
+)];
 
 #[test]
 fn every_read_only_list_method_takes_a_boxed_receiver() {

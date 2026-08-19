@@ -604,6 +604,16 @@ fn differential_strings() {
             // one of the four negative-count guards that had none —
             // `"ab".repeat(-1)` answered `""` compiled and stopped the program
             // interpreted.
+            // `to_bytes` had one runtime helper serving two spellings with a
+            // message of its own — `bytes.from_list(xs)` *is* `xs.to_bytes()`
+            // in the interpreter and both say `to_bytes`. So a caught error
+            // read differently compiled, on a plain `List<Int>`, with no boxing
+            // anywhere. The boxed carrier has to ask whether each element is an
+            // Int at all, which is the second refusal.
+            new(
+                "to_bytes_refuses_in_the_interpreters_words",
+                "fn c(xs) -> String { try { return \"ok \" + xs.to_bytes(); } catch e { return \"E: \" + e; } }\nprintln(c([1, 2]));\nprintln(c([3, \"x\"].take(1)));\nprintln(c([300, \"y\"].take(1)));\nprintln(c([1, \"z\"]));\nprintln(c([1.5, \"w\"].take(1)));\nprintln(c([]));\nreturn 0;\n",
+            ),
             new(
                 "a_negative_count_raises_on_both_ends",
                 "fn t(s: String, n: Int) -> String { try { return \"ok[\" + s.take(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn k(s: String, n: Int) -> String { try { return \"ok[\" + s.skip(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn r(s: String, n: Int) -> String { try { return \"ok[\" + s.repeat(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn p(s: String, n: Int) -> String { try { return \"ok[\" + s.pad_right(n, \"-\") + \"]\"; } catch e { return \"E: \" + e; } }\nprintln(t(\"abc\", -1));\nprintln(k(\"abc\", -1));\nprintln(r(\"abc\", -1));\nprintln(p(\"abc\", -1));\nprintln(r(\"abc\", 0));\nprintln(r(\"abc\", 2));\nreturn 0;\n",

@@ -1097,6 +1097,7 @@ pub(crate) const METHOD_TABLE: &[MethodRow] = &[
     method_row("concat",    true,     true,  false),
     method_row("unique",    true,     true,  true),
     method_row("sort",      true,     true,  false),
+    method_row("to_bytes",  true,     false, false),
     method_row("sum",       true,     false, true),
     method_row("min",       true,     false, true),
     method_row("max",       true,     false, true),

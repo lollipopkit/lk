@@ -322,7 +322,52 @@ pub unsafe extern "C" fn lkrt_lkbytes_from_i64_list(handle: *mut c_void) -> *mut
     for &value in values {
         match u8::try_from(value) {
             Ok(byte) => bytes.push(byte),
-            Err(_) => crate::panic::raise_str(&alloc::format!("bytes.from_list() value {value} is not a byte (0-255)")),
+            // The interpreter's wording, and it names `to_bytes` for both
+            // spellings because they are one call there: `bytes.from_list(xs)`
+            // *is* `xs.to_bytes()`. This said "bytes.from_list() value 300 is
+            // not a byte (0-255)", so a program that caught the error and
+            // printed it read differently compiled — on a plain `List<Int>`,
+            // with no boxing involved.
+            Err(_) => crate::panic::raise_str(&alloc::format!(
+                "list.to_bytes() expects byte values in 0..=255, got {value}"
+            )),
+        }
+    }
+    crate::state::arena_handle(bytes)
+}
+
+/// `xs.to_bytes()` where the elements are boxed.
+///
+/// The typed spelling hands `from_i64_list` a `Vec<i64>` and every element is
+/// an Int by construction. A boxed list has to ask, which is the whole reason
+/// this is a second function rather than a conversion: the interpreter has two
+/// refusals here — the element is not an Int, or it is an Int outside a byte —
+/// and both are caught and printed by ordinary programs.
+///
+/// # Safety
+/// `handle` must be a live boxed list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkbytes_from_dyn_list(handle: *mut c_void) -> *mut c_void {
+    use crate::lkdyn::{DYN_I64, LkDyn};
+    if handle.is_null() {
+        return crate::state::arena_handle(LkBytes::new());
+    }
+    // SAFETY: the caller passes a live boxed list handle.
+    let values = unsafe { &*(handle as *const Vec<LkDyn>) };
+    let mut bytes = LkBytes::with_capacity(values.len());
+    for &value in values {
+        if value.tag != DYN_I64 {
+            crate::panic::raise_str(&alloc::format!(
+                "list.to_bytes() expects Int items, got {}",
+                crate::lkdyn::kind_name(value)
+            ));
+        }
+        match u8::try_from(value.payload) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => crate::panic::raise_str(&alloc::format!(
+                "list.to_bytes() expects byte values in 0..=255, got {}",
+                value.payload
+            )),
         }
     }
     crate::state::arena_handle(bytes)
