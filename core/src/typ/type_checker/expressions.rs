@@ -1326,20 +1326,26 @@ impl TypeChecker {
             BinOp::Sub => {
                 let left_resolved = self.resolve_aliases(&left_type);
                 let right_resolved = self.resolve_aliases(&right_type);
-                // A `Tuple` is a list here for the reason it is one in `+`:
-                // a heterogeneous literal is still a list, and leaving it out
-                // sent `[1, "a"] - 1` to the numeric rule.
+                // The *left* side decides, in the interpreter's own order: a
+                // list on the left removes, then a map on the left removes,
+                // and only then is the right side's kind a reason to complain.
+                // Reading either side first sent `{"a": 1} - [1]` — a map
+                // minus a key that happens to be a list — to the list rule,
+                // which then said the left operand was not a list.
                 //
-                // The *left* side decides. `1 - [1]` is not a removal — it is a
-                // number minus a list, which raises — so only a list on the
-                // left routes here, unlike `+` where either side wins.
+                // A `Tuple` is a list here for the reason it is one in `+`: a
+                // heterogeneous literal is still a list, and leaving it out
+                // sent `[1, "a"] - 1` to the numeric rule.
                 if matches!(left_resolved, Type::List(_) | Type::Tuple(_)) {
                     return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(left_resolved, Type::Map(_, _)) {
+                    return self.check_map_removal(left_expr, &left_type, right_expr, &right_type);
                 }
                 if matches!(right_resolved, Type::List(_) | Type::Tuple(_)) {
                     return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
                 }
-                if matches!(left_resolved, Type::Map(_, _)) || matches!(right_resolved, Type::Map(_, _)) {
+                if matches!(right_resolved, Type::Map(_, _)) {
                     return self.check_map_removal(left_expr, &left_type, right_expr, &right_type);
                 }
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
@@ -1733,13 +1739,12 @@ impl TypeChecker {
         match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
             (Type::Map(left_key, left_value), Type::Map(_, _)) => Ok(Type::Map(left_key, left_value)),
             // `m - k` removes that one key, the VM's arm beside the
-            // map-minus-map one. Only a *key* type: the members of a map are
-            // keyed by nil, Bool, Int and String, and anything else raises when
-            // the key is built — which is why this is narrower than the list
-            // rule above rather than the same shape.
-            (Type::Map(key, value), Type::Nil | Type::Bool | Type::Int | Type::String | Type::Any) => {
-                Ok(Type::Map(key, value))
-            }
+            // map-minus-map one — and it takes *any* value, the way
+            // `m.delete(k)` does. A value that cannot be a key cannot be in the
+            // map, so removing it removes nothing; removal looks a key up
+            // rather than building one, which is the line `m[k]` and
+            // `m.set(k, v)` stay on the other side of.
+            (Type::Map(key, value), _) => Ok(Type::Map(key, value)),
             (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
                 "map removal requires a map or a key on the right",
                 Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),

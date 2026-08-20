@@ -1329,8 +1329,12 @@ mod tests {
             Type::Map(Box::new(Type::String), Box::new(Type::Int)),
             "…and the map keeps both of its types"
         );
+        // Removing something that cannot be a key removes nothing, the way
+        // `m.delete(k)` does — removal looks a key up rather than building one.
         check_program("let m = {\"a\": 1};\nlet c = m - 1.5;\nprintln(c);\n")
-            .expect_err("a Float cannot be a key, so it cannot be removed");
+            .expect("a Float is not a key the map holds");
+        check_program("let m = {\"a\": 1};\nlet c = m - [1];\nprintln(c);\n")
+            .expect("neither is a list — and the map on the left decides, not the list on the right");
         check_program("let c = 1 - [1];\nprintln(c);\n").expect_err("a number minus a list is not a removal");
     }
     /// The predicates take any value; the reductions need the right elements.

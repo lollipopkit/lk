@@ -655,7 +655,7 @@ fn differential_strings() {
             ),
             new(
                 "building_a_key_still_refuses",
-                "fn t(f: Int, bad: Any) -> String {\n  let s = Set([1]);\n  let m = {\"a\": 1};\n  try {\n    if f == 0 { s.add(bad); }\n    if f == 1 { m.delete(bad); }\n    if f == 2 { m.set(bad, 1); }\n    if f == 3 { let v: Any = m[bad]; let _ = v; }\n    if f == 4 { let d: Any = m - bad; let _ = d; }\n    return \"ok\";\n  } catch e { return \"E: \" + e; }\n}\nprintln(t(0, [1]));\nprintln(t(1, 1.5));\nprintln(t(2, 1.5));\nprintln(t(3, 1.5));\nprintln(t(4, 1.5));\nreturn 0;\n",
+                "fn t(f: Int, bad: Any) -> String {\n  let s = Set([1]);\n  let m = {\"a\": 1};\n  try {\n    if f == 0 { s.add(bad); }\n    if f == 1 { m.delete(bad); }\n    if f == 2 { m.set(bad, 1); }\n    if f == 3 { let v: Any = m[bad]; let _ = v; }\n    if f == 4 { let d: Any = m.set(bad, 1); let _ = d; }\n    return \"ok\";\n  } catch e { return \"E: \" + e; }\n}\nprintln(t(0, [1]));\nprintln(t(1, 1.5));\nprintln(t(2, 1.5));\nprintln(t(3, 1.5));\nprintln(t(4, 1.5));\nreturn 0;\n",
             ),
             new(
                 "removing_a_single_value",
