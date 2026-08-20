@@ -170,6 +170,20 @@ pub(crate) struct Phi {
     pub(crate) operands: Vec<(usize, ValueId)>,
 }
 
+/// What a `Map<str, Dyn>` word is — the two carriers share one machine
+/// representation, so the MIR type cannot tell them apart.
+///
+/// The lattice has no "unknown" member on purpose: absence from
+/// [`Ssa::struct_facts`] is unknown, so a site that forgets to record a fact
+/// makes the lowering refuse rather than answer for the wrong one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum StructFact {
+    /// A `NewObject` instance of this declared struct.
+    Struct(String),
+    /// An ordinary map.
+    PlainMap,
+}
+
 pub(crate) struct Ssa {
     pub(crate) reg_count: usize,
     /// Register slots plus the virtual cell slots appended after them
@@ -304,11 +318,16 @@ pub(crate) struct Ssa {
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
     pub(crate) edge_insts: Vec<Vec<Inst>>,
-    /// `NewObject` provenance: the struct type name behind a `MapStrDyn`
-    /// handle value (plan J1). Method calls and display contexts consult the
-    /// trait table through it; `Move` preserves the `ValueId`, so the entry
-    /// follows the value across registers for free.
-    pub(crate) struct_types: std::collections::HashMap<ValueId, String>,
+    /// What a `MapStrDyn` handle value actually is, when this function can
+    /// prove it (plan J1). Method calls and display contexts consult the trait
+    /// table through it; `Move` preserves the `ValueId`, so the entry follows
+    /// the value across registers for free.
+    ///
+    /// **Absence means unproven, not "a plain map".** A struct instance and a
+    /// map share the carrier, so a value with no fact might be either, and the
+    /// map *collection* operations refuse there — answering a struct's field
+    /// count for `len()` is a wrong answer, and the interpreter raises instead.
+    pub(crate) struct_facts: std::collections::HashMap<ValueId, StructFact>,
     /// A list handle → the declared struct **all** its elements are, when they
     /// agree.
     ///
@@ -364,7 +383,7 @@ impl Ssa {
             cell_refs: std::collections::HashMap::new(),
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
-            struct_types: std::collections::HashMap::new(),
+            struct_facts: std::collections::HashMap::new(),
             list_elem_struct: std::collections::HashMap::new(),
         }
     }
@@ -836,6 +855,32 @@ impl Ssa {
         Ok(())
     }
 
+    /// The declared struct behind a handle, when it is one.
+    pub(crate) fn struct_name(&self, v: ValueId) -> Option<&str> {
+        match self.struct_facts.get(&v) {
+            Some(StructFact::Struct(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether a handle is *provably* an ordinary map — the proof the map
+    /// collection operations need before they may answer from the carrier.
+    pub(crate) fn is_plain_map(&self, v: ValueId) -> bool {
+        self.struct_facts.get(&v) == Some(&StructFact::PlainMap)
+    }
+
+    /// Records a handle as an instance of a declared struct.
+    pub(crate) fn set_struct(&mut self, v: ValueId, name: String) {
+        self.struct_facts.insert(v, StructFact::Struct(name));
+    }
+
+    /// Records a handle as an ordinary map: a map literal, or a runtime call
+    /// whose result is one. Only a `NewObject` produces a struct, so anything
+    /// built any other way is this.
+    pub(crate) fn set_plain_map(&mut self, v: ValueId) {
+        self.struct_facts.insert(v, StructFact::PlainMap);
+    }
+
     /// Copies provenance from the first filled predecessor's definition of
     /// `slot` onto a not-yet-complete phi parameter.
     fn seed_provenance(&mut self, param: ValueId, slot: usize, block: usize, pc: usize) {
@@ -850,8 +895,8 @@ impl Ssa {
             if let Some(&carrier) = self.literal_carrier.get(&v) {
                 self.literal_carrier.insert(param, carrier);
             }
-            if let Some(name) = self.struct_types.get(&v).cloned() {
-                self.struct_types.insert(param, name);
+            if let Some(fact) = self.struct_facts.get(&v).cloned() {
+                self.struct_facts.insert(param, fact);
             }
             if let Some(name) = self.list_elem_struct.get(&v).cloned() {
                 self.list_elem_struct.insert(param, name);
@@ -891,8 +936,8 @@ impl Ssa {
         if let Some(carrier) = agreed(incoming, param, |v| self.literal_carrier.get(&v).copied()) {
             self.literal_carrier.insert(param, carrier);
         }
-        if let Some(name) = agreed(incoming, param, |v| self.struct_types.get(&v).cloned()) {
-            self.struct_types.insert(param, name);
+        if let Some(fact) = agreed(incoming, param, |v| self.struct_facts.get(&v).cloned()) {
+            self.struct_facts.insert(param, fact);
         }
         if let Some(name) = agreed(incoming, param, |v| self.list_elem_struct.get(&v).cloned()) {
             self.list_elem_struct.insert(param, name);
@@ -913,7 +958,7 @@ impl Ssa {
         block: usize,
         slot: usize,
     ) -> Result<(), Unsupported> {
-        let seeded_struct = self.struct_types.get(&param).cloned();
+        let seeded_struct = self.struct_facts.get(&param).cloned();
         let seeded_elem = self.list_elem_struct.get(&param).cloned();
         if seeded_struct.is_none() && seeded_elem.is_none() {
             return Ok(());
@@ -922,7 +967,7 @@ impl Ssa {
             if v == param {
                 continue;
             }
-            if seeded_struct.is_some() && self.struct_types.get(&v) != seeded_struct.as_ref() {
+            if seeded_struct.is_some() && self.struct_facts.get(&v) != seeded_struct.as_ref() {
                 return Err(Unsupported::PhiProvenance { block, slot });
             }
             if seeded_elem.is_some() && self.list_elem_struct.get(&v) != seeded_elem.as_ref() {

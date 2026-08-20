@@ -197,7 +197,7 @@ pub(super) fn lower(
             let is_map = matches!(
                 ty,
                 Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool | Ty::MapStrDyn
-            ) && !ssa.struct_types.contains_key(&v);
+            ) && !ssa.struct_name(v).is_some();
             let dst = ssa.new_val();
             insts.push(Inst::Const {
                 dst,

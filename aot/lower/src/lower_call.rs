@@ -227,7 +227,7 @@ pub(crate) fn lower_make_struct(
             args: vec![dst, tid_v],
         });
     }
-    ssa.struct_types.insert(dst, type_name);
+    ssa.set_struct(dst, type_name);
     ssa.write(base, block, (dst, Ty::MapStrDyn));
     Ok(())
 }
@@ -453,7 +453,7 @@ pub(crate) fn lower_user_call(
         // here. A lambda the callee *can* erase never reaches this line; the
         // identity vector above took it.
         let (aval, aty) = read_value(ssa, insts, sig, funcs, cap_ctx, arg_reg, block, pc)?;
-        let want = sig.observe_param(callee_idx, i, aty, ssa.struct_types.get(&aval).map(String::as_str));
+        let want = sig.observe_param(callee_idx, i, aty, ssa.struct_facts.get(&aval));
         // A typed container reaching an erased parameter has to be built Dyn.
         //
         // `want` is `Dyn` here because two call sites disagreed on the
@@ -493,18 +493,13 @@ pub(crate) fn lower_user_call(
     // environment values first, then the callee's own captures. Their types
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
-        let want = sig.observe_param(callee_idx, argc + k, ety, ssa.struct_types.get(&ev).map(String::as_str));
+        let want = sig.observe_param(callee_idx, argc + k, ety, ssa.struct_facts.get(&ev));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
-        let want = sig.observe_param(
-            callee_idx,
-            argc + env_total + k,
-            cty,
-            ssa.struct_types.get(&cval).map(String::as_str),
-        );
+        let want = sig.observe_param(callee_idx, argc + env_total + k, cty, ssa.struct_facts.get(&cval));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }

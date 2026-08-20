@@ -310,6 +310,78 @@ fn clif_differential_higher_order() {
 /// Absolute, and it has to be: the fact is missing in the *compiler*, so both
 /// backends are handed the same wrong instruction and agree with each other
 /// perfectly.
+/// A struct instance and a map share one native carrier (`Map<str, Dyn>`), so
+/// nothing in the MIR type says which a word is. The interpreter has two
+/// different heap values and refuses every map *collection* operation on a
+/// struct, naming it — `len()`, `is_empty()`, `keys()`, `in`. Answering from
+/// the carrier gave the field count, the field names, and `true`.
+///
+/// `MayDegrade`: where the lowering cannot prove which one it holds it declines,
+/// and these programs only ever raise, so the VM answering them costs nothing
+/// anyone runs.
+#[test]
+fn a_struct_is_not_a_map_and_the_collection_methods_say_so() {
+    run_differential(
+        "struct_not_map",
+        &[
+            new(
+                "len_through_any",
+                "struct P { p: Int, q: Int }\n\
+                 fn f(v: Any) -> String { try { return \"ok \" + v.len(); } catch e { return \"E \" + e; } }\n\
+                 println(f(P { p: 1, q: 2 }));\n\
+                 println(f({\"p\": 1}));\n",
+            ),
+            new(
+                "collection_methods_through_any",
+                "struct P { p: Int, q: Int }\n\
+                 fn empty(v: Any) -> String { try { return \"ok \" + v.is_empty(); } catch e { return \"E \" + e; } }\n\
+                 fn keys(v: Any) -> String { try { return \"ok \" + v.keys(); } catch e { return \"E \" + e; } }\n\
+                 fn has(v: Any) -> String { try { return \"ok \" + (\"p\" in v); } catch e { return \"E \" + e; } }\n\
+                 let p = P { p: 1, q: 2 };\n\
+                 println(empty(p));\n\
+                 println(keys(p));\n\
+                 println(has(p));\n\
+                 println(empty({\"p\": 1}));\n",
+            ),
+        ],
+        NativePath::MayDegrade,
+    );
+}
+
+/// The other half of the same proof: a map that *is* one keeps its lowering.
+/// The fact is a lattice with no "unknown" member, so a plain map has to be
+/// recorded as plain — and a parameter every call site hands a map is one.
+#[test]
+fn a_map_that_is_one_still_lowers_its_collection_methods() {
+    run_clif_differential(
+        "plain_map_collections",
+        &[
+            new(
+                "through_a_parameter",
+                "fn size(m: Map<String, Int>) -> Int { return m.len(); }\n\
+                 fn empty(m: Map<String, Int>) -> Bool { return m.is_empty(); }\n\
+                 fn has(m: Map<String, Int>) -> Bool { return \"a\" in m; }\n\
+                 let m = {\"a\": 1, \"b\": 2};\n\
+                 println(size(m));\n\
+                 println(empty(m));\n\
+                 println(has(m));\n\
+                 println(m.keys());\n",
+            ),
+            new(
+                "across_a_loop_header",
+                "let m = {\"a\": 1};\n\
+                 let total = 0;\n\
+                 let i = 0;\n\
+                 while i < 3 {\n\
+                   total = total + m.len();\n\
+                   i = i + 1;\n\
+                 }\n\
+                 println(total);\n",
+            ),
+        ],
+    );
+}
+
 #[test]
 fn a_declared_width_crosses_a_function_boundary() {
     let dir = unique_tmp_dir("param_width");

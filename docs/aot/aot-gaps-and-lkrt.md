@@ -2311,3 +2311,42 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 
 代价与收益都量了:跟踪那套守卫此前让 trait-位置扫描里 7/35 回退,现在
 **35/35 既一致又原生**。跟踪代码全部删除。
+
+## §64 结构体实例和 map 共用一个载体,"不知道"必须当成"可能是结构体"(2026-08-21)
+
+`NewObject` 编译成 `Map<str, Dyn>`,所以一个 `MapStrDyn` 字要么是 map,要么是
+结构体实例,MIR 类型区分不了。解释器那边是两个不同的堆值,map 的**集合**操作
+落在结构体上一律 raise。原生这边按载体作答:
+
+| 操作 | 解释器 | 原生(修复前) |
+| --- | --- | --- |
+| `v.len()` | ``E `len()` has no answer for P`` | `ok 2` |
+| `v.is_empty()` | `E P has no method 'is_empty'` | `ok false` |
+| `v.keys()` | `E P has no method 'keys'` | `["ok ","p","q"]` |
+| `"p" in v` | `E Contains haystack object is not searchable: "P"` | `ok true` |
+
+类型检查器挡住了写明类型的接收者,所以这四条只在**擦除**位置出现:`fn f(v: Any)`,
+或者两个调用点分别传结构体和 map 让参数事实归零的时候。§62 里的 `p.m["b"] = 2`
+是同一类:两个后端一起答错,因为它们共用前端。
+
+修复分两层。装箱那层(`Ty::Dyn` 接收者)由运行时判定:`dyn.len_of`、
+`dyn.contains`、`dyn.map_pairs`/`keys`/`values`、`dyn.map_has`、`dyn.map_delete`
+读 arena 类型标记,标记非零就按解释器的原话 raise。非 map 的 tag 一次比较就返回,
+只有装箱 map 付一次查表。
+
+有类型那层不能用运行时判定:`map_h.str_dyn_len`/`str_dyn_has` 是热路径,
+每次调用加一次带锁查表不可接受。改成编译期证明,而且是**正向**的:
+`ssa.struct_facts` 从 `HashMap<ValueId, String>` 变成
+`HashMap<ValueId, StructFact>`,`StructFact` 只有 `Struct(name)` 和 `PlainMap`
+两个成员,**没有 Unknown**——不在表里就是不知道,集合操作在不知道的地方拒绝下降。
+方向选反了就是错答:如果"缺省 = 普通 map",漏记一处事实就多一个错答;现在漏记
+一处只是多一次回退。
+
+事实的传播点就是原来那张表的足迹:`seed_provenance` / `inherit_provenance` /
+`verify_seeded_provenance` 三处(phi 按"每条非自环边都一致"合并,`Struct(P)` 与
+`PlainMap` 不一致就归零),跨函数的 `param_structs` / `ret_structs`,跨 `try` 区域的
+`try_body_struct_inputs`。`PlainMap` 目前在三个 map 字面量构造点写入。
+
+覆盖率没有掉:门禁 71/71,VM/原生扫描 73 一致 1 允许分歧,300 例模糊测试通过。
+`a_map_that_is_one_still_lowers_its_collection_methods` 钉住反面——参数位置和
+循环头上的普通 map 仍然全原生下降。

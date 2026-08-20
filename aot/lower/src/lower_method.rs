@@ -358,7 +358,7 @@ pub(crate) fn lower_trait_method_k(
         .map(Some);
     }
     if receiver_ty == Ty::MapStrDyn
-        && let Some(type_name) = ssa.struct_types.get(&receiver).cloned()
+        && let Some(type_name) = ssa.struct_name(receiver).map(str::to_string)
         && let Some(&fidx) = sig.traits.impls.get(&(type_name, name.to_string()))
     {
         let mut call_args = Vec::with_capacity(argc + 1);
@@ -484,7 +484,7 @@ pub(crate) fn emit_call_with_args(
     }
     let mut args = Vec::with_capacity(call_args.len());
     for (i, (v, ty)) in call_args.into_iter().enumerate() {
-        let want = sig.observe_param(fidx, i, ty, ssa.struct_types.get(&v).map(String::as_str));
+        let want = sig.observe_param(fidx, i, ty, ssa.struct_facts.get(&v));
         args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
     }
     let ret = sig.ret_types.get(fidx).copied().unwrap_or(Ty::I64);
@@ -518,8 +518,8 @@ pub(crate) fn emit_call_with_args(
 /// untyped receiver — the same missing-provenance failure as an `impl` method's
 /// `self`, one call deeper.
 pub(crate) fn seed_ret_struct(ssa: &mut Ssa, sig: &SigInfer, fidx: usize, dst: ValueId) {
-    if let Some(Some(name)) = sig.ret_structs.get(&(fidx as u32)) {
-        ssa.struct_types.insert(dst, name.clone());
+    if let Some(Some(fact)) = sig.ret_structs.get(&(fidx as u32)) {
+        ssa.struct_facts.insert(dst, fact.clone());
     }
 }
 
@@ -540,7 +540,7 @@ pub(crate) fn apply_display_show(
     pc: usize,
 ) -> Result<(ValueId, Ty), Unsupported> {
     if ty == Ty::MapStrDyn
-        && let Some(type_name) = ssa.struct_types.get(&v).cloned()
+        && let Some(type_name) = ssa.struct_name(v).map(str::to_string)
         && let Some(&fidx) = sig
             .traits
             .impls
@@ -1026,6 +1026,23 @@ pub(crate) fn lower_method_dispatch(
         nullable_needle_in_typed_container(ssa, insts, globals, receiver, receiver_ty, name, args, block, pc)?
     {
         return Ok(result);
+    }
+    // A struct instance rides the `Map<str, Dyn>` carrier, and a map's
+    // *collection* methods are not its. The interpreter has a different heap
+    // value and refuses each of these, naming the struct — so answering for the
+    // fields is a wrong answer: `s.len()` was the field count and `s.keys()`
+    // the field names.
+    //
+    // Reading a field is not among them; that is what the carrier is for. These
+    // programs always raise, so declining to lower them costs nothing anyone
+    // runs.
+    if ssa.struct_name(receiver).is_some()
+        && matches!(
+            name,
+            "len" | "is_empty" | "keys" | "values" | "has" | "delete" | "contains" | "clear"
+        )
+    {
+        return Err(Unsupported::TypeMismatch { pc });
     }
     let result: Reg = match (receiver_ty, name, args) {
         // Boxed-element list long tail (runtime-polymorphic receivers).

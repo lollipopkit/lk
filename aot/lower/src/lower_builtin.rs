@@ -794,8 +794,8 @@ pub(crate) fn lower_builtin_call(
                 // name, statically. Its carrier is `MapStrDyn`, and the static
                 // table said `Map` — so `typeof(p)` read `Map` compiled and
                 // `P` interpreted, a divergence no example happened to cover.
-                _ if ssa.struct_types.contains_key(&v) => {
-                    let name = ssa.struct_types[&v].clone();
+                _ if ssa.struct_name(v).is_some() => {
+                    let name = ssa.struct_name(v).expect("just matched").to_string();
                     materialize_key(ssa, insts, globals, &name)
                 }
                 // A carrier that *may* be a struct at run time but is not

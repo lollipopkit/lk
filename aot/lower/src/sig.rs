@@ -78,12 +78,12 @@ pub(crate) struct SigInfer {
     /// variable some closure in it captured. See [`cell_region_input`].
     /// Region inputs that are a **struct instance**, by the struct's name.
     ///
-    /// `ssa.struct_types` is the enclosing function's own SSA state and stops
+    /// `ssa.struct_facts` is the enclosing function's own SSA state and stops
     /// at the boundary, so inside the body the input is an ordinary
     /// `Map<str, Dyn>` — which is what a struct rides, and which `IsMap`
     /// answers `true` for. `let {p: c} = p;` inside a `try` then matched a map
     /// pattern against a struct, where the interpreter refuses.
-    pub(crate) try_body_struct_inputs: std::collections::HashMap<(u32, u8), String>,
+    pub(crate) try_body_struct_inputs: std::collections::HashMap<(u32, u8), crate::ssa::StructFact>,
     /// Region inputs whose word is a **closure handle**.
     ///
     /// `ssa.closure_values` is the enclosing function's own SSA state and stops
@@ -292,7 +292,7 @@ pub(crate) struct SigInfer {
     /// Per function: the struct its returns are known to construct.
     ///
     /// A type's *name* only ever entered the lowering from a `NewObject`
-    /// (`ssa.struct_types`), so it stopped at the function boundary: the
+    /// (`ssa.struct_facts`), so it stopped at the function boundary: the
     /// receiver of `make(3, 4).norm()` had no type and the method call fell out
     /// of the devirtualizing path — in one module as much as across two. This
     /// carries it out, and the fixpoint carries it to callers lowered before
@@ -300,7 +300,7 @@ pub(crate) struct SigInfer {
     ///
     /// `Some(None)` where the returns disagree or one of them is not a struct:
     /// an answer that is sometimes wrong would devirtualize to the wrong impl.
-    pub(crate) ret_structs: std::collections::HashMap<u32, Option<String>>,
+    pub(crate) ret_structs: std::collections::HashMap<u32, Option<crate::ssa::StructFact>>,
     /// `(callee, parameter slot)` → the struct every call site passes there.
     ///
     /// The parameter-side twin of [`Self::ret_structs`], and the same missing
@@ -317,7 +317,7 @@ pub(crate) struct SigInfer {
     /// as a separate call the caller might forget — because a site that
     /// silently records nothing inherits another site's answer, and that is
     /// exactly the wrong-impl case.
-    pub(crate) param_structs: std::collections::HashMap<(usize, usize), Option<String>>,
+    pub(crate) param_structs: std::collections::HashMap<(usize, usize), Option<crate::ssa::StructFact>>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -472,13 +472,19 @@ impl SigInfer {
     /// observe as `Dyn` directly. The join is monotonic on a two-level
     /// lattice, so the fixpoint still terminates; function-vs-value
     /// polymorphism keeps its own reject (`lambda_params`).
-    pub(crate) fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty, arg_struct: Option<&str>) -> Ty {
+    pub(crate) fn observe_param(
+        &mut self,
+        callee: usize,
+        slot_idx: usize,
+        arg_ty: Ty,
+        arg_fact: Option<&crate::ssa::StructFact>,
+    ) -> Ty {
         match self.param_structs.entry((callee, slot_idx)) {
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(arg_struct.map(str::to_string));
+                slot.insert(arg_fact.cloned());
             }
             std::collections::hash_map::Entry::Occupied(mut slot) => {
-                if slot.get().as_deref() != arg_struct {
+                if slot.get().as_ref() != arg_fact {
                     slot.insert(None);
                 }
             }

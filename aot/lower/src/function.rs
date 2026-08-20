@@ -861,9 +861,17 @@ pub(crate) fn lower_function(
             } else {
                 None
             }
-            .or_else(|| sig.param_structs.get(&(func_index as usize, r)).cloned().flatten());
+            .or_else(|| match sig.param_structs.get(&(func_index as usize, r)) {
+                Some(Some(crate::ssa::StructFact::Struct(name))) => Some(name.clone()),
+                _ => None,
+            });
             if let Some(type_name) = provenance {
-                ssa.struct_types.insert(pv, type_name);
+                ssa.set_struct(pv, type_name);
+            } else if let Some(fact) = sig.param_structs.get(&(func_index as usize, r)).cloned().flatten() {
+                // Not a struct, but proven: every call site passes an ordinary
+                // map. Without carrying that, `fn n(m) { return m.len(); }`
+                // could not tell a map from a struct instance and refused.
+                ssa.struct_facts.insert(pv, fact);
             }
         }
         fn_params.push((pv, pty));
@@ -965,8 +973,8 @@ pub(crate) fn lower_function(
             if is_closure_input {
                 ssa.closure_values.insert(pv);
             }
-            if let Some(name) = struct_input {
-                ssa.struct_types.insert(pv, name);
+            if let Some(fact) = struct_input {
+                ssa.struct_facts.insert(pv, fact);
             }
             fn_params.push((pv, ty));
         }
@@ -1354,7 +1362,7 @@ pub(crate) fn lower_function(
                     // return that is not a struct, answer "unknown" rather than a
                     // name that is right only sometimes.
                     if !is_entry {
-                        let returned = ssa.struct_types.get(&v).cloned();
+                        let returned = ssa.struct_facts.get(&v).cloned();
                         match sig.ret_structs.entry(func_index) {
                             std::collections::hash_map::Entry::Vacant(slot) => {
                                 slot.insert(returned);
@@ -1533,9 +1541,9 @@ pub(crate) fn lower_function(
                     }
                     if crosses_as_word(ty) {
                         sig.try_body_param_tys.insert((body, reg), ty);
-                        match ssa.struct_types.get(&v) {
-                            Some(name) => {
-                                sig.try_body_struct_inputs.insert((body, reg), name.clone());
+                        match ssa.struct_facts.get(&v) {
+                            Some(fact) => {
+                                sig.try_body_struct_inputs.insert((body, reg), fact.clone());
                             }
                             None => {
                                 sig.try_body_struct_inputs.remove(&(body, reg));

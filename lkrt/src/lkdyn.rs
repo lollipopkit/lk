@@ -513,6 +513,21 @@ pub(crate) fn kind_name(v: LkDyn) -> String {
 
 /// The declared name of a marked struct instance, or `None` for anything else
 /// (including a struct whose declaration never reached this runtime).
+/// Refuses a **struct instance** where a map *collection* operation is asked.
+///
+/// A struct rides the `Map<str, Dyn>` carrier, so every one of these would
+/// otherwise answer for the fields: `s.len()` was the field count, `s.keys()`
+/// the field names, `"p" in s` true. The interpreter has a different heap value
+/// and refuses each of them, naming the struct — so these are its words.
+///
+/// Reading a *field* is not among them: `p.x` is what a struct is for, and the
+/// carrier is how it is read.
+fn reject_struct_receiver(v: LkDyn, method: &str) {
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("{name} has no method '{method}'"));
+    }
+}
+
 fn struct_type_name(v: LkDyn) -> Option<String> {
     let type_id = lkrt_dyn_obj_type_id(v);
     if type_id == 0 {
@@ -1521,6 +1536,11 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
 /// Unicode scalar count; scalars are the VM's loud failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
+    // `len()` has its own wording, which names the struct rather than the
+    // method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("`len()` has no answer for {name}"));
+    }
     match v.tag {
         DYN_LIST => dyn_list(v).len() as i64,
         // Counted off the carrier — no boxing, which is the whole point of a
@@ -1838,6 +1858,7 @@ pub unsafe extern "C" fn lkrt_dyn_map_get_or(v: LkDyn, key: LkDyn, default: LkDy
 /// A map payload must be a live handle of the carrier its tag names.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_map_pairs(v: LkDyn) -> *mut c_void {
+    reject_struct_receiver(v, "keys");
     if v.tag == DYN_MAP {
         // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
         return unsafe { crate::lkmap::lkrt_lkmap_str_dyn_iter_pairs(v.payload as *mut c_void) };
@@ -1854,6 +1875,7 @@ pub unsafe extern "C" fn lkrt_dyn_map_pairs(v: LkDyn) -> *mut c_void {
 /// # Safety
 /// As [`lkrt_dyn_map_pairs`].
 unsafe fn dyn_map_pair_column(v: LkDyn, column: usize) -> *mut c_void {
+    reject_struct_receiver(v, if column == 0 { "keys" } else { "values" });
     let pairs = unsafe { lkrt_dyn_map_pairs(v) };
     let column: Vec<LkDyn> = dyn_slice(pairs)
         .iter()
@@ -2065,6 +2087,10 @@ pub unsafe extern "C" fn lkrt_dyn_seq_contains(v: LkDyn, needle: LkDyn) -> i64 {
 /// The payload must be a live handle of the carrier its tag names.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
+    // `in` names the object rather than a method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("Contains haystack object is not searchable: {name:?}"));
+    }
     if is_map_tag(v.tag) {
         if needle.tag == DYN_STR {
             return unsafe { lkrt_dyn_map_has(v, needle.payload as *const c_char) };
@@ -2141,6 +2167,7 @@ pub unsafe extern "C" fn lkrt_dyn_map_values(v: LkDyn) -> *mut c_void {
 /// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_map_has(v: LkDyn, key: *const c_char) -> i64 {
+    reject_struct_receiver(v, "has");
     if !is_map_tag(v.tag) {
         crate::panic::raise_str("runtime type error");
     }
@@ -2162,6 +2189,7 @@ pub unsafe extern "C" fn lkrt_dyn_map_has(v: LkDyn, key: *const c_char) -> i64 {
 /// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_map_delete(v: LkDyn, key: *const c_char) -> LkDyn {
+    reject_struct_receiver(v, "delete");
     if v.tag == DYN_MAP {
         // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; `key` is the
         // caller's NUL-terminated key.

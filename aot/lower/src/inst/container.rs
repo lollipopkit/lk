@@ -148,9 +148,9 @@ pub(super) fn lower(
                 ssa.list_base_len.insert(handle, elems.len() as i64);
                 // Every element the same declared struct: the list remembers
                 // which, so an element read out of it is still that struct.
-                let elem_struct = elems.first().and_then(|&(v, _)| ssa.struct_types.get(&v).cloned());
+                let elem_struct = elems.first().and_then(|&(v, _)| ssa.struct_name(v).map(str::to_string));
                 if let Some(name) = elem_struct
-                    && elems.iter().all(|&(v, _)| ssa.struct_types.get(&v) == Some(&name))
+                    && elems.iter().all(|&(v, _)| ssa.struct_name(v) == Some(name.as_str()))
                 {
                     ssa.list_elem_struct.insert(handle, name);
                 }
@@ -277,6 +277,10 @@ pub(super) fn lower(
                 callee: AbiRef::new("map_h", new_fn),
                 args: Vec::new(),
             });
+            // A literal is an ordinary map. Only `NewObject` builds a struct,
+            // and the two share the `MapStrDyn` carrier, so the collection
+            // operations need this said out loud to answer at all.
+            ssa.set_plain_map(handle);
             for &((k, kt), (v, vt)) in &entries {
                 let value = match map_ty {
                     Ty::MapStrDyn => to_dyn(ssa, insts, v, vt, pc)?,
@@ -528,6 +532,7 @@ pub(super) fn lower(
                         if new_fn.1 != Ty::MapStrDyn {
                             ssa.literal_carrier.insert(handle, (pc, new_fn.1));
                         }
+                        ssa.set_plain_map(handle);
                         ssa.write(instr.a(), block, (handle, new_fn.1));
                         return Ok(());
                     }
@@ -569,6 +574,7 @@ pub(super) fn lower(
                         callee: AbiRef::new("map_h", new_fn),
                         args: Vec::new(),
                     });
+                    ssa.set_plain_map(handle);
                     for (k, v) in entries {
                         let key = match k {
                             RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
@@ -649,6 +655,12 @@ pub(super) fn lower(
             // bounds-checked), so without this `for s in ["ab", "cde"] {
             // s.len() }` dropped the whole program to the interpreter.
             let (handle, ty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+            // A struct instance rides the map carrier and has no length: the
+            // interpreter answers "`len()` has no answer for P". Declining is
+            // what the method spelling does too (`lower_method_dispatch`).
+            if !ssa.is_plain_map(handle) && matches!(ty, Ty::MapStrDyn) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
             // Strings count Unicode scalar values (the VM's char length), which
             // is a string call rather than a container one; every other carrier
             // shares its row with `is_empty`.
@@ -873,7 +885,7 @@ pub(super) fn lower(
                         args: vec![map, tid_v],
                     });
                 }
-                ssa.struct_types.insert(map, type_name);
+                ssa.set_struct(map, type_name);
             }
             ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
         }
@@ -1367,7 +1379,7 @@ pub(super) fn lower(
                 if elem_ty == Ty::Dyn
                     && let Some(name) = ssa.list_elem_struct.get(&handle).cloned()
                 {
-                    ssa.struct_types.insert(dst, name);
+                    ssa.set_struct(dst, name);
                 }
                 ssa.write(instr.a(), block, (dst, elem_ty));
             } else {
@@ -1406,7 +1418,7 @@ pub(super) fn lower(
                         // An element of a list of one declared struct is that
                         // struct, so `nodes[i].next` reads a declared field.
                         if let Some(name) = ssa.list_elem_struct.get(&handle).cloned() {
-                            ssa.struct_types.insert(dst, name);
+                            ssa.set_struct(dst, name);
                         }
                         ssa.write(instr.a(), block, (dst, Ty::Dyn));
                     }
@@ -2336,10 +2348,10 @@ pub(crate) fn carrier_contradicted(ssa: &Ssa, handle: ValueId, carrier: Ty) -> O
 
 /// Where a declared struct keeps this field, when the receiver is one.
 fn struct_field_position(ssa: &Ssa, sig: &SigInfer, handle: ValueId, field: &str) -> Option<usize> {
-    let name = ssa.struct_types.get(&handle)?;
+    let name = ssa.struct_name(handle)?;
     sig.traits
         .struct_field_index
-        .get(&(name.clone(), field.to_string()))
+        .get(&(name.to_string(), field.to_string()))
         .copied()
 }
 
@@ -2415,7 +2427,7 @@ fn emit_field_store_check(
     value_ty: Ty,
     boxed: ValueId,
 ) {
-    if let Some(type_name) = ssa.struct_types.get(&handle).cloned() {
+    if let Some(type_name) = ssa.struct_name(handle).map(str::to_string) {
         emit_declared_field_check(ssa, insts, globals, sig, &type_name, field, value_ty, boxed);
         return;
     }
