@@ -702,6 +702,7 @@ impl Generator {
     }
 
     /// Generates one program; the flag reports whether it carries a hybrid
+    /// helper (the harness then asserts the bridge actually engaged).    /// Generates one program; the flag reports whether it carries a hybrid
     /// helper (the harness then asserts the bridge actually engaged).
     fn program(&mut self) -> (String, bool) {
         let mut out = String::new();
@@ -1291,6 +1292,105 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         compared: true,
         fully_native,
     }
+}
+
+/// Programs whose features *cross*, compared without a native-coverage floor.
+///
+/// Five defects came from a throwaway generator that crossed features and none
+/// from the structured probing that moved one axis at a time: a `try` region's
+/// parked `return` not joining with the function's own returns; `"a" + v` with
+/// `v: Any` typed `String` while a list operand makes the answer a list;
+/// `{1: 2} - k` reaching the boxed path through a `Maybe` key; a "cannot hold
+/// this" fold applied to a method the receiver does not have; and a removal
+/// handing back a typed map where the caller unboxes a boxed one.
+///
+/// Separate from `fuzz_differential_vm_vs_native` because these deliberately
+/// reach shapes that may not lower — mixing them into that generator dropped
+/// its native ratio from 13–19 of 40 to 3, which is exactly what its floor is
+/// there to catch. Here the comparison is the whole point and the ratio is not
+/// a property worth asserting.
+#[test]
+fn fuzz_differential_crossed_shapes() {
+    const ERASED: &[&str] = &[
+        "1",
+        "2.5",
+        "\"s\"",
+        "true",
+        "nil",
+        "[1, 2]",
+        "[[1], [2]]",
+        "{\"k\": 1}",
+        "{1: 2}",
+        "Set([1])",
+        "\"ab\".bytes()",
+        "[1, \"a\"]",
+        "[]",
+        "{}",
+    ];
+    const PROBES: &[&str] = &[
+        "a + b",
+        "a - b",
+        "b in a",
+        "a == b",
+        "\"t=\" + a",
+        "a.contains(b)",
+        "a.index_of(b)",
+        "a.count(b)",
+        "a.has(\"k\")",
+        "a.delete(\"k\")",
+        "a.len()",
+        "a.first()",
+        "a.sort()",
+        "a.sum()",
+        "a.join(\",\")",
+        "a[b]",
+    ];
+
+    let cases: u64 = std::env::var("LK_FUZZ_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let seed: u64 = std::env::var("LK_FUZZ_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0xC0FF_EE00);
+    warm_lk_api_staticlib();
+
+    let dir = std::env::temp_dir().join(format!("lk_aot_crossed_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create tmp dir");
+
+    let mut compared = 0_u64;
+    for case in 0..cases {
+        let case_seed = seed.wrapping_add(case);
+        let mut rng = Rng(case_seed);
+        let a = ERASED[rng.below(ERASED.len() as u64) as usize];
+        let b = ERASED[rng.below(ERASED.len() as u64) as usize];
+        let probe = PROBES[rng.below(PROBES.len() as u64) as usize];
+        // Everything is caught and printed, so a program that raises is a
+        // *result*: the two back ends have to agree on which, and on the
+        // message. The `try` arm answers whatever the probe is and the `catch`
+        // arm a string — two arms of one function, disagreeing, which is the
+        // join a region's parked return has to take part in. The nil capture
+        // crosses the region with it.
+        let source = format!(
+            "fn crossed(a: Any, b: Any) -> Any {{\n  \
+             let n = nil;\n  \
+             let f = || n == nil;\n  \
+             try {{ let r: Any = {probe}; return \"ok \" + (r == nil) + f(); }}\n  \
+             catch e {{ return \"E\"; }}\n\
+             }}\n\
+             println(crossed({a}, {b}));\n\
+             println(crossed({b}, {a}));\n"
+        );
+        let name = format!("crossed_{case}");
+        if run_case(&dir, &name, &source, case_seed, false).compared {
+            compared += 1;
+        }
+        let _ = fs::remove_dir_all(dir.join(&name));
+    }
+    let _ = fs::remove_dir_all(&dir);
+    println!("crossed shapes: {compared}/{cases} cases compared (seed {seed:#x})");
 }
 
 /// `lk compile` builds the lk-api staticlib on demand *inside the compile
