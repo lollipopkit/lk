@@ -513,6 +513,11 @@ pub(crate) fn kind_name(v: LkDyn) -> String {
 
 /// The declared name of a marked struct instance, or `None` for anything else
 /// (including a struct whose declaration never reached this runtime).
+/// Whether a value is a marked struct instance rather than an ordinary map.
+fn is_struct_instance(v: LkDyn) -> bool {
+    lkrt_dyn_obj_type_id(v) != 0
+}
+
 /// Refuses a **struct instance** where a map *collection* operation is asked.
 ///
 /// A struct rides the `Map<str, Dyn>` carrier, so every one of these would
@@ -949,7 +954,12 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
     // table's iteration order is decided by the order it was filled — so
     // "the same members" is not the same answer. This used to merge two
     // *unordered* views into a third, which is three different orders.
-    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+    // A struct instance rides the map carrier and `+` does not accept one: the
+    // VM's `dynamic_add` sees a different heap value and falls through to
+    // "Add expected numbers or strings, got P and Map". Falling through here
+    // reaches that same message, which `kind_name` already spells with the
+    // struct's name.
+    if is_map_tag(a.tag) && is_map_tag(b.tag) && !is_struct_instance(a) && !is_struct_instance(b) {
         let left = crate::lkmap::map_entries_ordered(a);
         let right = crate::lkmap::map_entries_ordered(b);
         let replaced: crate::lkmap::FxSet<_> = right.iter().map(|(key, _)| key.clone()).collect();
@@ -1036,7 +1046,7 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
             payload: arena_handle(kept) as i64,
         };
     }
-    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+    if is_map_tag(a.tag) && is_map_tag(b.tag) && !is_struct_instance(a) && !is_struct_instance(b) {
         let drop: crate::lkmap::FxSet<_> = crate::lkmap::map_entries_ordered(b)
             .into_iter()
             .map(|(key, _)| key)
@@ -1073,7 +1083,8 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
             payload: arena_handle(kept) as i64,
         };
     }
-    if is_map_tag(a.tag) {
+    // As in `lkrt_dyn_add`: `-` takes a map, not a struct instance.
+    if is_map_tag(a.tag) && !is_struct_instance(a) {
         // A value that cannot be a key cannot be in the map, so removing it
         // removes nothing — the same answer `m.delete(k)` gives, because they
         // are two spellings of one operation. Removal looks a key up and drops
@@ -1803,6 +1814,7 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
 /// `v` must be a live boxed container.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_clear(v: LkDyn) {
+    reject_struct_receiver(v, "clear");
     let handle = v.payload as *mut c_void;
     if handle.is_null() {
         return;
@@ -1839,6 +1851,7 @@ pub unsafe extern "C" fn lkrt_dyn_clear(v: LkDyn) {
 /// `v` must be a live boxed map; `key` and `default` live `LkDyn` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_map_get_or(v: LkDyn, key: LkDyn, default: LkDyn) -> LkDyn {
+    reject_struct_receiver(v, "get");
     if !is_map_tag(v.tag) {
         crate::panic::raise_str("runtime type error");
     }

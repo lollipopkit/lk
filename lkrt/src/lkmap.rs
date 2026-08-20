@@ -252,6 +252,10 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *c
         unsafe { (*(handle as *mut StrDynMap)).clone() }
     };
     copy.shift_remove(unsafe { key_str(key) });
+    // A struct instance with a field taken away is not that struct: the copy is
+    // an ordinary map. (A map pattern refuses to match a struct, so nothing
+    // reaches here with one today — the id would be a lie if anything did.)
+    copy.type_id = 0;
     crate::state::arena_handle(copy)
 }
 

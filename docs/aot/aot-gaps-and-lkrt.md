@@ -2379,6 +2379,19 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 3. **过 channel 的深拷贝要带上 id**。`OwnedVal::Map` 只搬条目,收到的一端就是
    一张普通 map;加一个 `i64` 字段,`materialize` 写回去。
 
+把 lkrt 里每一处 `is_map_tag` 逐条过了一遍(共 26 处),又挖出六条:`+` 合并、
+`-` 去键(两种形状)、`.clear()`、`.get(k, default)`。前四条只要在 map 分支上加
+"不是结构体实例",就自然掉进原有的报错——`kind_name` 早就会把结构体叫 `P`,所以
+文案自动对上(`Add expected numbers or strings, got P and Map`)。后两条按接收者
+拒绝。合法留下的只有字段读写(`dyn.field`/`dyn.index_set`)和相等(相等本来就比
+类型标记)。
+
+`.clear()` 那条还暴露出 §64 的守卫写窄了:它只在**已知是结构体**时拒绝,而两个
+调用点分别传结构体和 map 的参数根本没有事实——正是错答所在。守卫改成
+`MapStrDyn` 接收者必须**证明**是 map。改完 `examples/syntax/pattern_matching.lk`
+掉了下降:`{ k: v, ..rest }` 产出的 `rest` 也是一个没标记的新 map,补上。同时
+`str_dyn_without` 的拷贝把 `type_id` 清零——少一个字段的结构体不再是那个结构体。
+
 `a_struct_keeps_its_name_across_a_task` 钉四条:过 channel、被闭包捕获、嵌套加
 列表、从任务里送回来。
 

@@ -2218,6 +2218,12 @@ pub(super) fn lower(
                 });
                 current = next;
             }
+            // `{ k: v, ..rest }` builds `rest` fresh, so it is an ordinary map
+            // whatever the source was — which is also why a map pattern's
+            // refusal to match a struct is the only thing keeping a struct out.
+            if map_ty == Ty::MapStrDyn {
+                ssa.set_plain_map(current);
+            }
             ssa.write(instr.a(), block, (current, map_ty));
         }
         op => return Err(Unsupported::Opcode { pc, op }),

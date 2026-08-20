@@ -1036,11 +1036,13 @@ pub(crate) fn lower_method_dispatch(
     // Reading a field is not among them; that is what the carrier is for. These
     // programs always raise, so declining to lower them costs nothing anyone
     // runs.
-    if ssa.struct_name(receiver).is_some()
-        && matches!(
-            name,
-            "len" | "is_empty" | "keys" | "values" | "has" | "delete" | "contains" | "clear"
-        )
+    // A `MapStrDyn` receiver has to be *proven* a map, not merely not proven a
+    // struct: a parameter one call site hands a struct and another a map has no
+    // fact at all, and that is exactly where the wrong answer was.
+    if matches!(
+        name,
+        "len" | "is_empty" | "keys" | "values" | "has" | "delete" | "contains" | "clear"
+    ) && (ssa.struct_name(receiver).is_some() || (receiver_ty == Ty::MapStrDyn && !ssa.is_plain_map(receiver)))
     {
         return Err(Unsupported::TypeMismatch { pc });
     }

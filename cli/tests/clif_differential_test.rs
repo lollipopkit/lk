@@ -399,6 +399,24 @@ fn a_struct_is_not_a_map_and_the_collection_methods_say_so() {
                  println(empty({\"p\": 1}));\n",
             ),
             new(
+                "clear_and_get_and_arithmetic",
+                "struct P { p: Int, q: Int }\n\
+                 fn describe(v: Any) -> String { return typeof(v) + \" \" + v; }\n\
+                 fn clear(v: Any) -> String { try { v.clear(); return \"cleared\"; } catch e { return \"E \" + e; } }\n\
+                 fn get(v: Any) -> String { try { return \"\" + v.get(\"p\", 0); } catch e { return \"E \" + e; } }\n\
+                 fn add(a: Any, b: Any) -> String { try { return describe(a + b); } catch e { return \"E \" + e; } }\n\
+                 fn sub(a: Any, b: Any) -> String { try { return describe(a - b); } catch e { return \"E \" + e; } }\n\
+                 let obj = P { p: 1, q: 2 };\n\
+                 println(get(obj));\n\
+                 println(add(obj, {\"z\": 3}));\n\
+                 println(add({\"z\": 3}, obj));\n\
+                 println(sub(obj, \"q\"));\n\
+                 println(clear(obj));\n\
+                 println(clear({\"p\": 1}));\n\
+                 println(get({\"p\": 1}));\n\
+                 println(add({\"a\": 1}, {\"z\": 3}));\n",
+            ),
+            new(
                 "iterating_a_struct",
                 "struct P { p: Int, q: Int }\n\
                  fn f(v: Any) -> String { try { let s = \"\"; for k in v { s = s + k; } return \"ok \" + s; } catch e { return \"E \" + e; } }\n\
