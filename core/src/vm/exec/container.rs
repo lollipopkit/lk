@@ -547,12 +547,30 @@ impl Executor {
         })
     }
 
+    /// `k in m` — whether the map holds that key.
+    ///
+    /// A needle that cannot *be* a key is not a member, and the answer is
+    /// `false` rather than a raise. Building the key and propagating its
+    /// failure made the answer depend on the map's internal representation:
+    ///
+    /// ```lk
+    /// 1.5 in {"k": 1}     // false — a string-keyed carrier
+    /// 1.5 in {1: 2}       // raised — the same question, `Mixed` inside
+    /// ```
+    ///
+    /// Which carrier a map has is not something a program can see, so that was
+    /// two answers to one question. `in` is a predicate and answers: a list
+    /// already says `"s" in [1, 2]` is false rather than refusing the needle's
+    /// type, and this is the same rule one container over.
+    ///
+    /// Only membership. Indexing and insertion still raise, because there the
+    /// key is being *built* — `m[1.5] = x` has to say so.
     fn map_contains(&self, values: &TypedMap, needle: &RuntimeVal) -> Result<bool> {
         Ok(match values {
-            TypedMap::Mixed(values) => {
-                let key = self.runtime_map_key_from_value(needle)?;
-                values.contains_key(&key)
-            }
+            TypedMap::Mixed(values) => match self.runtime_map_key_from_value(needle) {
+                Ok(key) => values.contains_key(&key),
+                Err(_) => false,
+            },
             TypedMap::StringMixed(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringInt(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringFloat(values) => self.string_map_contains_key(values, needle)?,
@@ -560,9 +578,14 @@ impl Executor {
         })
     }
 
+    /// `v in s` — whether the set holds it. Total, for [`Self::map_contains`]'s
+    /// reason: a set's members are keys, so a value that cannot be one is not a
+    /// member.
     fn set_contains(&self, values: &RuntimeSet, needle: &RuntimeVal) -> Result<bool> {
-        let key = self.runtime_map_key_from_value(needle)?;
-        Ok(values.contains(&key))
+        Ok(match self.runtime_map_key_from_value(needle) {
+            Ok(key) => values.contains(&key),
+            Err(_) => false,
+        })
     }
 
     #[allow(clippy::wrong_self_convention)] // allocates on the heap, so it needs `&mut self`

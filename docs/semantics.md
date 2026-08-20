@@ -2689,6 +2689,39 @@ typeof(v[1])                      // Float
 顺带修好的一条:`runtime_value_display_string` 的另一个调用点是 "X is not a function"
 的错误消息,容器 callee 在那里把诊断换成了一条更差的错误。
 
+## 问是全函数,建键不是(2026-08-20 裁决)
+
+`v in c`、`m.has(k)`、`s.contains(v)` 是**谓词**,一律有答案:不能当键的值不是成员,
+答 `false`,不报错。而**构造键**的操作仍然报错:`m.set(1.5, x)`、`m.delete(1.5)`、
+`s.add([1])`、`m[1.5]`、`m - 1.5`。
+
+改前有两处不一致:
+
+| 表达式 | 改前 | 改后 |
+| --- | --- | --- |
+| `1.5 in {"k": 1}` | false | 不变 |
+| `1.5 in {1: 2}` | **报错** | false |
+| `[1] in {"k": 1}` | false | 不变 |
+| `[1] in {1: 2}` | **报错** | false |
+| `1.5 in Set([1])` | **报错** | false |
+| `m.has(1.5)` | **报错** | false |
+| `s.contains(1.5)` | **报错** | false |
+
+第一处:同一个问题,答案由 map 的**内部载体**决定 —— 字符串键的 map 走
+`string_map_contains_key` 答 false,整数键的 map 是 `Mixed`,走
+`runtime_map_key_from_value` 报错。载体是程序看不见的东西,这与列表 `in` 那条
+"答案取决于列表的内部表示"是同一个成因。
+
+第二处:运算符和方法两种拼写答得不一样。`k in m` 答 false,`m.has(k)` 报错。
+
+**为什么选"答 false"而不是"一律报错"**:`in` 在列表上已经是全函数 ——
+`"s" in [1, 2]` 是 false,不是类型错误。map / set 是同一个谓词换个容器。而且
+"一律报错"会破坏现在能跑的程序(`1.5 in {"k": 1}` 现在是 false)。
+
+native 侧同步:`lkrt_lkset_has` 与 `lkrt_dyn_contains` 的 map 分支改用
+`key_from_dyn_opt`;`m.has(k)` 在 `k` 类型未知时走 `dyn.contains`(即 `in` 的
+运行时分发),两种拼写共用一份实现。
+
 ## 条件里的赋值是语法错,不是被丢掉的 token(2026-08-06 裁决)
 
     let a = 1;

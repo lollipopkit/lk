@@ -83,6 +83,20 @@ pub(crate) fn key_from_dyn(v: LkDyn) -> RtKey {
     key_from_dyn_in(v, "")
 }
 
+/// The key a value would be, or `None` when it cannot be one.
+///
+/// For *membership* only: `1.5 in s` is `false` rather than a refusal, because
+/// a value that cannot be a key is not a member and `in` is a predicate. See
+/// the interpreter's `map_contains`, which says the same thing at more length —
+/// building the key and propagating its failure made the answer depend on the
+/// map's internal carrier, which no program can see.
+pub(crate) fn key_from_dyn_opt(v: LkDyn) -> Option<RtKey> {
+    match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_STR => Some(key_from_dyn(v)),
+        _ => None,
+    }
+}
+
 /// [`key_from_dyn`] with the call named, for the paths where the interpreter
 /// prefixes the refusal with it (`Set() item: …`, `set.add() value: …`). A
 /// caught error is printed output, so the prefix is part of the answer.

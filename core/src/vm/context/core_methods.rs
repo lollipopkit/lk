@@ -452,8 +452,18 @@ fn dispatch_map_builtin_method(
             if positional.len() != 1 {
                 bail!("map.has() expects 1 argument (key), got {}", positional.len());
             }
-            let key = runtime_map_key_from_value(&positional[0], heap, "map.has() key")?;
-            let found = matches!(heap.get(handle), Some(HeapValue::Map(m)) if m.get(&key).is_some());
+            // `m.has(k)` and `k in m` are one question, so they answer the
+            // same way: a value that cannot be a key is not a key the map
+            // holds. `in` says `false` and this said "map.has() key: Float
+            // cannot be a map key or set member" — two answers, decided by
+            // which spelling the program used.
+            //
+            // `delete` below keeps refusing, and the difference is the same one
+            // `map_contains` draws: asking is a predicate, removing names a key.
+            let found = match runtime_map_key_from_value(&positional[0], heap, "map.has() key") {
+                Ok(key) => matches!(heap.get(handle), Some(HeapValue::Map(m)) if m.get(&key).is_some()),
+                Err(_) => false,
+            };
             Ok(Some(RuntimeVal::Bool(found)))
         }
         "delete" => {
@@ -580,8 +590,13 @@ fn dispatch_set_builtin_method(
             if positional.len() != 1 {
                 bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
             }
-            let key = runtime_map_key_from_value(&positional[0], heap, "set.contains() value")?;
-            let found = matches!(heap.get(handle), Some(HeapValue::Set(values)) if values.contains(&key));
+            // `s.contains(v)` and `v in s` are one question, and answer alike:
+            // a value that cannot be a member is not one. `add` below still
+            // refuses, because it builds the key rather than asking after it.
+            let found = match runtime_map_key_from_value(&positional[0], heap, "set.contains() value") {
+                Ok(key) => matches!(heap.get(handle), Some(HeapValue::Set(values)) if values.contains(&key)),
+                Err(_) => false,
+            };
             Ok(Some(RuntimeVal::Bool(found)))
         }
         "add" => {

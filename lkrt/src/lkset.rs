@@ -184,7 +184,11 @@ pub unsafe extern "C" fn lkrt_lkset_from_dyn_list(handle: *mut c_void) -> *mut c
 /// `handle` must be a live `Set` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lkset_has(handle: *mut c_void, value: LkDyn) -> i64 {
-    let key = key_from_dyn(value);
+    // Total: a value that cannot be a key is not a member. `add` still refuses,
+    // because there the key is being *built*.
+    let Some(key) = crate::vm_mirror::key_from_dyn_opt(value) else {
+        return 0;
+    };
     i64::from(set_mut(handle).contains(&key))
 }
 

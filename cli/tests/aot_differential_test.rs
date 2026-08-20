@@ -632,6 +632,23 @@ fn differential_strings() {
             // for each beside the two-container ones, and nothing could reach
             // either — the checker refused the shape, so the lowering had none
             // and `lkrt_dyn_sub` raised. All three had to open together.
+            // Membership is a *predicate* and answers: a value that cannot be
+            // a key is not one the map or set holds. It used to depend on the
+            // map's internal carrier — `1.5 in {"k": 1}` was false and
+            // `1.5 in {1: 2}` raised, one question with two answers decided by
+            // something no program can see — and the method spellings
+            // disagreed with the operator besides.
+            //
+            // Building a key still refuses, which is the line: `m.set(1.5, x)`,
+            // `m.delete(1.5)`, `s.add([1])`, `m[1.5]` and `m - 1.5` all say so.
+            new(
+                "membership_answers_for_a_needle_that_cannot_be_a_key",
+                "fn i(c: Any, v: Any) -> String { try { let r: Any = v in c; return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn h(c: Any, v: Any) -> String { try { let r: Any = c.has(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn c2(c: Any, v: Any) -> String { try { let r: Any = c.contains(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nprintln(i({\"a\": 1}, \"a\"));\nprintln(i({\"a\": 1}, 1.5));\nprintln(i({\"a\": 1}, [1]));\nprintln(i([1, 2], 1.5));\nprintln(i(\"abc\", \"b\"));\nprintln(h({\"a\": 1}, \"a\"));\nprintln(h({\"a\": 1}, 1.5));\nprintln(c2([1, 2], 1.5));\nprintln(c2(\"abc\", \"b\"));\nreturn 0;\n",
+            ),
+            new(
+                "building_a_key_still_refuses",
+                "fn t(f: Int, bad: Any) -> String {\n  let s = Set([1]);\n  let m = {\"a\": 1};\n  try {\n    if f == 0 { s.add(bad); }\n    if f == 1 { m.delete(bad); }\n    if f == 2 { m.set(bad, 1); }\n    if f == 3 { let v: Any = m[bad]; let _ = v; }\n    if f == 4 { let d: Any = m - bad; let _ = d; }\n    return \"ok\";\n  } catch e { return \"E: \" + e; }\n}\nprintln(t(0, [1]));\nprintln(t(1, 1.5));\nprintln(t(2, 1.5));\nprintln(t(3, 1.5));\nprintln(t(4, 1.5));\nreturn 0;\n",
+            ),
             new(
                 "removing_a_single_value",
                 "println([1, 2, 1] - [1]);\nprintln([1, 2, 1] - 1);\nprintln([\"a\", \"b\"] - \"a\");\nprintln([1.5, 2.5] - 1.5);\nprintln([1] - 1.5);\nprintln([[1], [2]] - [[1]]);\nprintln([1, \"a\"] - 1);\nprintln({\"a\": 1, \"b\": 2} - {\"a\": 1});\nprintln({\"a\": 1, \"b\": 2} - \"a\");\nprintln({\"a\": 1} - 1);\nprintln({\"a\": 1} - nil);\nprintln({\"a\": 1} - true);\nreturn 0;\n",

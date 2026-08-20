@@ -2036,6 +2036,43 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, out_ty)
         }
+        // A key the lowering cannot type. `m.has(k)` and `k in m` are one
+        // question — the interpreter answers both from `map_contains` — so this
+        // takes `dyn.contains`, which is the `in` operator's dispatch and asks
+        // exactly that of a map. Placed after the `Str` arms, which keep the
+        // direct `map_h` call.
+        //
+        // Both are total: a value that cannot be a key is not one the map
+        // holds, so the answer is `false` rather than a raise. Building a key
+        // still refuses — `m.set(1.5, x)` says so.
+        (
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::Dyn,
+            "has",
+            [(key, kty @ (Ty::Dyn | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil))],
+        ) => {
+            let map = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed = to_dyn(ssa, insts, *key, *kty, pc)?;
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("dyn", "contains"),
+                args: vec![map, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
         (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
             let raw = ssa.new_val();
             insts.push(Inst::Call {

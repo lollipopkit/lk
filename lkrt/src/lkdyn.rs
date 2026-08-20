@@ -1697,7 +1697,12 @@ pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
         if needle.tag == DYN_STR {
             return unsafe { lkrt_dyn_map_has(v, needle.payload as *const c_char) };
         }
-        return i64::from(map_entries(v).contains_key(&crate::vm_mirror::key_from_dyn(needle)));
+        // Total, the way the interpreter's `map_contains` is: a needle that
+        // cannot be a key is not a member.
+        let Some(key) = crate::vm_mirror::key_from_dyn_opt(needle) else {
+            return 0;
+        };
+        return i64::from(map_entries(v).contains_key(&key));
     }
     if is_list_tag(v.tag) {
         return i64::from(dyn_list_values(v).iter().any(|&e| dyn_eq_inner(e, needle)));
