@@ -1466,6 +1466,24 @@ pub(crate) fn lower_function(
                         continue;
                     }
                     let (v, ty) = ssa.read(reg, bi, start)?;
+                    // A register holding `nil` says what was there *going in*,
+                    // not what the body will put back — the body boxes whatever
+                    // it writes, which is what `unbox_from_dyn` says about the
+                    // same value in a cell. So it crosses boxed, as `Dyn` does,
+                    // rather than refusing for having no word of its own:
+                    //
+                    //     fn t() -> String {
+                    //         let n = nil;
+                    //         try { let c = || n == nil; return "a" + c(); }
+                    //         catch e { return "E"; }
+                    //     }
+                    //
+                    // dropped its whole module to the VM for it.
+                    let (v, ty) = if ty == Ty::Nil {
+                        (to_dyn(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                    } else {
+                        (v, ty)
+                    };
                     // A two-register carrier crosses as its two raw words, put
                     // back together by the body (`Inst::CarrierFromParts`).
                     if crosses_as_two_words(ty) {
@@ -1633,6 +1651,13 @@ pub(crate) fn lower_function(
                         // A two-register carrier crosses as its two raw words
                         // and is put back together at the body's entry, exactly
                         // as a region input does.
+                        // Boxed for the reason a region *input* is: a `nil`
+                        // going in says nothing about what comes back.
+                        let (cv, cty) = if cty == Ty::Nil {
+                            (to_dyn(&mut ssa, &mut insts, cv, cty, start)?, Ty::Dyn)
+                        } else {
+                            (cv, cty)
+                        };
                         if crosses_as_two_words(cty) {
                             let mut word = |half| {
                                 let dst = ssa.new_val();

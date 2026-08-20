@@ -1207,6 +1207,16 @@ fn differential_dyn_cross_function() {
             // widens a nil argument to `Dyn`. The capture refused instead, so
             // `let v = nil; let f = || v == nil;` dropped its whole module to
             // the VM, which is an ordinary thing to write.
+            // A `nil` local crossing into a `try` region. The region is
+            // outlined and its inputs are marshalled as machine words; a `Nil`
+            // has none of its own, and it does not need one — what it says is
+            // what was there *going in*, and the body boxes whatever it writes
+            // back. It crosses boxed now, which is what a cell holding the same
+            // value already did.
+            new(
+                "a_nil_crosses_into_a_try_region",
+                "fn a() -> String {\n  let n = nil;\n  try { let c = || n == nil; return \"a\" + c(); }\n  catch e { return \"E\"; }\n}\nfn b() -> Int {\n  let n = nil;\n  try { if n == nil { return 1; } return 2; }\n  catch e { return 3; }\n}\nfn c() -> String {\n  let m = {\"a\": 1};\n  let x = m.get(\"zz\");\n  try { let f = || x == nil; return \"a\" + f(); }\n  catch e { return \"E\"; }\n}\nprintln(a());\nprintln(b());\nprintln(c());\nreturn 0;\n",
+            ),
             new(
                 "a_nil_capture_boxes_like_a_nil_argument",
                 "let m = {\"a\": 1};\nlet v = nil;\nlet x = m.get(\"zz\");\nlet y = m.get(\"a\");\nlet f = || v == nil;\nlet g = || x == nil;\nlet h = || y;\nprintln(f());\nprintln(g());\nprintln(h());\nreturn 0;\n",
