@@ -1,0 +1,6 @@
+fn f() -> Int {
+  defer println("first");
+  defer println("second");
+  return 1;
+}
+println("" + f());

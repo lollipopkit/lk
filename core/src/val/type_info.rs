@@ -190,12 +190,6 @@ impl DeclaredType {
         }
     }
 
-    /// Whether this type declares any field with a type. `false` means no
-    /// store into it can be measured, so no store has to look.
-    pub fn has_typed_fields(&self) -> bool {
-        self.typed_fields
-    }
-
     /// The declared type of `field`, when the declaration is in reach and the
     /// field was written with one.
     pub fn field_type(&self, field: &str) -> Option<&crate::val::Type> {

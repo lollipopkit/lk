@@ -1,0 +1,6 @@
+fn f() -> Int {
+  defer println("ran");
+  try { let x = 1 / 0; } catch e { println("caught"); }
+  return 1;
+}
+println("" + f());

@@ -1,0 +1,9 @@
+fn f() -> Int {
+  if true {
+    defer println("block defer");
+    println("in block");
+  }
+  println("after block");
+  return 0;
+}
+println("" + f());
