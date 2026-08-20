@@ -501,11 +501,22 @@ fn rewritten_object_set_assign<'a>(name: &str, expr: &'a Expr) -> Option<(&'a Ex
     Some((&args[0], &args[1], &args[2]))
 }
 
+/// A store written as a bare statement, over a base this compiler evaluates
+/// rather than a name it re-binds.
+///
+/// Both spellings, because both reach here the same way: an assignment target
+/// that is a *chain* (`p.q.n`, `p.m["b"]`, `xs[0][1]`) has no name to re-bind,
+/// so the parser desugars it to one of these applied to the chain before its
+/// last segment. `__lk_set_index` was already accepted with any base;
+/// `__lk_set_field` was not, and its sibling
+/// [`rewritten_object_set_assign`] only matches the base being the assigned
+/// name — so `p.q.n = 5` compiled to a call that *rebuilds* the object and
+/// threw the result away.
 fn rewritten_map_set_call(expr: &Expr) -> Option<(&Expr, &Expr, &Expr)> {
     let Expr::CallExpr(callee, args) = expr else {
         return None;
     };
-    if args.len() != 3 || !is_var(callee, "__lk_set_index") {
+    if args.len() != 3 || !(is_var(callee, "__lk_set_index") || is_var(callee, "__lk_set_field")) {
         return None;
     }
     Some((&args[0], &args[1], &args[2]))

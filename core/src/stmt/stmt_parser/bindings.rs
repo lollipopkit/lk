@@ -185,6 +185,49 @@ impl<'a> StmtParser<'a> {
         })
     }
 
+    /// Where the last segment of an assignment target starts, given the target
+    /// runs from `start` (the name) to `assign_pos` (the operator).
+    ///
+    /// `Some(i)` points at the `[` of a trailing `[key]` or at the `.` of a
+    /// trailing `.field`. `None` means the tokens in between are not an access
+    /// chain at all, which is this function's way of saying "not my statement".
+    fn access_target_last_segment(&self, start: usize, assign_pos: usize) -> Option<usize> {
+        if assign_pos <= start + 1 {
+            return None;
+        }
+        if self.tokens.get(assign_pos - 1) == Some(&Token::RBracket) {
+            // Back to the `[` that opens it, counting nested brackets so a key
+            // that is itself an index (`m[ks[0]] = v`) finds the outer one.
+            let mut depth = 0i32;
+            let mut i = assign_pos - 1;
+            loop {
+                match self.tokens.get(i) {
+                    Some(Token::RBracket) => depth += 1,
+                    Some(Token::LBracket) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return (i > start).then_some(i);
+                        }
+                    }
+                    None => return None,
+                    _ => {}
+                }
+                if i == start {
+                    return None;
+                }
+                i -= 1;
+            }
+        }
+        // `.field`, where the field is the token before the operator.
+        if assign_pos >= start + 3
+            && matches!(self.tokens.get(assign_pos - 2), Some(Token::Dot))
+            && matches!(self.tokens.get(assign_pos - 1), Some(Token::Id(_) | Token::Str(_)))
+        {
+            return Some(assign_pos - 2);
+        }
+        None
+    }
+
     pub fn try_parse_access_assign_stmt_with_id(&mut self, name: String) -> Result<Option<Stmt>> {
         let start = self.pos;
         let mut cursor = self.pos + 1;
@@ -230,14 +273,23 @@ impl<'a> StmtParser<'a> {
             return Ok(None);
         };
 
-        let key = if self.tokens.get(start + 1) == Some(&Token::LBracket)
-            && assign_pos >= start + 3
-            && self.tokens.get(assign_pos - 1) == Some(&Token::RBracket)
-        {
-            let mut parser = self.expr_parser(&self.tokens[start + 2..assign_pos - 1], None);
+        // Where the *last* segment of the target starts. A target is a chain —
+        // `p.q.n`, `p.m["b"]`, `xs[0][1]` — and the store belongs to its last
+        // step, applied to everything before it.
+        //
+        // This used to read the *first* segment and discard the rest: `p.m["b"]
+        // = 2` became `p.m = 2` and `p.q.n = 5` became `p.q = 5`, both
+        // silently, on both engines, and `lk check` had nothing to object to
+        // when the field was `Any`. A map or a nested struct was destroyed by
+        // an assignment that reads like an update.
+        let Some(seg_start) = self.access_target_last_segment(start, assign_pos) else {
+            return Ok(None);
+        };
+        let key = if self.tokens.get(seg_start) == Some(&Token::LBracket) {
+            let mut parser = self.expr_parser(&self.tokens[seg_start + 1..assign_pos - 1], None);
             parser.parse()?
-        } else if self.tokens.get(start + 1) == Some(&Token::Dot) {
-            match self.tokens.get(start + 2) {
+        } else {
+            match self.tokens.get(seg_start + 1) {
                 Some(Token::Id(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
                 Some(Token::Str(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
                 other => {
@@ -246,16 +298,27 @@ impl<'a> StmtParser<'a> {
                     ));
                 }
             }
-        } else {
-            return Ok(None);
         };
+        // Everything before the last segment. One token means the target is
+        // `name<segment>`, which is the shape this function has always handled
+        // and whose desugar re-binds the name; anything longer is a chain, and
+        // the store lands on the container that chain names.
+        let base_is_the_name = seg_start == start + 1;
 
         let shift_assign = self.peek_shift_assign(assign_pos);
         self.pos = assign_pos + if shift_assign.is_some() { 2 } else { 1 };
         let rhs = self.parse_expression()?;
         self.expect_token(Token::Semicolon)?;
 
-        let current = Expr::Access(Box::new(Expr::Var(name.clone())), Box::new(key.clone()));
+        // The container the store lands on: the name itself for a one-segment
+        // target, the chain before the last segment otherwise.
+        let base = if base_is_the_name {
+            Expr::Var(name.clone())
+        } else {
+            let mut parser = self.expr_parser(&self.tokens[start..seg_start], None);
+            parser.parse()?
+        };
+        let current = Expr::Access(Box::new(base.clone()), Box::new(key.clone()));
         let value = match assign_op.expect("assignment operator found") {
             Token::Assign => rhs,
             Token::AddAssign => Expr::Bin(Box::new(current), BinOp::Add, Box::new(rhs)),
@@ -271,6 +334,25 @@ impl<'a> StmtParser<'a> {
             }
         };
 
+        // A chain has no name to re-bind: the store mutates the container the
+        // chain names, and every container in this language is a heap value, so
+        // the change is visible through it. `p.m.set("b", 2)` — the spelling
+        // that always worked — is the same operation.
+        if !base_is_the_name {
+            let setter = if self.tokens.get(seg_start) == Some(&Token::LBracket) {
+                "__lk_set_index"
+            } else {
+                "__lk_set_field"
+            };
+            let store = Expr::CallExpr(
+                Box::new(Expr::Var(setter.to_string())),
+                vec![Box::new(base), Box::new(key), Box::new(value)],
+            );
+            return Ok(Some(Stmt::Expr {
+                value: Box::new(store),
+                span: self.current_span(),
+            }));
+        }
         if self.tokens.get(start + 1) == Some(&Token::LBracket) && matches!(key, Expr::Literal(LiteralVal::Int(_))) {
             let list_set = Expr::CallExpr(
                 Box::new(Expr::Access(

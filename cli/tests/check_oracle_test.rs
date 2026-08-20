@@ -159,6 +159,26 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
     ("empty list annotation", "let xs: List<Int> = [];\nprintln(xs);\n"),
+    // An assignment target is a *chain*, and the store belongs to its last
+    // step. The parser used to read the first step and discard the rest, so
+    // `p.m["b"] = 2` was `p.m = 2` — accepted here whenever the field's type
+    // left room for it, and silently destroying the map on both engines.
+    (
+        "a store into a field's map",
+        "struct P { m: Map<String, Int> }\nlet p = P { m: {\"a\": 1} };\np.m[\"b\"] = 2;\nprintln(p.m);\n",
+    ),
+    (
+        "a store into a field's list",
+        "struct P { xs: List<Int> }\nlet p = P { xs: [1, 2] };\np.xs[0] = 9;\nprintln(p.xs);\n",
+    ),
+    (
+        "a store two fields deep",
+        "struct Q { n: Int }\nstruct P { q: Q }\nlet p = P { q: Q { n: 1 } };\np.q.n = 5;\nprintln(p.q.n);\n",
+    ),
+    (
+        "a store two indexes deep",
+        "let m = {\"a\": {\"b\": 1}};\nm[\"a\"][\"b\"] = 2;\nprintln(m);\n",
+    ),
     // The other side of the map rule above: a string-keyed map can answer any
     // name, because its type does not say which keys it has. The value type is
     // not part of the question — a field call does not need a callable, and
