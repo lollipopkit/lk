@@ -1575,6 +1575,34 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     }
 }
 
+/// `c.clear()` on a boxed container, dispatched on the tag.
+///
+/// Every carrier has its own `clear`, and the static type usually says which.
+/// A receiver that reached two call sites with different carriers is a `Dyn`
+/// and has none — `fn empty(c) { c.clear(); }` called with two maps was the
+/// shape with no arm, so the whole module fell back.
+///
+/// # Safety
+/// `v` must be a live boxed container.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_clear(v: LkDyn) {
+    let handle = v.payload as *mut c_void;
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: the payload is a live handle of the carrier its tag names.
+    unsafe {
+        match v.tag {
+            DYN_LIST => crate::lklist::lkrt_lklist_dyn_clear(handle),
+            DYN_MAP => crate::lkmap::lkrt_lkmap_str_dyn_clear(handle),
+            DYN_SET => crate::lkset::lkrt_lkset_clear(handle),
+            tag if is_map_tag(tag) => crate::lkmap::typed_map_clear(tag - DYN_TMAP_BASE, handle),
+            tag if is_list_tag(tag) => crate::lklist::typed_list_clear(tag - DYN_TLIST_BASE, handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 /// `m.get(k, default)` where the key is boxed.
 ///
 /// The key kinds split three ways, which is what makes this its own entry

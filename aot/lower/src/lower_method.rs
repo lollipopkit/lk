@@ -3310,6 +3310,11 @@ fn clear_helper(receiver_ty: Ty) -> Option<(&'static str, &'static str)> {
         Ty::MapI64I64 => ("map_h", "i64_i64_clear"),
         Ty::MapI64F64 => ("map_h", "i64_f64_clear"),
         Ty::Set => ("set", "clear"),
+        // A boxed receiver: the tag says which carrier. Reached when the same
+        // container name meets two carriers — `fn empty(c) { c.clear(); }`
+        // called with a `Map<String, Int>` and a `Map<String, Float>` — which
+        // is a `Dyn` and had no arm at all.
+        Ty::Dyn => ("dyn", "clear"),
         _ => return None,
     };
     Some(helper)

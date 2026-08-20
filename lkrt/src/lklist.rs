@@ -2101,6 +2101,26 @@ pub(crate) fn typed_list_push(kind: i64, handle: *mut c_void, value: crate::lkdy
 /// spelling uses — out of range is the VM's halt, and a negative index counts
 /// from the end. The element unboxes back to the carrier's type, like
 /// [`typed_list_push`].
+/// `xs.clear()` on a **typed** list handle, by carrier kind.
+///
+/// The sibling of [`typed_list_set`]: a boxed list has no static carrier and
+/// the tag is the only thing that says which.
+pub(crate) fn typed_list_clear(kind: i64, handle: *mut c_void) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: `handle` addresses a list of the carrier `kind` names.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_clear(handle),
+            TLIST_F64 => lkrt_lklist_f64_clear(handle),
+            TLIST_STR => lkrt_lklist_str_clear(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 pub(crate) fn typed_list_set(kind: i64, handle: *mut c_void, index: i64, value: crate::lkdyn::LkDyn) {
     use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
     if handle.is_null() {

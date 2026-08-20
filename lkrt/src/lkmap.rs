@@ -631,6 +631,23 @@ pub(crate) fn typed_map_text(kind: i64, handle: *mut c_void) -> String {
 }
 
 /// Entry count without a copy.
+/// `m.clear()` on a **typed** map handle, by carrier kind.
+///
+/// The sibling of [`typed_map_len`], for the same reason: a boxed map has no
+/// static carrier and the tag is the only thing that says which.
+pub(crate) fn typed_map_clear(kind: i64, handle: *mut c_void) {
+    // SAFETY: as in `typed_map_len`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 | KIND_STR_BOOL => lkrt_lkmap_str_i64_clear(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_clear(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_clear(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_clear(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 pub(crate) fn typed_map_len(kind: i64, handle: *mut c_void) -> i64 {
     // SAFETY: as in `typed_map_text`.
     unsafe {
