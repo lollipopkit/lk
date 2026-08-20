@@ -117,9 +117,14 @@ pub(crate) fn lower_spawn(
         callee: AbiRef::new("rt", spawn_fn),
         args,
     });
-    // An `i64` id where the interpreter has a `Task`.
-    ssa.disguised_values.insert(dst);
-    ssa.write(base, block, (dst, Ty::I64));
+    // Boxed under `DYN_TASK`; see `chan` for why the bare id is not enough.
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", "from_task"),
+        args: vec![dst],
+    });
+    ssa.write(base, block, (boxed, Ty::Dyn));
     Ok(())
 }
 

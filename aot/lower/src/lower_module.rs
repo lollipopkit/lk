@@ -603,7 +603,9 @@ pub(crate) fn lower_module_call(
         let mut handles = Vec::with_capacity(argc);
         for index in 0..argc {
             let reg = base.wrapping_add(1).wrapping_add(index as u8);
-            handles.push(ssa.read_typed(reg, block, Ty::I64, pc)?);
+            // A task travels boxed under `DYN_TASK`; this reads the id behind
+            // it, and a bare `I64` still passes through.
+            handles.push(crate::dyn_box::read_channel_id(ssa, insts, reg, block, pc)?);
         }
         for handle in handles {
             await_into(ssa, insts, handle);
@@ -835,6 +837,17 @@ pub(crate) fn lower_module_abi_call(
         if *want == Ty::Dyn {
             let (v, ty) = ssa.read(arg_reg, block, pc)?;
             args.push(to_dyn(ssa, insts, v, ty, pc)?);
+            continue;
+        }
+        // A channel or a task travels boxed (`DYN_CHAN` / `DYN_TASK`), and
+        // these members take the id behind it. The generic read would unbox
+        // through `dyn.as_i64`, which refuses a handle *on purpose* — a channel
+        // must not be usable wherever an `Int` is required.
+        // Every `I64` of theirs, not just the first: `task.join_all(a, b)`
+        // takes several. A capacity or a count passes through unchanged — an
+        // unboxed `I64` is returned as-is, and a boxed one unboxes either way.
+        if *want == Ty::I64 && matches!(module, "chan" | "task") {
+            args.push(crate::dyn_box::read_channel_id(ssa, insts, arg_reg, block, pc)?);
             continue;
         }
         args.push(ssa.read_typed(arg_reg, block, *want, pc)?);

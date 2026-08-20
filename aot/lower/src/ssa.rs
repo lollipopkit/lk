@@ -240,30 +240,26 @@ pub(crate) struct Ssa {
     /// widens the literal instead of compiling to an unbox that raises on the
     /// one value the list was built to hold.
     /// Values this side represents as something the interpreter would not
-    /// agree with: a materialized stream (a list where the interpreter has a
-    /// `Stream`), and a channel or task handle (an `i64` id where the
-    /// interpreter has a `Channel` or a `Task`).
+    /// agree with — currently a **materialized stream**: a list built where the
+    /// interpreter has a `Stream`.
     ///
-    /// Each substitution is sound only where the difference cannot be seen, and
-    /// four things can see it — `typeof` answers the representation, display
-    /// writes it, `==` compares it (a channel was *equal to the integer 1*),
-    /// and a trait dispatches on it. Escaping counts too: boxing, crossing to a
-    /// typed parameter and returning all drop the mark and hand the bare
-    /// representation to code that would answer for it.
+    /// The substitution is sound only where the difference cannot be seen, and
+    /// four things can see it: `typeof` answers the representation, display
+    /// writes it, `==` compares it, and a trait dispatches on it. Escaping
+    /// counts too — boxing, crossing to a typed parameter, and returning all
+    /// drop the mark and hand the bare representation to code that would answer
+    /// for it. Every one of those declines to lower rather than answering.
     ///
-    /// The first three decline to lower rather than answering.
-    ///
-    /// *Escaping* is guarded for streams only, in [`Self::escape_is_visible`].
-    /// It is the same hazard for a handle — a channel in a list, printed, shows
-    /// the id — but the cost is not the same: a channel is passed to functions
-    /// and put in `select`'s lists constantly, and guarding that took two
-    /// examples out of native lowering, while for a stream it took nothing.
-    /// The residual is recorded in `docs/aot/aot-gaps-and-lkrt.md`; closing it
-    /// means giving a handle a type of its own rather than tracking a value.
+    /// A channel and a task used to be here as well, as `i64` ids. Tracking
+    /// them caught the direct cases and lost the fact wherever the value
+    /// escaped, which is most of what a program does with a channel — so they
+    /// carry a *tag* now (`DYN_CHAN` / `DYN_TASK`) and need no tracking at all.
+    /// That is what §63 said the answer was, and it is the answer here too if
+    /// a stream ever gets a carrier of its own.
     pub(crate) disguised_values: std::collections::HashSet<ValueId>,
-    /// The subset of [`Self::disguised_values`] whose *escape* is guarded too:
-    /// boxing, crossing to a typed parameter, or being returned all drop the
-    /// mark and hand the bare representation to code that would answer for it.
+    /// The subset of [`Self::disguised_values`] whose *escape* is guarded too.
+    /// Every entry is currently in both; the split is kept because the two
+    /// questions are different and were once answered differently.
     pub(crate) escape_is_visible: std::collections::HashSet<ValueId>,
     pub(crate) closure_values: std::collections::HashSet<ValueId>,
     /// A closure value with an *empty* environment → the function it names.

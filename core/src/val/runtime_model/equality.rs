@@ -139,6 +139,14 @@ impl<'a> Comparison<'a> {
             // so `P { x: 1 } == P { x: 1 }` was false — and silently:
             // `[p].contains(p_equal)`, `index_of`, `unique` all inherited it.
             (HeapValue::Object(left), HeapValue::Object(right)) => self.objects(left, right, depth)?,
+            // A channel and a task are *identities*, and the identity is the id
+            // — not the heap object naming it. A value that crosses a channel
+            // is deep-copied into a fresh object, so comparing by handle said a
+            // channel sent through a channel was not the one that came out,
+            // while `send`ing to what came out reached the original. Two
+            // answers to the same question.
+            (HeapValue::Channel(left), HeapValue::Channel(right)) => left.id == right.id,
+            (HeapValue::Task(left), HeapValue::Task(right)) => left.id == right.id,
             _ => false,
         })
     }

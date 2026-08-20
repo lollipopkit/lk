@@ -1,0 +1,51 @@
+// A channel and a task are values, not the numbers the runtime keys them by.
+//
+// Natively a handle is an `i64` id. It used to travel as that bare id, and the
+// id is an `Int`: `typeof` answered `Int`, printing one wrote the number, and
+// `chan(1) == 1` was *true* compiled and false interpreted. Tracking which
+// integers were really handles caught the direct cases and lost the fact
+// wherever the value escaped — into a list, into a function's parameter — which
+// is most of what a program does with a channel. So the tag travels with the
+// value instead.
+
+use task;
+
+let c = chan(2);
+let t = spawn(|| 7);
+
+// What it is, and how it reads.
+println(typeof(c));
+println(typeof(t));
+println(c);
+println(t);
+println("c=" + c);
+
+// Inside containers, where the mark used to be lost.
+println([c, t]);
+println({ "k": c });
+
+// Identity, not the number behind it.
+println(c == 1);
+println(c == c);
+println(c == chan(1));
+
+// And it still does what a channel is for.
+send(c, 1);
+send(c, 2);
+println(recv(c));
+println(recv(c));
+println(task.await(t));
+
+// Through a function, where a typed parameter used to erase it.
+fn describe(h) -> String {
+    return typeof(h) + " " + h;
+}
+
+println(describe(c));
+
+// And through a channel, which copies by identity: the same channel comes out.
+let post = chan(1);
+send(post, c);
+let back = recv(post);
+println(typeof(back));
+println(back == c);

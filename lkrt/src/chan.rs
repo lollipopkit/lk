@@ -40,6 +40,10 @@ pub(crate) enum OwnedVal {
     /// index (for `display`), and its own captures owned the same way. The
     /// address is shared rather than copied — it is code.
     Closure(usize, i64, i64, Vec<OwnedVal>),
+    /// A channel or a task, as its tag and its id. Copied by *identity*: the
+    /// registry is process-wide, so a channel that crosses a channel is the
+    /// same channel — which is what the interpreter's handle copy means too.
+    Handle(i64, i64),
 }
 
 pub(crate) fn own(v: LkDyn) -> OwnedVal {
@@ -73,16 +77,22 @@ pub(crate) fn own(v: LkDyn) -> OwnedVal {
             let map = unsafe { &*(handle as *mut StrDynMap) };
             OwnedVal::Map(map.iter().map(|(k, &val)| (k.clone(), own(val))).collect())
         }
-        // Channels/tasks/functions do not cross as *values* in the native
-        // subset (channels travel as their i64 ids).
         // A closure copies its captures the same way and shares its code.
         crate::lkdyn::DYN_CLOSURE => crate::lkclosure::own_closure(v),
+        // A channel or a task crosses as itself. They used to travel as bare
+        // `i64` ids, which is why this arm did not exist — and why `typeof` on
+        // one answered `Int`.
+        crate::lkdyn::DYN_CHAN | crate::lkdyn::DYN_TASK => OwnedVal::Handle(v.tag, v.payload),
         _ => crate::panic::raise_str("value cannot cross a channel"),
     }
 }
 
 pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
     match v {
+        OwnedVal::Handle(tag, id) => LkDyn {
+            tag: *tag,
+            payload: *id,
+        },
         OwnedVal::Nil => LkDyn::NIL,
         OwnedVal::Bool(b) => LkDyn {
             tag: DYN_BOOL,
@@ -578,7 +588,10 @@ pub unsafe extern "C" fn lkrt_chan_select(
         owned_sends.push((kind == 1 && armed).then(|| own(values[index])));
         arms.push(armed.then(|| {
             let id = match channels[index].tag {
-                DYN_I64 => channels[index].payload,
+                // A channel travels boxed under its own tag; the bare id is
+                // still accepted, which is what a `chan::…` spelling that has
+                // not been through the boxing path hands over.
+                crate::lkdyn::DYN_CHAN | DYN_I64 => channels[index].payload,
                 _ => crate::panic::raise_str("select$block: invalid channel arm"),
             };
             (kind, channel(id))

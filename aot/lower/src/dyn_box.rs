@@ -180,7 +180,7 @@ pub(crate) fn read_channel_id(
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("dyn", "as_i64"),
+                callee: AbiRef::new("dyn", "as_handle"),
                 args: vec![v],
             });
             Ok(dst)

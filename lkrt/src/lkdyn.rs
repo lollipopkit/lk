@@ -110,6 +110,51 @@ pub const DYN_SLICE: i64 = DYN_TMAP_END;
 /// reference, which is why storing one in a container had no form at all.
 pub const DYN_CLOSURE: i64 = 20;
 
+/// A channel and a task, as **runtime values**: the payload is the `i64` id the
+/// runtime keys them by.
+///
+/// A tag of their own rather than the bare id, because the id is an `Int` and a
+/// channel is not: `typeof` answered `Int`, display wrote `1`, and `chan(1) ==
+/// 1` was *true*. Tracking which `i64`s were really handles caught the direct
+/// cases and lost the fact wherever the value escaped — into a list, into a
+/// typed parameter — which is most of what a program does with a channel. The
+/// tag travels with the value instead.
+pub const DYN_CHAN: i64 = 21;
+pub const DYN_TASK: i64 = 22;
+
+/// Boxes a channel id.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_chan(id: i64) -> LkDyn {
+    LkDyn {
+        tag: DYN_CHAN,
+        payload: id,
+    }
+}
+
+/// Boxes a task id.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_task(id: i64) -> LkDyn {
+    LkDyn {
+        tag: DYN_TASK,
+        payload: id,
+    }
+}
+
+/// The id behind a boxed channel or task.
+///
+/// Its own entry rather than [`lkrt_dyn_as_i64`], which would then accept a
+/// channel wherever an `Int` is required — `xs[c]` would quietly index by the
+/// id where the interpreter refuses.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_handle(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_CHAN | DYN_TASK => v.payload,
+        // The id unboxed, for the paths that still hand one over directly.
+        DYN_I64 => v.payload,
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 /// Whether a tag denotes a map of any representation.
 pub(crate) fn is_map_tag(tag: i64) -> bool {
     tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
@@ -418,6 +463,8 @@ pub(crate) fn kind_name(v: LkDyn) -> String {
         DYN_I64 => "Int",
         DYN_F64 => "Float",
         DYN_STR => "String",
+        DYN_CHAN => "Channel",
+        DYN_TASK => "Task",
         tag if is_list_tag(tag) => "List",
         DYN_SET => "Set",
         DYN_BYTES => "Bytes",
@@ -782,6 +829,8 @@ fn dispatch_builtin_code(v: LkDyn) -> i64 {
         // `heap_dispatch_type` answers `Slice<Any>`, not `List<Any>` — so
         // `impl Describe for List` must not catch one.
         DYN_SLICE => 10,
+        DYN_CHAN => 11,
+        DYN_TASK => 12,
         tag if is_list_tag(tag) => 6,
         tag if is_map_tag(tag) => 9,
         _ => 0,
@@ -1219,6 +1268,10 @@ fn dyn_eq_at(a: LkDyn, b: LkDyn, depth: u32) -> bool {
         // equal. Native lowering keeps that rule by building a lambda used as
         // a value *once*, at its definition (`inst/call.rs::bind_lambda`).
         DYN_CLOSURE => a.payload == b.payload,
+        // A channel and a task compare by identity, which is what the
+        // interpreter's handle equality is. A tag mismatch already answered
+        // `false` above, so `chan(1) == 1` is false here without an arm.
+        DYN_CHAN | DYN_TASK => a.payload == b.payload,
         _ => false,
     }
 }
@@ -1395,6 +1448,9 @@ fn display_into_at(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: b
         // and did not build at all.
         #[cfg(feature = "std")]
         DYN_CLOSURE => out.push_str(&unsafe { crate::lkclosure::closure_text(v) }),
+        // The interpreter's rendering: the identity is not part of it.
+        DYN_CHAN => out.push_str("<Channel>"),
+        DYN_TASK => out.push_str("<Task>"),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");
@@ -1860,6 +1916,8 @@ fn kind_rank(v: LkDyn) -> u8 {
         DYN_BYTES => 4,
         DYN_SET => 7,
         DYN_CLOSURE => 9,
+        DYN_CHAN => 11,
+        DYN_TASK => 12,
         _ => 10,
     }
 }

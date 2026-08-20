@@ -226,9 +226,16 @@ pub(crate) fn lower_builtin_call(
                 callee: AbiRef::new("chan", "new"),
                 args: vec![cap],
             });
-            // An `i64` id where the interpreter has a `Channel`.
-            ssa.disguised_values.insert(dst);
-            ssa.write(base, block, (dst, Ty::I64));
+            // Boxed under `DYN_CHAN`, not the bare id: the id is an `Int` and a
+            // channel is not. `typeof` answered `Int`, display wrote the
+            // number, and `chan(1) == 1` was true.
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_chan"),
+                args: vec![dst],
+            });
+            ssa.write(base, block, (boxed, Ty::Dyn));
             return Ok(());
         }
         Builtin::ChanSend => {
