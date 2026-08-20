@@ -699,6 +699,23 @@ fn differential_strings() {
                 "a_key_of_another_type_is_a_miss_erased",
                 "fn r(m: Any, k: Any) -> Any { return m[k]; }\nprintln(r({\"k\": 1}, 0));\nprintln(r({\"k\": 1}, \"k\"));\nreturn 0;\n",
             ),
+            // The receiver has to *have* the method before "it cannot hold this"
+            // is an answer. A map has `has` and `delete` and no `contains`,
+            // `index_of` or `count` at all, so folding those to "absent" made
+            // `{}.contains(x)` answer `false` where the interpreter says "a Map
+            // has no method `contains`".
+            new(
+                "a_fold_needs_the_method_to_exist",
+                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {}.contains([1, 2]); return \"ok \" + r; }\n    if f == 1 { let r: Any = {1: 2}.index_of({\"k\": 1}); return \"ok \" + r; }\n    if f == 2 { let r: Any = {1: 2}.count(2.5); return \"ok \" + r; }\n    if f == 3 { let r: Any = [1, 2].contains(\"a\"); return \"ok \" + r; }\n    let r: Any = {\"a\": 1}.has(1);\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nprintln(p(4));\nreturn 0;\n",
+            ),
+            // Removing something that cannot be a key removes nothing — and the
+            // answer has to come back under the tag the caller unboxes.
+            // Handing the *typed* map back where `dyn.as_map` wants the boxed
+            // one made `{"a": 1} - []` raise where the interpreter answered.
+            new(
+                "removing_a_non_key_answers_the_map",
+                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {} - []; return \"ok \" + r; }\n    if f == 1 { let r: Any = {\"a\": 1} - []; return \"ok \" + r; }\n    if f == 2 { let r: Any = {\"a\": 1} - 1.5; return \"ok \" + r; }\n    let r: Any = {\"a\": 1} - \"a\";\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nreturn 0;\n",
+            ),
             new(
                 "a_predicate_takes_any_value",
                 "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",

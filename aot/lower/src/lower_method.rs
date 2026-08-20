@@ -836,9 +836,30 @@ fn nullable_needle_in_typed_container(
 /// refuse — and the answer is the same for every value of that type, so it is a
 /// constant rather than a call.
 ///
+/// The receiver must *have* the method first. A map has `has` and `delete` and
+/// no `contains`, `index_of` or `count` at all, so folding those to "absent"
+/// answered `{}.contains(x)` where the interpreter says "a Map has no method
+/// `contains`". The pairs are listed rather than assumed for that reason.
+///
 /// `Dyn` and the nullable carriers are never "shown" anything: they may be the
 /// right kind at run time.
-fn never_matches(receiver_ty: Ty, needle_ty: Ty) -> bool {
+fn never_matches(receiver_ty: Ty, name: &str, needle_ty: Ty) -> bool {
+    let is_map = matches!(
+        receiver_ty,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+    );
+    let has_method = match name {
+        // A sequence searches; a map does not, and a set answers `contains`
+        // only.
+        "contains" => !is_map,
+        "index_of" | "count" => !is_map && receiver_ty != Ty::Set,
+        "has" => is_map,
+        "delete" => is_map || receiver_ty == Ty::Set,
+        _ => false,
+    };
+    if !has_method {
+        return false;
+    }
     let concrete = !matches!(
         needle_ty,
         Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool
@@ -1267,7 +1288,7 @@ pub(crate) fn lower_method_dispatch(
         // `"abc".contains(1)`, `b.contains("a")`, `s.contains(1.5)` — each of
         // them was a refusal on this side and an answer on the other.
         (_, name @ ("contains" | "has" | "index_of" | "count" | "delete"), [(_, nty)])
-            if never_matches(receiver_ty, *nty) =>
+            if never_matches(receiver_ty, name, *nty) =>
         {
             let dst = ssa.new_val();
             match name {

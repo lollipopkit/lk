@@ -919,8 +919,17 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
         // are two spellings of one operation. Removal looks a key up and drops
         // it; it does not build one, which is the line `m[k]` and `m.set(k, v)`
         // stay on the other side of.
+        // A value that cannot be a key removes nothing — but the answer still
+        // has to come back under the tag the caller unboxes: returning `a`
+        // handed a *typed* map back where `dyn.as_map` wants the boxed one, and
+        // `{"a": 1} - []` raised where the interpreter answered `{"a": 1}`. The
+        // present-key path below rebuilds for the same reason.
         let Some(drop) = crate::vm_mirror::key_from_dyn_opt(b) else {
-            return a;
+            let kept = crate::lkmap::map_entries_ordered(a);
+            return LkDyn {
+                tag: DYN_MAP,
+                payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+            };
         };
         let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
             .into_iter()
