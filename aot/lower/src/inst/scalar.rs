@@ -685,6 +685,16 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Str));
                 return Ok(());
             }
+            // An int-keyed map has no boxed carrier to be rebuilt into, so
+            // `dyn.add`/`dyn.sub` would raise "map merge with a non-string key
+            // has no native carrier" — where the interpreter answers. The
+            // direct spellings already fall back; this is the same shape
+            // arriving boxed, which a `Maybe` key is enough to cause
+            // (`{1: 2} - "ab".bytes().first()`). Falling back answers it too,
+            // and answering wrongly is the only thing that must not happen.
+            if matches!(op, Opcode::AddInt | Opcode::SubInt) && matches!(lty_raw, Ty::MapI64I64 | Ty::MapI64F64) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
             if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
                 let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                 let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;

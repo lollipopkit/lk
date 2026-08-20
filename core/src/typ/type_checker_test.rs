@@ -1463,6 +1463,36 @@ mod tests {
             .expect("the front end must refuse rather than overflow");
     }
 
+    /// A string joined to an erased operand is not promised a `String`.
+    ///
+    /// A list operand wins over a string one — `"a" + [1, 2]` is
+    /// `["a", 1, 2]` — so an operand that *might* be a list makes the answer
+    /// one too. This promised `String` regardless, and the promise was a lie
+    /// the native build then acted on: it unboxed the result as a string and
+    /// raised where the interpreter answered a list.
+    ///
+    /// A type *variable* is not erased in the same way: `coerce_to_string`
+    /// binds it, so by the time the answer is given the operand really is a
+    /// string. `Any` cannot be bound, and that is the whole difference.
+    #[test]
+    fn a_string_joined_to_an_erased_operand_is_not_a_string() {
+        assert_eq!(infer("\"a\" + \"b\""), Type::String, "two strings");
+        assert_eq!(infer("\"a\" + 1"), Type::String, "a number renders");
+        assert_eq!(
+            infer("x + \"!\""),
+            Type::String,
+            "a type variable is bound by the coercion"
+        );
+
+        check_program("fn f(v: Any) -> Any { return \"a\" + v; }\nprintln(f([1, 2]));\n")
+            .expect("an erased operand joins a string");
+        // A list operand still wins outright, erased or not.
+        assert_eq!(
+            infer("\"a\" + [1, 2]"),
+            Type::List(Box::new(Type::Any)),
+            "a list operand wins and the answer is a list"
+        );
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first

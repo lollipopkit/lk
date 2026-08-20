@@ -1213,6 +1213,17 @@ fn differential_dyn_cross_function() {
             // what was there *going in*, and the body boxes whatever it writes
             // back. It crosses boxed now, which is what a cell holding the same
             // value already did.
+            // A `try` region's parked `return` and the function's own returns
+            // are different arms of one function, and only the second kind was
+            // joined: the parked value is boxed into the outcome cell and read
+            // back with the function's return type, so a list parked by the
+            // `try` arm came back as the `Str` the `catch` arm settled on and
+            // raised. Both kinds join now, and disagreeing takes the retry that
+            // two disagreeing direct returns already take.
+            new(
+                "a_try_region_return_joins_with_the_functions_own",
+                "fn a() -> Any { let r: Any = []; try { return \"ok \" + r; } catch e { return \"E\"; } }\nfn b() -> String { let r: Any = []; try { return \"ok \" + r; } catch e { return \"E\"; } }\nfn c() -> Int { try { return 1; } catch e { return 2; } }\nfn d(f: Bool) -> Any { try { if f { return 1; } return \"s\"; } catch e { return nil; } }\nprintln(a());\nprintln(b());\nprintln(c());\nprintln(d(true));\nprintln(d(false));\nreturn 0;\n",
+            ),
             new(
                 "a_nil_crosses_into_a_try_region",
                 "fn a() -> String {\n  let n = nil;\n  try { let c = || n == nil; return \"a\" + c(); }\n  catch e { return \"E\"; }\n}\nfn b() -> Int {\n  let n = nil;\n  try { if n == nil { return 1; } return 2; }\n  catch e { return 3; }\n}\nfn c() -> String {\n  let m = {\"a\": 1};\n  let x = m.get(\"zz\");\n  try { let f = || x == nil; return \"a\" + f(); }\n  catch e { return \"E\"; }\n}\nprintln(a());\nprintln(b());\nprintln(c());\nreturn 0;\n",

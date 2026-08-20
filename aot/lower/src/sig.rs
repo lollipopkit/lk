@@ -166,6 +166,21 @@ pub(crate) struct SigInfer {
     /// more output cells, a flag and the value. The body sets them and returns
     /// normally; the caller checks the flag on the ok edge and returns.
     pub(crate) try_body_returns: std::collections::HashSet<u32>,
+    /// What a try body's parked `return` *is*, by body index.
+    ///
+    /// The value is boxed into the outcome cell and read back out with the
+    /// enclosing function's return type — which is joined over the returns that
+    /// function makes *directly*, and a region's return is not one of those. So
+    ///
+    /// ```lk
+    /// fn f() -> Any { let r: Any = []; try { return "ok " + r; } catch e { return "E"; } }
+    /// ```
+    ///
+    /// took `Str` from the `catch` arm, read a list back as a string, and
+    /// raised where the interpreter answered. Recording the parked type lets
+    /// the two be joined, and a disagreement takes the `dyn_rets` retry that
+    /// two disagreeing direct returns already take.
+    pub(crate) try_body_ret_tys: std::collections::HashMap<u32, Ty>,
     /// How many escape trailers a try body ends with — one per distinct pc
     /// outside the region that its `break`/`continue` jumps to
     /// (`TryRegionShape::escape_targets`).

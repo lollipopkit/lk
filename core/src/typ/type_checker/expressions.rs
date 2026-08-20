@@ -1574,6 +1574,21 @@ impl TypeChecker {
         })
     }
 
+    /// `"a" + x` — a string joined to something.
+    ///
+    /// The answer is a `String` *unless the other operand might be a list*, in
+    /// which case it might be a list: a list operand wins over a string one, so
+    /// `"a" + [1, 2]` is `["a", 1, 2]`. An erased operand might be one at run
+    /// time and this used to promise `String` anyway, so
+    ///
+    /// ```lk
+    /// fn f(v: Any) -> String { return "a" + v; }
+    /// f([1, 2])                            // ["a",1,2]
+    /// ```
+    ///
+    /// passed `lk check` and answered a list. The native build read the
+    /// promise and unboxed the result as a string, which raised — one back end
+    /// answering and the other refusing, on a type the checker had invented.
     fn check_string_addition(
         &mut self,
         _left_expr: &Expr,
@@ -1581,9 +1596,17 @@ impl TypeChecker {
         _right_expr: &Expr,
         right_ty: &Type,
     ) -> Result<Type> {
+        // A type *variable* is not one of these: `coerce_to_string` below binds
+        // it to `String`, so by the time this answers the operand really is a
+        // string. `Any` is a declared escape hatch and cannot be bound — that
+        // is the whole difference, and it is why `x + "!"` stays a `String`
+        // while `v + "!"` with `v: Any` does not.
+        let could_be_a_list = |ty: &Type| matches!(ty, Type::Any | Type::Union(_) | Type::Unknown);
+        let erased =
+            could_be_a_list(&self.resolve_aliases(left_ty)) || could_be_a_list(&self.resolve_aliases(right_ty));
         self.coerce_to_string(left_ty);
         self.coerce_to_string(right_ty);
-        Ok(Type::String)
+        Ok(if erased { Type::Any } else { Type::String })
     }
 
     /// `m + n` — the two maps merged, the right side winning on a shared key.

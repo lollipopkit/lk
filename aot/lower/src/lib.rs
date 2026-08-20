@@ -171,6 +171,7 @@ pub fn lower_bundled(
         try_body_raw_cells: std::collections::HashSet::new(),
         try_body_extra_cells: std::collections::HashMap::new(),
         try_body_returns: std::collections::HashSet::new(),
+        try_body_ret_tys: std::collections::HashMap::new(),
         try_body_escapes: std::collections::HashMap::new(),
         try_body_outer_captures: std::collections::HashMap::new(),
         try_body_outer_cell_tys: std::collections::HashMap::new(),

@@ -1295,6 +1295,19 @@ pub(crate) fn lower_function(
                 // the trampoline reports "did not raise". The caller checks the
                 // flag on the ok edge.
                 let parked = if let Some((flag, slot)) = return_channel {
+                    // What the enclosing function will read back out of the
+                    // cell. Recorded so its return type can be joined with this
+                    // one; without it the readback took whatever type the
+                    // function's *direct* returns happened to agree on.
+                    match sig.try_body_ret_tys.entry(func_index) {
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(ty);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut slot) if *slot.get() != ty => {
+                            slot.insert(Ty::Dyn);
+                        }
+                        std::collections::hash_map::Entry::Occupied(_) => {}
+                    }
                     let boxed = to_dyn(&mut ssa, &mut insts, v, ty, start)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -1700,6 +1713,7 @@ pub(crate) fn lower_function(
                         flag,
                         value: return_channel.map(|(_, value)| value),
                         escape_targets,
+                        body,
                     });
                 }
                 let ok = ssa.new_val();
@@ -2509,6 +2523,19 @@ pub(crate) fn lower_function(
             });
             continue;
         }
+        // What the *region* parked has to agree with what this function's own
+        // returns settled on — the value is read back as `ret`, and a list read
+        // back as a `Str` raises. Disagreeing takes the same retry two
+        // disagreeing direct returns take: re-lower with every return boxed.
+        if let Some(&parked_ty) = sig.try_body_ret_tys.get(&check.body)
+            && parked_ty != ret
+            && ret != Ty::Dyn
+        {
+            if dyn_boxable_ty(parked_ty) && dyn_boxable_ty(ret) && !is_entry {
+                sig.dyn_rets.insert(func_index);
+            }
+            return Err(Unsupported::ReturnTypeConflict);
+        }
         let returned_value = match ret {
             Ty::Nil => None,
             // The same unboxing the output cells use; a type with no readback
@@ -2580,6 +2607,8 @@ struct TryExitCheck {
     value: Option<ValueId>,
     /// Where each escape code lands, in the parent's pc space.
     escape_targets: Vec<usize>,
+    /// Which outlined body this region is, so what it parks can be looked up.
+    body: u32,
 }
 
 /// The synthetic blocks one [`TryExitCheck`] gets, in the order they are pushed.
