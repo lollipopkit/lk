@@ -35,7 +35,11 @@ pub(crate) enum OwnedVal {
     Float(f64),
     Str(String),
     List(Vec<OwnedVal>),
-    Map(Vec<(String, OwnedVal)>),
+    /// A map's entries, and the declared-struct id if the map is a struct
+    /// instance. Copying the entries alone dropped the identity at the channel:
+    /// the receiver got a plain map, so `typeof` answered `Map` and `println`
+    /// printed `{"p":1}` where the interpreter had `P{p:1}`.
+    Map(Vec<(String, OwnedVal)>, i64),
     /// A closure: its code address, its visible arity, its module function
     /// index (for `display`), and its own captures owned the same way. The
     /// address is shared rather than copied — it is code.
@@ -71,11 +75,11 @@ pub(crate) fn own(v: LkDyn) -> OwnedVal {
         DYN_MAP => {
             let handle = v.payload as *mut c_void;
             if handle.is_null() {
-                return OwnedVal::Map(Vec::new());
+                return OwnedVal::Map(Vec::new(), 0);
             }
             // SAFETY: DYN_MAP payloads are live `StrDynMap` handles.
             let map = unsafe { &*(handle as *mut StrDynMap) };
-            OwnedVal::Map(map.iter().map(|(k, &val)| (k.clone(), own(val))).collect())
+            OwnedVal::Map(map.iter().map(|(k, &val)| (k.clone(), own(val))).collect(), map.type_id)
         }
         // A closure copies its captures the same way and shares its code.
         crate::lkdyn::DYN_CLOSURE => crate::lkclosure::own_closure(v),
@@ -120,11 +124,12 @@ pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
                 payload: arena_handle(list) as i64,
             }
         }
-        OwnedVal::Map(entries) => {
+        OwnedVal::Map(entries, type_id) => {
             let mut map = StrDynMap::default();
             for (k, val) in entries {
                 map.insert(k.clone(), materialize(val));
             }
+            map.type_id = *type_id;
             LkDyn {
                 tag: DYN_MAP,
                 payload: arena_handle(map) as i64,

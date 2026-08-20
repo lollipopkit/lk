@@ -571,6 +571,11 @@ pub(super) fn lower(
                     callee: AbiRef::new("dyn", unbox),
                     args: vec![boxed],
                 });
+                // `dyn.sub` returned a fresh container; removing keys from a
+                // struct instance yields a map, as it does in the interpreter.
+                if out_ty == Ty::MapStrDyn {
+                    ssa.set_plain_map(dst);
+                }
                 ssa.write(instr.a(), block, (dst, out_ty));
                 return Ok(());
             }
@@ -592,6 +597,9 @@ pub(super) fn lower(
                     callee: AbiRef::new("dyn", "as_map"),
                     args: vec![boxed],
                 });
+                // `dyn.add` on two maps built a fresh one; a fresh map is a
+                // map, whatever the operands were.
+                ssa.set_plain_map(dst);
                 ssa.write(instr.a(), block, (dst, Ty::MapStrDyn));
                 return Ok(());
             }

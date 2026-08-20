@@ -1163,7 +1163,45 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_out(
 
 // ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
 
-pub(crate) type StrDynMap = FxMap<String, crate::lkdyn::LkDyn>;
+/// A `str -> Dyn` map, plus the declared-struct id when this map *is* a struct
+/// instance.
+///
+/// The id rides the value rather than a side table because a value crosses
+/// threads. The table it replaced was thread-local, so a struct sent to a task
+/// arrived on the other side as an ordinary map: `typeof` answered `Map` where
+/// the interpreter said `P`, and `println` printed `{"p":1,"q":2}` for
+/// `P{p:1,q:2}`. Carrying it here also drops a hash lookup from every `typeof`,
+/// trait dispatch and declared-field check.
+#[derive(Default, Clone)]
+pub(crate) struct StrDynMap {
+    entries: FxMap<String, crate::lkdyn::LkDyn>,
+    /// The declared struct's id, or `0` for an ordinary map. Written by
+    /// `lkrt_lkmap_obj_mark` right after construction.
+    pub(crate) type_id: i64,
+}
+
+impl core::ops::Deref for StrDynMap {
+    type Target = FxMap<String, crate::lkdyn::LkDyn>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl core::ops::DerefMut for StrDynMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
+
+impl<'a> IntoIterator for &'a StrDynMap {
+    type Item = (&'a String, &'a crate::lkdyn::LkDyn);
+    type IntoIter = <&'a FxMap<String, crate::lkdyn::LkDyn> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (&self.entries).into_iter()
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {

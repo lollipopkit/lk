@@ -653,33 +653,28 @@ pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
 // identity lives in a side registry keyed by the arena handle. Handles are
 // never freed before process exit, so a mark can't dangle or alias.
 
-// Thread-local under std, a spin-locked global on bare metal (no TLS there).
-#[cfg(feature = "std")]
-std::thread_local! {
-    static OBJ_TYPE_MARKS: core::cell::RefCell<crate::lkmap::FxMap<usize, i64>> =
-        core::cell::RefCell::new(crate::lkmap::FxMap::default());
-}
-
-#[cfg(not(feature = "std"))]
-static OBJ_TYPE_MARKS_CELL: spin::Mutex<Option<crate::lkmap::FxMap<usize, i64>>> = spin::Mutex::new(None);
-
-/// Runs `f` with the object type-mark table, however it is stored.
-#[cfg(feature = "std")]
-fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
-    OBJ_TYPE_MARKS.with(|marks| f(&mut marks.borrow_mut()))
-}
-
-#[cfg(not(feature = "std"))]
-fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
-    let mut slot = OBJ_TYPE_MARKS_CELL.lock();
-    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
+/// The declared-struct id a live `str -> Dyn` map handle carries, or `0`.
+///
+/// # Safety
+/// `handle` must be a live `StrDynMap` handle, or null.
+unsafe fn handle_type_id(handle: *mut c_void) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: as documented.
+    unsafe { (*(handle as *mut crate::lkmap::StrDynMap)).type_id }
 }
 
 /// Marks a freshly built struct-instance map with its lowering-assigned
 /// type id (`NewObject` of a declared struct).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
-    with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
+    if !handle.is_null() {
+        // SAFETY: a marked handle is a live `Map<str, Dyn>`.
+        unsafe {
+            (*(handle as *mut crate::lkmap::StrDynMap)).type_id = type_id;
+        }
+    }
     // Whatever is already in the map is measured against the declaration now.
     // A construction that *builds* the map first — `P { ..base }`, which
     // rebuilds a map and marks the copy — has no other moment to be checked:
@@ -725,18 +720,29 @@ pub const DECLARED_STR: i64 = 4;
 /// Added to a code to say the field is nullable, so `nil` satisfies it.
 pub const DECLARED_NULLABLE: i64 = 16;
 
+// One table for the process, not one per thread. The generated entry prologue
+// registers every declared struct once, on the main thread; a task runs on
+// another, and with a thread-local table it found no description at all — so a
+// struct handed to a task printed as a map even once its id travelled with it.
+//
+// Every caller copies what it needs out of the closure and raises afterwards
+// (a raise `longjmp`s past drops, so a guard held across one never unlocks).
 #[cfg(feature = "std")]
-thread_local! {
-    static STRUCT_TYPES: core::cell::RefCell<crate::lkmap::FxMap<i64, StructTypeDesc>> =
-        core::cell::RefCell::new(crate::lkmap::FxMap::default());
-}
+static STRUCT_TYPES: std::sync::Mutex<Option<crate::lkmap::FxMap<i64, StructTypeDesc>>> = std::sync::Mutex::new(None);
 
 #[cfg(not(feature = "std"))]
 static STRUCT_TYPES_CELL: spin::Mutex<Option<crate::lkmap::FxMap<i64, StructTypeDesc>>> = spin::Mutex::new(None);
 
 #[cfg(feature = "std")]
 fn with_struct_types<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<i64, StructTypeDesc>) -> R) -> R {
-    STRUCT_TYPES.with(|types| f(&mut types.borrow_mut()))
+    let mut slot = match STRUCT_TYPES.lock() {
+        Ok(slot) => slot,
+        // A raise inside a *different* thread's registration would poison this;
+        // the description is still readable, and refusing to print is worse
+        // than printing what is there.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
 }
 
 #[cfg(not(feature = "std"))]
@@ -807,7 +813,8 @@ fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool, dep
     if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
         return false;
     }
-    let type_id = with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0));
+    // SAFETY: a non-null `DYN_MAP` payload is a live `StrDynMap`.
+    let type_id = unsafe { handle_type_id(v.payload as *mut c_void) };
     if type_id == 0 {
         return false;
     }
@@ -846,7 +853,8 @@ pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     if v.tag != DYN_MAP {
         return 0;
     }
-    with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0))
+    // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+    unsafe { handle_type_id(v.payload as *mut c_void) }
 }
 
 /// Where the built-in dispatch codes start, above any arena type mark.
@@ -2789,7 +2797,8 @@ pub(crate) unsafe fn check_declared_field(target: LkDyn, key: *const c_char, val
 /// `key` must be a NUL-terminated string; `handle` a live map handle or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_check_marked_field(handle: *mut c_void, key: *const c_char, value: LkDyn) {
-    let type_id = with_obj_type_marks(|marks| marks.get(&(handle as usize)).copied().unwrap_or(0));
+    // SAFETY: as documented.
+    let type_id = unsafe { handle_type_id(handle) };
     // SAFETY: as documented.
     unsafe { check_declared_field_of(type_id, key, value) }
 }

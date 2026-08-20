@@ -310,6 +310,61 @@ fn clif_differential_higher_order() {
 /// Absolute, and it has to be: the fact is missing in the *compiler*, so both
 /// backends are handed the same wrong instruction and agree with each other
 /// perfectly.
+/// A struct's identity has to travel with the value, because the value crosses
+/// threads. Both halves of it used to be thread-local: the id → name/field
+/// registry (written once by the entry prologue, on the main thread) and a
+/// handle → id side table. A task runs on another thread and saw neither, so a
+/// struct handed to one arrived as a plain map — `typeof` answered `Map`, and
+/// `println` printed `{"p":1,"q":2}` for `P{p:1,q:2}`.
+#[test]
+fn a_struct_keeps_its_name_across_a_task() {
+    run_clif_differential(
+        "struct_across_task",
+        &[
+            new(
+                "through_a_channel",
+                "use task;\n\
+                 struct P { p: Int, q: Int }\n\
+                 fn describe(v: Any) -> String { return typeof(v) + \" \" + v; }\n\
+                 let ch = chan(1);\n\
+                 let t = spawn(|| { return describe(recv(ch)); });\n\
+                 send(ch, P { p: 1, q: 2 });\n\
+                 println(task.await(t));\n",
+            ),
+            new(
+                "captured_by_the_closure",
+                "use task;\n\
+                 struct P { p: Int, q: Int }\n\
+                 fn describe(v: Any) -> String { return typeof(v) + \" \" + v; }\n\
+                 let p = P { p: 1, q: 2 };\n\
+                 let t = spawn(|| { return describe(p); });\n\
+                 println(task.await(t));\n",
+            ),
+            new(
+                "nested_and_in_a_list",
+                "use task;\n\
+                 struct Inner { v: Int }\n\
+                 struct Outer { inner: Inner, tag: String }\n\
+                 let ch = chan(2);\n\
+                 let t = spawn(|| { return \"\" + recv(ch) + \" | \" + recv(ch); });\n\
+                 send(ch, Outer { inner: Inner { v: 7 }, tag: \"x\" });\n\
+                 send(ch, [Inner { v: 1 }, Inner { v: 2 }]);\n\
+                 println(task.await(t));\n",
+            ),
+            new(
+                "back_out_of_the_task",
+                "use task;\n\
+                 struct P { p: Int }\n\
+                 let out = chan(1);\n\
+                 let t = spawn(|| { send(out, P { p: 9 }); return 0; });\n\
+                 let v = recv(out);\n\
+                 println(typeof(v) + \" \" + v);\n\
+                 println(task.await(t));\n",
+            ),
+        ],
+    );
+}
+
 /// A struct instance and a map share one native carrier (`Map<str, Dyn>`), so
 /// nothing in the MIR type says which a word is. The interpreter has two
 /// different heap values and refuses every map *collection* operation on a

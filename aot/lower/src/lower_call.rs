@@ -178,6 +178,9 @@ pub(crate) fn lower_merge_fields(
             });
         }
     }
+    // Merging two maps makes an ordinary one, whichever the operands were:
+    // `{..p, ..q}` on struct instances is a map in the interpreter too.
+    ssa.set_plain_map(dst);
     ssa.write(base, block, (dst, Ty::MapStrDyn));
     Ok(())
 }

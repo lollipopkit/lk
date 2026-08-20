@@ -919,6 +919,13 @@ pub(crate) fn lower_module_abi_call(
             (dst, ret_ty)
         }
     };
+    // A stdlib member's `Map<str, Dyn>` result is an ordinary map — only
+    // `NewObject` and the struct-update desugar make a struct instance. Said
+    // here rather than per row, so a new row cannot forget it and lose its
+    // `len()` to the interpreter.
+    if dst.1 == Ty::MapStrDyn {
+        ssa.set_plain_map(dst.0);
+    }
     ssa.write(base, block, dst);
     Ok(())
 }

@@ -2356,3 +2356,33 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 覆盖率没有掉:门禁 71/71,VM/原生扫描 73 一致 1 允许分歧,300 例模糊测试通过。
 `a_map_that_is_one_still_lowers_its_collection_methods` 钉住反面——参数位置和
 循环头上的普通 map 仍然全原生下降。
+
+## §65 结构体的身份存在别的线程读不到的地方(2026-08-21)
+
+`typeof(p)`、`println(p)`、trait 派发、字段声明检查,原生这边都靠两张表:
+`id → 名字/字段` 的注册表(生成的入口序言写一次)和 `句柄 → id` 的标记表
+(每次构造写一条)。两张都是 `thread_local!`。任务跑在别的线程上,两张都读不到:
+
+| 程序 | 解释器 | 原生(修复前) |
+| --- | --- | --- |
+| 结构体经 channel 送进 task,在里面 `typeof` | `P` | `Map` |
+| 同上,`"" + v` | `P{p:1,q:2}` | `{"p":1,"q":2}` |
+
+三处改动:
+
+1. **标记进句柄**。`StrDynMap` 从 `FxMap<String, LkDyn>` 的别名变成一个带
+   `type_id` 字段的结构体(`Deref`/`DerefMut` 到原来的 map,所以调用点不动)。
+   标记表整张删掉——顺带把 `typeof`、派发、声明检查上的一次哈希查表变成一次取字段。
+2. **注册表改成进程级**。std 下 `Mutex<Option<…>>`,裸机维持 spin。所有调用者
+   本来就是"把要的东西拷出闭包再 raise"(raise 会 longjmp 过 drop,守卫跨越它
+   就永远不解锁),这条纪律现在是注释里写明的前提。
+3. **过 channel 的深拷贝要带上 id**。`OwnedVal::Map` 只搬条目,收到的一端就是
+   一张普通 map;加一个 `i64` 字段,`materialize` 写回去。
+
+`a_struct_keeps_its_name_across_a_task` 钉四条:过 channel、被闭包捕获、嵌套加
+列表、从任务里送回来。
+
+同一趟里 §64 的 `PlainMap` 证明缺了三个产出点——map 合并、`dyn.sub` 的 map 结果、
+以及**所有** stdlib 行的 `Map<str, Dyn>` 返回值。三条 `PureCranelift` 差分用例
+因此拒绝下降;覆盖率门禁和 VM/原生扫描都没看见(它们允许回退)。stdlib 那条写在
+通用行下降的收尾处,而不是逐行写,这样新加一行不会漏。
