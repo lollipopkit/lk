@@ -3364,3 +3364,27 @@ enum RegisterWidth { Scalar(IntKind), Elements(IntKind) }
 `bytes[0] + 10` 是 `u8`),编译器还是在重新推一遍。现在只剩一处推导而不是七处,
 但根子还在——`Expr` 没有 span 也没有 id,检查器算出的类型没有地方挂,要么给 AST
 加标识,要么让检查器改写 AST。两条都是重新设计。
+
+## `use` 的四种写法,只有两种在检查成员(2026-08-21)
+
+模块不存在的成员应当在 `lk check` 时报错,而不是运行到一半说 "nil is not a
+function"——那句话既没提模块也没提成员。这条规则本来就在,但只对 `use module;` 和
+`use module as alias;` 生效:
+
+| 写法 | 修复前 |
+| --- | --- |
+| `use math; math.nope()` | 检查时报错 |
+| `use math as m; m.nope()` | 检查时报错 |
+| `use { json } from encoding; json.nope()` | **通过检查,运行时 nil** |
+| `use * as m from math; m.nope()` | **通过检查,运行时 nil** |
+
+第三种正是示例里用的写法(`encoding.json` 只能这样引进来),所以
+`json.encode(v)` 一路通过检查,跑起来才发现这个模块的方法叫 `stringify`。
+
+原因:`use { a } from m;` 被当成"绑定成员,不绑定模块"——而**成员本身可以是模块**。
+`encoding.json` 就是,它被绑到裸名 `json` 上,而 `json` 自己不是任何已声明模块,
+成员检查因此整条跳过。`use * as ns from m` 是同一件事换个写法,也漏了。
+
+两处都改成注册别名(机制早就有:`add_imported_stdlib_module` + `resolve_stdlib_alias`),
+报错时说的是**真实路径**:`` `encoding.json` has no member `nope` ``。
+`every_import_spelling_checks_its_members` 把五种写法的拒绝和三种写法的接受都钉住。

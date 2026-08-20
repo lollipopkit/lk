@@ -963,9 +963,38 @@ impl Stmt {
                     crate::stmt::ImportStmt::ModuleAlias { alias, module } => {
                         type_checker.add_imported_stdlib_module(alias.clone(), module.clone());
                     }
-                    // `use { a, b } from m;` binds the *members*, not the
-                    // module, and a file import binds a namespace that
-                    // `imported_members` already covers.
+                    // `use { a, b } from m;` binds the *members* — but a
+                    // member can itself be a module, and that one binds a
+                    // module under a bare name. `use { json } from encoding;`
+                    // then `json.encode(v)` type-checked and died at run time
+                    // with "nil is not a function": `json` alone is not a
+                    // declared module, so the member check skipped it, while
+                    // `use encoding;` + `encoding.json.encode(v)` and
+                    // `use math;` + `math.nope()` were both caught. The
+                    // spelling the examples use was the one without the check.
+                    crate::stmt::ImportStmt::Items {
+                        items,
+                        source: crate::stmt::ImportSource::Module(source),
+                    } => {
+                        for item in items {
+                            let path = alloc::format!("{source}.{}", item.name);
+                            if crate::typ::stdlib_module_is_declared(&path) {
+                                let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                                type_checker.add_imported_stdlib_module(bound, path);
+                            }
+                        }
+                    }
+                    // `use * as e from encoding;` binds the whole module under
+                    // one name, which is `use module as alias` written the other
+                    // way round — and it had no member check either.
+                    crate::stmt::ImportStmt::Namespace {
+                        alias,
+                        source: crate::stmt::ImportSource::Module(source),
+                    } => {
+                        type_checker.add_imported_stdlib_module(alias.clone(), source.clone());
+                    }
+                    // A file import binds a namespace that `imported_members`
+                    // already covers.
                     _ => {}
                 }
                 Ok(())

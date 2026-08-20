@@ -83,6 +83,71 @@ fn a_stdlib_member_that_does_not_exist_is_refused_at_check_time() -> Result<(), 
     Ok(())
 }
 
+/// Every spelling of an import gets the member check, not just `use module;`.
+///
+/// A member can itself be a module — `use { json } from encoding;` binds
+/// `encoding.json` under the bare name `json` — and that spelling had no check
+/// at all: `json.encode(v)` type-checked and died with "nil is not a function",
+/// which is the sentence naming neither the module nor the member. It is also
+/// the spelling the examples use.
+#[test]
+fn every_import_spelling_checks_its_members() -> Result<(), Box<dyn Error>> {
+    let dir = tempdir()?;
+    for (name, source, reported) in [
+        (
+            "submodule_by_name",
+            "use { json } from encoding;\nlet r = json.nope(1);\n",
+            "`encoding.json` has no member `nope`",
+        ),
+        (
+            "submodule_aliased",
+            "use { json as j } from encoding;\nlet r = j.nope(1);\n",
+            "`encoding.json` has no member `nope`",
+        ),
+        (
+            "namespace_of_a_module",
+            "use * as m from math;\nlet r = m.nope(1);\n",
+            "`math` has no member `nope`",
+        ),
+        (
+            "namespace_of_a_parent",
+            "use * as e from encoding;\nlet r = e.json.nope(1);\n",
+            "`encoding.json` has no member `nope`",
+        ),
+        (
+            "module_aliased",
+            "use math as m;\nlet r = m.nope(1);\n",
+            "`math` has no member `nope`",
+        ),
+    ] {
+        let script_path = dir.path().join(format!("{name}.lk"));
+        fs::write(&script_path, source)?;
+        let mut cmd = Command::cargo_bin("lk")?;
+        cmd.args(["check", script_path.to_str().unwrap()]);
+        cmd.assert().failure().stderr(predicate::str::contains(reported));
+    }
+
+    // And the members that do exist still resolve through every spelling.
+    for (name, source) in [
+        (
+            "ok_submodule",
+            "use { json } from encoding;\nlet r = json.parse(\"[1]\");\n",
+        ),
+        (
+            "ok_aliased",
+            "use { json as j } from encoding;\nlet r = j.parse(\"[1]\");\n",
+        ),
+        ("ok_namespace", "use * as m from math;\nlet r = m.floor(1.5);\n"),
+    ] {
+        let script_path = dir.path().join(format!("{name}.lk"));
+        fs::write(&script_path, source)?;
+        let mut cmd = Command::cargo_bin("lk")?;
+        cmd.args(["check", script_path.to_str().unwrap()]);
+        cmd.assert().success();
+    }
+    Ok(())
+}
+
 /// A user module's namespace answers the same way a standard library module's
 /// does.
 ///
