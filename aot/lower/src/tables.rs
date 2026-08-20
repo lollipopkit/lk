@@ -1,5 +1,41 @@
 use super::*;
 
+/// The ABI entry that answers how many elements a container holds, per
+/// carrier.
+///
+/// One table because there is one question. It used to be written twice — once
+/// for the `Len` opcode and once for the `is_empty` method — and the copies
+/// disagreed: `{"a": true}.len()` lowered while `{"a": true}.is_empty()` did
+/// not, and the same for both integer-keyed maps, because the second table was
+/// a subset someone extended once and not again.
+///
+/// `Str` is deliberately absent. A string's length is its count of Unicode
+/// scalar values, which is a string call rather than a container one, so its
+/// caller spells it rather than sharing a row that is only half right.
+pub(crate) fn container_len_abi(ty: Ty) -> Option<AbiRef> {
+    let (module, name) = match ty {
+        Ty::ListI64 => ("list_h", "i64_len"),
+        Ty::ListF64 => ("list_h", "f64_len"),
+        Ty::ListStr => ("list_h", "str_len"),
+        Ty::ListDyn => ("list_h", "dyn_len"),
+        // A window's length is its own, not the source's.
+        Ty::SliceI64 => ("slice_h", "i64_len"),
+        Ty::MapStrI64 => ("map_h", "str_i64_len"),
+        // The bool map rides the `str_i64` carrier, so it is the same call.
+        Ty::MapStrBool => ("map_h", "str_i64_len"),
+        Ty::MapStrF64 => ("map_h", "str_f64_len"),
+        Ty::MapStrDyn => ("map_h", "str_dyn_len"),
+        Ty::MapI64I64 => ("map_h", "i64_i64_len"),
+        Ty::MapI64F64 => ("map_h", "i64_f64_len"),
+        Ty::Set => ("set", "len"),
+        Ty::Bytes => ("bytes_h", "len"),
+        // A boxed Dyn: length dispatches on the runtime tag.
+        Ty::Dyn => ("dyn", "len_of"),
+        _ => return None,
+    };
+    Some(AbiRef::new(module, name))
+}
+
 /// Module-object metadata: how one stdlib module name binds. Single source
 /// of truth — the bare-`GetGlobal` whitelist and the submodule import
 /// routing both derive from this table (adding a module is one row here
@@ -584,18 +620,21 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     //
     // `string.replace(text, pattern, with)` — the three-argument form. The
     // fourth parameter `all` defaults to true, which is what `str::replace`
-    // does, so a call that omits it lowers; a call that passes `all` has a
-    // different arity and no row, and falls back.
+    // does, so a call that omits it lowers here; a call that passes `all` has a
+    // different arity, finds no row, and reaches the `replace` *method* instead
+    // (the member forwards, and the method's three-argument arm selects the
+    // replacement limit). Both spellings of that call — positional and
+    // `all:` — lower.
     abi_row_named(
         "string",
         "replace",
         AbiRef::new("str", "replace"),
         &[Ty::Str, Ty::Str, Ty::Str],
         Ty::Str,
-        // The stdlib declares three names; this row is the arity that leaves
-        // `all` at its default. A call that does pass `all` has four arguments,
-        // finds no row, and falls back — which is why the *names* list stays
-        // whole while the `args` list does not.
+        // The stdlib declares three names and this row is the arity that leaves
+        // `all` at its default, which is why the *names* list stays whole while
+        // the `args` list does not: the named-call permutation reads the
+        // declaration from here even for the arity this row cannot serve.
         // One leading positional-only parameter: the subject.
         1,
         &["pattern", "with", "all"],

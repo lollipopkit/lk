@@ -729,8 +729,6 @@ pub(crate) fn lower_list_hof_k(
     }
 }
 
-/// The shared per-(receiver type, method name, argument types) dispatch table.
-#[allow(clippy::too_many_arguments)]
 /// See the note at the top of [`lower_method_dispatch`].
 #[allow(clippy::too_many_arguments)]
 fn nullable_needle_in_typed_container(
@@ -901,6 +899,8 @@ fn fits_carrier(receiver_ty: Ty, name: &str, needle_ty: Ty) -> bool {
     }
 }
 
+/// The shared per-(receiver type, method name, argument types) dispatch table.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_method_dispatch(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -1154,32 +1154,16 @@ pub(crate) fn lower_method_dispatch(
         // too, and unboxing one to a list aborts. `len_of` is the dispatch
         // `xs.len()` already takes on a boxed receiver, so the two spellings
         // answer through one function.
-        (
-            Ty::ListI64
-            | Ty::ListF64
-            | Ty::ListStr
-            | Ty::ListDyn
-            | Ty::MapStrI64
-            | Ty::MapStrF64
-            | Ty::MapStrDyn
-            | Ty::Dyn,
-            "is_empty",
-            [],
-        ) => {
-            let (module, len_fn) = match receiver_ty {
-                Ty::Dyn => ("dyn", "len_of"),
-                Ty::ListI64 => ("list_h", "i64_len"),
-                Ty::ListF64 => ("list_h", "f64_len"),
-                Ty::ListStr => ("list_h", "str_len"),
-                Ty::ListDyn => ("list_h", "dyn_len"),
-                Ty::MapStrI64 => ("map_h", "str_i64_len"),
-                Ty::MapStrF64 => ("map_h", "str_f64_len"),
-                _ => ("map_h", "str_dyn_len"),
-            };
+        //
+        // The carrier list is `container_len_abi`'s, shared with the `Len`
+        // opcode. It used to be a second table naming eight of them, and the
+        // three it left out — both integer-keyed maps and the bool map — each
+        // lowered `m.len()` and refused `m.is_empty()`.
+        (_, "is_empty", []) if container_len_abi(receiver_ty).is_some() => {
             let len = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(len),
-                callee: AbiRef::new(module, len_fn),
+                callee: container_len_abi(receiver_ty).expect("guarded by the arm"),
                 args: vec![receiver],
             });
             let zero = ssa.new_val();
@@ -1456,6 +1440,26 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::SliceI64)
         }
+        // `end` omitted means "to the end of the window" — its own length, not
+        // the length of the list it looks into. Every other carrier already
+        // had this form: a list's reaches a slice *opcode* rather than a
+        // `CallMethodK`, and `Bytes` has the arm above. A window was the one
+        // receiver where `xs.slice(1)` dropped the module to the VM.
+        (Ty::SliceI64, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("slice_h", "i64_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sub"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::SliceI64)
+        }
         // A window on a window resolves against the original source rather
         // than nesting, matching `dispatch_slice_builtin_method`.
         (Ty::SliceI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
@@ -1475,28 +1479,6 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::I64)
-        }
-        (Ty::SliceI64, "is_empty", []) => {
-            let flag = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(flag),
-                callee: AbiRef::new("slice_h", "i64_is_empty"),
-                args: vec![receiver],
-            });
-            let zero = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: zero,
-                value: Const::I64(0),
-            });
-            let dst = ssa.new_val();
-            insts.push(Inst::Cmp {
-                dst,
-                op: CmpOp::Ne,
-                float: false,
-                lhs: flag,
-                rhs: zero,
-            });
-            (dst, Ty::Bool)
         }
         // The copy, asked for by name — the operation `.slice()` used to
         // perform silently.
@@ -1752,6 +1734,49 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Dyn)
         }
+        (Ty::MapI64I64 | Ty::MapI64F64, "delete", [(k, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "map_h",
+                    if receiver_ty == Ty::MapI64I64 {
+                        "i64_i64_delete"
+                    } else {
+                        "i64_f64_delete"
+                    },
+                ),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `m.has(k)` on integer-keyed maps — the same present bit the string
+        // arms below take, off the integer-key lookup.
+        (Ty::MapI64I64 | Ty::MapI64F64, "has", [(k, Ty::I64)]) => {
+            let looked = ssa.new_val();
+            let maybe_ty = if receiver_ty == Ty::MapI64I64 {
+                insts.push(Inst::MapGetMaybeI64Key {
+                    dst: looked,
+                    handle: receiver,
+                    key: *k,
+                });
+                Ty::MaybeI64
+            } else {
+                insts.push(Inst::MapGetMaybeI64F64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *k,
+                });
+                Ty::MaybeF64
+            };
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty,
+            });
+            (present, Ty::Bool)
+        }
         // `m.has(k)` on typed string maps — the dynamic-lookup present bit.
         (Ty::MapStrI64 | Ty::MapStrBool, "has", [(k, Ty::Str)]) => {
             let looked = ssa.new_val();
@@ -1794,28 +1819,6 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::I64)
-        }
-        (Ty::Set, "is_empty", []) => {
-            let len = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(len),
-                callee: AbiRef::new("set", "len"),
-                args: vec![receiver],
-            });
-            let zero = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: zero,
-                value: Const::I64(0),
-            });
-            let b = ssa.new_val();
-            insts.push(Inst::Cmp {
-                dst: b,
-                op: CmpOp::Eq,
-                float: false,
-                lhs: len,
-                rhs: zero,
-            });
-            (b, Ty::Bool)
         }
         // Only the spellings the language actually has. This accepted `has` and
         // `remove` too, and the type checker rejects both — so those two names
@@ -2648,6 +2651,37 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
+        // `s.replace(from, to, all)` — `all: false` replaces the first
+        // occurrence alone. The runtime entry takes a count rather than a flag
+        // (negative meaning no limit), so the same call serves both and a flag
+        // that is not a literal lowers too.
+        (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str), (all, Ty::Bool)]) => {
+            let unlimited = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: unlimited,
+                value: Const::I64(-1),
+            });
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let limit = ssa.new_val();
+            insts.push(Inst::Select {
+                dst: limit,
+                cond: *all,
+                then_v: unlimited,
+                else_v: one,
+                ty: Ty::I64,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "replace_limited"),
+                args: vec![receiver, *from, *to, limit],
+            });
+            (dst, Ty::Str)
+        }
         // `s.chars()` — a dyn list, whose display quotes its strings exactly as
         // the VM's `TypedList::String` does. (The VM built a *Mixed* list when
         // this was written, which printed `[a,b]` against the module spelling's
@@ -2889,13 +2923,95 @@ pub(crate) fn lower_method_dispatch(
             };
             (dst, maybe_ty)
         }
+        // `m.get(key, default)` — the same lookup, with the absent case
+        // answered by the caller's value rather than nil. Both halves were
+        // already here (`MaybePresent` is how `has` is lowered, `MaybeValue`
+        // is how a `Maybe` reaches a phi edge); a `Select` between them is the
+        // whole method. Without it, a map read with a fallback — an ordinary
+        // way to write one — dropped the module to the VM.
+        //
+        // The result is the plain scalar, not a `Maybe`: a default is always
+        // present, so the answer cannot be nil.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str), (fallback, fallback_ty)])
+        | (Ty::MapI64I64 | Ty::MapI64F64, "get", [(key, Ty::I64), (fallback, fallback_ty)]) => {
+            let (maybe_ty, scalar_ty) = match receiver_ty {
+                Ty::MapStrF64 | Ty::MapI64F64 => (Ty::MaybeF64, Ty::F64),
+                Ty::MapStrBool => (Ty::MaybeBool, Ty::Bool),
+                _ => (Ty::MaybeI64, Ty::I64),
+            };
+            // A default of another carrier would have to widen the answer past
+            // the map's value type; that is the boxed-map question, not this
+            // one.
+            if *fallback_ty != scalar_ty {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let looked = ssa.new_val();
+            match receiver_ty {
+                Ty::MapStrF64 => insts.push(Inst::MapGetMaybeStrF64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                Ty::MapI64F64 => insts.push(Inst::MapGetMaybeI64F64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                Ty::MapI64I64 => insts.push(Inst::MapGetMaybeI64Key {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                _ => insts.push(Inst::MapGetMaybe {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+            }
+            // `MaybeValue` narrows a `MaybeBool`'s word to a `Bool` itself, so
+            // the extracted value is already `scalar_ty` for all of them.
+            let value = ssa.new_val();
+            insts.push(Inst::MaybeValue {
+                dst: value,
+                src: looked,
+                maybe_ty,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Select {
+                dst,
+                cond: present,
+                then_v: value,
+                else_v: *fallback,
+                ty: scalar_ty,
+            });
+            (dst, scalar_ty)
+        }
         // `m.set(key, value)` on string-keyed maps.
+        //
+        // A bool map rides the `str_i64` carrier, so its value crosses as the
+        // word — and it arrives as a `Bool`, the narrower machine type, which
+        // has to be widened. Only `Ty::I64` was accepted here, so
+        // `m.set(k, true)` on a `Map<String, Bool>` dropped the module to the
+        // VM.
         (Ty::MapStrI64, "set", [(key, Ty::Str), (value, Ty::I64)])
-        | (Ty::MapStrBool, "set", [(key, Ty::Str), (value, Ty::I64)]) => {
+        | (Ty::MapStrBool, "set", [(key, Ty::Str), (value, Ty::I64 | Ty::Bool)]) => {
+            let value = if args.get(1).map(|(_, ty)| *ty) == Some(Ty::Bool) {
+                let wide = ssa.new_val();
+                insts.push(Inst::ZextBool { dst: wide, src: *value });
+                wide
+            } else {
+                *value
+            };
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("map_h", "str_i64_set"),
-                args: vec![receiver, *key, *value],
+                args: vec![receiver, *key, value],
             });
             let nil = ssa.new_val();
             insts.push(Inst::Const {

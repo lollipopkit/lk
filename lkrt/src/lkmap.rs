@@ -514,7 +514,7 @@ map_iter_family!(
 /// boxes the key with `boxed_str_key` — the key kind is the one thing the two
 /// families do not share.
 macro_rules! int_map_iter {
-    ($name:ident, $keys:ident, $values:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
+    ($name:ident, $keys:ident, $values:ident, $delete:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
         #[doc = $doc]
         /// # Safety
         /// `handle` must be a live map handle of the matching carrier.
@@ -554,6 +554,24 @@ macro_rules! int_map_iter {
             let values: Vec<crate::lkdyn::LkDyn> = map.values().map(|v| ($box_val)(v)).collect();
             crate::state::arena_handle(values)
         }
+
+        #[doc = $doc]
+        /// `.delete(k)` — removes and returns the value, or nil when absent.
+        /// The string families generate this from their own macro; leaving it
+        /// out here is why `m.delete(k)` lowered for a string-keyed map and
+        /// dropped the module to the VM for an integer-keyed one.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $delete(handle: *mut c_void, key: i64) -> crate::lkdyn::LkDyn {
+            // SAFETY: as above.
+            let map = unsafe { &mut *(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            match map.shift_remove(&crate::vm_mirror::IntKey(key)) {
+                Some(v) => ($box_val)(&v),
+                None => crate::lkdyn::LkDyn::NIL,
+            }
+        }
     };
 }
 
@@ -561,6 +579,7 @@ int_map_iter!(
     lkrt_lkmap_i64_i64_iter_pairs,
     lkrt_lkmap_i64_i64_keys,
     lkrt_lkmap_i64_i64_values,
+    lkrt_lkmap_i64_i64_delete,
     I64I64Map,
     |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
     "`for pair in m` snapshot over `Map<i64, i64>`."
@@ -569,6 +588,7 @@ int_map_iter!(
     lkrt_lkmap_i64_f64_iter_pairs,
     lkrt_lkmap_i64_f64_keys,
     lkrt_lkmap_i64_f64_values,
+    lkrt_lkmap_i64_f64_delete,
     I64F64Map,
     |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
     "`for pair in m` snapshot over `Map<i64, f64>`."

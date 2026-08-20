@@ -239,12 +239,26 @@ pub(crate) fn to_dyn(
         Ty::MaybeBool => "from_maybe_bool",
         _ => return to_dyn_plain(ssa, insts, v, ty, pc),
     };
-    let value = ssa.new_val();
+    let value_narrow = ssa.new_val();
     insts.push(Inst::MaybeValue {
-        dst: value,
+        dst: value_narrow,
         src: v,
         maybe_ty: ty,
     });
+    // `MaybeValue` hands back a `MaybeBool`'s half as the `Bool` it is, and
+    // `from_maybe_bool` takes the word — the same widening the present half
+    // gets just below. Without it the call is not well-typed IR, so `"" +
+    // m.get(k)` on a `Map<String, Bool>` failed Cranelift verification.
+    let value = if ty == Ty::MaybeBool {
+        let wide = ssa.new_val();
+        insts.push(Inst::ZextBool {
+            dst: wide,
+            src: value_narrow,
+        });
+        wide
+    } else {
+        value_narrow
+    };
     let present_b = ssa.new_val();
     insts.push(Inst::MaybePresent {
         dst: present_b,

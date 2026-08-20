@@ -990,12 +990,26 @@ impl Ssa {
                     Ty::MaybeStr => "from_maybe_str",
                     _ => "from_maybe_bool",
                 };
-                let value = self.new_val();
+                let value_narrow = self.new_val();
                 self.edge_insts[pred].push(Inst::MaybeValue {
-                    dst: value,
+                    dst: value_narrow,
                     src: v,
                     maybe_ty: ty,
                 });
+                // A `MaybeBool`'s value half comes back as the `Bool` it is
+                // and the ABI entry takes the word — the same widening the
+                // present half gets just below. See `dyn_box::to_dyn`, which
+                // boxes the same carriers on the non-edge path.
+                let value = if ty == Ty::MaybeBool {
+                    let wide = self.new_val();
+                    self.edge_insts[pred].push(Inst::ZextBool {
+                        dst: wide,
+                        src: value_narrow,
+                    });
+                    wide
+                } else {
+                    value_narrow
+                };
                 let present_b = self.new_val();
                 self.edge_insts[pred].push(Inst::MaybePresent {
                     dst: present_b,

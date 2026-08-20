@@ -649,34 +649,18 @@ pub(super) fn lower(
             // bounds-checked), so without this `for s in ["ab", "cde"] {
             // s.len() }` dropped the whole program to the interpreter.
             let (handle, ty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
-            let (module, len_fn) = match ty {
-                // Strings count Unicode scalar values (the VM's char length).
-                Ty::Str => ("str", "char_len"),
-                Ty::ListI64 => ("list_h", "i64_len"),
-                // A window's length is its own, not the source's.
-                Ty::SliceI64 => ("slice_h", "i64_len"),
-                Ty::ListF64 => ("list_h", "f64_len"),
-                Ty::ListStr => ("list_h", "str_len"),
-                Ty::MapStrI64 => ("map_h", "str_i64_len"),
-                // The bool map rides the `str_i64` carrier, so it is the same
-                // call — it was simply missing from this table, which cost a
-                // program its lowering for `{"a": true}.len()` alone.
-                Ty::MapStrBool => ("map_h", "str_i64_len"),
-                Ty::MapI64I64 => ("map_h", "i64_i64_len"),
-                Ty::MapStrF64 => ("map_h", "str_f64_len"),
-                Ty::MapI64F64 => ("map_h", "i64_f64_len"),
-                Ty::ListDyn => ("list_h", "dyn_len"),
-                Ty::MapStrDyn => ("map_h", "str_dyn_len"),
-                Ty::Set => ("set", "len"),
-                Ty::Bytes => ("bytes_h", "len"),
-                // A boxed Dyn: length dispatches on the runtime tag.
-                Ty::Dyn => ("dyn", "len_of"),
-                _ => return Err(Unsupported::TypeMismatch { pc }),
+            // Strings count Unicode scalar values (the VM's char length), which
+            // is a string call rather than a container one; every other carrier
+            // shares its row with `is_empty`.
+            let callee = if ty == Ty::Str {
+                AbiRef::new("str", "char_len")
+            } else {
+                container_len_abi(ty).ok_or(Unsupported::TypeMismatch { pc })?
             };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new(module, len_fn),
+                callee,
                 args: vec![handle],
             });
             ssa.write(instr.a(), block, (dst, Ty::I64));
@@ -1805,6 +1789,30 @@ pub(super) fn lower(
                         );
                     }
                     ("str_f64_set", coerce_to_f64(ssa, insts, bv, bty))
+                }
+                // A bool map rides the `str_i64` carrier, and its value crosses
+                // as that carrier's word — so a `Bool` is widened here, the way
+                // it is everywhere a `Bool` meets an `I64` ABI parameter. The
+                // carrier had no arm at all, which is why `m[k] = true` on a
+                // `Map<String, Bool>` dropped the module to the VM: reading and
+                // deleting lowered, writing did not.
+                Ty::MapStrBool => {
+                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+                    let word = match bty {
+                        Ty::I64 => bv,
+                        Ty::Bool => {
+                            let wide = ssa.new_val();
+                            insts.push(Inst::ZextBool { dst: wide, src: bv });
+                            wide
+                        }
+                        _ => {
+                            return Err(
+                                carrier_contradicted_here_or_at_callers(ssa, func, instr.a(), handle, map_ty)
+                                    .unwrap_or(Unsupported::TypeMismatch { pc }),
+                            );
+                        }
+                    };
+                    ("str_i64_set", word)
                 }
                 // Struct-instance field stores (`p.x += 9` on a `NewObject`
                 // map): any boxable value stores boxed, insert-or-update.

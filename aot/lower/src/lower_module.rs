@@ -554,6 +554,7 @@ pub(crate) fn lower_module_call(
 pub(crate) fn lower_named_module_call(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
     module: &str,
     name: &str,
     base: u8,
@@ -573,6 +574,17 @@ pub(crate) fn lower_named_module_call(
         // too, and this arity leaves it defaulted) — so it bounds the names,
         // rather than counting them.
         .find(|row| row.args.len() == argc && row.named.len() >= argc - positional_count)
+        // No row of this arity, but the member may still be one that forwards
+        // to a method, and a method arm is matched on its argument list rather
+        // than on a row. `string.replace(s, p, w, all: false)` is that call:
+        // the positional spelling of it forwards and lowers, and only the
+        // named spelling landed here and fell back. Any row for the member
+        // carries the same declaration — the names are the stdlib export's,
+        // not the row's — so the permutation below can use it.
+        .or_else(|| {
+            forwards_to_method(module, name)
+                .and_then(|_| module_call_abi_rows(module, name).find(|row| !row.named.is_empty()))
+        })
         .ok_or_else(reject)?;
     let mut arg_regs: Vec<Option<u8>> = vec![None; argc];
     for (i, slot) in arg_regs.iter_mut().enumerate().take(positional_count) {
@@ -610,6 +622,22 @@ pub(crate) fn lower_named_module_call(
         arg_regs[slot] = Some(value_reg);
     }
     let arg_regs = arg_regs.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
+    // Only when no row serves this arity: a member that both forwards and has
+    // a row of the right shape keeps taking the row, so nothing that lowered
+    // before now takes a different path.
+    if row.args.len() != argc
+        && let Some(method) = forwards_to_method(module, name)
+        && let Some((&receiver_reg, rest)) = arg_regs.split_first()
+    {
+        let (receiver, receiver_ty) = ssa.read(receiver_reg, block, pc)?;
+        let args = rest
+            .iter()
+            .map(|reg| ssa.read(*reg, block, pc))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, method, &args, block, pc)?;
+        ssa.write(base, block, result);
+        return Ok(());
+    }
     lower_module_abi_call(ssa, insts, module, name, base, &arg_regs, block, pc)
 }
 

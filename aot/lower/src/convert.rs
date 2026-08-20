@@ -345,31 +345,20 @@ pub(crate) fn to_display_str(
                 src: v,
                 maybe_ty: ty,
             });
+            // Bool display goes through `from_bool`, not the i64 decimal text.
+            // `MaybeValue` narrows a `MaybeBool`'s word to a `Bool` itself, so
+            // the extracted value is already the scalar in every case. It used
+            // to be re-derived here with a `!= 0` against an `i64` zero, which
+            // is not well-typed IR: `println(m.get(k))` on a `Map<String,
+            // Bool>` failed Cranelift verification rather than lowering, and
+            // with fallback on (the default) that reads as a program that
+            // merely declines to lower.
             let scalar_ty = match ty {
-                Ty::MaybeI64 | Ty::MaybeBool => Ty::I64,
+                Ty::MaybeI64 => Ty::I64,
+                Ty::MaybeBool => Ty::Bool,
                 Ty::MaybeF64 => Ty::F64,
                 _ => Ty::Str,
             };
-            // Bool display goes through from_bool, not the i64 decimal text.
-            let raw = if ty == Ty::MaybeBool {
-                let zero = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: zero,
-                    value: Const::I64(0),
-                });
-                let b = ssa.new_val();
-                insts.push(Inst::Cmp {
-                    dst: b,
-                    op: CmpOp::Ne,
-                    float: false,
-                    lhs: raw,
-                    rhs: zero,
-                });
-                b
-            } else {
-                raw
-            };
-            let scalar_ty = if ty == Ty::MaybeBool { Ty::Bool } else { scalar_ty };
             let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, false, pc)?;
             let present = ssa.new_val();
             insts.push(Inst::MaybePresent {

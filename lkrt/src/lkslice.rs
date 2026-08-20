@@ -103,16 +103,6 @@ pub unsafe extern "C" fn lkrt_lkslice_i64_len(handle: *mut c_void) -> i64 {
     unsafe { window(handle) }.map_or(0, |w| w.len as i64)
 }
 
-/// `w.is_empty()`, as `0`/`1`.
-///
-/// # Safety
-/// `handle` must be a live window handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lkslice_i64_is_empty(handle: *mut c_void) -> i64 {
-    // SAFETY: the caller guarantees a live window handle or null.
-    i64::from(unsafe { window(handle) }.is_none_or(|w| w.len == 0))
-}
-
 /// `w[i]` as `Maybe<i64>`: a negative index counts from the window's end, and
 /// anything outside it is absent — the VM's `slice_element`, which resolves the
 /// index against the window and then reads through to the source.
@@ -431,7 +421,7 @@ mod tests {
     fn an_empty_window_is_empty() {
         let source = list(&[1, 2, 3]);
         let window = unsafe { lkrt_lkslice_i64_new(source, 2, 2) };
-        assert_eq!(unsafe { lkrt_lkslice_i64_is_empty(window) }, 1);
+        assert_eq!(unsafe { lkrt_lkslice_i64_len(window) }, 0);
         assert_eq!(read(window, 0), None);
     }
 }

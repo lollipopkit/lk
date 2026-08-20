@@ -604,7 +604,6 @@ macro_rules! for_each_abi_fn {
             ("slice_h", "i64_new", lkrt_lkslice_i64_new, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
             ("slice_h", "i64_sub", lkrt_lkslice_i64_sub, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
             ("slice_h", "i64_len", lkrt_lkslice_i64_len, ReadsHost, [Ptr], I64, Borrowed);
-            ("slice_h", "i64_is_empty", lkrt_lkslice_i64_is_empty, ReadsHost, [Ptr], I64, Borrowed);
             // The copy, asked for by name. Its result windows nothing, so it is
             // an ordinary `Constructs`.
             ("slice_h", "i64_to_list", lkrt_lkslice_i64_to_list, WritesHost, [Ptr], Ptr, Constructs);
@@ -649,6 +648,7 @@ macro_rules! for_each_abi_fn {
             ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
             ("map_h", "i64_i64_len", lkrt_lkmap_i64_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("map_h", "i64_i64_delete", lkrt_lkmap_i64_i64_delete, WritesHost, [Ptr, I64], DynVal, Borrowed);
             // String-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
@@ -661,6 +661,7 @@ macro_rules! for_each_abi_fn {
             ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
             ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("map_h", "i64_f64_delete", lkrt_lkmap_i64_f64_delete, WritesHost, [Ptr, I64], DynVal, Borrowed);
             // Byte-wise string comparison, returning -1/0/1 (the caller compares to 0).
             ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
@@ -683,6 +684,7 @@ macro_rules! for_each_abi_fn {
             ("str", "reverse", lkrt_str_reverse, WritesHost, [StrPtr], StrPtr);
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
+            ("str", "replace_limited", lkrt_str_replace_limited, WritesHost, [StrPtr, StrPtr, StrPtr, I64], StrPtr);
             ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr, Constructs);
             // `string.strip_prefix/suffix` return String-or-nil (boxed Dyn);
             // `count` counts non-overlapping matches, the empty needle included

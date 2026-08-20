@@ -392,7 +392,35 @@ pub unsafe extern "C" fn lkrt_str_repeat(s: *const c_char, n: i64) -> *mut c_cha
 /// All pointers must be valid C strings, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char, to: *const c_char) -> *mut c_char {
-    arena_c_string(CString::new(view(s).replace(view(from), view(to))).unwrap_or_default())
+    unsafe { lkrt_str_replace_limited(s, from, to, -1) }
+}
+
+/// `s.replace(from, to)` with a cap on how many occurrences are replaced:
+/// `limit` negative means every one, otherwise at most that many from the
+/// left.
+///
+/// This is what the method's `all` parameter compiles to, which is why it is a
+/// count rather than a flag — `all: false` is "at most one" and `all: true` is
+/// "no limit", and both are the same primitive. The flag can be a runtime
+/// value, so picking between two entries at compile time would not have
+/// covered `s.replace(a, b, flag)`.
+///
+/// # Safety
+/// All pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_replace_limited(
+    s: *const c_char,
+    from: *const c_char,
+    to: *const c_char,
+    limit: i64,
+) -> *mut c_char {
+    let (s, from, to) = (view(s), view(from), view(to));
+    let replaced = if limit < 0 {
+        s.replace(from, to)
+    } else {
+        s.replacen(from, to, limit as usize)
+    };
+    arena_c_string(CString::new(replaced).unwrap_or_default())
 }
 
 /// The module `string.len(s)` — **byte** length (`str::len`), unlike the

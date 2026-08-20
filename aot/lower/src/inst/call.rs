@@ -150,6 +150,7 @@ pub(super) fn lower(
                     return lower_named_module_call(
                         ssa,
                         insts,
+                        globals,
                         &module,
                         &name,
                         base,
