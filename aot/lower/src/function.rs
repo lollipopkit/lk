@@ -933,6 +933,7 @@ pub(crate) fn lower_function(
             .get(&(func_index, reg))
             .copied()
             .unwrap_or(Ty::I64);
+        let is_closure_input = sig.try_body_closure_inputs.contains(&(func_index, reg));
         // The two words a carrier crossed as, fused back into one.
         if crosses_as_two_words(ty) {
             let lo = ssa.new_val();
@@ -942,6 +943,9 @@ pub(crate) fn lower_function(
             let carrier = ssa.new_val();
             entry_carriers.push((carrier, lo, hi, ty));
             ssa.current_def[0][reg as usize] = Some((carrier, ty));
+            if is_closure_input {
+                ssa.closure_values.insert(carrier);
+            }
             continue;
         }
         let pv = ssa.new_val();
@@ -955,6 +959,11 @@ pub(crate) fn lower_function(
             try_param_bitcasts.push((reg, pv));
         } else {
             ssa.current_def[0][reg as usize] = Some((pv, ty));
+            // Carried across the boundary rather than re-derived: the body has
+            // no definition to look at.
+            if is_closure_input {
+                ssa.closure_values.insert(pv);
+            }
             fn_params.push((pv, ty));
         }
     }
@@ -1508,11 +1517,23 @@ pub(crate) fn lower_function(
                         let lo = word(lk_aot_mir::CarrierHalf::Lo);
                         let hi = word(lk_aot_mir::CarrierHalf::Hi);
                         sig.try_body_param_tys.insert((body, reg), ty);
+                        // A closure handle is a `Dyn`, so it crosses here and
+                        // not through the single-word branch below.
+                        if ssa.closure_values.contains(&v) {
+                            sig.try_body_closure_inputs.insert((body, reg));
+                        } else {
+                            sig.try_body_closure_inputs.remove(&(body, reg));
+                        }
                         input_words[index] = Some(vec![lo, hi]);
                         continue;
                     }
                     if crosses_as_word(ty) {
                         sig.try_body_param_tys.insert((body, reg), ty);
+                        if ssa.closure_values.contains(&v) {
+                            sig.try_body_closure_inputs.insert((body, reg));
+                        } else {
+                            sig.try_body_closure_inputs.remove(&(body, reg));
+                        }
                         input_words[index] = Some(vec![v]);
                     } else {
                         // Not a word and not a carrier this knows how to split.

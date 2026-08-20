@@ -76,6 +76,18 @@ pub(crate) struct SigInfer {
     pub(crate) try_body_lambdas: std::collections::HashMap<(u32, u8), LambdaIdentity>,
     /// Region inputs the enclosing function holds as an *upvalue cell* — a
     /// variable some closure in it captured. See [`cell_region_input`].
+    /// Region inputs whose word is a **closure handle**.
+    ///
+    /// `ssa.closure_values` is the enclosing function's own SSA state and stops
+    /// at the boundary: the body is a separate lowering and the input arrives
+    /// as an ordinary `Dyn` word. What that costs is precision at the one place
+    /// the fact is load-bearing — a store whose *key* is a closure is provably
+    /// not a key and may lower to the runtime's refusal, while any other `Dyn`
+    /// key might be a valid key of the wrong kind and must not.
+    ///
+    /// Only for lambdas used as *values*; one still travelling as a compile-time
+    /// identity is [`SigInfer::try_body_lambdas`] and has no word at all.
+    pub(crate) try_body_closure_inputs: std::collections::HashSet<(u32, u8)>,
     pub(crate) try_body_cell_inputs: std::collections::HashSet<(u32, u8)>,
     /// What a cell input's *content* type is, as the caller saw it entering the
     /// region.

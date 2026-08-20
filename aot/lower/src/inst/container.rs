@@ -1532,6 +1532,34 @@ pub(super) fn lower(
                 });
                 return Ok(());
             }
+            // A key this side cannot type, stored into a map carrier that holds
+            // *one* key kind. The runtime unbox (`dyn.as_key_str` /
+            // `dyn.as_key_i64`) refuses every other kind — and the interpreter
+            // does not: an LK map takes nil, a Bool, an Int and a String alike,
+            // and which carrier holds it is a native representation choice no
+            // program asked for. So `fn put(m, k) { m[k] = 1; }` called once
+            // with a string and once with an integer stored the first and
+            // raised "runtime type error" on the second, where the interpreter
+            // answered `{"a":1,7:1}`. An explicit `{"a": 1}` literal reaches it
+            // too, so this is not about the empty-literal guess.
+            //
+            // Except a **closure**, which is provably not a key at all: there
+            // the runtime refusal is the interpreter's own sentence, word for
+            // word, and lowering it keeps the rest of the module native.
+            // `examples/syntax/closure_value.lk` writes that on purpose, inside
+            // a `try` — which is why the fact has to cross the region boundary
+            // (`SigInfer::try_body_closure_inputs`) rather than be re-derived.
+            //
+            // Measured: the generative fuzzer's fully-native count is unchanged
+            // at 300 cases, and no example loses its lowering.
+            if matches!(
+                list_ty,
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+            ) && let Ok((kv, Ty::Dyn)) = ssa.read(instr.b(), block, pc)
+                && !ssa.closure_values.contains(&kv)
+            {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
             // A boxed map takes any value: box it and store. Without this arm

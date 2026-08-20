@@ -739,6 +739,21 @@ fn differential_strings() {
                 "a_caught_error_says_what_the_interpreter_says",
                 "fn ix(a: Any) { try { let r: Any = a[0]; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn ln(a: Any) { try { let r: Any = a.len(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cn(a: Any) { try { let r: Any = 1 in a; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cl(a: Any) { try { let r: Any = a(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nix(nil);\nix(1);\nix(1.5);\nix(true);\nix(Set([1]));\nln(nil);\nln(1);\nln(true);\nln(1.5);\ncn(nil);\ncn(1);\ncn(true);\ncl(nil);\ncl(1);\ncl(true);\ncl(1.5);\ncl(\"s\");\ncl(\"abcdefgh\");\ncl([1]);\ncl({\"k\": 1});\ncl(Set([1]));\nreturn 0;\n",
             ),
+            // A map takes nil, a Bool, an Int and a String as keys alike, and
+            // which native carrier holds it is a representation choice no
+            // program asked for. The runtime unbox refused every kind but the
+            // carrier's, so the same helper stored a string key and raised
+            // "runtime type error" on an integer one — on an explicit literal,
+            // not only on the empty-literal guess.
+            //
+            // These do not lower, and that is the point: the answer has to be
+            // the interpreter's, and until a boxed map is generally keyed
+            // (`docs/aot/aot-gaps-and-lkrt.md` §62) the only way to have it is
+            // to decline. What this pins is that declining is what happens.
+            new(
+                "a_map_key_of_any_kind_answers_or_declines",
+                "fn put(m: Any, k: Any) -> Any {\n  m[k] = 1;\n  return m;\n}\nprintln(put({\"a\": 1}, \"b\"));\nprintln(put({\"a\": 1}, 7));\nprintln(put({\"a\": 1}, nil));\nprintln(put({\"a\": 1}, true));\nprintln(put({1: 2}, 7));\nprintln(put({1: 2}, \"k\"));\nfn build(k: Any) -> Any {\n  let m = {};\n  m[k] = 1;\n  return m;\n}\nprintln(build(\"kk\"));\nprintln(build(7));\nreturn 0;\n",
+            ),
             new(
                 "a_predicate_takes_any_value",
                 "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",
