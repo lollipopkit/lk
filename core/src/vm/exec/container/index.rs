@@ -267,6 +267,20 @@ impl Executor {
                     return Ok(self.get_typed_list_element_allocating(handle, index));
                 }
             }
+            // `p.x` — a struct field read. The object arms lived only in the
+            // slow path, so every field read of a struct took the cold route:
+            // 600 000 of 600 000 in a loop that reads two fields. The slow
+            // path's field-slot cache is not what saves it there either — a
+            // static fact means no inline cache is consulted at all, so what
+            // it does is exactly this lookup, behind a `#[cold]` call.
+            if fact.target_kind == PerfIndexTargetKind::Object
+                && let Some(key) = known_string_key
+                && let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
+            {
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
+                return Ok(object.get_field(key).unwrap_or(RuntimeVal::Nil));
+            }
             if fact.target_kind == PerfIndexTargetKind::String {
                 let key_val = self.read_unchecked(key_reg);
                 if let RuntimeVal::Int(n) = key_val

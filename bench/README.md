@@ -992,5 +992,14 @@ min-of-9:2.47s → **2.24s**。两趟合起来 2.69s → 2.24s,**17%**。
 min-of-9:0.96s → 0.87s(去掉双重分配)→ **0.68s**(共用声明里的 `Arc`),
 合计 **29%**。
 
+再看一眼 `lk coverage --runtime` 的索引计数,发现第三处:
+`index_keys=known_string_key:600000, slow_path:600000` —— 结构体的**每一次**
+字段读都走冷路径。`get_heap_index` 的快路径有 Map / List / String 三支,唯独没有
+Object,所以 `p.x` 一律掉进 `#[cold]` 的 `get_heap_index_slow_path`。而那条冷路径
+上的字段槽缓存在这里也没用上:有静态事实时根本不查内联缓存,它做的就是同一次
+哈希查找,只是隔着一次冷调用。补一支 Object 快路径:0.68s → **0.61s**。
+
+三处合计:0.96s → 0.61s,**36%**。
+
 `IndexMap::from_iter::<…, 1>` 那 4.0% 仍然在:`Mixed` 空 map 第一次插入时提升成
 `StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。
