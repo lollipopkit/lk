@@ -1001,5 +1001,34 @@ Object,所以 `p.x` 一律掉进 `#[cold]` 的 `get_heap_index_slow_path`。而�
 
 三处合计:0.96s → 0.61s,**36%**。
 
+## 参数后面的容器没有编译期事实,于是每次索引都走冷路径(2026-08-21)
+
+`cart_pricing_rules`(1.89x Lua)的计数器:
+
+    index_keys=dynamic_register_key:7000000, dynamic_short_string_key:7000000,
+               slow_path:7000000, typed_map_direct:7000000
+
+**7 000 000 次里 7 000 000 次走 `#[cold] get_heap_index_slow_path`**,然后从
+同一个有类型的载体上答出来。列表那边一样:`fn at(xs, i) { return xs[i]; }`
+是 `slow_path:6000000`。
+
+原因是快路径的三支(Map / List / String)全都写在 `if let Some(fact) = index_fact`
+里面 —— 而**参数后面的容器没有事实**。`prices.get(sku)` 写在
+`fn line_total(prices, …)` 里是最普通的形状。
+
+改法:把"这是什么容器"这个问题提前一次问清楚 —— 有事实用事实,没有就看一眼堆
+(一次 match)。四支(Map / List / Object / String)收进同一个 `match`。冷路径
+本身留着,它还管着内联缓存、观察到的类型和事实不符、以及 Unknown。
+
+min-of-9:
+
+| workload | 前 | 后 |
+| --- | --- | --- |
+| 参数后面的列表索引 | 0.22s | **0.17s** |
+| `cart_pricing_rules` 抽出来 | 0.51s | 0.49s |
+
+门禁上 `cart_pricing_rules` 1.89x → 1.77x,`binary_search` 24.8ms → 23.7ms,
+`two_sum_map` 27.1ms → 24.4ms,geomean 0.987x。
+
 `IndexMap::from_iter::<…, 1>` 那 4.0% 仍然在:`Mixed` 空 map 第一次插入时提升成
 `StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。

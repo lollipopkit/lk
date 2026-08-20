@@ -227,9 +227,28 @@ impl Executor {
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
-        // Fast path: when index_fact confirms Map target, do direct map lookup.
-        if let Some(fact) = index_fact {
-            if fact.target_kind == PerfIndexTargetKind::Map {
+        // What kind of container this is: the compile-time fact when there is
+        // one, and otherwise one look at the heap.
+        //
+        // A container behind a *parameter* has no fact — `prices.get(sku)` and
+        // `xs[i]` inside `fn line_total(prices, …)` / `fn at(xs, i)` are the
+        // ordinary shapes — so every such lookup took the `#[cold]` route to
+        // learn what the heap says directly. Measured: 7 000 000 of 7 000 000
+        // map lookups in a pricing loop, 6 000 000 of 6 000 000 list lookups in
+        // an indexing loop, and the cold route then answered from the same
+        // carrier these arms read.
+        let target_kind = match index_fact {
+            Some(fact) => Some(fact.target_kind),
+            None => match self.state.heap.get(handle) {
+                Some(HeapValue::Map(_)) => Some(PerfIndexTargetKind::Map),
+                Some(HeapValue::List(_)) => Some(PerfIndexTargetKind::List),
+                Some(HeapValue::Object(_)) => Some(PerfIndexTargetKind::Object),
+                Some(HeapValue::String(_)) => Some(PerfIndexTargetKind::String),
+                _ => None,
+            },
+        };
+        match target_kind {
+            Some(PerfIndexTargetKind::Map) => {
                 if let Some(key_str) = known_string_key {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
@@ -246,8 +265,7 @@ impl Executor {
                     return self.get_map_index_fast(handle, key_reg, index_key_metrics);
                 }
             }
-            // For list with known type, skip the slow path too
-            if fact.target_kind == PerfIndexTargetKind::List {
+            Some(PerfIndexTargetKind::List) => {
                 let key_val = self.read_unchecked(key_reg);
                 if let RuntimeVal::Int(n) = key_val
                     && let Some(HeapValue::List(list)) = self.state.heap.get(handle)
@@ -267,21 +285,22 @@ impl Executor {
                     return Ok(self.get_typed_list_element_allocating(handle, index));
                 }
             }
-            // `p.x` — a struct field read. The object arms lived only in the
+            // `p.x` — a struct field read. The object arm lived only in the
             // slow path, so every field read of a struct took the cold route:
             // 600 000 of 600 000 in a loop that reads two fields. The slow
-            // path's field-slot cache is not what saves it there either — a
-            // static fact means no inline cache is consulted at all, so what
-            // it does is exactly this lookup, behind a `#[cold]` call.
-            if fact.target_kind == PerfIndexTargetKind::Object
-                && let Some(key) = known_string_key
-                && let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
-            {
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
-                return Ok(object.get_field(key).unwrap_or(RuntimeVal::Nil));
+            // path's field-slot cache is not what saves it there either — with
+            // a static fact no inline cache is consulted at all, so what it
+            // does is exactly this lookup, behind a `#[cold]` call.
+            Some(PerfIndexTargetKind::Object) => {
+                if let Some(key) = known_string_key
+                    && let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
+                {
+                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
+                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
+                    return Ok(object.get_field(key).unwrap_or(RuntimeVal::Nil));
+                }
             }
-            if fact.target_kind == PerfIndexTargetKind::String {
+            Some(PerfIndexTargetKind::String) => {
                 let key_val = self.read_unchecked(key_reg);
                 if let RuntimeVal::Int(n) = key_val
                     && let Some(HeapValue::String(value)) = self.state.heap.get(handle)
@@ -289,6 +308,7 @@ impl Executor {
                     return self.index_string_at(value, *n);
                 }
             }
+            Some(PerfIndexTargetKind::Unknown) | None => {}
         }
 
         self.get_heap_index_slow_path(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
