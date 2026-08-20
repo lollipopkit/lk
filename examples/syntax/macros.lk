@@ -34,4 +34,36 @@ fn selected_value() {
 }
 
 assert_eq!(selected_value(), 5);
+
+// An expansion that lands where an *expression* is expected is one expression,
+// not loose tokens. Spliced raw, the pieces bound to whatever surrounded the
+// call instead of to each other: `twice!(n) * 2` computed `n + n * 2`, and
+// `"v=" + twice!(n)` concatenated both terms.
+macro_rules! twice {
+    ($e:expr) => { ($e) + ($e) };
+}
+
+let n = 3;
+assert_eq!(twice!(n), 6);
+assert_eq!(twice!(n) * 2, 12);
+assert_eq!(2 * twice!(n), 12);
+assert_eq!("v=" + twice!(n), "v=6");
+assert_eq!([twice!(n), 9], [6, 9]);
+
+// A multi-statement expansion stays multiple statements — the grouping is for
+// expression position only, and a top-level `;` says this is not one.
+macro_rules! swap_two {
+    ($a:ident, $b:ident) => {
+        let held = $a;
+        $a = $b;
+        $b = held;
+    };
+}
+
+let left = 1;
+let right = 2;
+swap_two!(left, right);
+assert_eq!(left, 2);
+assert_eq!(right, 1);
+
 return values.1;

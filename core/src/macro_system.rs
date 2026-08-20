@@ -744,6 +744,65 @@ fn parse_fragment_kind(name: &str) -> Option<FragmentKind> {
     }
 }
 
+/// Parenthesises an expansion that lands where an *expression* is expected.
+///
+/// A declarative macro's output is spliced as tokens, so its pieces used to
+/// bind to whatever surrounded the call rather than to each other:
+///
+/// ```text
+/// macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+/// let n = 3;
+/// twice!(n)          → 6     (nothing to bind to)
+/// twice!(n) * 2      → 9     (`n + n * 2`), and `2 * twice!(n)` the same
+/// "v=" + twice!(n)   → "v=33"
+/// ```
+///
+/// Two conditions, and both are needed. The **site** must want an expression —
+/// statement position is `;`, `{`, `}` or the start of the stream, and nothing
+/// else is — and the **expansion** must be a single expression, which a
+/// top-level `;` in it says it is not (`swap_names!` expands to three
+/// statements and must stay three statements).
+fn group_expression_expansion(before: &[SourceToken], expanded: Vec<SourceToken>) -> Vec<SourceToken> {
+    if expanded.is_empty() {
+        return expanded;
+    }
+    let statement_position = match before.last() {
+        None => true,
+        Some(token) => matches!(token.token, Token::Semicolon | Token::LBrace | Token::RBrace),
+    };
+    if statement_position {
+        return expanded;
+    }
+    let mut depth = 0i32;
+    for token in &expanded {
+        match token.token {
+            Token::LParen | Token::LBracket | Token::LBrace => depth += 1,
+            Token::RParen | Token::RBracket | Token::RBrace => depth -= 1,
+            Token::Semicolon if depth == 0 => return expanded,
+            _ => {}
+        }
+    }
+    // The parentheses take the call's span and origins, so a diagnostic inside
+    // still points at the macro rather than at punctuation nobody wrote.
+    let open = SourceToken {
+        token: Token::LParen,
+        span: expanded[0].span.clone(),
+        lexeme: "(".to_string(),
+        origins: expanded[0].origins.clone(),
+    };
+    let close = SourceToken {
+        token: Token::RParen,
+        span: expanded[expanded.len() - 1].span.clone(),
+        lexeme: ")".to_string(),
+        origins: expanded[expanded.len() - 1].origins.clone(),
+    };
+    let mut grouped = Vec::with_capacity(expanded.len() + 2);
+    grouped.push(open);
+    grouped.extend(expanded);
+    grouped.push(close);
+    grouped
+}
+
 fn expand_stream(
     tokens: &[SourceToken],
     registry: &MacroRegistry,
@@ -817,6 +876,7 @@ fn expand_stream(
             }
         };
         stack.pop();
+        let expanded = group_expression_expansion(&output, expanded);
         output.extend(expanded);
         index = inner_end + 1;
     }

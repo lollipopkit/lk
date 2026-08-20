@@ -253,17 +253,47 @@ fn capture_expr_fragment(
     // A macro call is an expression, and composing macros is most of what
     // macros are for — `twice!(twice!(1))`. Expansion is token-level, so at
     // this point the inner call is still `Id ! ( … )`, which the expression
-    // parser does not know; it answered "expected `expr` fragment". Captured
-    // as tokens it is expanded on a later round, like any other output.
-    if let Some(consumed) = macro_invocation_prefix_len(input, pos) {
-        return capture_parser_prefix(input, pos, consumed, next_literal);
-    }
-    let tokens = source_tokens_to_tokens(&input[pos..]);
+    // parser does not know.
+    //
+    // Collapsing each call to a single name lets the *real* parser decide where
+    // the expression ends, so a call composes like any other operand. Taking the
+    // call itself as the whole fragment — which is what this did — stopped at
+    // the call: `twice!(n)` matched and `twice!(n) * 2` "matched a prefix but
+    // left unexpected `*`". The captured tokens are the originals, expanded on a
+    // later round like any other output.
+    let (tokens, widths) = collapse_macro_calls(input, pos);
     let mut parser = ExprParser::new(&tokens);
     let Ok((_, consumed)) = parser.parse_prefix() else {
         return None;
     };
+    let consumed = widths.get(..consumed)?.iter().sum();
     capture_parser_prefix(input, pos, consumed, next_literal)
+}
+
+/// The tokens of `input[pos..]` with every macro invocation collapsed to one
+/// identifier, plus how many original tokens each rewritten token stands for.
+///
+/// Summing the widths of the tokens a parser consumed gives the length in the
+/// original stream.
+fn collapse_macro_calls(input: &[SourceToken], pos: usize) -> (Vec<Token>, Vec<usize>) {
+    let mut tokens = Vec::with_capacity(input.len() - pos);
+    let mut widths = Vec::with_capacity(input.len() - pos);
+    let mut index = pos;
+    while index < input.len() {
+        match macro_invocation_prefix_len(input, index) {
+            Some(len) => {
+                tokens.push(Token::Id("__lk_macro_operand".into()));
+                widths.push(len);
+                index += len;
+            }
+            None => {
+                tokens.push(input[index].token.clone());
+                widths.push(1);
+                index += 1;
+            }
+        }
+    }
+    (tokens, widths)
 }
 
 /// The token length of a macro invocation starting at `pos`, if there is one.
