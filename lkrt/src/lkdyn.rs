@@ -752,6 +752,55 @@ pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0))
 }
 
+/// Where the built-in dispatch codes start, above any arena type mark.
+///
+/// A struct instance carries a mark; a value of a built-in type does not, and
+/// `impl S for Int` is a real impl whose arm has to be reachable. So dispatch
+/// asks for *this* id rather than the mark: a marked receiver answers its mark,
+/// and everything else answers a code for its language type.
+///
+/// The lowering mirrors these nine numbers (`aot/lower/src/trait_env.rs`),
+/// because it is what assigns the arm ids. `examples/syntax/trait_builtin.lk`
+/// is the conformance check: a disagreement is a wrong answer there, on every
+/// kind, immediately.
+pub const DISPATCH_BUILTIN_BASE: i64 = 1 << 40;
+
+/// The language type of a value, as a small code — the built-in half of
+/// [`lkrt_dyn_dispatch_type_id`]. Collapses the four list carriers to `List`
+/// and the six map carriers to `Map`, because that is what an impl target can
+/// name (`impl List<Int>` is refused by the language).
+fn dispatch_builtin_code(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_NIL => 1,
+        DYN_BOOL => 2,
+        DYN_I64 => 3,
+        DYN_F64 => 4,
+        DYN_STR => 5,
+        DYN_SET => 7,
+        DYN_BYTES => 8,
+        DYN_SLICE => 6,
+        tag if is_list_tag(tag) => 6,
+        tag if is_map_tag(tag) => 9,
+        _ => 0,
+    }
+}
+
+/// The id trait dispatch matches an arm against.
+///
+/// A marked struct instance answers its mark; anything else answers
+/// [`DISPATCH_BUILTIN_BASE`] plus its type code. Without the second half a
+/// receiver of a built-in type matched no arm and fell through to
+/// [`lkrt_dyn_method_missing`], so `fn show(v: S) -> String { return v.s(); }`
+/// raised "runtime type error" for every `impl S for Int` in the program.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_dispatch_type_id(v: LkDyn) -> i64 {
+    let mark = lkrt_dyn_obj_type_id(v);
+    if mark != 0 {
+        return mark;
+    }
+    DISPATCH_BUILTIN_BASE + dispatch_builtin_code(v)
+}
+
 /// Dispatch fall-through: no registered impl matched the receiver's mark —
 /// the VM's unknown-method error is a catchable raise.
 #[unsafe(no_mangle)]

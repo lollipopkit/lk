@@ -1,0 +1,94 @@
+// A trait can be implemented for a *built-in* type, and dispatch through a
+// trait-typed parameter has to reach those impls as well as a struct's.
+//
+// `Nil` is not among them: the checker does not accept `nil` where a trait is
+// declared, so an impl for it has no call site.
+//
+// A struct instance carries a type mark the runtime can read; a value of a
+// built-in type does not. So dispatch asks for a type id that answers the mark
+// when there is one and a fixed code for the value's language type otherwise —
+// and this file is what checks the two sides agree on those codes, because a
+// disagreement matches no arm and raises where the interpreter answers.
+
+trait Describe {
+    fn describe(self) -> String;
+}
+
+impl Describe for Bool {
+    fn describe(self) -> String {
+        return "bool " + self;
+    }
+}
+
+impl Describe for Int {
+    fn describe(self) -> String {
+        return "int " + self;
+    }
+}
+
+impl Describe for Float {
+    fn describe(self) -> String {
+        return "float " + self;
+    }
+}
+
+impl Describe for String {
+    fn describe(self) -> String {
+        return "string " + self;
+    }
+}
+
+impl Describe for List {
+    fn describe(self) -> String {
+        return "list of " + self.len();
+    }
+}
+
+impl Describe for Map {
+    fn describe(self) -> String {
+        return "map of " + self.len();
+    }
+}
+
+impl Describe for Set {
+    fn describe(self) -> String {
+        return "set of " + self.len();
+    }
+}
+
+impl Describe for Bytes {
+    fn describe(self) -> String {
+        return "bytes of " + self.len();
+    }
+}
+
+struct Point {
+    x: Int,
+}
+
+impl Describe for Point {
+    fn describe(self) -> String {
+        return "point " + self.x;
+    }
+}
+
+fn tell(v: Describe) -> String {
+    return v.describe();
+}
+
+println(tell(true));
+println(tell(7));
+println(tell(2.5));
+println(tell("hi"));
+println(tell([1, 2, 3]));
+println(tell({ "a": 1, "b": 2 }));
+println(tell(Set([1])));
+println(tell("ab".bytes()));
+println(tell(Point { x: 4 }));
+
+// The same call reached with several kinds in turn, so one call site has to
+// dispatch rather than specialize.
+let mixed = [1, "two", 3.0, [4], true];
+for v in mixed {
+    println(tell(v));
+}

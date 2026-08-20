@@ -1515,7 +1515,7 @@ impl Lower {
         arms: &[(i64, FuncId)],
     ) -> Result<(), ClifError> {
         let (s0, s1) = self.two(self_arg)?;
-        let type_id = self.abi_call(b, mctx, "dyn", "obj_type_id", &[s0, s1])?;
+        let type_id = self.abi_call(b, mctx, "dyn", "dispatch_type_id", &[s0, s1])?;
         // `self` then the method's own arguments, each a boxed `Dyn` pair — the
         // one call shape every arm is rendered with.
         let mut call_args = vec![s0, s1];

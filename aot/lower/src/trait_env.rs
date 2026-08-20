@@ -66,6 +66,33 @@ pub(crate) fn called_method_names(module: &lk_core::vm::ModuleData) -> std::coll
     names
 }
 
+/// The dispatch id of a built-in impl target, or `None` for a struct name.
+///
+/// Mirrors `lkrt::lkdyn::dispatch_builtin_code` and its base — the runtime
+/// computes the same number from the value's tag, and the two have to agree or
+/// no arm matches. `examples/syntax/trait_builtin.lk` is the conformance check:
+/// it dispatches through a trait parameter on every built-in kind, so a
+/// disagreement is a wrong answer there rather than a silent miss.
+///
+/// The name is the impl target's type *text*, so a container's is written out
+/// (`List<Any>`, `Map<Any, Any>`) and only its base names the type.
+fn dispatch_builtin_type_id(type_name: &str) -> Option<i64> {
+    const BASE: i64 = 1 << 40;
+    let code = match type_name.split('<').next().unwrap_or(type_name) {
+        "Nil" => 1,
+        "Bool" => 2,
+        "Int" => 3,
+        "Float" => 4,
+        "String" => 5,
+        "List" => 6,
+        "Set" => 7,
+        "Bytes" => 8,
+        "Map" => 9,
+        _ => return None,
+    };
+    Some(BASE + code)
+}
+
 impl TraitEnv {
     /// The type whose `impl` block defines function `fidx`, if any.
     ///
@@ -125,7 +152,15 @@ pub(crate) fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
     }
     for decl in &module.type_info.impls {
         let next_id = env.type_ids.len() as i64 + 1;
-        let tid = *env.type_ids.entry(decl.type_name.clone()).or_insert(next_id);
+        // `impl S for Int` names a *built-in* type, whose values carry no arena
+        // mark for a sequential id to be compared against. Those arms take the
+        // fixed code the runtime answers for the kind
+        // (`lkrt::lkdyn::dispatch_builtin_code`); a struct keeps the sequential
+        // id, which is also what `display` looks its name up by.
+        let tid = match dispatch_builtin_type_id(&decl.type_name) {
+            Some(fixed) => *env.type_ids.entry(decl.type_name.clone()).or_insert(fixed),
+            None => *env.type_ids.entry(decl.type_name.clone()).or_insert(next_id),
+        };
         for method in &decl.methods {
             env.impls
                 .insert((decl.type_name.clone(), method.name.clone()), method.function);

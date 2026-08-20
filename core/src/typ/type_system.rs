@@ -287,12 +287,41 @@ impl TypeRegistry {
 
     /// Check if a type implements a trait
     pub fn implements_trait(&self, typ: &Type, trait_name: &str) -> bool {
-        let type_name = Self::type_to_string(typ);
-        if let Some(impls) = self.implementations.get(&type_name) {
-            impls.iter().any(|impl_def| impl_def.trait_name == trait_name)
-        } else {
-            false
+        self.impls_for(typ)
+            .is_some_and(|impls| impls.iter().any(|impl_def| impl_def.trait_name == trait_name))
+    }
+
+    /// The impls registered against `typ`, by its own name and then by its type
+    /// *constructor*.
+    ///
+    /// A container's registered name is written out — `impl List` is stored as
+    /// `List<Any>` — so `List<Int>` finds nothing by its own name. The base is
+    /// the right key rather than a guess, because the language refuses an impl
+    /// that names an element type ("`List<Int>` is not distinguishable from
+    /// another element type at run time — write `List`"), so one constructor
+    /// has one entry and every list is that entry's type.
+    ///
+    /// Without the second lookup `impl Describe for List` compiled and then
+    /// `fn tell(v: Describe)` refused every list, so the impl could not be
+    /// called. Scalars were unaffected — `Int` is its own name — which is why
+    /// only the containers were broken.
+    fn impls_for(&self, typ: &Type) -> Option<&Vec<TraitImpl>> {
+        let name = Self::type_to_string(typ);
+        if let Some(found) = self.implementations.get(&name) {
+            return Some(found);
         }
+        // Both sides are written out, and they need not agree on the argument:
+        // the lookup is `List<Int>` and the registration is `List<Any>`, so
+        // neither the full name nor a bare `List` finds the other. The
+        // *constructor* is what matches.
+        let base = name.split('<').next()?;
+        if base == name {
+            return None;
+        }
+        self.implementations
+            .iter()
+            .find(|(key, _)| key.split('<').next() == Some(base))
+            .map(|(_, impls)| impls)
     }
 
     /// Get the method implementation for a type and method name
@@ -301,8 +330,7 @@ impl TypeRegistry {
     /// against the module that compiled it; the runtime dispatch table
     /// (`VmContext::methods`) is what carries that module alongside it.
     pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<u32> {
-        let type_name = Self::type_to_string(typ);
-        let impls = self.implementations.get(&type_name)?;
+        let impls = self.impls_for(typ)?;
         impls
             .iter()
             .find_map(|impl_def| impl_def.methods.get(method_name).map(|(function, _sig)| *function))
