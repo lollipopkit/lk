@@ -747,6 +747,14 @@ impl Type {
                 name: "Slice".to_string(),
                 params: vec![Type::Any],
             }),
+            // The rest of the parameterized built-ins, for the same reason:
+            // `impl Task { … }` typed `self` as a `Task` of nothing.
+            "Task" => Some(Type::Task(Box::new(Type::Any))),
+            "Channel" => Some(Type::Channel(Box::new(Type::Any))),
+            "Stream" => Some(Type::Generic {
+                name: "Stream".to_string(),
+                params: vec![Type::Any],
+            }),
             _ => {
                 // Assume it's a named custom type
                 if is_type_name(s) {

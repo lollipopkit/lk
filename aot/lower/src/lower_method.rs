@@ -270,6 +270,7 @@ fn builtin_impl_for<'a>(sig: &'a SigInfer, type_name: &str, method: &str) -> Opt
 /// time (that one dispatches through `traits.methods` instead).
 fn builtin_impl_type_name(ty: Ty) -> Option<&'static str> {
     match ty {
+        Ty::Nil => Some("Nil"),
         Ty::Bool => Some("Bool"),
         Ty::I64 => Some("Int"),
         Ty::F64 => Some("Float"),

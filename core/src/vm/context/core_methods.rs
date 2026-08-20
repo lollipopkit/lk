@@ -2346,11 +2346,15 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
             named_params: Vec::new(),
             return_type: Box::new(Type::Any),
         },
+        // The element is dropped, as it is for a list and a map above: an impl
+        // target names the *constructor* (`impl Channel`), so a receiver
+        // carrying its own inner type would key on something no impl registers
+        // under. `Task` already did; these two did not.
         HeapValue::Task(_) => Type::Task(Box::new(Type::Any)),
-        HeapValue::Channel(channel) => Type::Channel(Box::new(channel.inner_type.clone())),
-        HeapValue::Stream(stream) => Type::Generic {
+        HeapValue::Channel(_) => Type::Channel(Box::new(Type::Any)),
+        HeapValue::Stream(_) => Type::Generic {
             name: "Stream".to_string(),
-            params: vec![stream.inner_type.clone()],
+            params: vec![Type::Any],
         },
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
         // `Slice<Any>`, not a bare `Slice`: an impl target written `Slice` is

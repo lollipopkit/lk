@@ -717,7 +717,9 @@ fn impl_target_scope(target_type: &str, declaring: &crate::val::TypeScope) -> cr
         // `"ab".bytes().mine()` said "Bytes has no method 'mine'". They are the
         // only two; every other builtin has a variant and takes the last arm.
         Some(Type::Named(name)) if name == "Bytes" => crate::val::TypeScope::builtin(),
-        Some(Type::Generic { ref name, .. }) if name == "Slice" => crate::val::TypeScope::builtin(),
+        Some(Type::Generic { ref name, .. }) if matches!(name.as_str(), "Slice" | "Stream") => {
+            crate::val::TypeScope::builtin()
+        }
         Some(Type::Named(_)) | Some(Type::Generic { .. }) | None => declaring.clone(),
         Some(_) => crate::val::TypeScope::builtin(),
     }

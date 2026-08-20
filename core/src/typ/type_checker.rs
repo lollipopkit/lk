@@ -480,10 +480,14 @@ impl TypeChecker {
             // cannot be called. Every other built-in container was normalized;
             // this one was missed because its type is `Generic` rather than a
             // variant of its own.
-            Type::Generic { name, params } if name == "Slice" && params.len() == 1 => Type::Generic {
-                name: name.clone(),
-                params: vec![Type::Any],
-            },
+            Type::Generic { name, params } if matches!(name.as_str(), "Slice" | "Stream") && params.len() == 1 => {
+                Type::Generic {
+                    name: name.clone(),
+                    params: vec![Type::Any],
+                }
+            }
+            Type::Task(_) => Type::Task(Box::new(Type::Any)),
+            Type::Channel(_) => Type::Channel(Box::new(Type::Any)),
             other => other.clone(),
         }
     }

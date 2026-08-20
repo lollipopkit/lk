@@ -47,12 +47,20 @@ impl Set {
     }
 }
 
+impl Nil {
+    fn describe(self) -> String {
+        return "nothing";
+    }
+}
+
 impl Slice {
     fn window_len(self) -> Int {
         return self.len();
     }
 }
 
+let nothing = nil;
+println(nothing.describe());
 println((5).doubled());
 println((3.0).halved());
 println("hi".shout());
