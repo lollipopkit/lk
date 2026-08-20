@@ -352,9 +352,25 @@ pub(super) fn lower(
                             }
                             (None, _) => unreachable!("only `Cell` is left to the call site"),
                         };
-                        if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                            return Err(Unsupported::TypeMismatch { pc });
-                        }
+                        // A carrier the function ABI has no word for *boxes*,
+                        // the way a call argument does — `lower_user_call`
+                        // observes the boxed type and the callee reads it back
+                        // as `Dyn`. Refusing instead meant
+                        //
+                        //     let v = nil;
+                        //     let f = || v == nil;
+                        //
+                        // dropped its whole module to the VM: a capture of a
+                        // variable the compiler had proved nil, which is an
+                        // ordinary thing to write. The same shape as a nil
+                        // *argument*, which `SigInfer::observe_param` has
+                        // widened to `Dyn` all along.
+                        let (v, ty) = match ty {
+                            Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                                (to_dyn(ssa, insts, v, ty, pc)?, Ty::Dyn)
+                            }
+                            _ => (v, ty),
+                        };
                         resolved.push((v, ty));
                     }
                     lower_user_call(

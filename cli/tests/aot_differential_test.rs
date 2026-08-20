@@ -1201,6 +1201,20 @@ fn differential_dyn_cross_function() {
         &[
             // Disagreeing call-site types join the parameter to Dyn (each
             // site boxes); the body consumes through the Dyn arms.
+            // A capture whose type the compiler proved is `Nil`, or a nullable
+            // one. The function ABI has no word for either, and a call argument
+            // in the same position has boxed all along — `observe_param`
+            // widens a nil argument to `Dyn`. The capture refused instead, so
+            // `let v = nil; let f = || v == nil;` dropped its whole module to
+            // the VM, which is an ordinary thing to write.
+            new(
+                "a_nil_capture_boxes_like_a_nil_argument",
+                "let m = {\"a\": 1};\nlet v = nil;\nlet x = m.get(\"zz\");\nlet y = m.get(\"a\");\nlet f = || v == nil;\nlet g = || x == nil;\nlet h = || y;\nprintln(f());\nprintln(g());\nprintln(h());\nreturn 0;\n",
+            ),
+            new(
+                "a_nil_capture_inside_a_function",
+                "fn t() -> Bool {\n  let v = nil;\n  let f = || v == nil;\n  return f();\n}\nprintln(t());\nreturn 0;\n",
+            ),
             new(
                 "param_join_int_str",
                 "fn id(x) { return x; }\nprintln(id(1));\nprintln(id(\"s\"));\nprintln(id(2.5));\nprintln(id(true));\nreturn 0;\n",
