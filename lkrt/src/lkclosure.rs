@@ -210,7 +210,7 @@ pub(crate) unsafe fn closure_text(value: LkDyn) -> alloc::string::String {
 /// `value` must be a `DYN_CLOSURE`.
 unsafe fn closure_of<'a>(value: LkDyn) -> &'a LkClosure {
     if value.tag != DYN_CLOSURE {
-        crate::panic::raise_str("value is not callable");
+        crate::panic::raise_str(&crate::lkdyn::not_a_function_message(value));
     }
     // SAFETY: the payload of a `DYN_CLOSURE` is an `LkClosure` handle.
     unsafe { &*(value.payload as *const LkClosure) }

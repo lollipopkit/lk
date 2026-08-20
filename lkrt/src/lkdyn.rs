@@ -1208,6 +1208,38 @@ pub(crate) fn display_for_diagnostics(v: LkDyn) -> String {
     out
 }
 
+/// The interpreter's sentence for calling something that is not a function.
+///
+/// Two shapes, and which one a value gets is its *representation*: a scalar —
+/// `nil`, a Bool, an Int, a Float, or a string short enough to be inline — is
+/// named by its display, and anything on the heap is named by its type. The
+/// seven-byte cut is the same one `vm_mirror::str_key` makes, and it is visible
+/// here because a caught error is printed output.
+pub(crate) fn not_a_function_message(v: LkDyn) -> String {
+    let inline = match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64 => true,
+        DYN_STR => {
+            let ptr = v.payload as *const c_char;
+            // SAFETY: a `DYN_STR` payload is a NUL-terminated arena string.
+            !ptr.is_null() && unsafe { CStr::from_ptr(ptr) }.to_bytes().len() <= 7
+        }
+        _ => false,
+    };
+    if inline {
+        let mut text = String::new();
+        display_into(&mut text, v, false);
+        return alloc::format!("{text} is not a function");
+    }
+    // The nudge the interpreter attaches to a map, because `use chan;` binds
+    // the module — which is a map of its members — over the `chan()` global.
+    let hint = if is_map_tag(v.tag) {
+        " — an imported module is a map of its members, so call one of them (`m.f(…)`)"
+    } else {
+        ""
+    };
+    alloc::format!("this value is not a function: it is a {}{hint}", kind_name(v))
+}
+
 fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
     display_into_impl(out, v, quoted, true)
 }
@@ -1368,7 +1400,16 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
         // SAFETY: a `DYN_SLICE` payload is a live window handle — the tag is
         // only ever set by `from_slice`.
         DYN_SLICE => unsafe { crate::lkslice::lkrt_lkslice_i64_len(v.payload as *mut c_void) },
-        _ => crate::panic::raise_str("runtime type error"),
+        // The interpreter names the operation and what it got, and writes `nil`
+        // in lower case there. A caught error is printed output, so "runtime
+        // type error" was a wrong answer and not merely a poor message.
+        _ => crate::panic::raise_str(&alloc::format!(
+            "`len()` works on a String, List, Map, Set, Bytes or Slice, got {}",
+            match kind_name(v).as_str() {
+                "Nil" => alloc::string::String::from("nil"),
+                _ => kind_name(v),
+            }
+        )),
     }
 }
 
@@ -1789,6 +1830,13 @@ pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
     if is_list_tag(v.tag) {
         return i64::from(dyn_list_values(v).iter().any(|&e| dyn_eq_inner(e, needle)));
     }
+    if !matches!(v.tag, DYN_STR | DYN_SET | DYN_SLICE | DYN_BYTES) {
+        // The interpreter's own sentence for a haystack that is not one.
+        crate::panic::raise_str(&alloc::format!(
+            "Contains haystack expected string/list/map/set/bytes/slice, got {}",
+            kind_name(v)
+        ));
+    }
     match v.tag {
         // A string's members are its substrings, which is what the unboxed
         // spelling answers; it was the one carrier `in` did not reach here.
@@ -1933,6 +1981,19 @@ pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
     if v.tag == DYN_STR {
         // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
         return unsafe { crate::lkstr::lkrt_str_char_at(v.payload as *const c_char, index) };
+    }
+    if !is_list_tag(v.tag) {
+        // Two wordings, and which one a value gets is whether it lives on the
+        // heap: a scalar is named plainly, a heap value is named in quotes by
+        // the object's type. `dyn_list_values` raises here too, but it is
+        // shared by every carrier walk and can only say "runtime type error" —
+        // which is what `nil[0]` used to answer where the interpreter says
+        // "Nil is not indexable".
+        let name = kind_name(v);
+        if matches!(v.tag, DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64) {
+            crate::panic::raise_str(&alloc::format!("{name} is not indexable"));
+        }
+        crate::panic::raise_str(&alloc::format!("index target object is not indexable: {name:?}"));
     }
     let values = dyn_list_values(v);
     let len = values.len() as i64;

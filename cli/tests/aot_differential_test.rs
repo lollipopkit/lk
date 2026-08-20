@@ -724,6 +724,21 @@ fn differential_strings() {
                 "removing_a_non_key_answers_the_map",
                 "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {} - []; return \"ok \" + r; }\n    if f == 1 { let r: Any = {\"a\": 1} - []; return \"ok \" + r; }\n    if f == 2 { let r: Any = {\"a\": 1} - 1.5; return \"ok \" + r; }\n    let r: Any = {\"a\": 1} - \"a\";\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nreturn 0;\n",
             ),
+            // A *caught* error's message is stdout, so the two engines have to
+            // agree on the words. The runtime used to answer "runtime type
+            // error" for three of these and "value is not callable" for the
+            // fourth, where the interpreter names the operation and the type.
+            //
+            // `cl` is the fine one: which sentence a value gets is its
+            // *representation*. A scalar — and a string short enough to be
+            // inline — is named by its display, anything on the heap by its
+            // type, and the cut is at seven bytes. `"s"` and `"abcdefgh"` are
+            // both here for that reason, and the map carries the interpreter's
+            // nudge about imported modules.
+            new(
+                "a_caught_error_says_what_the_interpreter_says",
+                "fn ix(a: Any) { try { let r: Any = a[0]; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn ln(a: Any) { try { let r: Any = a.len(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cn(a: Any) { try { let r: Any = 1 in a; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cl(a: Any) { try { let r: Any = a(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nix(nil);\nix(1);\nix(1.5);\nix(true);\nix(Set([1]));\nln(nil);\nln(1);\nln(true);\nln(1.5);\ncn(nil);\ncn(1);\ncn(true);\ncl(nil);\ncl(1);\ncl(true);\ncl(1.5);\ncl(\"s\");\ncl(\"abcdefgh\");\ncl([1]);\ncl({\"k\": 1});\ncl(Set([1]));\nreturn 0;\n",
+            ),
             new(
                 "a_predicate_takes_any_value",
                 "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",
