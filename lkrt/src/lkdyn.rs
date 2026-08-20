@@ -211,7 +211,11 @@ pub extern "C" fn lkrt_dyn_is_list(v: LkDyn) -> i64 {
 /// The map half of [`lkrt_dyn_is_list`]. A `String` is not a map.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_is_map(v: LkDyn) -> i64 {
-    i64::from(is_map_tag(v.tag))
+    // A struct instance rides the `Map<str, Dyn>` carrier and is *not* a map:
+    // the interpreter's `runtime_value_is_map` is `HeapValue::Map` alone, and an
+    // `Object` is a different variant. It shows in `let {p: c} = P { p: 3 };` —
+    // a map pattern, which the interpreter refuses and this side matched.
+    i64::from(is_map_tag(v.tag) && lkrt_dyn_obj_type_id(v) == 0)
 }
 
 /// Boxes a typed list handle under its carrier's tag. `kind` is `TLIST_*`.

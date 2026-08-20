@@ -189,10 +189,15 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
+            // A struct instance rides the `Map<str, Dyn>` carrier and is not a
+            // map — the interpreter's `runtime_value_is_map` is
+            // `HeapValue::Map` alone. When the lowering knows the value is a
+            // struct it folds to `false`; when it does not, the runtime asks
+            // the arena type mark (`dyn.is_map` above).
             let is_map = matches!(
                 ty,
                 Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool | Ty::MapStrDyn
-            );
+            ) && !ssa.struct_types.contains_key(&v);
             let dst = ssa.new_val();
             insts.push(Inst::Const {
                 dst,

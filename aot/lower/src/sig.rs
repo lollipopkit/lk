@@ -76,6 +76,14 @@ pub(crate) struct SigInfer {
     pub(crate) try_body_lambdas: std::collections::HashMap<(u32, u8), LambdaIdentity>,
     /// Region inputs the enclosing function holds as an *upvalue cell* — a
     /// variable some closure in it captured. See [`cell_region_input`].
+    /// Region inputs that are a **struct instance**, by the struct's name.
+    ///
+    /// `ssa.struct_types` is the enclosing function's own SSA state and stops
+    /// at the boundary, so inside the body the input is an ordinary
+    /// `Map<str, Dyn>` — which is what a struct rides, and which `IsMap`
+    /// answers `true` for. `let {p: c} = p;` inside a `try` then matched a map
+    /// pattern against a struct, where the interpreter refuses.
+    pub(crate) try_body_struct_inputs: std::collections::HashMap<(u32, u8), String>,
     /// Region inputs whose word is a **closure handle**.
     ///
     /// `ssa.closure_values` is the enclosing function's own SSA state and stops

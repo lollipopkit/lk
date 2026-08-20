@@ -159,6 +159,15 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
     ("empty list annotation", "let xs: List<Int> = [];\nprintln(xs);\n"),
+    // A map pattern destructures a *map*. A struct is not one — the two are
+    // different heap values, and the interpreter's `is_map` says so — even
+    // though a struct instance rides the map carrier natively. The pattern
+    // itself is well-formed, so this is a *run-time* refusal and belongs here
+    // as a program the checker must accept.
+    (
+        "a map pattern against a struct",
+        "struct P { p: Int }\nlet p = P { p: 3 };\ntry { let {p: c} = p; println(c); } catch e { println(\"E\"); }\n",
+    ),
     // An assignment target is a *chain*, and the store belongs to its last
     // step. The parser used to read the first step and discard the rest, so
     // `p.m["b"] = 2` was `p.m = 2` — accepted here whenever the field's type

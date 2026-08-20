@@ -934,6 +934,7 @@ pub(crate) fn lower_function(
             .copied()
             .unwrap_or(Ty::I64);
         let is_closure_input = sig.try_body_closure_inputs.contains(&(func_index, reg));
+        let struct_input = sig.try_body_struct_inputs.get(&(func_index, reg)).cloned();
         // The two words a carrier crossed as, fused back into one.
         if crosses_as_two_words(ty) {
             let lo = ssa.new_val();
@@ -963,6 +964,9 @@ pub(crate) fn lower_function(
             // no definition to look at.
             if is_closure_input {
                 ssa.closure_values.insert(pv);
+            }
+            if let Some(name) = struct_input {
+                ssa.struct_types.insert(pv, name);
             }
             fn_params.push((pv, ty));
         }
@@ -1529,6 +1533,14 @@ pub(crate) fn lower_function(
                     }
                     if crosses_as_word(ty) {
                         sig.try_body_param_tys.insert((body, reg), ty);
+                        match ssa.struct_types.get(&v) {
+                            Some(name) => {
+                                sig.try_body_struct_inputs.insert((body, reg), name.clone());
+                            }
+                            None => {
+                                sig.try_body_struct_inputs.remove(&(body, reg));
+                            }
+                        }
                         if ssa.closure_values.contains(&v) {
                             sig.try_body_closure_inputs.insert((body, reg));
                         } else {

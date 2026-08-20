@@ -52,3 +52,22 @@ println(nested);
 let alias = o.inner;
 o.inner.n = 42;
 println(alias.n);
+
+// A map pattern destructures a map, and a struct is not one — even though a
+// struct instance rides the map carrier natively, where this used to match.
+let pairs = { "left": 1, "right": 2 };
+let { left: l, right: r } = pairs;
+println(l + r);
+
+struct Corner {
+    left: Int,
+    right: Int,
+}
+
+let corner = Corner { left: 3, right: 4 };
+try {
+    let { left: bad, right: worse } = corner;
+    println(bad + worse);
+} catch e {
+    println("a struct is not a map");
+}
