@@ -542,6 +542,32 @@ impl TraitOracle for NoTraits {
 
 impl Type {
     pub fn parse(s: &str) -> Option<Type> {
+        Type::parse_at(s, 0)
+    }
+
+    /// [`Type::parse`], counting how deep it has gone.
+    ///
+    /// A type spelling nests without bound — `List<List<…<Int>…>>` — and this
+    /// is a recursive descent over it, so a deep enough annotation overflowed
+    /// the stack: `SIGABRT` and a core dump past about 1700 levels, on a
+    /// program the tokenizer had accepted. The expression parser has had a
+    /// bound for this reason; the type parser is the other half of the same
+    /// surface, and the LSP and the browser playground read both from text they
+    /// did not write.
+    ///
+    /// Past the bound is `None`, which every caller already words as "not a
+    /// type" — the same answer a misspelling gets, and the reason this needs no
+    /// new error path.
+    fn parse_at(s: &str, depth: usize) -> Option<Type> {
+        /// Deep enough that nothing written by hand comes close — the deepest
+        /// annotation in this repository is four — and far enough under the
+        /// measured overflow (between 1500 and 2000 levels) to stay there when
+        /// a later walk over the type gets hungrier.
+        const MAX_TYPE_DEPTH: usize = 128;
+        if depth >= MAX_TYPE_DEPTH {
+            return None;
+        }
+        let depth = depth + 1;
         let s = s.trim();
 
         // `_` — an element type that is not known. No positional rule keeps it
@@ -583,14 +609,14 @@ impl Type {
 
         // `*mut T` before `*T`: the former's prefix is a superset.
         if let Some(rest) = s.strip_prefix("*mut ").or_else(|| s.strip_prefix("*mut")) {
-            let pointee = Type::parse(rest.trim())?;
+            let pointee = Type::parse_at(rest.trim(), depth)?;
             return Some(Type::Ptr {
                 pointee: Box::new(pointee),
                 mutable: true,
             });
         }
         if let Some(rest) = s.strip_prefix('*') {
-            let pointee = Type::parse(rest.trim())?;
+            let pointee = Type::parse_at(rest.trim(), depth)?;
             return Some(Type::Ptr {
                 pointee: Box::new(pointee),
                 mutable: false,
@@ -614,7 +640,7 @@ impl Type {
         if let Some(inner) = s_no_ws.strip_suffix('?') {
             let inner = inner.trim_end();
             if !inner.is_empty() {
-                return Type::parse(inner).map(|t| Type::Optional(Box::new(t)));
+                return Type::parse_at(inner, depth).map(|t| Type::Optional(Box::new(t)));
             }
         }
 
@@ -627,7 +653,7 @@ impl Type {
             } else {
                 let mut types = Vec::new();
                 for part in parts {
-                    if let Some(ty) = Type::parse(part) {
+                    if let Some(ty) = Type::parse_at(part, depth) {
                         types.push(ty);
                     }
                 }
@@ -653,7 +679,7 @@ impl Type {
             } else {
                 let mut params = Vec::new();
                 for param in split_top_level(params_str, ',') {
-                    params.push(Type::parse(param)?);
+                    params.push(Type::parse_at(param, depth)?);
                 }
                 params
             };
@@ -1389,6 +1415,32 @@ fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// A type spelling too deep to walk is refused, not a core dump.
+    ///
+    /// `Type::parse` is a recursive descent over the spelling, so
+    /// `List<List<…<Int>…>>` overflowed the stack past about 1700 levels —
+    /// `SIGABRT`, on a program the tokenizer had accepted. The expression
+    /// parser has had a bound for this reason and this is the other half of the
+    /// same surface: the LSP and the browser playground read both from text
+    /// they did not write.
+    #[test]
+    fn a_type_too_deep_is_refused_not_aborted() {
+        // Four is the deepest annotation this repository writes; a hundred is
+        // past anything and still parses.
+        let ok = format!("{}Int{}", "List<".repeat(100), ">".repeat(100));
+        assert!(Type::parse(&ok).is_some(), "a hundred levels still parses");
+
+        // Past the bound is `None` — "not a type", the answer a misspelling
+        // gets — at any size.
+        for depth in [200, 3000, 20_000] {
+            let deep = format!("{}Int{}", "List<".repeat(depth), ">".repeat(depth));
+            assert!(
+                Type::parse(&deep).is_none(),
+                "{depth} levels must be refused, not walked"
+            );
+        }
+    }
+
     use super::{IntKind, ShortStr, ShortStrOrStr, Type};
     use alloc::boxed::Box;
     use alloc::format;
