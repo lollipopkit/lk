@@ -3264,3 +3264,29 @@ println(m.delete("a"));// 修复前:nil,而且没删掉
 顺带修掉一个 stdlib 的错答:`net.udp` 的 `recv` 结果 map 用 `String("data")`
 和 `String("addr")` 建键,两个都短。`r["data"]` 靠双重探测侥幸能读,
 `"data" in r` 一直是 `false`。
+
+## `a[i]` 和 `a.i` 在编译器眼里是同一个东西(2026-08-21)
+
+两者解析成同一种节点——一次带键的访问——区别全在键上:成员名**永远是字符串
+字面量**(`a.f` → `Access(a, Literal("f"))`),下标是任意表达式
+(`a[i]` → `Access(a, Var("i"))`)。
+
+编译器取成员名的那个函数把裸 `Var` 也当成成员名:
+
+```lk
+let fs = [|| 7, || 8];
+let i = 1;
+println(fs[0]());   // 7      —— 0 不是标识符,所以走对了
+println(fs[i]());   // 修复前:Error: List has no method 'i'
+```
+
+`lk check` 一直是对的(它按下标处理),错的只有编译器。这条规则在编译器里有**三份
+副本**,两份是取成员名的(`call.rs`、`loop_consts.rs`),第三份
+(`for_value_usage.rs`)干脆把两种形状都认——那个 `||` 正是这条规则从没被写清楚
+的痕迹。三份收成 `support::access_member_name` 一处,只认字面量。
+
+工作区里除了下标解析,没有任何地方构造"成员是 `Var`"的访问节点,所以那条分支
+除了制造这个错以外没有用途。
+
+`examples/syntax/index_by_variable.lk` 钉住:变量下标调用、map 键变量、链式、
+下标变量恰好和方法同名(`xs[len]` 对 `xs.len()`)、下标由调用算出。

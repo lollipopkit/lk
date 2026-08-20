@@ -168,14 +168,10 @@ fn is_single_char_len_call(callee: &Expr, args: &[Box<Expr>], name: &str) -> boo
     let Expr::Access(target, method) = callee else {
         return false;
     };
+    // The member of a dot access is a string literal; a bare `Var` there is a
+    // bracket *index*, and `xs[len]` is not `xs.len()`.
     matches!(target.as_ref(), Expr::Var(value) if value == name)
-        && (matches!(
-            method.as_ref(),
-            Expr::Var(value) if value == "len"
-        ) || matches!(
-            method.as_ref(),
-            Expr::Literal(value) if value.as_str() == Some("len")
-        ))
+        && matches!(method.as_ref(), Expr::Literal(value) if value.as_str() == Some("len"))
 }
 
 pub(super) fn stmt_shadows_name_deep(stmt: &Stmt, name: &str) -> bool {

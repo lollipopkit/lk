@@ -17,7 +17,7 @@ use super::{
     Compiler, Instr, Opcode,
     facts::{expr_static_value_kind, index_fact_from_target},
     get_field_key,
-    support::{FunctionSignature, checked_u8, simple_local_expr_name},
+    support::{FunctionSignature, access_member_name, checked_u8, simple_local_expr_name},
 };
 
 /// `__lk_u64_str(expr)` — the unsigned decimal rendering of a carrier-filling
@@ -179,7 +179,7 @@ impl Compiler {
             return self.lower_named_call(name, args);
         }
         if let Expr::Access(target, method) = callee
-            && let Some(method) = method_name(method)
+            && let Some(method) = access_member_name(method)
         {
             if self.is_external_global_access_target(target) {
                 if self.is_stdlib_module_method(target, "map", "get", method) {
@@ -482,7 +482,7 @@ impl Compiler {
         let Expr::Access(target, method) = callee.as_ref() else {
             return Ok(false);
         };
-        let Some("set") = method_name(method) else {
+        let Some("set") = access_member_name(method) else {
             return Ok(false);
         };
         if self.is_external_global_access_target(target) {
@@ -1261,14 +1261,6 @@ impl Compiler {
     }
 }
 
-fn method_name(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Var(name) => Some(name.as_str()),
-        Expr::Literal(value) => value.as_str(),
-        _ => None,
-    }
-}
-
 pub(super) fn map_get_method_call_args<'a>(callee: &'a Expr, args: &'a [Box<Expr>]) -> Option<(&'a Expr, &'a Expr)> {
     if args.len() != 1 {
         return None;
@@ -1276,7 +1268,7 @@ pub(super) fn map_get_method_call_args<'a>(callee: &'a Expr, args: &'a [Box<Expr
     let Expr::Access(target, method) = callee else {
         return None;
     };
-    if method_name(method) != Some("get") {
+    if access_member_name(method) != Some("get") {
         return None;
     }
     Some((target.as_ref(), args[0].as_ref()))
@@ -1305,7 +1297,7 @@ fn split_join_same_separator_string_target<'a>(
     let Expr::Access(join_target, join_method) = unparen_expr(join_callee) else {
         return None;
     };
-    if method_name(join_method) != Some("join") {
+    if access_member_name(join_method) != Some("join") {
         return None;
     }
     let Expr::CallExpr(split_callee, split_args) = unparen_expr(join_target) else {
@@ -1320,7 +1312,7 @@ fn split_join_same_separator_string_target<'a>(
     let Expr::Access(split_target, split_method) = unparen_expr(split_callee) else {
         return None;
     };
-    if method_name(split_method) != Some("split") || !known_string_expr(split_target, facts, locals) {
+    if access_member_name(split_method) != Some("split") || !known_string_expr(split_target, facts, locals) {
         return None;
     }
     Some(split_target)

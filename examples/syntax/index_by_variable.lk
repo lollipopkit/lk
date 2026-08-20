@@ -1,0 +1,43 @@
+// `a[i]` is an index; `a.i` is a member. They parse to the same node shape —
+// an access with a key — and the key is what tells them apart: a member is
+// always a string *literal*, an index is any expression.
+//
+// The compiler read a bare variable as a member name too, so `fs[i]()` meant
+// `fs.i()`: calling a closure out of a list by a variable index raised
+// `List has no method 'i'`. `fs[0]()` worked, because `0` is not an
+// identifier — which is why nothing noticed.
+
+let fs = [|| 7, || 8];
+let i = 1;
+assert(fs[0]() == 7);
+assert(fs[i]() == 8);
+
+// The same shape through a map, and through a chain.
+let handlers = {"start": || "go", "stop": || "halt"};
+let which = "start";
+assert(handlers[which]() == "go");
+
+let nested = {"outer": {"inner": || 42}};
+let k1 = "outer";
+let k2 = "inner";
+assert(nested[k1][k2]() == 42);
+
+// An index whose variable happens to be named like a method is still an index.
+let xs = [10, 20, 30];
+let len = 1;
+assert(xs[len] == 20);
+assert(xs.len() == 3);
+
+let m = {"get": "a value", "keys": "another"};
+let get = "get";
+assert(m[get] == "a value");
+assert(m.get("keys") == "another");
+
+// And an index computed by a call.
+fn first() -> Int {
+    return 0;
+}
+
+assert(fs[first()]() == 7);
+
+println("index by variable: ok");

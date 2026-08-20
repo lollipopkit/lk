@@ -303,6 +303,23 @@ pub(super) fn range_step_sign(step: Option<&Expr>) -> RangeStepSign {
     }
 }
 
+/// The member name an `Expr::Access` spells, when it spells one.
+///
+/// `a.f` parses to `Access(a, Literal("f"))` — the member is a *string
+/// literal*, always. `a[i]` parses to `Access(a, Var("i"))`, and that is an
+/// index, not a member: the value of `i` picks the element.
+///
+/// Reading a bare `Var` as a member name is what made `fs[i]()` mean `fs.i()`,
+/// so calling a closure out of a list by a variable index raised
+/// `List has no method 'i'` — while `fs[0]()`, whose index is not an
+/// identifier, worked.
+pub(super) fn access_member_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Literal(value) => value.as_str(),
+        _ => None,
+    }
+}
+
 pub(super) fn simple_local_expr_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Paren(inner) => simple_local_expr_name(inner),

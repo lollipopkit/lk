@@ -16,7 +16,7 @@ use super::{
     call::map_get_method_call_args,
     checked_u8,
     inline::{inline_body_is_supported, stmt_contains_call_to},
-    support::{FunctionInlineBody, const_runtime_map_key_from_literal},
+    support::{FunctionInlineBody, access_member_name, const_runtime_map_key_from_literal},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -960,7 +960,7 @@ fn const_map_get_target_and_key(expr: &Expr) -> Option<(&Expr, &Expr)> {
     let Expr::Access(target, method) = callee.as_ref() else {
         return None;
     };
-    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || method_name(method) != Some("get") {
+    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || access_member_name(method) != Some("get") {
         return None;
     }
     Some((args[0].as_ref(), args[1].as_ref()))
@@ -971,14 +971,6 @@ fn const_map_key_from_expr(expr: &Expr) -> Result<Option<RuntimeMapKey>> {
         Expr::Paren(inner) => const_map_key_from_expr(inner),
         Expr::Literal(value) => const_runtime_map_key_from_literal(value),
         _ => Ok(None),
-    }
-}
-
-fn method_name(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Var(name) => Some(name.as_str()),
-        Expr::Literal(value) => value.as_str(),
-        _ => None,
     }
 }
 
