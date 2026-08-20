@@ -5,7 +5,7 @@ use lk_core::{
     val::{HeapStore, HeapValue, ResourceHandle, RuntimeMapKey, RuntimeVal, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
-use std::{net::UdpSocket, sync::Arc};
+use std::net::UdpSocket;
 
 use crate::{
     bytes::{runtime_bytes_or_string_arg, runtime_bytes_value},
@@ -132,8 +132,10 @@ fn recv_result_value(data: Vec<u8>, addr: String, heap: &mut HeapStore) -> Runti
     let data = runtime_bytes_value(data, heap);
     let addr = runtime_string_value(&addr, heap);
     let mut fields = value_map_new();
-    fields.insert(RuntimeMapKey::String(Arc::<str>::from("data")), data);
-    fields.insert(RuntimeMapKey::String(Arc::<str>::from("addr")), addr);
+    // `from_text`, not the `String` variant: four characters key inline, and
+    // a lookup built from the text would not have found this one.
+    fields.insert(RuntimeMapKey::from_text("data"), data);
+    fields.insert(RuntimeMapKey::from_text("addr"), addr);
     RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::Mixed(fields))))
 }
 

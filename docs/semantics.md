@@ -3232,3 +3232,35 @@ lkrt 那边跟着改了同一份(它的注释本来就写着"和 VM 逐字节一
 元素类型取自已经推好的结果(同构字面量是 `List`,异构的是 `Tuple`),所以没有
 任何东西被重新检查,只有豁免往下走。`Type::container_literal_fits{,_with}` 因此
 没有调用者了,删掉。
+
+## 一段文本只能有一种键表示(2026-08-21)
+
+字符串键短的时候内联存(`ShortStr`),长的时候放在 `Arc` 后面(`String`)。
+`RuntimeMapKey` 派生 `Eq`/`Hash`,所以同一段文本的这两种**是两个不同的键**。
+选哪种必须只由文本决定——而"把有类型的字符串 map 提升成通用载体"这条路上,
+每个键都被写成了 `String`,短的也是:
+
+```lk
+fn put(m, k, v) { m[k] = v; }
+let m = {"a": 1};
+put(m, 3, 9);          // 提升成通用 map
+println(m);            // {"a":1,3:9}
+println(m.len());      // 2
+println(m["a"]);       // 1
+println("a" in m);     // 修复前:false
+println(m.has("a"));   // 修复前:false
+println(m.delete("a"));// 修复前:nil,而且没删掉
+```
+
+`[]` 和 `.get()` 之所以还对,是因为 `get_str` 会先试 `ShortStr` 再试 `String`
+——它把这个错盖住了,只盖住了自己那一条路。`in` / `has` / `delete` 由文本构造键,
+拿到的是另一种,于是找不到。
+
+规则收成 `RuntimeMapKey::from_text` / `from_shared` 两个构造器,工作区里每一处
+**由文本构造键**的地方都改用它们(提升、`entries()`、跨堆相等、模块导出表、
+反序列化、两个 mirror 辅助函数)。`get_str` 的双重探测删掉——文本决定表示,
+没有第二种可试。
+
+顺带修掉一个 stdlib 的错答:`net.udp` 的 `recv` 结果 map 用 `String("data")`
+和 `String("addr")` 建键,两个都短。`r["data"]` 靠双重探测侥幸能读,
+`"data" in r` 一直是 `false`。

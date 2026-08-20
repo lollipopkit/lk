@@ -920,14 +920,12 @@ impl TypedMap {
 
     pub fn get_str(&self, key: &str) -> Option<RuntimeVal> {
         match self {
-            Self::Mixed(values) => {
-                if let Some(value) =
-                    ShortStr::new(key).and_then(|key| values.get(&RuntimeMapKey::ShortStr(key)).cloned())
-                {
-                    return Some(value);
-                }
-                values.get(&RuntimeMapKey::String(Arc::<str>::from(key))).cloned()
-            }
+            // One lookup: the text decides the representation, so there is no
+            // second one to try. This used to probe `ShortStr` and then
+            // `String`, which papered over the promotion writing the wrong
+            // variant — and only here, which is why `m["a"]` worked while
+            // `"a" in m` did not.
+            Self::Mixed(values) => values.get(&RuntimeMapKey::from_text(key)).cloned(),
             Self::StringMixed(values) => values.get(key).cloned(),
             Self::StringInt(values) => values.get(key).copied().map(RuntimeVal::Int),
             Self::StringFloat(values) => values.get(key).copied().map(RuntimeVal::Float),
@@ -946,22 +944,22 @@ impl TypedMap {
             }
             Self::StringMixed(entries) => {
                 for (k, v) in entries {
-                    out.push((RuntimeMapKey::String(k.clone()), *v));
+                    out.push((RuntimeMapKey::from_shared(k.clone()), *v));
                 }
             }
             Self::StringInt(entries) => {
                 for (k, v) in entries {
-                    out.push((RuntimeMapKey::String(k.clone()), RuntimeVal::Int(*v)));
+                    out.push((RuntimeMapKey::from_shared(k.clone()), RuntimeVal::Int(*v)));
                 }
             }
             Self::StringFloat(entries) => {
                 for (k, v) in entries {
-                    out.push((RuntimeMapKey::String(k.clone()), RuntimeVal::Float(*v)));
+                    out.push((RuntimeMapKey::from_shared(k.clone()), RuntimeVal::Float(*v)));
                 }
             }
             Self::StringBool(entries) => {
                 for (k, v) in entries {
-                    out.push((RuntimeMapKey::String(k.clone()), RuntimeVal::Bool(*v)));
+                    out.push((RuntimeMapKey::from_shared(k.clone()), RuntimeVal::Bool(*v)));
                 }
             }
         }
@@ -1089,28 +1087,28 @@ impl TypedMap {
             Self::StringMixed(values) => {
                 let mut mixed = value_map_new();
                 for (key, value) in values {
-                    mixed.insert(RuntimeMapKey::String(key), value);
+                    mixed.insert(RuntimeMapKey::from_shared(key), value);
                 }
                 mixed
             }
             Self::StringInt(values) => {
                 let mut mixed = value_map_new();
                 for (key, value) in values {
-                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Int(value));
+                    mixed.insert(RuntimeMapKey::from_shared(key), RuntimeVal::Int(value));
                 }
                 mixed
             }
             Self::StringFloat(values) => {
                 let mut mixed = value_map_new();
                 for (key, value) in values {
-                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Float(value));
+                    mixed.insert(RuntimeMapKey::from_shared(key), RuntimeVal::Float(value));
                 }
                 mixed
             }
             Self::StringBool(values) => {
                 let mut mixed = value_map_new();
                 for (key, value) in values {
-                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Bool(value));
+                    mixed.insert(RuntimeMapKey::from_shared(key), RuntimeVal::Bool(value));
                 }
                 mixed
             }
@@ -1157,11 +1155,7 @@ impl TypedMap {
 pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)>) -> Vec<String> {
     let mut stage1 = value_map_new();
     for (key, value) in entries {
-        let key = match ShortStr::new(key) {
-            Some(short) => RuntimeMapKey::ShortStr(short),
-            None => RuntimeMapKey::String(Arc::from(key)),
-        };
-        stage1.insert(key, RuntimeVal::Int(value));
+        stage1.insert(RuntimeMapKey::from_text(key), RuntimeVal::Int(value));
     }
     match typed_map_from_entries(stage1) {
         TypedMap::StringInt(map) => map.keys().map(|k| k.to_string()).collect(),
@@ -1181,10 +1175,7 @@ pub fn set_iteration_order(members: impl Iterator<Item = MirrorMember>) -> Vec<M
     for member in members {
         set.insert(match &member {
             MirrorMember::Int(v) => RuntimeMapKey::Int(*v),
-            MirrorMember::Str(v) => match ShortStr::new(v) {
-                Some(short) => RuntimeMapKey::ShortStr(short),
-                None => RuntimeMapKey::String(Arc::from(v.as_str())),
-            },
+            MirrorMember::Str(v) => RuntimeMapKey::from_text(v),
         });
     }
     set.iter()
@@ -1348,7 +1339,7 @@ fn typed_map_entries_all(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey, Ru
         TypedMap::Mixed(entries) => entries.iter().all(|(key, value)| visit(key.clone(), *value)),
         TypedMap::StringMixed(entries) => entries
             .iter()
-            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), *value)),
+            .all(|(key, value)| visit(RuntimeMapKey::from_shared(key.clone()), *value)),
         TypedMap::StringInt(entries) => entries
             .iter()
             .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value))),
@@ -1414,6 +1405,35 @@ pub enum RuntimeMapKey {
 }
 
 impl RuntimeMapKey {
+    /// The key a piece of text is stored under — **one** representation per
+    /// text, so a lookup finds what an insert wrote.
+    ///
+    /// Short text is a `ShortStr` (inline, no allocation), anything longer a
+    /// `String`. That this is a function of the text alone is not a detail:
+    /// the enum derives `Eq` and `Hash`, so the two variants holding the same
+    /// characters are *different keys*.
+    ///
+    /// Promoting a typed string map to `Mixed` used to write `String` for every
+    /// key, short ones included. `m["a"]`, `m.get("a")`, `m.keys()` and
+    /// `println(m)` all showed the entry, while `"a" in m` and `m.has("a")`
+    /// answered `false` and `m.delete("a")` removed nothing — those three build
+    /// the lookup key from the text and got the other variant.
+    pub fn from_text(text: &str) -> Self {
+        match ShortStr::new(text) {
+            Some(short) => Self::ShortStr(short),
+            None => Self::String(Arc::from(text)),
+        }
+    }
+
+    /// [`Self::from_text`] for text already behind an `Arc` — a typed string
+    /// carrier's key is one, and long text keeps the allocation it has.
+    pub fn from_shared(text: Arc<str>) -> Self {
+        match ShortStr::new(&text) {
+            Some(short) => Self::ShortStr(short),
+            None => Self::String(text),
+        }
+    }
+
     /// The key a value is used under — the only conversion.
     ///
     /// There were two, and they disagreed about the case that matters. The
@@ -1628,10 +1648,13 @@ mod tests {
         assert!(matches!(map, TypedMap::Mixed(_)));
         assert_eq!(map.get_str("ok"), Some(RuntimeVal::Bool(true)));
         assert_eq!(map.get(&RuntimeMapKey::Int(7)), Some(RuntimeVal::Bool(false)));
-        assert_eq!(
-            map.get(&RuntimeMapKey::String(Arc::<str>::from("ok"))),
-            Some(RuntimeVal::Bool(true))
-        );
+        // The carried-over key takes the representation the text decides, so a
+        // lookup built the same way finds it. This used to assert the
+        // `String` variant, which is what the promotion wrote for every key —
+        // and then `"ok" in m` and `m.has("ok")`, which build the key from the
+        // text, answered `false` for an entry `m["ok"]` returned.
+        assert_eq!(map.get(&RuntimeMapKey::from_text("ok")), Some(RuntimeVal::Bool(true)));
+        assert_eq!(map.get(&RuntimeMapKey::String(Arc::<str>::from("ok"))), None);
     }
 
     #[test]

@@ -1305,7 +1305,9 @@ mod tests {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let expected: alloc::vec::Vec<(String, RuntimeVal)> = [("alpha", 1), ("beta", 2), ("gamma", 3)]
             .into_iter()
-            .map(|(key, value)| (format!("String({key:?})"), RuntimeVal::Int(value)))
+            // `ShortStr`, not `String`: the text decides the representation, and
+            // these five-character keys fit inline.
+            .map(|(key, value)| (format!("ShortStr({key:?})"), RuntimeVal::Int(value)))
             .collect();
         assert_eq!(pairs, expected);
     }

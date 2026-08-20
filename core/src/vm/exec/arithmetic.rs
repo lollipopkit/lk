@@ -988,22 +988,22 @@ fn for_each_typed_map_entry(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey,
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), *value);
+                visit(RuntimeMapKey::from_shared(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Int(*value));
             }
         }
         TypedMap::StringFloat(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Float(*value));
             }
         }
         TypedMap::StringBool(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Bool(*value));
             }
         }
     }
@@ -1018,22 +1018,22 @@ fn for_each_typed_map_key(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey)) 
         }
         TypedMap::StringMixed(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringInt(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringFloat(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringBool(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
     }

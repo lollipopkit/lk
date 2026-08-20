@@ -39,7 +39,7 @@ impl ProgramResult {
         let mut state = self.state;
         let mut entries = value_map_new();
         for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
-            entries.insert(RuntimeMapKey::String(slot.name.clone()), *value);
+            entries.insert(RuntimeMapKey::from_shared(slot.name.clone()), *value);
         }
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
         RuntimeExport::new(

@@ -452,7 +452,7 @@ fn runtime_string_key(value: &str) -> RuntimeMapKey {
     if let Some(value) = ShortStr::new(value) {
         RuntimeMapKey::ShortStr(value)
     } else {
-        RuntimeMapKey::String(Arc::<str>::from(value))
+        RuntimeMapKey::from_text(value)
     }
 }
 

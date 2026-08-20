@@ -1345,11 +1345,7 @@ fn runtime_map_string_key(value: Arc<str>) -> RuntimeMapKey {
 
 #[inline(always)]
 fn runtime_map_key_from_str(key_str: &str) -> RuntimeMapKey {
-    if let Some(short) = ShortStr::new(key_str) {
-        RuntimeMapKey::ShortStr(short)
-    } else {
-        RuntimeMapKey::String(Arc::<str>::from(key_str))
-    }
+    RuntimeMapKey::from_text(key_str)
 }
 
 fn list_value_kind(list: &TypedList) -> PerfValueKind {

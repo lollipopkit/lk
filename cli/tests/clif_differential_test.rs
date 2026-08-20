@@ -310,6 +310,50 @@ fn clif_differential_higher_order() {
 /// Absolute, and it has to be: the fact is missing in the *compiler*, so both
 /// backends are handed the same wrong instruction and agree with each other
 /// perfectly.
+/// One text, one key representation — otherwise a map disagrees with itself.
+///
+/// A string key is stored inline (`ShortStr`) when it fits and behind an `Arc`
+/// when it does not, and the enum derives `Eq`/`Hash`, so the two are different
+/// keys. Promoting a typed string map to the general carrier wrote the `Arc`
+/// variant for every key, short ones included: `m["a"]`, `m.get("a")`,
+/// `m.keys()` and `println(m)` all showed the entry, while `"a" in m` and
+/// `m.has("a")` answered `false` and `m.delete("a")` removed nothing.
+#[test]
+fn a_promoted_map_still_finds_its_short_keys() {
+    run_differential(
+        "map_key_shape",
+        &[
+            new(
+                "promoted_by_an_int_key",
+                "fn put(m: Any, k: Any, v: Any) -> Nil { m[k] = v; return nil; }\n\
+                 let m = {\"a\": 1};\n\
+                 put(m, 3, 9);\n\
+                 println(m);\n\
+                 println(m.len());\n\
+                 println(m[\"a\"]);\n\
+                 println(\"a\" in m);\n\
+                 println(m.has(\"a\"));\n\
+                 println(m.get(\"a\"));\n\
+                 println(m.keys());\n\
+                 println(m.delete(\"a\"));\n\
+                 println(m);\n",
+            ),
+            new(
+                "promoted_by_a_wider_value",
+                "fn put(m: Any, k: Any, v: Any) -> Nil { m[k] = v; return nil; }\n\
+                 let counts = {\"hit\": 1, \"a much longer key than fits inline\": 2};\n\
+                 put(counts, \"miss\", \"none\");\n\
+                 println(counts.has(\"hit\"));\n\
+                 println(counts.has(\"a much longer key than fits inline\"));\n\
+                 println(\"miss\" in counts);\n\
+                 println(counts.delete(\"hit\"));\n\
+                 println(counts.len());\n",
+            ),
+        ],
+        NativePath::MayDegrade,
+    );
+}
+
 /// A struct's identity has to travel with the value, because the value crosses
 /// threads. Both halves of it used to be thread-local: the id → name/field
 /// registry (written once by the entry prologue, on the main thread) and a

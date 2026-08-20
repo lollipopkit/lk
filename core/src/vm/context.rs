@@ -996,7 +996,7 @@ fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: Runt
 fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
     match (map, value) {
         (TypedMap::Mixed(entries), value) => {
-            let runtime_key = RuntimeMapKey::String(key);
+            let runtime_key = RuntimeMapKey::from_shared(key);
             let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if *entry_key != runtime_key {
@@ -1147,7 +1147,7 @@ fn typed_map_contains_str(map: &TypedMap, key: &str) -> bool {
     match map {
         TypedMap::Mixed(entries) => {
             ShortStr::new(key).is_some_and(|key| entries.contains_key(&RuntimeMapKey::ShortStr(key)))
-                || entries.contains_key(&RuntimeMapKey::String(Arc::<str>::from(key)))
+                || entries.contains_key(&RuntimeMapKey::from_text(key))
         }
         TypedMap::StringMixed(entries) => entries.contains_key(key),
         TypedMap::StringInt(entries) => entries.contains_key(key),
@@ -1229,22 +1229,22 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), *value);
+                out.set(RuntimeMapKey::from_shared(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Int(*value));
             }
         }
         TypedMap::StringFloat(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Float(*value));
             }
         }
         TypedMap::StringBool(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Bool(*value));
             }
         }
     }

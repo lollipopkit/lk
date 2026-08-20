@@ -333,14 +333,14 @@ impl<'a> Comparison<'a> {
             }
             TypedMap::StringMixed(entries) => {
                 for (key, value) in entries {
-                    if !self.map_value(right, &RuntimeMapKey::String(key.clone()), value, depth)? {
+                    if !self.map_value(right, &RuntimeMapKey::from_shared(key.clone()), value, depth)? {
                         return Ok(false);
                     }
                 }
             }
             TypedMap::StringInt(entries) => {
                 for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
+                    let key = RuntimeMapKey::from_shared(key.clone());
                     if !self.map_value(right, &key, &RuntimeVal::Int(*value), depth)? {
                         return Ok(false);
                     }
@@ -348,7 +348,7 @@ impl<'a> Comparison<'a> {
             }
             TypedMap::StringFloat(entries) => {
                 for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
+                    let key = RuntimeMapKey::from_shared(key.clone());
                     if !self.map_value(right, &key, &RuntimeVal::Float(*value), depth)? {
                         return Ok(false);
                     }
@@ -356,7 +356,7 @@ impl<'a> Comparison<'a> {
             }
             TypedMap::StringBool(entries) => {
                 for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
+                    let key = RuntimeMapKey::from_shared(key.clone());
                     if !self.map_value(right, &key, &RuntimeVal::Bool(*value), depth)? {
                         return Ok(false);
                     }

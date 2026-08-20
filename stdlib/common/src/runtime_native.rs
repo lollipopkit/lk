@@ -219,7 +219,7 @@ fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Resu
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
+                let key = RuntimeMapKey::from_shared(key.clone());
                 if !typed_map_value_equal(right, &key, value, heap)? {
                     return Ok(false);
                 }
@@ -227,7 +227,7 @@ fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Resu
         }
         TypedMap::StringInt(entries) => {
             for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
+                let key = RuntimeMapKey::from_shared(key.clone());
                 if !typed_map_value_equal(right, &key, &RuntimeVal::Int(*value), heap)? {
                     return Ok(false);
                 }
@@ -235,7 +235,7 @@ fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Resu
         }
         TypedMap::StringFloat(entries) => {
             for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
+                let key = RuntimeMapKey::from_shared(key.clone());
                 if !typed_map_value_equal(right, &key, &RuntimeVal::Float(*value), heap)? {
                     return Ok(false);
                 }
@@ -243,7 +243,7 @@ fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Resu
         }
         TypedMap::StringBool(entries) => {
             for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
+                let key = RuntimeMapKey::from_shared(key.clone());
                 if !typed_map_value_equal(right, &key, &RuntimeVal::Bool(*value), heap)? {
                     return Ok(false);
                 }
