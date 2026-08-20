@@ -1469,11 +1469,21 @@ fn fuzz_differential_vm_vs_native() {
     // generated program started running on the VM. The floor is a fifth,
     // deliberately far below what is measured: the generator emits
     // deliberately-unlowerable hybrid helpers, so the real ratio is a property
-    // of the generator rather than a gate, and it moves with the seed (13–19 of
-    // 40 over six seeds when this was written). What the floor catches is a
+    // of the generator rather than a gate. What the floor catches is a
     // collapse, which goes to nearly zero rather than drifting.
+    //
+    // Asserted only on a *large* run, because the ratio is a sample and a small
+    // one is noisy: measured on an unchanged tree it was 10, 12, 13, 16, 16, 18
+    // and 18 out of 60 across seven seeds — 17% to 30% against a 20% floor, so
+    // the seed alone decides whether it fires. It cried wolf twice in one
+    // session here, and both times the change under test was blamed for a
+    // number the seed had already produced. CI runs 500 cases, where the same
+    // spread is a few points wide and the floor means something.
+    //
+    // The ratio is printed either way, so a small run still reports it.
+    const FLOOR_NEEDS: u64 = 200;
     assert!(
-        fully_native * 5 >= compared,
+        compared < FLOOR_NEEDS || fully_native * 5 >= compared,
         "only {fully_native}/{compared} compiled programs lowered fully native; native coverage \
          has regressed behind a fallback that still answers correctly"
     );
