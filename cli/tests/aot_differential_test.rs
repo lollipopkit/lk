@@ -666,6 +666,24 @@ fn differential_strings() {
             // message it gave said so: "a native binary is bounded by the real
             // stack, not by LK_MAX_CALL_DEPTH", which is true of LK recursion
             // and was not what had happened.
+            // A boxed value stored into a container the lowering guessed a
+            // carrier for. An empty `{}` guesses `str -> i64`, so this stored
+            // an Int and raised "runtime type error" for every other kind while
+            // the interpreter stored all of them — the guess is meant to cost a
+            // widening, and unboxing spent it on a raise.
+            new(
+                "a_boxed_value_widens_the_container_it_is_stored_in",
+                "fn m(v: Any) -> String { try { let c = {}; c[\"k\"] = v; return \"map \" + c.len(); } catch e { return \"map E\"; } }\nfn l(v: Any) -> String { try { let c = []; c.push(v); return \"list \" + c.len(); } catch e { return \"list E\"; } }\nfn s(v: Any) -> String { try { let c = [0]; c[0] = v; return \"set \" + c.len(); } catch e { return \"set E\"; } }\nprintln(m(1));\nprintln(m(\"a\"));\nprintln(m([1]));\nprintln(m({\"j\": 1}));\nprintln(m(nil));\nprintln(m(1.5));\nprintln(m(true));\nprintln(l(1));\nprintln(l(\"a\"));\nprintln(l([1]));\nprintln(l(nil));\nprintln(s(1));\nprintln(s(\"a\"));\nprintln(s([1]));\nprintln(s(nil));\nreturn 0;\n",
+            ),
+            // A value compared against itself answers without being walked,
+            // which is what the interpreter does — and without it the depth
+            // bound above turned `d == d` and `[d, d].unique()` into refusals
+            // for a value 2000 levels deep. A Float is excluded: `NaN != NaN`,
+            // and two NaNs are the same bits.
+            new(
+                "a_value_equals_itself_without_being_walked",
+                "fn build(n: Int) -> Any {\n    let v: Any = 1;\n    let i = 0;\n    while i < n { v = [v]; i = i + 1; }\n    return v;\n}\nfn t(f: Int, d: Any, e: Any) -> String {\n  try {\n    if f == 0 { return \"self: \" + (d == d); }\n    if f == 1 { return \"unique: \" + [d, d].unique().len(); }\n    if f == 2 { return \"other: \" + (d == e); }\n    return \"nan: \" + ((0.0 / 0.0) == (0.0 / 0.0));\n  } catch err { return \"E\"; }\n}\nlet d = build(2000);\nlet e = build(2000);\nprintln(t(0, d, e));\nprintln(t(1, d, e));\nprintln(t(2, d, e));\nprintln(t(3, d, e));\nreturn 0;\n",
+            ),
             new(
                 "a_value_too_deep_is_refused_the_same_way",
                 "fn build(n: Int) -> Any {\n    let v: Any = 1;\n    let i = 0;\n    while i < n { v = [v]; i = i + 1; }\n    return v;\n}\nfn t(label: String, f: Int, d: Any, e: Any) -> String {\n    try {\n        if f == 0 { return label + \": \" + (d == e); }\n        if f == 1 { return label + \": \" + [d].contains(e); }\n        if f == 2 { return label + \": \" + [d, e].index_of(e); }\n        if f == 3 { return label + \": \" + ([d] - [e]).len(); }\n        return label + \": \" + [d, e].sort().len();\n    } catch err { return label + \": E \" + err; }\n}\nlet a = build(600);\nlet b = build(600);\nprintln(t(\"eq\", 0, a, b));\nprintln(t(\"contains\", 1, a, b));\nprintln(t(\"index_of\", 2, a, b));\nprintln(t(\"sub\", 3, a, b));\nprintln(t(\"sort\", 4, a, b));\nlet shallow = build(100);\nprintln(shallow == build(100));\nreturn 0;\n",

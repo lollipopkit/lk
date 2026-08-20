@@ -2172,13 +2172,27 @@ fn nullable_into_typed_carrier(
     carrier: Ty,
 ) -> Option<Unsupported> {
     let ty = ssa.peek(value_reg, block).map(|(_, ty)| ty)?;
-    if !matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+    // A *boxed* value is the same situation as a nullable one and was not
+    // treated as it: unboxing it into the carrier is a guess that raises at run
+    // time, where widening the carrier answers. An empty `{}` guesses
+    // `str -> i64`, so
+    //
+    //     fn s(v: Any) -> Int { let m = {}; m["k"] = v; return m.len(); }
+    //
+    // stored an `Int` and raised "runtime type error" for every other kind,
+    // while the interpreter stored all of them. The guess is meant to cost a
+    // widening — that is what this function is for — and the unbox spent it on
+    // a raise instead.
+    if !matches!(ty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool | Ty::Dyn) {
+        return None;
+    }
+    if ty == Ty::Dyn && carrier == Ty::Dyn {
         return None;
     }
     carrier_contradicted_here_or_at_callers(ssa, func, receiver_reg, handle, carrier).or(Some(
         Unsupported::OperandType {
             pc: 0,
-            want: "a Dyn container, which is the only kind that holds nil",
+            want: "a Dyn container, which is the only kind that holds this",
             got: lk_aot_mir::ty_name(ty),
         },
     ))

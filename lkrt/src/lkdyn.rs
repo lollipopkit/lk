@@ -1035,6 +1035,17 @@ pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
 /// LK_MAX_CALL_DEPTH" — which is true of LK recursion and was not what had
 /// happened here.
 fn dyn_eq_at(a: LkDyn, b: LkDyn, depth: u32) -> bool {
+    // One value is equal to itself without being walked, which is what the
+    // interpreter does — `d == d` and `[d, d].unique()` answer for a value 2000
+    // levels deep there. Without this the depth bound below turned those into
+    // refusals, and every comparison of a container against itself paid for a
+    // full traversal it could not fail.
+    if a.tag == b.tag && a.payload == b.payload {
+        // Except a Float: `NaN != NaN`, and two NaNs are the same bits.
+        if a.tag != DYN_F64 || !a.f64_value().is_nan() {
+            return true;
+        }
+    }
     if depth >= MAX_VALUE_DEPTH {
         crate::panic::raise_str(&alloc::format!(
             "comparison nested deeper than {MAX_VALUE_DEPTH} levels; the values are cyclic or too deeply nested to compare"
