@@ -226,7 +226,9 @@ pub(crate) fn lower_make_struct(
         });
         insts.push(Inst::Call {
             dst: None,
-            callee: AbiRef::new("map_h", "obj_mark"),
+            // The checked mark: this shape rebuilt the map from a base, so its
+            // entries were never measured against the declaration.
+            callee: AbiRef::new("map_h", "obj_mark_checked"),
             args: vec![dst, tid_v],
         });
     }

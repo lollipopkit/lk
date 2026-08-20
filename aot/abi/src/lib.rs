@@ -851,6 +851,7 @@ macro_rules! for_each_abi_fn {
             // marked map would leave a stale entry that a later allocation at
             // the same address would inherit.
             ("map_h", "obj_mark", lkrt_lkmap_obj_mark, WritesHost, [Ptr, I64], Nil);
+            ("map_h", "obj_mark_checked", lkrt_lkmap_obj_mark_checked, WritesHost, [Ptr, I64], Nil);
             // A struct type's name and field order, described once at startup
             // so `display` can render a marked instance the way the VM does
             // (declaration order, nested values quoted). Two calls rather than

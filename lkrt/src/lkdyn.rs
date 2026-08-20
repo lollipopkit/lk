@@ -680,10 +680,26 @@ pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
             (*(handle as *mut crate::lkmap::StrDynMap)).type_id = type_id;
         }
     }
-    // Whatever is already in the map is measured against the declaration now.
-    // A construction that *builds* the map first — `P { ..base }`, which
-    // rebuilds a map and marks the copy — has no other moment to be checked:
-    // the sets happened before this handle was a struct at all.
+}
+
+/// [`lkrt_lkmap_obj_mark`], and then measures what is already in the map
+/// against the declaration.
+///
+/// For the construction that *builds* the map first — `P { ..base }`, which
+/// rebuilds a map and marks the copy — where the sets happened before this
+/// handle was a struct at all, so there is no earlier moment to check them.
+///
+/// The ordinary `P { x: 1 }` uses the plain mark: the lowering emits a check per
+/// field before the mark, and elides the ones a value's own type already
+/// settles. Doing both meant every construction also copied every key into an
+/// owned `String` and re-checked every field — 7% of a loop building one struct,
+/// plus its share of the allocation traffic, for an answer already known.
+///
+/// # Safety
+/// `handle` must be a live `Map<str, Dyn>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_obj_mark_checked(handle: *mut c_void, type_id: i64) {
+    lkrt_lkmap_obj_mark(handle, type_id);
     if handle.is_null() || type_id == 0 {
         return;
     }

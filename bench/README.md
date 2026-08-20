@@ -1032,3 +1032,39 @@ min-of-9:
 
 `IndexMap::from_iter::<…, 1>` 那 4.0% 仍然在:`Mixed` 空 map 第一次插入时提升成
 `StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。
+
+## 原生比解释器**慢**——两个 workload 上,而且没有门禁在看(2026-08-21)
+
+perf 门禁跑的是 `RUN_AOT=0`,量的是纯解释器。原生这一侧从来没被量过。量了一下
+(dist 构建,`LK_AOT_NO_FALLBACK=1` 确认全原生,min-of-5):
+
+| workload | VM | 原生 | |
+| --- | --- | --- | --- |
+| 参数后面的列表索引 | 0.18s | **0.02s** | 快 9x |
+| `cart_pricing_rules` | 0.51s | **0.10s** | 快 5x |
+| `config_defaults_merge` | 2.40s | 5.48s | **慢 2.3x** |
+| 结构体构造 300 万次 | 0.62s | 2.03s | **慢 3.3x** |
+
+算术和索引密集的快 5–9 倍,**分配密集的反而慢**。`perf` 看结构体那条:
+
+| 项 | 占比 |
+| --- | --- |
+| `RuntimeState::register_container` | 25.8% |
+| libc(malloc/free) | 26.2% |
+| `IndexMap::insert_full` | 7.6% |
+| `check_declared_value` | 7.3% |
+
+**改掉的一项**:`obj_mark` 除了写下类型 id,还会把 map 里**每个键拷成 `String`、
+逐个重新做声明类型检查**。而降低那边本来就在每个字段上发过检查(值的类型能定下来
+的还会省掉)。拆成两个入口:`obj_mark` 只写 id,`obj_mark_checked` 才重扫——后者
+只给 `P { ..base }` 这种"先建 map 再打标记"的形状用,它的字段确实没有更早的检查
+时机。结构体构造 2.03s → **1.67s**,`config_defaults_merge` 5.48s → **4.98s**,
+两端答案不变(`spread check` 那条仍然报同一句声明类型错误)。
+
+**没改的一项,量在这里**:`register_container` 是一张
+`HashMap<usize, ContainerEntry>`,每个容器一次插入、一次删除。它买的是两件事——
+退出时全部释放,以及**释放是幂等的**(未知句柄返回 `None`,重复释放是空操作)。
+所以不能简单地"作用域局部的容器不登记":那会把重复释放从空操作变成 double free,
+是拿正确性换速度。真正的改法是把 drop 信息放进分配本身的头部、用侵入式链表串起来
+(登记变成两次指针写,释放变成 O(1) 摘链,退出时走链表),幂等性靠节点上的标记。
+那是 lkrt 分配路径的一次 unsafe 重构,没有在这一轮做。
