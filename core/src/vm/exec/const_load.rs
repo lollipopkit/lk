@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use alloc::sync::Arc;
 
 use crate::{
-    val::{HeapValue, RuntimeVal, ShortStr, TypedList, typed_map_from_entries},
+    val::{HeapValue, RuntimeVal, ShortStr, TypedList, TypedMap, typed_map_from_entries},
     vm::{ConstHeapValue, ConstRuntimeValue, Function, Instr, Opcode},
 };
 
@@ -81,7 +81,7 @@ impl Executor {
             .consts
             .heap_value(instr.bx())
             .ok_or_else(|| anyhow!("LoadHeapConst const index {} out of bounds", instr.bx()))?;
-        let value = self.materialize_heap_const(value.clone())?;
+        let value = self.materialize_heap_const(value)?;
         if !dead_write {
             let handle = self.alloc_heap_value(value);
             self.write(instr.a(), RuntimeVal::Obj(handle))?;
@@ -89,23 +89,38 @@ impl Executor {
         Ok(())
     }
 
-    fn materialize_const_value(&mut self, value: ConstRuntimeValue) -> Result<RuntimeVal> {
+    fn materialize_const_value(&mut self, value: &ConstRuntimeValue) -> Result<RuntimeVal> {
         Ok(match value {
             ConstRuntimeValue::Nil => RuntimeVal::Nil,
-            ConstRuntimeValue::Bool(value) => RuntimeVal::Bool(value),
-            ConstRuntimeValue::Int(value) => RuntimeVal::Int(value),
-            ConstRuntimeValue::Float(value) => RuntimeVal::Float(value),
-            ConstRuntimeValue::ShortStr(value) => RuntimeVal::ShortStr(value),
+            ConstRuntimeValue::Bool(value) => RuntimeVal::Bool(*value),
+            ConstRuntimeValue::Int(value) => RuntimeVal::Int(*value),
+            ConstRuntimeValue::Float(value) => RuntimeVal::Float(*value),
+            ConstRuntimeValue::ShortStr(value) => RuntimeVal::ShortStr(*value),
             ConstRuntimeValue::Heap(value) => {
-                let value = self.materialize_heap_const(*value)?;
+                let value = self.materialize_heap_const(value)?;
                 RuntimeVal::Obj(self.alloc_heap_value(value))
             }
         })
     }
 
-    fn materialize_heap_const(&mut self, value: ConstHeapValue) -> Result<HeapValue> {
+    /// Builds the runtime value a constant describes.
+    ///
+    /// By reference: the constant stays in the function's pool and is read,
+    /// not consumed. Taking it by value meant cloning the whole structure —
+    /// every key, every nested constant — and then walking the clone to build
+    /// the real thing, so a constant container cost two deep copies per load
+    /// instead of one. `ConstHeapValue::clone` plus its drop was 5% of a
+    /// map-building workload; a `{}` in a loop is a common shape.
+    fn materialize_heap_const(&mut self, value: &ConstHeapValue) -> Result<HeapValue> {
         Ok(match value {
-            ConstHeapValue::LongString(value) => HeapValue::String(value),
+            // An empty `{}` or `[]` — what a loop body allocates over and over
+            // — has nothing to walk. The general path still built an empty
+            // `ValueMap`, called down a level, and ran a shape scan that gave
+            // up on the first look; that was 4% of a workload whose whole loop
+            // body is `let config = {};` plus four lookups.
+            ConstHeapValue::Map(values) if values.is_empty() => HeapValue::Map(TypedMap::Mixed(value_map_new())),
+            ConstHeapValue::List(values) if values.is_empty() => HeapValue::List(TypedList::Mixed(Vec::new())),
+            ConstHeapValue::LongString(value) => HeapValue::String(Arc::clone(value)),
             ConstHeapValue::List(values) => {
                 let list = self.materialize_const_list(values)?;
                 HeapValue::List(list)
@@ -113,15 +128,15 @@ impl Executor {
             ConstHeapValue::Map(values) => {
                 let mut runtime_entries = value_map_new();
                 for (key, value) in values {
-                    runtime_entries.insert(key, self.materialize_const_value(value)?);
+                    runtime_entries.insert(key.clone(), self.materialize_const_value(value)?);
                 }
                 HeapValue::Map(typed_map_from_entries(runtime_entries))
             }
-            ConstHeapValue::UpvalCell(value) => HeapValue::UpvalCell(self.materialize_const_value(*value)?),
+            ConstHeapValue::UpvalCell(value) => HeapValue::UpvalCell(self.materialize_const_value(value)?),
         })
     }
 
-    fn materialize_const_list(&mut self, values: Vec<ConstRuntimeValue>) -> Result<TypedList> {
+    fn materialize_const_list(&mut self, values: &[ConstRuntimeValue]) -> Result<TypedList> {
         let mut original = Vec::with_capacity(values.len());
         let mut shape = ConstListShape::Empty;
         for value in values {
