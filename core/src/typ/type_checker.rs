@@ -803,11 +803,8 @@ impl TypeChecker {
         while let crate::expr::Expr::Paren(inner) = value {
             value = inner;
         }
-        if matches!(value, crate::expr::Expr::List(_) | crate::expr::Expr::Map(_))
-            && self
-                .resolve_aliases(value_ty)
-                .container_literal_fits_with(&self.resolve_aliases(expected), self.registry())
-        {
+        let expected = self.resolve_aliases(expected);
+        if self.container_literal_fits(value, &self.resolve_aliases(value_ty), &expected) {
             return true;
         }
         // The second literal rule, and it was split across the same two
@@ -815,7 +812,42 @@ impl TypeChecker {
         // is what makes `u8 + Int` an error rather than a silent widening — but
         // a literal has no type of its own to preserve. `f(0x3f8)` for
         // `fn f(port: u16)` is the ordinary way to call a driver.
-        Self::int_literal_fits_machine_int(&self.resolve_aliases(expected), value)
+        Self::int_literal_fits_machine_int(&expected, value)
+    }
+
+    /// The container-literal half of [`Self::value_fits`], **recursively**.
+    ///
+    /// A literal nested in a literal is fresh too, so the exemption has to
+    /// reach it: `let xs: List<List<Any>> = [[1]];` and
+    /// `let xs: List<u8> = [5];` were refused because the rule compared types
+    /// one level down and stopped, where `List<Int>` is not assignable to
+    /// `List<Any>` and `Int` is not a `u8` — both of which are true of a
+    /// *variable* and neither of a literal.
+    ///
+    /// The element types come from the inference already done (a homogeneous
+    /// literal is a `List`, a heterogeneous one a `Tuple`), so nothing is
+    /// re-checked; only the exemption walks down.
+    fn container_literal_fits(&self, value: &crate::expr::Expr, value_ty: &Type, expected: &Type) -> bool {
+        use crate::expr::Expr;
+        let element_types = |count: usize| -> Option<alloc::vec::Vec<Type>> {
+            match value_ty {
+                Type::List(elem) => Some(alloc::vec![(**elem).clone(); count]),
+                Type::Tuple(elems) if elems.len() == count => Some(elems.clone()),
+                _ => None,
+            }
+        };
+        match (value, expected) {
+            (Expr::List(items), Type::List(elem)) => element_types(items.len())
+                .is_some_and(|tys| items.iter().zip(tys).all(|(item, ty)| self.value_fits(item, &ty, elem))),
+            (Expr::Map(pairs), Type::Map(key, value_type)) => {
+                let Type::Map(actual_key, actual_value) = value_ty else {
+                    return false;
+                };
+                actual_key.is_assignable_to_with(key, self.registry())
+                    && pairs.iter().all(|(_, v)| self.value_fits(v, actual_value, value_type))
+            }
+            _ => false,
+        }
     }
 
     /// Whether `value` is an integer literal in range for a machine-int

@@ -394,7 +394,7 @@ impl Stmt {
                                 Err(anyhow!(error_msg))
                             };
                         }
-                    } else if !type_checker.is_assignable(&expr_type, var_type) {
+                    } else if !type_checker.value_fits(value, &expr_type, var_type) {
                         let error_msg = format!(
                             "Type mismatch in assignment: variable '{}' has type {}, but right-hand side has type {}",
                             name,

@@ -1118,6 +1118,50 @@ mod tests {
             ("struct field", "struct S { f: u8 }\nlet s = S { f: {LIT} };"),
             ("return", "fn make() -> u8 { return {LIT}; }"),
         ];
+        // Nested: a literal inside a literal is fresh too. The rule compared
+        // types one level down and stopped there, so `[[1]]` for a
+        // `List<List<Any>>` and `[5]` for a `List<u8>` were refused — both
+        // true of a *variable* and neither of a literal.
+        for source in [
+            "let xs: List<List<Any>> = [[1]];",
+            "let xs: List<List<List<Any>>> = [[[1]]];",
+            "let xs: List<u8> = [5];",
+            "let m: Map<String, u8> = {\"k\": 5};",
+            "let m: Map<String, List<Any>> = {\"k\": [1]};",
+            "struct S { f: List<List<Any>> }\nlet s = S { f: [[1]] };",
+        ] {
+            check_program(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+        for source in [
+            // A named container among the elements is still an alias.
+            "let a: List<Int> = [1];\nlet xs: List<List<Any>> = [a];",
+            "let xs: List<u8> = [300];",
+            "let xs: List<List<Int>> = [[1.5]];",
+            "let m: Map<String, u8> = {\"k\": 300};",
+            "let m: Map<Int, u8> = {\"k\": 5};",
+        ] {
+            check_program(source).expect_err(source);
+        }
+
+        // A store is a position a value is written at, so the same two rules
+        // reach a reassignment and a field write.
+        for source in [
+            "let xs: List<Any> = [];\nxs = [1];",
+            "let x: u8 = 1;\nx = 5;",
+            "struct S { f: List<Any> }\nlet s = S { f: [] };\ns.f = [1];",
+            "struct S { f: u8 }\nlet s = S { f: 1 };\ns.f = 5;",
+        ] {
+            check_program(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+        for source in [
+            "let xs: List<Any> = [];\nlet ys: List<Int> = [1];\nxs = ys;",
+            "struct S { f: List<Any> }\nlet s = S { f: [] };\nlet ys: List<Int> = [1];\ns.f = ys;",
+            "struct S { f: u8 }\nlet s = S { f: 1 };\ns.f = 300;",
+            "struct S { f: List<Int> }\nlet s = S { f: [] };\ns.f = [1.5];",
+        ] {
+            check_program(source).expect_err(source);
+        }
+
         for (what, shape) in machine_int {
             check_program(&shape.replace("{LIT}", "5")).unwrap_or_else(|e| panic!("{what}: {e}"));
             // Having a range is the point of a fixed width, so out of range is

@@ -867,46 +867,6 @@ impl Type {
         }
     }
 
-    /// Whether a container of `self` may fill a `target` **because it is a
-    /// literal** — a container the program has no other name for.
-    ///
-    /// Containers are invariant because a widening is an alias: two names for
-    /// one object, disagreeing about the element type, and the wider one can
-    /// write what the narrower one's type forbids. A literal has no second
-    /// name, so its elements are checked covariantly, exactly as they were
-    /// before, and `let xs: List<Any> = [1, 2];` or `f([1, 2])` still work.
-    ///
-    /// The counterpart of the machine-int literal rule (`let x: u8 = 5` rather
-    /// than `5 as u8`), for the same reason and at the same three positions:
-    /// a `let` with an annotation, a positional argument, and a named one.
-    /// Callers pass the *expression* so that only a literal takes this path.
-    pub fn container_literal_fits(&self, target: &Type) -> bool {
-        self.container_literal_fits_with(target, &NoTraits)
-    }
-
-    /// [`Self::container_literal_fits`] with a [`TraitOracle`], for the same
-    /// reason [`Self::is_assignable_to_with`] takes one: the elements may be
-    /// required to implement a trait.
-    pub fn container_literal_fits_with(&self, target: &Type, oracle: &dyn TraitOracle) -> bool {
-        match (self, target) {
-            (Type::List(a), Type::List(b)) => a.is_assignable_to_with(b, oracle),
-            (Type::Set(a), Type::Set(b)) => a.is_assignable_to_with(b, oracle),
-            (Type::Map(ak, av), Type::Map(bk, bv)) => {
-                ak.is_assignable_to_with(bk, oracle) && av.is_assignable_to_with(bv, oracle)
-            }
-            // A heterogeneous literal infers as a `Tuple` — that is the whole
-            // reason the variant exists — so `[p, q]` written for a
-            // `List<Show>` never reached the `List` arm above and the
-            // annotation was rejected by the precision it asked for. Element by
-            // element, like the arms above, and covariant for the same reason:
-            // a literal has no second name.
-            (Type::Tuple(elems), Type::List(target)) => {
-                elems.iter().all(|elem| elem.is_assignable_to_with(target, oracle))
-            }
-            _ => false,
-        }
-    }
-
     /// Check if this type can be assigned to another type (subtyping)
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         self.is_assignable_to_with(other, &NoTraits)

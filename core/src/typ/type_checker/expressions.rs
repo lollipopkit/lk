@@ -2402,7 +2402,9 @@ impl TypeChecker {
             self.inference_engine.add_constraint(declared, value_ty);
             return Ok(());
         }
-        if self.is_assignable(&value_ty, &declared) {
+        // `value_fits`, not bare assignability: a store is a position a value
+        // is written at, and the literal rules belong to every one of them.
+        if self.value_fits(value, &value_ty, &declared) {
             return Ok(());
         }
         Err(Self::type_err(
