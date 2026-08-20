@@ -1212,6 +1212,21 @@ pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
     crate::state::arena_handle(StrDynMap::default())
 }
 
+/// [`lkrt_lkmap_str_dyn_new`] for a map whose size is known before it is
+/// filled — a struct literal and a map literal both are.
+///
+/// Growing costs a rehash of everything inserted so far, and the cost is not
+/// linear in the field count: three fields cost 135ns each and six cost 277ns,
+/// which is the table doubling under them.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_dyn_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrDynMap {
+        entries: FxMap::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher),
+        type_id: 0,
+    })
+}
+
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
 /// `key` must be a NUL-terminated string.

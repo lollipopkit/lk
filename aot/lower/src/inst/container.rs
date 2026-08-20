@@ -841,11 +841,18 @@ pub(super) fn lower(
             // absent optional field is `str_dyn_get`'s Nil — matching the
             // VM's absent-Object-field nil. The type name is dropped: whole-
             // object display/`typeof` are not in the native subset.
+            // Sized: a struct literal knows its field count, and growing a map
+            // rehashes everything already in it.
+            let capacity = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: capacity,
+                value: Const::I64(i64::from(instr.c())),
+            });
             let map = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(map),
-                callee: AbiRef::new("map_h", "str_dyn_new"),
-                args: Vec::new(),
+                callee: AbiRef::new("map_h", "str_dyn_new_sized"),
+                args: vec![capacity],
             });
             let type_name = ssa.const_str_at(instr.b(), block, pc);
             for i in 0..instr.c() as usize {

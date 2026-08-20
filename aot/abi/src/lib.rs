@@ -872,6 +872,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "type_name", lkrt_dyn_type_name, ReadsHost, [DynVal], StrPtr);
             ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_dyn_new_sized", lkrt_lkmap_str_dyn_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);
             ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
             // The same read by position, with the key as the check — see
