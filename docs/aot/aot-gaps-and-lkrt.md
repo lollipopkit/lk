@@ -2150,3 +2150,41 @@ needle 就拒绝降级。类型化的那些 arm 都精确匹配 needle 的类型
 x86 内核现在过了打包这一关,停在下一个:`print_file` 里一处方法在那个接收者类型上
 还没有原生降级。那是另一条,没在这一轮做。
 
+
+## §62 装箱 map 按 `String` 索引,而 nil 和 Bool 也是键(2026-08-20)
+
+解释器的 map 键有四种:`nil`、Bool、Int、String。原生这边没有任何表示装得下前两种 ——
+装箱载体 `StrDynMap = FxMap<String, LkDyn>`,类型化载体按 `String` 或 `i64`。
+
+**读**这一侧已经补齐:`lkrt_dyn_get` 对任意键种做查找,miss 给 nil,非键种交给
+`key_from_dyn` 按解释器的措辞 raise。**写**这一侧补不了:`m[nil] = 1` 解释器给
+`{nil:1}`,原生没有地方放。
+
+现状是两段:
+
+- 键的静态类型是 `Ty::Nil` / `Ty::Bool` 时,降级层拒绝,整程序回落 VM。正确,慢。
+- 键是 `Ty::Dyn`(擦除)时,仍然发出 `dyn.index_set`,运行期 raise "runtime type
+  error" —— **这是错答**,解释器答得出来。
+
+### 为什么没有一并拒绝擦除的键
+
+试过。`aot_fuzz_differential_test` 的原生化比例从 12/60 掉到 10/60,踩了它自己的下限
+断言。那个下限就是为了抓这种"回退掉一大片但答案仍然正确"的退化而设的。
+
+### 为什么没有改表示
+
+`StrDynMap` 换成 `FxMap<RtKey, LkDyn>` 是唯一的正解,顺带把"装箱 map 是字符串键"
+这个特例连同各处的 `str_key` / `key_from_dyn` 转换层一起删掉。迭代序不是障碍:
+`FxMap` 是 `IndexMap`,顺序按插入,与键类型无关。
+
+障碍是**查找要分配**。`map.get(&str_key(text))` 对超过 7 字节的键会构造
+`RtKey::String(String)` —— 而这正是结构体字段读取那条路径,它此前专门优化过
+(`str_dyn_get_at` 按位置读,注释记着一次哈希查找实测 ~107ns 是整个循环的开销)。
+结构体字段名超过 7 字节很常见。
+
+绕开分配需要一个借用形式的键(`Equivalent<RtKey> for &str`),它的 `Hash` 必须与
+`RtKey::ShortStr` / `RtKey::String` 逐位一致,包括 7 字节那道分界。那是一份会在
+沉默中漂移的副本 —— 正是 [[lkrt-mirror-drift]] 那一类。
+
+规模与此前记下的 `MapI64Dyn` 载体相当(15 个 ABI 入口 + 约 48 处内部引用)。
+要做就连同一个借用键的 hash 一致性测试一起做,不要只搬类型。
