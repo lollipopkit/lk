@@ -1,9 +1,6 @@
 // A trait can be implemented for a *built-in* type, and dispatch through a
 // trait-typed parameter has to reach those impls as well as a struct's.
 //
-// `Nil` is not among them: the checker does not accept `nil` where a trait is
-// declared, so an impl for it has no call site.
-//
 // A struct instance carries a type mark the runtime can read; a value of a
 // built-in type does not. So dispatch asks for a type id that answers the mark
 // when there is one and a fixed code for the value's language type otherwise —
@@ -12,6 +9,12 @@
 
 trait Describe {
     fn describe(self) -> String;
+}
+
+impl Describe for Nil {
+    fn describe(self) -> String {
+        return "nothing";
+    }
 }
 
 impl Describe for Bool {
@@ -84,6 +87,8 @@ fn tell(v: Describe) -> String {
     return v.describe();
 }
 
+let nothing = nil;
+println(tell(nothing));
 println(tell(true));
 println(tell(7));
 println(tell(2.5));

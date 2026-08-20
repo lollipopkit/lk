@@ -76,3 +76,78 @@ println([
         "nil,bool,int,float,string,list,map,set,bytes,slice,task,channel,stream"
     );
 }
+
+/// The same list again, reached through a *trait* parameter rather than by
+/// naming the method on the value.
+///
+/// A different path — the checker has to accept the argument where the trait is
+/// declared, which asks the registry whether the type implements it — and it
+/// was wrong for three of the thirteen. `List` and the other containers keyed
+/// on their element (`List<Int>` against a registration of `List<Any>`);
+/// `Stream` keyed the other way round, a bare name against a written-out
+/// registration; and `Nil` never reached the question at all, because "a
+/// nullable value does not fit a slot that is not nullable" answered first —
+/// true of a slot, and not of a trait somebody wrote `impl D for Nil` for.
+#[test]
+fn a_trait_implemented_for_a_built_in_type_accepts_a_value_of_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("trait_impls.lk");
+    std::fs::write(
+        &source,
+        r#"use stream;
+
+trait Tag { fn tag(self) -> String; }
+
+impl Tag for Nil { fn tag(self) -> String { return "nil"; } }
+impl Tag for Bool { fn tag(self) -> String { return "bool"; } }
+impl Tag for Int { fn tag(self) -> String { return "int"; } }
+impl Tag for Float { fn tag(self) -> String { return "float"; } }
+impl Tag for String { fn tag(self) -> String { return "string"; } }
+impl Tag for List { fn tag(self) -> String { return "list"; } }
+impl Tag for Map { fn tag(self) -> String { return "map"; } }
+impl Tag for Set { fn tag(self) -> String { return "set"; } }
+impl Tag for Bytes { fn tag(self) -> String { return "bytes"; } }
+impl Tag for Slice { fn tag(self) -> String { return "slice"; } }
+impl Tag for Task { fn tag(self) -> String { return "task"; } }
+impl Tag for Channel { fn tag(self) -> String { return "channel"; } }
+impl Tag for Stream { fn tag(self) -> String { return "stream"; } }
+
+fn name(v: Tag) -> String { return v.tag(); }
+
+let nothing = nil;
+let c = chan(1);
+send(c, "x");
+println([
+  name(nothing),
+  name(true),
+  name(1),
+  name(1.5),
+  name("s"),
+  name([1]),
+  name({"k": 1}),
+  name(Set([1])),
+  name("ab".bytes()),
+  name([1, 2, 3].slice(0, 2)),
+  name(spawn(|| 1)),
+  name(c),
+  name(stream.range(0, 2)),
+].join(","));
+"#,
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(source.to_str().expect("utf-8 path"))
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("run under the VM");
+    assert!(
+        out.status.success(),
+        "the program did not run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "nil,bool,int,float,string,list,map,set,bytes,slice,task,channel,stream"
+    );
+}

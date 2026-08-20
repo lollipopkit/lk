@@ -310,17 +310,15 @@ impl TypeRegistry {
         if let Some(found) = self.implementations.get(&name) {
             return Some(found);
         }
-        // Both sides are written out, and they need not agree on the argument:
-        // the lookup is `List<Int>` and the registration is `List<Any>`, so
-        // neither the full name nor a bare `List` finds the other. The
-        // *constructor* is what matches.
+        // Neither side need agree with the other on the argument: the lookup is
+        // `List<Int>` and the registration is `List<Any>`, and it also runs the
+        // other way — `stream.range(…)` is declared to return a bare `Stream`
+        // while `impl D for Stream` registers as `Stream<Any>`. The
+        // *constructor* is what matches, in either direction.
         let base = name.split('<').next()?;
-        if base == name {
-            return None;
-        }
         self.implementations
             .iter()
-            .find(|(key, _)| key.split('<').next() == Some(base))
+            .find(|(key, _)| key.split('<').next() == Some(base) && key.as_str() != name)
             .map(|(_, impls)| impls)
     }
 

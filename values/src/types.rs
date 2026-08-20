@@ -961,6 +961,13 @@ impl Type {
             // failed there instead, which is exactly what `?` exists to
             // prevent — and `String?` was already rejected in the same
             // position, so the rule only had a hole for numbers.
+            //
+            // A *trait* is not a slot in the sense this rule guards: `impl D
+            // for Nil` makes nil a `D`, so whether it fits is the oracle's
+            // answer and not this one's. Deciding it here refused `t(nil)` for
+            // a program that had written that impl, and refused it before the
+            // oracle was ever asked.
+            (lhs, Type::Named(trait_name)) if lhs.may_be_nil() => oracle.implements(lhs, trait_name),
             (lhs, rhs) if lhs.may_be_nil() && !rhs.may_be_nil() => false,
             // Numeric hierarchy: allow Int -> Float, Float -> Boxed, etc.
             (lhs, rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => {
