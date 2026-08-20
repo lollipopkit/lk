@@ -1072,6 +1072,42 @@ mod tests {
         check_program("let a: List<_> = [1, 2];\na.push(3);").expect_err("a read-only view cannot be written");
     }
 
+    /// …and the literal half of that rule holds in every position too.
+    ///
+    /// It used to hold in two: the `let` statement and a call argument each
+    /// carried their own copy of it, and a struct field and a `return` had
+    /// neither. So `let f: List<Any> = [1];` was accepted while
+    /// `S { f: [1] }` and `fn f() -> List<Any> { return [1]; }` were refused —
+    /// the same written value, three answers.
+    #[test]
+    fn a_container_literal_takes_the_declared_element_type_in_every_position() {
+        let positions = [
+            ("let", "let xs: List<Any> = {LIT};"),
+            ("parameter", "fn take(xs: List<Any>) -> Int { return xs.len(); }\nlet n = take({LIT});"),
+            ("struct field", "struct S { f: List<Any> }\nlet s = S { f: {LIT} };"),
+            ("return", "fn make() -> List<Any> { return {LIT}; }"),
+        ];
+        // A homogeneous literal, a heterogeneous one (which infers as a
+        // `Tuple`), and an empty one.
+        for literal in ["[1]", "[1, \"a\"]", "[]"] {
+            for (what, shape) in positions {
+                let source = shape.replace("{LIT}", literal);
+                check_program(&source).unwrap_or_else(|e| panic!("{what} with {literal}: {e}"));
+            }
+        }
+        // The same positions still refuse a *variable*, which is what
+        // invariance is about — the literal is not a loophole in it.
+        for (what, shape) in positions {
+            let source = alloc::format!("let a: List<Int> = [1];\n{}", shape.replace("{LIT}", "a"));
+            check_program(&source).expect_err(what);
+        }
+        // And a literal whose elements do not fit is still refused.
+        check_program("struct S { f: List<Int> }\nlet s = S { f: [1.5] };")
+            .expect_err("a literal is checked element by element, not waved through");
+        check_program("fn make() -> Map<String, Int> { return {\"k\": \"v\"}; }")
+            .expect_err("map literals too");
+    }
+
     #[test]
     fn a_list_satisfies_a_tuple_annotation_of_the_same_element_types() {
         check_program("let t: Tuple<Int, Int> = [1, 2];").expect("a two-Int list is a Tuple<Int, Int>");

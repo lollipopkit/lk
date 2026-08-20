@@ -788,10 +788,7 @@ impl TypeChecker {
                 .add_constraint(param_type.clone(), arg_type.clone());
             return Ok(());
         }
-        if self.is_assignable(arg_type, param_type)
-            || literal_fits_machine_int(param_type, arg)
-            || literal_fits_container(param_type, arg, arg_type, self.registry())
-        {
+        if self.value_fits(arg, arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
             return Ok(());
         }
         Err(Self::type_err(
@@ -815,10 +812,7 @@ impl TypeChecker {
                 .add_constraint(param_type.clone(), arg_type.clone());
             return Ok(());
         }
-        if self.is_assignable(arg_type, param_type)
-            || literal_fits_machine_int(param_type, arg)
-            || literal_fits_container(param_type, arg, arg_type, self.registry())
-        {
+        if self.value_fits(arg, arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
             return Ok(());
         }
         Err(Self::type_err(
@@ -862,24 +856,6 @@ impl TypeChecker {
 /// type of its own to preserve. `f(0x3f8)` for `fn f(port: u16)` is the
 /// ordinary way to call a driver, and requiring `0x3f8 as u16` there would be
 /// ceremony without a reader.
-/// Whether `arg` is a container *literal* that fits `param_type`.
-///
-/// Containers are invariant because a widening is an alias; a literal has no
-/// second name, so its elements are checked covariantly. Same shape and same
-/// reason as [`literal_fits_machine_int`] right below.
-fn literal_fits_container(
-    param_type: &Type,
-    arg: &Expr,
-    arg_type: &Type,
-    oracle: &dyn crate::val::TraitOracle,
-) -> bool {
-    let mut arg = arg;
-    while let Expr::Paren(inner) = arg {
-        arg = inner;
-    }
-    matches!(arg, Expr::List(_) | Expr::Map(_)) && arg_type.container_literal_fits_with(param_type, oracle)
-}
-
 fn literal_fits_machine_int(param_type: &Type, arg: &Expr) -> bool {
     let Type::MachineInt(kind) = param_type else {
         return false;

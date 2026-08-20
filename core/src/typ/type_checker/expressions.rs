@@ -596,7 +596,7 @@ impl TypeChecker {
                         let expected = schema.get(fname).cloned();
                         let at = self.check_expr_against(fexpr, expected.as_ref())?;
                         if let Some(expected) = expected {
-                            if !self.is_assignable(&at, &expected) {
+                            if !self.value_fits(fexpr, &at, &expected) {
                                 return Err(Self::type_err(
                                     &format!("Field '{}' type mismatch in struct '{}'", fname, name),
                                     Some(expected.clone()),
@@ -827,7 +827,7 @@ impl TypeChecker {
                         }
                         let at = self.check_expr_against(e, schema.get(n))?;
                         if let Some(expected) = schema.get(n)
-                            && !self.is_assignable(&at, expected)
+                            && !self.value_fits(e, &at, expected)
                         {
                             return Err(Self::type_err(
                                 &format!("Field '{}' type mismatch in struct '{}'", n, name),

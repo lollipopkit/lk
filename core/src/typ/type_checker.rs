@@ -782,6 +782,33 @@ impl TypeChecker {
         lhs.is_assignable_to_with(&rhs, self.registry())
     }
 
+    /// Whether `value`, whose inferred type is `value_ty`, may be written where
+    /// `expected` is declared.
+    ///
+    /// [`Self::is_assignable`], plus the one rule that has to be stated
+    /// alongside it every time: a container **literal** is checked
+    /// covariantly. Containers are invariant because a widening is an alias,
+    /// and a literal has no second name.
+    ///
+    /// The rule lived in two copies — the `let` statement's and the call
+    /// argument's — and the positions that had neither refused what those two
+    /// accept: `S { f: [1] }` for a `List<Any>` field, and
+    /// `fn f() -> List<Any> { return [1]; }`, while
+    /// `let f: List<Any> = [1];` was fine.
+    pub fn value_fits(&self, value: &crate::expr::Expr, value_ty: &Type, expected: &Type) -> bool {
+        if self.is_assignable(value_ty, expected) {
+            return true;
+        }
+        let mut value = value;
+        while let crate::expr::Expr::Paren(inner) = value {
+            value = inner;
+        }
+        matches!(value, crate::expr::Expr::List(_) | crate::expr::Expr::Map(_))
+            && self
+                .resolve_aliases(value_ty)
+                .container_literal_fits_with(&self.resolve_aliases(expected), self.registry())
+    }
+
     /// Register a function signature for static checking by name
     pub fn add_function_sig(&mut self, name: String, sig: FunctionSig) {
         self.function_sigs.insert(name, sig);

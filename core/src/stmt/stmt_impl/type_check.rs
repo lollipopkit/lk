@@ -296,8 +296,7 @@ impl Stmt {
                         };
                     }
                 } else if let Some(expected_type) = type_annotation
-                    && !type_checker.is_assignable(&expr_type, expected_type)
-                    && !container_literal_fits(expected_type, value, &expr_type, type_checker.registry())
+                    && !type_checker.value_fits(value, &expr_type, expected_type)
                 {
                     let error_msg = format!(
                         "Type mismatch in let statement: pattern expected type {}, but expression has type {}",
@@ -982,7 +981,16 @@ impl Stmt {
                     // `fn make() -> (Int) -> Int { return |x| … }` was rejected.
                     Some(expr) => {
                         let declared = type_checker.declared_return();
-                        type_checker.check_expr_against(expr, declared.as_ref())?
+                        let inferred = type_checker.check_expr_against(expr, declared.as_ref())?;
+                        // `return [1];` for a declared `List<Any>` is the same
+                        // written value as `let x: List<Any> = [1];`, and the
+                        // literal rule is what makes both fine. The declaration
+                        // is adopted here rather than widened at the join, so
+                        // `pop_return_frame` stays a list of plain types.
+                        match &declared {
+                            Some(want) if type_checker.value_fits(expr, &inferred, want) => want.clone(),
+                            _ => inferred,
+                        }
                     }
                     None => Type::Nil,
                 };
@@ -1699,25 +1707,4 @@ fn declared_admits_nil(declared: &Type) -> bool {
         Type::Variable(_) => true,
         _ => false,
     }
-}
-
-/// Whether `value` is a container *literal* whose type fits `expected`.
-///
-/// Containers are invariant because a widening is an alias; a literal has no
-/// second name, so its elements are checked covariantly. The same rule the
-/// call sites apply to an argument (`literal_fits_container` in
-/// `typ::type_checker::expressions::calls`), through the same
-/// `Type::container_literal_fits`.
-fn container_literal_fits(
-    expected: &Type,
-    value: &crate::expr::Expr,
-    value_ty: &Type,
-    oracle: &dyn crate::val::TraitOracle,
-) -> bool {
-    use crate::expr::Expr;
-    let mut value = value;
-    while let Expr::Paren(inner) = value {
-        value = inner;
-    }
-    matches!(value, Expr::List(_) | Expr::Map(_)) && value_ty.container_literal_fits_with(expected, oracle)
 }
