@@ -130,6 +130,13 @@ pub struct Compiler {
     /// initializer or a declared type. The compiler tracks no other types; this
     /// exists only to give `r.field` a width to wrap to.
     local_struct_types: HashMap<String, String>,
+    /// A local container's declared **element** width, when it has one.
+    ///
+    /// The twin of [`Self::local_struct_types`], for the other shape a machine
+    /// integer is read out of. `let bytes: List<u8> = …; bytes[0] + 10` added at
+    /// 64 bits and answered 260 where the type says 4, and a `Map<String, u8>`
+    /// did the same — a byte buffer is exactly what a driver reads through.
+    local_element_widths: HashMap<String, crate::val::IntKind>,
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
@@ -338,7 +345,7 @@ impl Compiler {
 
     /// The width a call to `name` produces: a user function that declares one,
     /// or a builtin whose name *is* one.
-    fn call_machine_width(&self, name: &str) -> Option<crate::val::IntKind> {
+    pub(in crate::vm::compiler) fn call_machine_width(&self, name: &str) -> Option<crate::val::IntKind> {
         self.function_machine_returns
             .get(name)
             .copied()
@@ -408,6 +415,29 @@ impl Compiler {
         }
     }
 
+    /// Records a local container's declared element width, for the same reason
+    /// [`Self::note_local_struct_type`] records its struct: so that a value read
+    /// out of it has a width to wrap to.
+    pub(in crate::vm::compiler) fn note_local_element_width(
+        &mut self,
+        name: &str,
+        type_annotation: Option<&crate::val::Type>,
+    ) {
+        let element = match type_annotation {
+            Some(crate::val::Type::List(element) | crate::val::Type::Set(element)) => Some(element.as_ref()),
+            Some(crate::val::Type::Map(_, value)) => Some(value.as_ref()),
+            _ => None,
+        };
+        match element {
+            Some(crate::val::Type::MachineInt(kind)) => {
+                self.local_element_widths.insert(String::from(name), *kind);
+            }
+            _ => {
+                self.local_element_widths.remove(name);
+            }
+        }
+    }
+
     /// The declared width of `target.key`, when the compiler knows both.
     pub(in crate::vm::compiler) fn access_machine_width_of(
         &self,
@@ -421,8 +451,14 @@ impl Compiler {
         let Expr::Var(name) = target else {
             return None;
         };
+        // An element read out of a declared container: `bytes[i]`, `counts[k]`.
+        // Any key expression, because an index is any expression — which is
+        // also why a bare `Var` below is *not* a field name.
+        if let Some(kind) = self.local_element_widths.get(name.as_str()).copied() {
+            return Some(kind);
+        }
+        // A member is a string literal; `p[field]` is an index, not `p.field`.
         let field = match key {
-            Expr::Var(field) => field.as_str(),
             Expr::Literal(value) => value.as_str()?,
             _ => return None,
         };

@@ -106,6 +106,7 @@ impl Compiler {
             // the only type the compiler tracks, and only so that `r.field` has
             // a declared width to wrap to.
             self.note_local_struct_type(name, type_annotation, value);
+            self.note_local_element_width(name, type_annotation);
             match type_annotation {
                 Some(_) => self.note_machine_reg(slot, type_annotation),
                 // A call establishes nothing on its own, so its declared width

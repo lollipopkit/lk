@@ -123,8 +123,16 @@ impl Compiler {
         // AOT coverage number is identical with and without it. The drop came
         // from a change landing alongside. Measure at your own commit before
         // blaming your own diff.
-        if name == "__lk_bit_not"
-            && args.len() == 1
+        // The shifts are the other two. `<<` and `>>` desugar into named calls
+        // the same way, and they were not in this branch: at `u8`, `1 << 9`
+        // answered 512, and at `i32`, `1 << 31` answered 2147483648 where the
+        // sign bit makes it -2147483648. `&`, `|` and `^` need nothing — two
+        // operands already inside the width cannot leave it.
+        //
+        // The width is argument 0's in all three: a shift count has its own
+        // type and does not decide the result's.
+        if matches!(name, "__lk_bit_not" | "__lk_shl" | "__lk_shr")
+            && !args.is_empty()
             && let Some(kind) = self.expr_machine_width(&args[0])
         {
             let dst = self.lower_named_call_body(name, args)?;
@@ -132,7 +140,19 @@ impl Compiler {
             self.machine_regs.insert(dst, kind);
             return Ok(dst);
         }
-        self.lower_named_call_body(name, args)
+        let dst = self.lower_named_call_body(name, args)?;
+        // A declared return width is a width the *caller* can rely on, and the
+        // register the result lands in had none: `fn ret() -> u8 { … }` then
+        // `ret() + 10` added at 64 bits and answered 260 where `let v = ret();
+        // v + 10` answered 4. The fact existed (`function_machine_returns`) and
+        // only `expr_machine_width` consulted it — and the arithmetic path asks
+        // the *register*, not the expression.
+        if let Some(kind) = self.call_machine_width(name) {
+            self.machine_regs.insert(dst, kind);
+        } else {
+            self.machine_regs.remove(&dst);
+        }
+        Ok(dst)
     }
 
     fn lower_named_call_body(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {

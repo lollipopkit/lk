@@ -515,6 +515,56 @@ fn a_map_that_is_one_still_lowers_its_collection_methods() {
     );
 }
 
+/// A declared width has to survive every boundary a value crosses, and three
+/// of them dropped it.
+///
+/// The arithmetic path asks the *register* for its width, and a register that
+/// came out of a call or a container had none — while the same value bound to a
+/// local first got it right. `250 + 10` at `u8` is 4:
+///
+/// | written as | was |
+/// | --- | --- |
+/// | `bytes[0] + 10`, `bytes: List<u8>` | 260 |
+/// | `counts["k"] + 10`, `counts: Map<String, u8>` | 260 |
+/// | `ret() + 10`, `fn ret() -> u8` | 260 |
+///
+/// The shifts are the fourth: they desugar into named calls, and only `~` had
+/// been taught to wrap afterwards.
+#[test]
+fn a_declared_width_survives_a_call_a_container_and_a_shift() {
+    run_clif_differential(
+        "machine_int_boundaries",
+        &[
+            new(
+                "out_of_a_call_and_a_container",
+                "struct S { f: u8 }\n\
+                 fn ret() -> u8 { return 250; }\n\
+                 let bytes: List<u8> = [250];\n\
+                 let counts: Map<String, u8> = {\"k\": 250};\n\
+                 let s = S { f: 250 };\n\
+                 let local: u8 = 250;\n\
+                 println(bytes[0] + 10);\n\
+                 println(counts[\"k\"] + 10);\n\
+                 println(s.f + 10);\n\
+                 println(local + 10);\n\
+                 println(ret() + 10);\n",
+            ),
+            new(
+                "shifts_wrap_to_their_width",
+                "fn shl8(a: u8, n: u8) -> u8 { return a << n; }\n\
+                 fn shr8(a: u8, n: u8) -> u8 { return a >> n; }\n\
+                 fn shl32(a: i32, n: i32) -> i32 { return a << n; }\n\
+                 println(shl8(1, 3));\n\
+                 println(shl8(1, 9));\n\
+                 println(shr8(255, 9));\n\
+                 println(shl32(1, 30));\n\
+                 println(shl32(1, 31));\n\
+                 println(shl32(1, 32));\n",
+            ),
+        ],
+    );
+}
+
 /// A float narrowed to a fixed width saturates to *that* width's range.
 ///
 /// Both engines used to saturate to `i64` first and then mask the result, so a
