@@ -970,5 +970,27 @@ min-of-9:2.69s → 2.53s(按引用)→ 2.47s(加空容器直达),**8%**。
 min-of-9:2.47s → **2.24s**。两趟合起来 2.69s → 2.24s,**17%**。
 `config_defaults_merge` 的比值 1.91x → 1.62x。
 
+**第三趟(同日),结构体构造**:上面两趟都在 map 上,结构体构造是另一条路
+(`NewObject`),而它的字段名每次构造都要新分配。300 万次构造一个三字段结构体,
+`perf -F 499`:
+
+| 项 | 占比 |
+| --- | --- |
+| `dispatch_new_object` | 17.9% |
+| `get_heap_index_slow_path`(读 `p.x`) | 11.5% |
+| `HeapValue` drop_glue + `Arc<str>::drop_slow` | 18.9% |
+| `runtime_value_to_plain_string_maybe` | 7.6% |
+| `insert_full` | 5.4% |
+
+两处:
+
+1. 字段名走的是通用转换 —— 把值渲染成一个新 `String`,再拷进 `Arc`,**每个字段
+   每次构造两次分配**,而字段名本来就是字符串(堆上的那种本身就是 `Arc`)。
+2. 分配掉的那一次也不必有:**声明**里就存着字段名的 `Arc<str>`
+   (`DeclaredType::fields`),让实例直接用它,整个程序一个字段名一次分配。
+
+min-of-9:0.96s → 0.87s(去掉双重分配)→ **0.68s**(共用声明里的 `Arc`),
+合计 **29%**。
+
 `IndexMap::from_iter::<…, 1>` 那 4.0% 仍然在:`Mixed` 空 map 第一次插入时提升成
 `StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。

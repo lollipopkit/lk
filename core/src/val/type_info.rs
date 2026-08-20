@@ -192,6 +192,19 @@ impl DeclaredType {
 
     /// The declared type of `field`, when the declaration is in reach and the
     /// field was written with one.
+    /// The declared field of this name, when it is declared.
+    ///
+    /// Handing out the declaration's own `Arc<str>` is what lets every instance
+    /// share one allocation for a field name instead of minting one per
+    /// construction — `Arc<str>::drop_slow` was 9% of a loop building one
+    /// struct.
+    pub fn declared_field_name(&self, field: &str) -> Option<&Arc<str>> {
+        self.fields
+            .iter()
+            .find(|declared| &*declared.name == field)
+            .map(|declared| &declared.name)
+    }
+
     pub fn field_type(&self, field: &str) -> Option<&crate::val::Type> {
         if !self.typed_fields {
             return None;

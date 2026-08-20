@@ -123,6 +123,38 @@ impl Executor {
         Ok(values)
     }
 
+    /// A struct field's name, as the `Arc<str>` the object will key by.
+    ///
+    /// The general conversion renders a value into a fresh `String`, which this
+    /// then copied into an `Arc` — two allocations per field per construction,
+    /// and the rendering was 7.5% of a loop that builds one struct. A field name
+    /// is a string already: a heap one *is* an `Arc` and is shared, and an
+    /// inline one is copied once.
+    fn field_name_from_register(&self, register: u8, ty: &crate::val::DeclaredType) -> Result<Arc<str>> {
+        let borrowed = match self.read(register)? {
+            RuntimeVal::ShortStr(text) => Some(text.as_str()),
+            RuntimeVal::Obj(handle) => match self.state.heap.get(*handle) {
+                // A heap field name is an `Arc` already, and the object may
+                // share it.
+                Some(HeapValue::String(text)) => return Ok(Arc::clone(text)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(text) = borrowed {
+            // The declaration holds this name, so every instance keys by the
+            // *same* `Arc` — one allocation for the program, not one per
+            // construction. A name the declaration does not have (an undeclared
+            // field, or a struct whose declaration is out of reach) still costs
+            // its own.
+            if let Some(shared) = ty.declared_field_name(text) {
+                return Ok(Arc::clone(shared));
+            }
+            return Ok(Arc::<str>::from(text));
+        }
+        Ok(Arc::<str>::from(self.to_runtime_string(register)?))
+    }
+
     pub(super) fn read_object_fields(&mut self, base: u8, count: u8) -> Result<RuntimeObject> {
         let ty = self.declared_type(base)?;
         let field_base = base
@@ -139,7 +171,7 @@ impl Executor {
             let value_reg = key_reg
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("object value register overflow"))?;
-            let key = Arc::<str>::from(self.to_runtime_string(key_reg)?);
+            let key = self.field_name_from_register(key_reg, &ty)?;
             let value = *self.read(value_reg)?;
             // Construction is checked against the declaration for the same
             // reason a store is: `A { v: x }` with an untyped `x` is a write
