@@ -828,6 +828,58 @@ fn nullable_needle_in_typed_container(
     Ok(Some((dst, found_ty)))
 }
 
+/// Whether the receiver can be *shown* not to hold a needle of this type.
+///
+/// A byte string holds bytes, a string's members are its substrings, and a map
+/// or set is keyed by nil/Bool/Int/String. When the needle's type is outside
+/// what the container can hold, the interpreter answers "absent" — it does not
+/// refuse — and the answer is the same for every value of that type, so it is a
+/// constant rather than a call.
+///
+/// `Dyn` and the nullable carriers are never "shown" anything: they may be the
+/// right kind at run time.
+fn never_matches(receiver_ty: Ty, needle_ty: Ty) -> bool {
+    let concrete = !matches!(
+        needle_ty,
+        Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool
+    );
+    if !concrete {
+        return false;
+    }
+    match receiver_ty {
+        Ty::Str => needle_ty != Ty::Str,
+        Ty::Bytes | Ty::SliceI64 => needle_ty != Ty::I64,
+        // A set's member type is not in the carrier, so the only thing shown
+        // here is that the value cannot be a member of *any* set.
+        Ty::Set => !matches!(needle_ty, Ty::Nil | Ty::Bool | Ty::I64 | Ty::Str),
+        // A map's key type *is* in the carrier, and it is the whole answer: a
+        // string-keyed map does not hold an Int key, whatever the Int is.
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => needle_ty != Ty::Str,
+        Ty::MapI64I64 | Ty::MapI64F64 => needle_ty != Ty::I64,
+        _ => false,
+    }
+}
+
+/// Whether a needle type reaches the carrier's own typed search helper.
+///
+/// `Int` and `Float` both fit a numeric carrier, because the language compares
+/// them as numbers — `1 in [1.0]` is true. Everything else is a value the
+/// carrier cannot hold, and the search answers "absent" rather than refusing.
+fn fits_carrier(receiver_ty: Ty, name: &str, needle_ty: Ty) -> bool {
+    match receiver_ty {
+        // `contains` has a helper for an `f64` needle against an `i64` list —
+        // `1.5 in [1, 2]` is a real question and the answer is `false` — while
+        // `index_of` and `count` have none and take the boxed route.
+        Ty::ListI64 if name == "contains" => matches!(needle_ty, Ty::I64 | Ty::F64),
+        Ty::ListI64 => needle_ty == Ty::I64,
+        // A `List<f64>` coerces an `Int` needle in its own arm.
+        Ty::ListF64 if name == "contains" => matches!(needle_ty, Ty::I64 | Ty::F64),
+        Ty::ListF64 => needle_ty == Ty::F64,
+        Ty::ListStr => needle_ty == Ty::Str,
+        _ => true,
+    }
+}
+
 pub(crate) fn lower_method_dispatch(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -1208,6 +1260,89 @@ pub(crate) fn lower_method_dispatch(
                 rhs: zero,
             });
             (b, Ty::Bool)
+        }
+        // A container searched for something it cannot hold at all. The
+        // interpreter answers "absent" rather than refusing, and the answer is
+        // the same for every value of that type, so it is a constant.
+        // `"abc".contains(1)`, `b.contains("a")`, `s.contains(1.5)` — each of
+        // them was a refusal on this side and an answer on the other.
+        (_, name @ ("contains" | "has" | "index_of" | "count" | "delete"), [(_, nty)])
+            if never_matches(receiver_ty, *nty) =>
+        {
+            let dst = ssa.new_val();
+            match name {
+                "index_of" | "delete" => {
+                    // Both answer a boxed nil when absent: `index_of` has no
+                    // position and `delete` had nothing to return.
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "from_nil"),
+                        args: vec![],
+                    });
+                    (dst, Ty::Dyn)
+                }
+                "count" => {
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::I64(0),
+                    });
+                    (dst, Ty::I64)
+                }
+                _ => {
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(false),
+                    });
+                    (dst, Ty::Bool)
+                }
+            }
+        }
+        // A typed list searched for something its carrier cannot hold. The
+        // answer is `false`/nil/`0` — the interpreter says so, and its operator
+        // spelling `v in xs` has always said so — but the typed helpers take
+        // the carrier's own element and there is nothing to hand them. Boxing
+        // the receiver reaches the helpers that compare by value, which is the
+        // same route a `ListDyn` receiver already takes below.
+        //
+        // Placed before the typed arms would shadow them, so it guards on the
+        // needle *not* fitting: `Int` and `Float` both fit a numeric carrier,
+        // because `1 in [1.0]` is true.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, name @ ("contains" | "index_of" | "count"), [(needle, nty)])
+            if !fits_carrier(receiver_ty, name, *nty) =>
+        {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let helper = match name {
+                "contains" => "dyn_contains",
+                "index_of" => "dyn_index_of",
+                _ => "dyn_count",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![handle, boxed],
+            });
+            match name {
+                "contains" => {
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    let b = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst: b,
+                        op: CmpOp::Ne,
+                        float: false,
+                        lhs: dst,
+                        rhs: zero,
+                    });
+                    (b, Ty::Bool)
+                }
+                "index_of" => (dst, Ty::Dyn),
+                _ => (dst, Ty::I64),
+            }
         }
         (Ty::ListDyn, "contains", [(needle, nty)]) => {
             let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
@@ -2835,6 +2970,32 @@ pub(crate) fn lower_method_dispatch(
                 op: CmpOp::Ne,
                 float: false,
                 lhs: dst,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // An `f64` needle against an `i64` list: `1.5 in [1, 2]` is false and
+        // `1.0 in [1, 2]` is true, because the two compare as numbers. The ABI
+        // has carried this helper for a while with nothing calling it — the
+        // shape was unreachable while the checker refused `[1, 2].contains(1.5)`.
+        (Ty::ListI64, "contains", [(v, Ty::F64)]) => {
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "i64_contains_f64"),
+                args: vec![receiver, *v],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
                 rhs: zero,
             });
             (b, Ty::Bool)

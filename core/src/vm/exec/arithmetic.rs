@@ -281,9 +281,16 @@ impl Executor {
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ if self.runtime_value_is_map(&lhs)? => {
-                let key = self.runtime_map_key_from_value(&rhs)?;
-                let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
-                let map = typed_map_without_key(lhs, &key);
+                // A value that cannot be a key cannot be *in* the map, so
+                // removing it removes nothing. Same answer as `m.delete(k)`,
+                // which is the other spelling of this — and removal is a
+                // lookup-and-drop, not a key construction, which is the line
+                // `m[k]`/`m.set(k, v)`/`s.add(v)` stay on the other side of.
+                let lhs_map = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
+                let map = match self.runtime_map_key_from_value(&rhs) {
+                    Ok(key) => typed_map_without_key(lhs_map, &key),
+                    Err(_) => lhs_map.clone(),
+                };
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ => bail!(

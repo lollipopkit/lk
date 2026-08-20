@@ -914,11 +914,14 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
         };
     }
     if is_map_tag(a.tag) {
-        // `key_from_dyn` raises for a value that cannot be a key, which is the
-        // VM's `runtime_map_key_from_value` doing the same thing: a map's
-        // members are keyed by nil, Bool, Int and String, so `m - 1.5` is a
-        // question with no answer rather than a removal of nothing.
-        let drop = crate::vm_mirror::key_from_dyn(b);
+        // A value that cannot be a key cannot be in the map, so removing it
+        // removes nothing — the same answer `m.delete(k)` gives, because they
+        // are two spellings of one operation. Removal looks a key up and drops
+        // it; it does not build one, which is the line `m[k]` and `m.set(k, v)`
+        // stay on the other side of.
+        let Some(drop) = crate::vm_mirror::key_from_dyn_opt(b) else {
+            return a;
+        };
         let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
             .into_iter()
             .filter(|(key, _)| *key != drop)

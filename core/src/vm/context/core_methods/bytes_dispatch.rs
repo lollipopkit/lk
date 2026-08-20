@@ -84,8 +84,12 @@ pub(super) fn dispatch_bytes_builtin_method(
             if positional.len() != 1 {
                 bail!("bytes.contains() expects 1 argument (value), got {}", positional.len());
             }
+            // Total, like `in` on the same byte string: a byte string holds
+            // byte values, so nothing else can be in it. `"a" in b` has always
+            // answered `false` and this refused the needle's type — one
+            // question, two answers, chosen by the spelling.
             let RuntimeVal::Int(value) = &positional[0] else {
-                bail!("bytes.contains() value must be Int");
+                return Ok(Some(RuntimeVal::Bool(false)));
             };
             let found = u8::try_from(*value).is_ok_and(|byte| bytes.contains(&byte));
             Ok(Some(RuntimeVal::Bool(found)))
@@ -94,8 +98,9 @@ pub(super) fn dispatch_bytes_builtin_method(
             if positional.len() != 1 {
                 bail!("bytes.index_of() expects 1 argument (value), got {}", positional.len());
             }
+            // Absent, for `contains`'s reason.
             let RuntimeVal::Int(value) = &positional[0] else {
-                bail!("bytes.index_of() value must be Int");
+                return Ok(Some(RuntimeVal::Nil));
             };
             let found = u8::try_from(*value)
                 .ok()
@@ -248,8 +253,9 @@ pub(super) fn dispatch_bytes_builtin_method(
             if positional.len() != 1 {
                 bail!("bytes.count() expects 1 argument (value), got {}", positional.len());
             }
+            // Zero, for `contains`'s reason.
             let RuntimeVal::Int(needle) = &positional[0] else {
-                bail!("bytes.count() value must be Int");
+                return Ok(Some(RuntimeVal::Int(0)));
             };
             let found = u8::try_from(*needle)
                 .map(|needle| bytes.iter().filter(|byte| **byte == needle).count())

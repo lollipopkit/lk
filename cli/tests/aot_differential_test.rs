@@ -641,6 +641,14 @@ fn differential_strings() {
             //
             // Building a key still refuses, which is the line: `m.set(1.5, x)`,
             // `m.delete(1.5)`, `s.add([1])`, `m[1.5]` and `m - 1.5` all say so.
+            // The method spellings of the predicates take any value, the way
+            // their operator spellings always have. A container searched for
+            // something it cannot hold answers "absent" — and where the type
+            // settles it, the answer is a constant rather than a call.
+            new(
+                "a_predicate_takes_any_value",
+                "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",
+            ),
             new(
                 "membership_answers_for_a_needle_that_cannot_be_a_key",
                 "fn i(c: Any, v: Any) -> String { try { let r: Any = v in c; return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn h(c: Any, v: Any) -> String { try { let r: Any = c.has(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn c2(c: Any, v: Any) -> String { try { let r: Any = c.contains(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nprintln(i({\"a\": 1}, \"a\"));\nprintln(i({\"a\": 1}, 1.5));\nprintln(i({\"a\": 1}, [1]));\nprintln(i([1, 2], 1.5));\nprintln(i(\"abc\", \"b\"));\nprintln(h({\"a\": 1}, \"a\"));\nprintln(h({\"a\": 1}, 1.5));\nprintln(c2([1, 2], 1.5));\nprintln(c2(\"abc\", \"b\"));\nreturn 0;\n",

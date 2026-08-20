@@ -595,6 +595,54 @@ impl TypeChecker {
             }
             return Ok(None);
         };
+        // Two reductions want something of the *element*, and say so when they
+        // run: `sum` adds numbers and `to_bytes` wants bytes. A `List<String>`
+        // can never answer either, so this is the `Set + Set` case — the
+        // runtime raises for every value of that type, and the checker is right
+        // to say so first.
+        //
+        // Only for an element type that settles it. `Any`, a union and a type
+        // variable stay out: those lists may hold numbers when they run.
+        // A heterogeneous literal is a `Tuple`, and its element types are
+        // written out one by one — so `[1, "a"].sum()` is refused by the
+        // `String` in it, which collapsing to `List<Any>` would have lost.
+        let elements: Option<Vec<Type>> = match &resolved_receiver {
+            Type::List(elem) => Some(vec![self.resolve_aliases(elem.as_ref())]),
+            Type::Tuple(elems) => Some(elems.iter().map(|e| self.resolve_aliases(e)).collect()),
+            _ => None,
+        };
+        if let Some(elements) = elements {
+            let refuses = |elem: &Type| match method {
+                "sum" => matches!(
+                    elem,
+                    Type::String | Type::Bool | Type::Nil | Type::List(_) | Type::Map(_, _) | Type::Set(_)
+                ),
+                "to_bytes" => matches!(
+                    elem,
+                    Type::String
+                        | Type::Float
+                        | Type::Bool
+                        | Type::Nil
+                        | Type::List(_)
+                        | Type::Map(_, _)
+                        | Type::Set(_)
+                ),
+                _ => false,
+            };
+            if elements.iter().any(refuses) {
+                let (wanted, needs) = if method == "sum" {
+                    (Type::Float, "numbers")
+                } else {
+                    (Type::Int, "Int items")
+                };
+                return Err(Self::type_err(
+                    &format!("list.{method}() needs {needs}"),
+                    Some(Type::List(Box::new(wanted))),
+                    Some(resolved_receiver),
+                    None,
+                ));
+            }
+        }
         // A variadic method has no upper bound: `"{} {}".format(a, b)` passes
         // two arguments to one declared parameter, and that is the shape.
         if args.len() < sig.required || (args.len() > sig.params.len() && !sig.variadic) {

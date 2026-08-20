@@ -1333,6 +1333,52 @@ mod tests {
             .expect_err("a Float cannot be a key, so it cannot be removed");
         check_program("let c = 1 - [1];\nprintln(c);\n").expect_err("a number minus a list is not a removal");
     }
+    /// The predicates take any value; the reductions need the right elements.
+    ///
+    /// Two halves of one audit. `xs.contains(v)`, `index_of`, `count`,
+    /// `m.has(k)`, `m.delete(k)`, `s.contains(v)` and `s.delete(v)` were
+    /// declared to take the container's own element or key type, while their
+    /// *operator* spellings — `v in xs`, `k in m`, `m - k` — take anything and
+    /// answer "absent". One question, two rules, chosen by which spelling the
+    /// program used.
+    ///
+    /// The other way for `sum` and `to_bytes`: they need something of the
+    /// element and say so when they run, so a `List<String>` can never answer
+    /// either. That is the `Set + Set` case — the runtime raises for every
+    /// value of that type, and the checker is right to say so first.
+    #[test]
+    fn predicates_take_any_value_and_reductions_do_not() {
+        for source in [
+            "println([\"a\", \"b\"].contains(1));",
+            "println([\"a\", \"b\"].index_of(1));",
+            "println([\"a\", \"b\"].count(1));",
+            "println([1, 2].contains(1.5));",
+            "println(\"abc\".contains(1));",
+            "println(\"ab\".bytes().contains(\"a\"));",
+            "println({1: 2}.has(\"k\"));",
+            "println({1: 2}.delete(\"k\"));",
+            "println(Set([1]).contains(\"a\"));",
+            "println(Set([1]).delete(\"a\"));",
+        ] {
+            check_program(source).unwrap_or_else(|e| panic!("a predicate takes any value: {source}: {e}"));
+        }
+
+        // Inserting is the other side of the line and still refuses: a
+        // `List<String>` that accepted an Int would make its own type a lie.
+        check_program("let xs: List<String> = [\"a\"];\nxs.push(1);\n")
+            .expect_err("pushing an Int into a List<String>");
+
+        for source in [
+            "println([\"a\"].sum());",
+            "println([1, \"a\"].sum());",
+            "println([1.5].to_bytes());",
+            "println([1, 2.5].to_bytes());",
+        ] {
+            assert!(check_program(source).is_err(), "must be refused: {source}");
+        }
+        check_program("println([1, 2.5].sum());").expect("numbers add");
+        check_program("println([1, 2].to_bytes());").expect("Ints are bytes");
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first

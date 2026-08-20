@@ -470,7 +470,13 @@ fn dispatch_map_builtin_method(
             if positional.len() != 1 {
                 bail!("map.delete() expects 1 argument (key), got {}", positional.len());
             }
-            let key = runtime_map_key_from_value(&positional[0], heap, "map.delete() key")?;
+            // Removing a key the map cannot hold removes nothing — and cannot
+            // corrupt the map's key type, which is why this joins the
+            // predicates rather than the key *builders* (`set`, indexing).
+            // `m - k` already answered this way.
+            let Ok(key) = runtime_map_key_from_value(&positional[0], heap, "map.delete() key") else {
+                return Ok(Some(RuntimeVal::Nil));
+            };
             let removed = match heap.get_mut(handle) {
                 Some(HeapValue::Map(map)) => map.remove(&key).unwrap_or(RuntimeVal::Nil),
                 _ => RuntimeVal::Nil,
@@ -615,7 +621,11 @@ fn dispatch_set_builtin_method(
             if positional.len() != 1 {
                 bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
             }
-            let key = runtime_map_key_from_value(&positional[0], heap, "set.delete() value")?;
+            // Removing a value the set cannot hold removes nothing, for
+            // `map.delete`'s reason. `add` still refuses.
+            let Ok(key) = runtime_map_key_from_value(&positional[0], heap, "set.delete() value") else {
+                return Ok(Some(RuntimeVal::Bool(false)));
+            };
             let removed = match heap.get_mut(handle) {
                 Some(HeapValue::Set(values)) => values.remove(&key),
                 _ => false,
@@ -885,7 +895,14 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let needle = extract_string_detached(&positional[0], heap, "string.contains() needle")?;
+            // Total, like `in` on the same string and like every other
+            // container's membership: a needle that is not a string is not a
+            // substring. `1 in "abc"` has always said `false` here, and this
+            // said "string.contains() needle: expected string, got Int" — one
+            // question, two answers, chosen by which spelling was written.
+            let Ok(needle) = extract_string_detached(&positional[0], heap, "string.contains() needle") else {
+                return Ok(Some(RuntimeVal::Bool(false)));
+            };
             Ok(Some(RuntimeVal::Bool(s.contains(needle.as_str()))))
         }
         "trim" => {
@@ -945,7 +962,10 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let needle = extract_string_detached(&positional[0], heap, "string.index_of() needle")?;
+            // Absent, for `contains`'s reason.
+            let Ok(needle) = extract_string_detached(&positional[0], heap, "string.index_of() needle") else {
+                return Ok(Some(RuntimeVal::Nil));
+            };
             match crate::util::text::find_char_index(s, needle.as_str()) {
                 Some(index) => Ok(Some(RuntimeVal::Int(index as i64))),
                 None => Ok(Some(RuntimeVal::Nil)),
@@ -1119,7 +1139,10 @@ fn dispatch_string_builtin_method(
             if positional.len() != 1 {
                 bail!("string.count() expects 1 argument (needle), got {}", positional.len());
             }
-            let needle = extract_string_detached(&positional[0], heap, "string.count() needle")?;
+            // Zero, for `contains`'s reason.
+            let Ok(needle) = extract_string_detached(&positional[0], heap, "string.count() needle") else {
+                return Ok(Some(RuntimeVal::Int(0)));
+            };
             // An empty needle matches between every pair of characters and at
             // both ends — `str::matches` says so, and counting characters + 1
             // said something else for any multi-byte string.
