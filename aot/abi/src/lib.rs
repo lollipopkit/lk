@@ -789,6 +789,8 @@ macro_rules! for_each_abi_fn {
             ("dyn", "clear", lkrt_dyn_clear, WritesHost, [DynVal], Nil);
             ("dyn", "from_chan", lkrt_dyn_from_chan, Pure, [I64], DynVal);
             ("dyn", "from_task", lkrt_dyn_from_task, Pure, [I64], DynVal);
+            ("dyn", "from_stream", lkrt_dyn_from_stream, Pure, [Ptr], DynVal);
+            ("dyn", "stream_list", lkrt_dyn_stream_list, Pure, [DynVal], Ptr);
             ("dyn", "as_handle", lkrt_dyn_as_handle, Pure, [DynVal], I64);
             ("dyn", "list_insert", lkrt_dyn_list_insert, WritesHost, [DynVal, I64, DynVal], Nil);
             ("dyn", "list_remove_at", lkrt_dyn_list_remove_at, WritesHost, [DynVal, I64], DynVal);

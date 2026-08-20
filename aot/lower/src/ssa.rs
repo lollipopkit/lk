@@ -239,28 +239,6 @@ pub(crate) struct Ssa {
     /// (`convert::read_typed_scalar`), so a lambda pushed into a guessed `[]`
     /// widens the literal instead of compiling to an unbox that raises on the
     /// one value the list was built to hold.
-    /// Values this side represents as something the interpreter would not
-    /// agree with — currently a **materialized stream**: a list built where the
-    /// interpreter has a `Stream`.
-    ///
-    /// The substitution is sound only where the difference cannot be seen, and
-    /// four things can see it: `typeof` answers the representation, display
-    /// writes it, `==` compares it, and a trait dispatches on it. Escaping
-    /// counts too — boxing, crossing to a typed parameter, and returning all
-    /// drop the mark and hand the bare representation to code that would answer
-    /// for it. Every one of those declines to lower rather than answering.
-    ///
-    /// A channel and a task used to be here as well, as `i64` ids. Tracking
-    /// them caught the direct cases and lost the fact wherever the value
-    /// escaped, which is most of what a program does with a channel — so they
-    /// carry a *tag* now (`DYN_CHAN` / `DYN_TASK`) and need no tracking at all.
-    /// That is what §63 said the answer was, and it is the answer here too if
-    /// a stream ever gets a carrier of its own.
-    pub(crate) disguised_values: std::collections::HashSet<ValueId>,
-    /// The subset of [`Self::disguised_values`] whose *escape* is guarded too.
-    /// Every entry is currently in both; the split is kept because the two
-    /// questions are different and were once answered differently.
-    pub(crate) escape_is_visible: std::collections::HashSet<ValueId>,
     pub(crate) closure_values: std::collections::HashSet<ValueId>,
     /// A closure value with an *empty* environment → the function it names.
     ///
@@ -375,8 +353,6 @@ impl Ssa {
             dyn_loop_slots: std::collections::HashSet::new(),
             no_provenance_slots: std::collections::HashSet::new(),
             dyn_literal_pcs: std::collections::HashSet::new(),
-            disguised_values: std::collections::HashSet::new(),
-            escape_is_visible: std::collections::HashSet::new(),
             closure_values: std::collections::HashSet::new(),
             closure_fidx: std::collections::HashMap::new(),
             literal_carrier: std::collections::HashMap::new(),

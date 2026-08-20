@@ -207,14 +207,6 @@ pub(crate) fn coerce_arg(
     if ty != want {
         return Err(Unsupported::TypeMismatch { pc });
     }
-    // A materialized stream passed to a *typed* parameter crosses without a
-    // box, and the mark does not cross with it — the callee sees a plain list
-    // and would answer as one. Carrying the fact across the boundary is what
-    // `try_body_closure_inputs` does for a closure; a stream is rare enough
-    // that declining is the better trade. See `Ssa::disguised_values`.
-    if ssa.escape_is_visible.contains(&v) {
-        return Err(Unsupported::TypeMismatch { pc });
-    }
     Ok(v)
 }
 
@@ -240,15 +232,6 @@ pub(crate) fn to_dyn(
     ty: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
-    // Boxing is where a materialized stream *escapes*: into a list element, a
-    // map value, a struct field, an argument, a trait-typed return. The mark
-    // does not survive the box — the value on the other side is a plain list —
-    // and everything that could see the difference is on the other side. So the
-    // program declines to lower rather than answering as a list. See
-    // `Ssa::disguised_values`.
-    if ssa.escape_is_visible.contains(&v) {
-        return Err(Unsupported::TypeMismatch { pc });
-    }
     let from = match ty {
         Ty::MaybeI64 => "from_maybe_i64",
         Ty::MaybeF64 => "from_maybe_f64",

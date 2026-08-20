@@ -1,0 +1,46 @@
+// A stream is a value of its own, not the list it is materialized into.
+//
+// Natively a finite pipeline is built eagerly as a list, which is what makes it
+// cheap. That is sound only while nothing can tell the difference, and four
+// things can: `typeof`, display, `==`, and a trait dispatching on it. The
+// materialized list used to answer all four, so `typeof(s)` was `List` and
+// printing one wrote its elements.
+//
+// Marking the value instead of tagging it could not work here: `stream.from_list(xs)`
+// answers a stream *over the caller's own list*, so a mark on the result was a
+// mark on `xs`. A box is a value of its own.
+
+use stream;
+
+let xs = [1, 2, 3];
+let s = stream.from_list(xs);
+
+println(typeof(s));
+println(s);
+println("s=" + s);
+
+// The list it was built from is still a list.
+println(typeof(xs));
+println(xs);
+
+// A stream is not the list it collects to.
+let collected = stream.collect(s);
+println(typeof(collected));
+println(collected);
+
+// Every operation answers a stream again.
+let doubled = stream.map(stream.from_list([1, 2]), fn(x) => x * 2);
+println(typeof(doubled));
+println(stream.collect(doubled));
+
+let kept = stream.filter(stream.range(0, 6), fn(x) => x % 2 == 0);
+println(typeof(kept));
+println(stream.collect(kept));
+
+// Including the one that takes a second stream.
+let joined = stream.chain(stream.from_list([1]), stream.from_list([2]));
+println(typeof(joined));
+println(stream.collect(joined));
+
+// In a container, where a mark would have been lost.
+println([stream.range(0, 2)]);

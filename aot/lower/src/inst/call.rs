@@ -248,6 +248,26 @@ pub(super) fn lower(
                         && argc >= 1
                     {
                         let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                        // A stream operation works on the list behind the
+                        // stream and answers a stream again. Unboxed here and
+                        // re-boxed below, so `stream.map(s, f)` is a `Stream`
+                        // to `typeof` and to display exactly as it is to the
+                        // interpreter.
+                        let stream_receiver = module.as_str() == "stream";
+                        let (receiver, receiver_ty) = if stream_receiver {
+                            if receiver_ty != Ty::Dyn {
+                                return Err(Unsupported::TypeMismatch { pc });
+                            }
+                            let list = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(list),
+                                callee: AbiRef::new("dyn", "stream_list"),
+                                args: vec![receiver],
+                            });
+                            (list, Ty::ListDyn)
+                        } else {
+                            (receiver, receiver_ty)
+                        };
                         // The HOF spellings reuse the lambda-aware method
                         // path (the lambda register offset matches with the
                         // window base shifted one slot right).
@@ -268,6 +288,7 @@ pub(super) fn lower(
                                     pc,
                                 )?
                             {
+                                let result = rebox_stream(ssa, insts, stream_receiver, result, pc)?;
                                 ssa.write(base, block, result);
                                 return Ok(());
                             }
@@ -275,7 +296,22 @@ pub(super) fn lower(
                         }
                         let mut args = Vec::with_capacity(argc - 1);
                         for i in 0..argc - 1 {
-                            args.push(ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?);
+                            let (v, ty) = ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?;
+                            // `stream.chain(a, b)` takes a second *stream*, and
+                            // the list method behind it takes a list. Every
+                            // other stream operation's arguments are scalars,
+                            // so a boxed one here is a stream.
+                            if stream_receiver && ty == Ty::Dyn {
+                                let list = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(list),
+                                    callee: AbiRef::new("dyn", "stream_list"),
+                                    args: vec![v],
+                                });
+                                args.push((list, Ty::ListDyn));
+                                continue;
+                            }
+                            args.push((v, ty));
                         }
                         let result = lower_method_dispatch(
                             ssa,
@@ -288,6 +324,7 @@ pub(super) fn lower(
                             block,
                             pc,
                         )?;
+                        let result = rebox_stream(ssa, insts, stream_receiver, result, pc)?;
                         ssa.write(base, block, result);
                         return Ok(());
                     }
@@ -507,4 +544,27 @@ fn bind_lambda(
     }
     ssa.bind_ref(block, dst, global_ref);
     Ok(())
+}
+
+/// Re-boxes a stream operation's result, which is a list here and a `Stream`
+/// to the interpreter. A non-stream receiver passes through.
+fn rebox_stream(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    stream_receiver: bool,
+    result: (ValueId, Ty),
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if !stream_receiver {
+        return Ok(result);
+    }
+    let (v, ty) = result;
+    let list = crate::dyn_box::to_dyn_list_handle(ssa, insts, v, ty, pc)?;
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", "from_stream"),
+        args: vec![list],
+    });
+    Ok((boxed, Ty::Dyn))
 }

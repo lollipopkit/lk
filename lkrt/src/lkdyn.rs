@@ -122,6 +122,36 @@ pub const DYN_CLOSURE: i64 = 20;
 pub const DYN_CHAN: i64 = 21;
 pub const DYN_TASK: i64 = 22;
 
+/// A stream, as a **runtime value**: the payload is the dyn-list handle this
+/// side materializes it into.
+///
+/// The materialization is what makes a finite pipeline cheap, and it is sound
+/// only where the difference cannot be seen. A tag is how it stays unseen:
+/// without one `typeof` answered `List`, display wrote the elements, and a
+/// trait dispatched to `impl … for List`. Marking the *value* instead could not
+/// work for `stream.from_list(xs)`, whose result is the caller's own list —
+/// marking it marked `xs`. A box is a value of its own.
+pub const DYN_STREAM: i64 = 23;
+
+/// Boxes a materialized stream from its list handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_stream(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_STREAM,
+        payload: handle as i64,
+    }
+}
+
+/// The list behind a stream — `stream.collect`, and the receiver of every
+/// stream operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_stream_list(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_STREAM {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
 /// Boxes a channel id.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_chan(id: i64) -> LkDyn {
@@ -465,6 +495,7 @@ pub(crate) fn kind_name(v: LkDyn) -> String {
         DYN_STR => "String",
         DYN_CHAN => "Channel",
         DYN_TASK => "Task",
+        DYN_STREAM => "Stream",
         tag if is_list_tag(tag) => "List",
         DYN_SET => "Set",
         DYN_BYTES => "Bytes",
@@ -831,6 +862,7 @@ fn dispatch_builtin_code(v: LkDyn) -> i64 {
         DYN_SLICE => 10,
         DYN_CHAN => 11,
         DYN_TASK => 12,
+        DYN_STREAM => 13,
         tag if is_list_tag(tag) => 6,
         tag if is_map_tag(tag) => 9,
         _ => 0,
@@ -1271,7 +1303,7 @@ fn dyn_eq_at(a: LkDyn, b: LkDyn, depth: u32) -> bool {
         // A channel and a task compare by identity, which is what the
         // interpreter's handle equality is. A tag mismatch already answered
         // `false` above, so `chan(1) == 1` is false here without an arm.
-        DYN_CHAN | DYN_TASK => a.payload == b.payload,
+        DYN_CHAN | DYN_TASK | DYN_STREAM => a.payload == b.payload,
         _ => false,
     }
 }
@@ -1451,6 +1483,7 @@ fn display_into_at(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: b
         // The interpreter's rendering: the identity is not part of it.
         DYN_CHAN => out.push_str("<Channel>"),
         DYN_TASK => out.push_str("<Task>"),
+        DYN_STREAM => out.push_str("<Stream>"),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");
@@ -1918,6 +1951,7 @@ fn kind_rank(v: LkDyn) -> u8 {
         DYN_CLOSURE => 9,
         DYN_CHAN => 11,
         DYN_TASK => 12,
+        DYN_STREAM => 13,
         _ => 10,
     }
 }

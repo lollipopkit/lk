@@ -31,22 +31,36 @@ pub(crate) fn lower_module_call(
                     });
                 }
                 let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                if name == "collect" {
+                    // The list behind the stream. Its own value, so the stream
+                    // it came from keeps its identity.
+                    if ty != Ty::Dyn {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let list = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(list),
+                        callee: AbiRef::new("dyn", "stream_list"),
+                        args: vec![v],
+                    });
+                    ssa.write(base, block, (list, Ty::ListDyn));
+                    return Ok(());
+                }
                 if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
                     return Err(Unsupported::TypeMismatch { pc });
                 }
-                // Neither one is marked, and both would want to be: the
-                // *value* passes straight through, so a mark on it is a mark on
-                // the caller's list as well. `stream.from_list(xs)` shares its
-                // SSA value with `xs`, so marking it would refuse `println(xs)`
-                // — and `stream.collect(s)` shares one with `s`, so the mark
-                // would ride onto a list that legitimately *is* a list and
-                // refuse comparing it.
-                //
-                // Marking a pass-through needs a value of its own to mark, and
-                // MIR has no copy that would make one. `range` constructs a
-                // fresh handle and is marked; `from_list` is the residual, and
-                // `docs/aot/aot-gaps-and-lkrt.md` records it.
-                ssa.write(base, block, (v, ty));
+                // Boxed under `DYN_STREAM`: a stream is not the list it is
+                // materialized into, and a box is a value of its own — which is
+                // what lets `from_list` answer a stream without the caller's
+                // `xs` becoming one.
+                let list = to_dyn_list_handle(ssa, insts, v, ty, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_stream"),
+                    args: vec![list],
+                });
+                ssa.write(base, block, (boxed, Ty::Dyn));
                 return Ok(());
             }
             // The same three arities `iter.range` takes: the one-argument form
@@ -88,9 +102,14 @@ pub(crate) fn lower_module_call(
                     callee: AbiRef::new("list_h", "i64_from_range"),
                     args: vec![start, end, one, exclusive],
                 });
-                ssa.disguised_values.insert(handle);
-                ssa.escape_is_visible.insert(handle);
-                ssa.write(base, block, (handle, Ty::ListI64));
+                let list = to_dyn_list_handle(ssa, insts, handle, Ty::ListI64, pc)?;
+                let boxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_stream"),
+                    args: vec![list],
+                });
+                ssa.write(base, block, (boxed, Ty::Dyn));
                 return Ok(());
             }
             _ => {}
