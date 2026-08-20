@@ -1083,7 +1083,10 @@ mod tests {
     fn a_container_literal_takes_the_declared_element_type_in_every_position() {
         let positions = [
             ("let", "let xs: List<Any> = {LIT};"),
-            ("parameter", "fn take(xs: List<Any>) -> Int { return xs.len(); }\nlet n = take({LIT});"),
+            (
+                "parameter",
+                "fn take(xs: List<Any>) -> Int { return xs.len(); }\nlet n = take({LIT});",
+            ),
             ("struct field", "struct S { f: List<Any> }\nlet s = S { f: {LIT} };"),
             ("return", "fn make() -> List<Any> { return {LIT}; }"),
         ];
@@ -1104,8 +1107,23 @@ mod tests {
         // And a literal whose elements do not fit is still refused.
         check_program("struct S { f: List<Int> }\nlet s = S { f: [1.5] };")
             .expect_err("a literal is checked element by element, not waved through");
-        check_program("fn make() -> Map<String, Int> { return {\"k\": \"v\"}; }")
-            .expect_err("map literals too");
+        check_program("fn make() -> Map<String, Int> { return {\"k\": \"v\"}; }").expect_err("map literals too");
+
+        // The machine-int literal rule was split the same way, across the same
+        // two positions: `let x: u8 = 5;` and `f(5)` were accepted while
+        // `S { f: 5 }` and `fn f() -> u8 { return 5; }` were not.
+        let machine_int = [
+            ("let", "let x: u8 = {LIT};"),
+            ("parameter", "fn take(v: u8) -> Int { return 0; }\nlet n = take({LIT});"),
+            ("struct field", "struct S { f: u8 }\nlet s = S { f: {LIT} };"),
+            ("return", "fn make() -> u8 { return {LIT}; }"),
+        ];
+        for (what, shape) in machine_int {
+            check_program(&shape.replace("{LIT}", "5")).unwrap_or_else(|e| panic!("{what}: {e}"));
+            // Having a range is the point of a fixed width, so out of range is
+            // a refusal in every position too.
+            check_program(&shape.replace("{LIT}", "300")).expect_err(what);
+        }
     }
 
     #[test]

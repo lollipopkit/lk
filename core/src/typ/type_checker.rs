@@ -803,10 +803,36 @@ impl TypeChecker {
         while let crate::expr::Expr::Paren(inner) = value {
             value = inner;
         }
-        matches!(value, crate::expr::Expr::List(_) | crate::expr::Expr::Map(_))
+        if matches!(value, crate::expr::Expr::List(_) | crate::expr::Expr::Map(_))
             && self
                 .resolve_aliases(value_ty)
                 .container_literal_fits_with(&self.resolve_aliases(expected), self.registry())
+        {
+            return true;
+        }
+        // The second literal rule, and it was split across the same two
+        // positions: a machine integer does not convert implicitly — that rule
+        // is what makes `u8 + Int` an error rather than a silent widening — but
+        // a literal has no type of its own to preserve. `f(0x3f8)` for
+        // `fn f(port: u16)` is the ordinary way to call a driver.
+        Self::int_literal_fits_machine_int(&self.resolve_aliases(expected), value)
+    }
+
+    /// Whether `value` is an integer literal in range for a machine-int
+    /// `expected`. Out of range is not "not a literal": it is a refusal, and
+    /// having a range is the whole point of a fixed width.
+    fn int_literal_fits_machine_int(expected: &Type, value: &crate::expr::Expr) -> bool {
+        let Type::MachineInt(kind) = expected else {
+            return false;
+        };
+        let mut value = value;
+        while let crate::expr::Expr::Paren(inner) = value {
+            value = inner;
+        }
+        let crate::expr::Expr::Literal(crate::val::LiteralVal::Int(literal)) = value else {
+            return false;
+        };
+        kind.accepts_literal(i128::from(*literal))
     }
 
     /// Register a function signature for static checking by name

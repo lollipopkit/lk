@@ -788,7 +788,7 @@ impl TypeChecker {
                 .add_constraint(param_type.clone(), arg_type.clone());
             return Ok(());
         }
-        if self.value_fits(arg, arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
+        if self.value_fits(arg, arg_type, param_type) {
             return Ok(());
         }
         Err(Self::type_err(
@@ -812,7 +812,7 @@ impl TypeChecker {
                 .add_constraint(param_type.clone(), arg_type.clone());
             return Ok(());
         }
-        if self.value_fits(arg, arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
+        if self.value_fits(arg, arg_type, param_type) {
             return Ok(());
         }
         Err(Self::type_err(
@@ -851,21 +851,6 @@ impl TypeChecker {
 /// Whether `arg` is an integer *literal* that fits a machine-integer
 /// parameter.
 ///
-/// Machine integers do not convert implicitly — that is the rule that makes
-/// `u8 + Int` an error rather than a silent widening — but a literal has no
-/// type of its own to preserve. `f(0x3f8)` for `fn f(port: u16)` is the
-/// ordinary way to call a driver, and requiring `0x3f8 as u16` there would be
-/// ceremony without a reader.
-fn literal_fits_machine_int(param_type: &Type, arg: &Expr) -> bool {
-    let Type::MachineInt(kind) = param_type else {
-        return false;
-    };
-    let Expr::Literal(crate::val::LiteralVal::Int(value)) = arg else {
-        return false;
-    };
-    kind.accepts_literal(i128::from(*value))
-}
-
 /// How a receiver kind is named in a diagnostic — the same words the VM uses
 /// when the call reaches it.
 fn receiver_kind_name(kind: crate::typ::BuiltinReceiverKind) -> &'static str {
