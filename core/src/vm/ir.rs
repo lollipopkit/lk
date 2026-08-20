@@ -26,7 +26,12 @@ pub struct GlobalSlot {
 pub struct ConstPool {
     pub ints: Vec<i64>,
     pub floats: Vec<f64>,
-    pub strings: Vec<String>,
+    /// `Arc<str>`, not `String`: a constant string key inserted into a map
+    /// becomes an `Arc<str>` there, and every insert used to allocate a fresh
+    /// one and free it when the map died. Sharing the pool's makes it a
+    /// refcount bump — `Arc<str>::drop_slow` alone was 4.6% of a map-building
+    /// workload. Reads still hand out `&str`.
+    pub strings: Vec<Arc<str>>,
     pub heap_values: Vec<ConstHeapValue>,
 }
 
@@ -41,8 +46,8 @@ impl ConstPool {
         push_const_by(&mut self.floats, value, "float", |a, b| a.to_bits() == b.to_bits())
     }
 
-    pub fn push_string(&mut self, value: impl Into<String>) -> Result<u16> {
-        push_const(&mut self.strings, value.into(), "string")
+    pub fn push_string(&mut self, value: impl AsRef<str>) -> Result<u16> {
+        push_const(&mut self.strings, Arc::<str>::from(value.as_ref()), "string")
     }
 
     pub fn push_heap_value(&mut self, value: ConstHeapValue) -> Result<u16> {
@@ -61,7 +66,14 @@ impl ConstPool {
 
     #[inline]
     pub fn string(&self, index: u16) -> Option<&str> {
-        self.strings.get(index as usize).map(String::as_str)
+        self.strings.get(index as usize).map(Arc::as_ref)
+    }
+
+    /// The pooled string itself, for a caller that is about to *store* it —
+    /// a map key. See [`Self::strings`].
+    #[inline]
+    pub fn shared_string(&self, index: u16) -> Option<&Arc<str>> {
+        self.strings.get(index as usize)
     }
 
     #[inline]

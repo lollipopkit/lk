@@ -1213,7 +1213,7 @@ impl Executor {
                             .performance
                             .known_key(self.pc)
                             .and_then(|fact| fact.const_key)
-                            .and_then(|index| function.consts.string(index))
+                            .and_then(|index| function.consts.shared_string(index))
                     };
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
@@ -1273,7 +1273,7 @@ impl Executor {
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
                     }
-                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                    let Some(key) = function.consts.shared_string(instr.c() as u16) else {
                         bail!("GetFieldK const string index {} out of bounds", instr.c());
                     };
                     let value = self.get_index(
@@ -1328,7 +1328,7 @@ impl Executor {
                             .performance
                             .known_key(self.pc)
                             .and_then(|fact| fact.const_key)
-                            .and_then(|index| function.consts.string(index))
+                            .and_then(|index| function.consts.shared_string(index))
                     };
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
@@ -1379,7 +1379,7 @@ impl Executor {
                         .container_move(self.pc)
                         .is_some_and(|fact| fact.move_value);
                     let index_fact = self.static_index_fact(function);
-                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                    let Some(key) = function.consts.shared_string(instr.c() as u16) else {
                         bail!("SetFieldK const string index {} out of bounds", instr.c());
                     };
                     if collect_metrics {

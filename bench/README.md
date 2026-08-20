@@ -961,13 +961,14 @@ geomean 已经在 1.01x,尾巴上的这几个不值得再挖。**别重复这次
 min-of-9:2.69s → 2.53s(按引用)→ 2.47s(加空容器直达),**8%**。
 `config_defaults_merge` 的比值 1.91x → 1.73x,geomean 1.008x → 1.000x。
 
-剩下的两项**量过但没做**,记在这里免得重复:
+**第二趟(同日)**:上面记为"量过但没做"的那条做了。常量池从 `Vec<String>` 改成
+`Vec<Arc<str>>`,`known_string_key` 从 `Option<&str>` 改成 `Option<&Arc<str>>`,
+往有类型字符串 map 里插入走一个 `KeyText` —— 借来的文本(寄存器里的键)还是分配,
+池里的常量直接 `Arc::clone`。一个参数而不是"`&str` 加一个可选 `Arc`",因为那两个
+必须一致而没人会检查。
 
-- `Arc<str>::drop_slow` 4.6% + `insert_full` 4.3%:`TypedMap::set` 每插入一个
-  **新**键就 `Arc::<str>::from(key_str)` 一次,而 `SetFieldK` 的键是常量池里的
-  字符串。让常量池存 `Arc<str>`、把它一路传到 `set`,插入就变成一次引用计数加一。
-  拦路的是 `known_string_key: Option<&str>` 这条贯穿读写两条路径的参数,以及
-  `RuntimeMapKey` 的 `ShortStr` / `String` 两种表示必须对同一段文本哈希一致
-  (`vm_mirror.rs` 拿 lkrt 的顺序对着 VM 断言,这里错了是错答不是变慢)。
-- `IndexMap::from_iter::<…, 1>` 4.0%:`Mixed` 空 map 第一次插入时提升成
-  `StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。
+min-of-9:2.47s → **2.24s**。两趟合起来 2.69s → 2.24s,**17%**。
+`config_defaults_merge` 的比值 1.91x → 1.62x。
+
+`IndexMap::from_iter::<…, 1>` 那 4.0% 仍然在:`Mixed` 空 map 第一次插入时提升成
+`StringInt`,每轮循环各提升一次。这是表示切换本身,不是浪费。

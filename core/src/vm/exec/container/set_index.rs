@@ -42,6 +42,39 @@ impl SmallKey {
     }
 }
 
+/// A string key on its way into a map.
+///
+/// The two carry the same text and differ in what storing it costs. A typed
+/// string carrier keys by `Arc<str>`, so inserting a *new* key had to allocate
+/// one — and a constant key already is one, sitting in the function's const
+/// pool. Passing the pooled `Arc` makes the insert a refcount bump, and the
+/// map's later death a decrement rather than a free.
+///
+/// One parameter rather than a `&str` plus an optional `Arc` beside it: the
+/// two would have to agree, and nothing would check that they did.
+enum KeyText<'a> {
+    /// Text the caller only borrows — a key read out of a register.
+    Borrowed(&'a str),
+    /// The pooled constant.
+    Shared(&'a Arc<str>),
+}
+
+impl KeyText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+
+    fn to_arc(&self) -> Arc<str> {
+        match self {
+            Self::Borrowed(text) => Arc::<str>::from(*text),
+            Self::Shared(text) => Arc::clone(text),
+        }
+    }
+}
+
 impl Executor {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
@@ -53,7 +86,7 @@ impl Executor {
         value_reg: u8,
         move_key: bool,
         move_value: bool,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<()> {
@@ -200,7 +233,7 @@ impl Executor {
         );
         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
         with_string_int_key(prefix, suffix, |key| {
-            if self.try_set_typed_string_map(handle, key, &value, known_value_kind)? {
+            if self.try_set_typed_string_map(handle, KeyText::Borrowed(key), &value, known_value_kind)? {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                 return Ok(());
             }
@@ -388,7 +421,7 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         known_value_kind: Option<PerfValueKind>,
         has_static_fact: bool,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
@@ -398,7 +431,7 @@ impl Executor {
         if let Some(key_str) = known_string_key {
             record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
             record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
-            if self.try_set_typed_string_map(handle, key_str, &value, known_value_kind)? {
+            if self.try_set_typed_string_map(handle, KeyText::Shared(key_str), &value, known_value_kind)? {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                 return Ok(());
             }
@@ -422,7 +455,7 @@ impl Executor {
                     VmIndexKeyMetric::DynamicShortStringKey,
                 );
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
-                if self.try_set_typed_string_map(handle, key_str, &value, known_value_kind)? {
+                if self.try_set_typed_string_map(handle, KeyText::Borrowed(key_str), &value, known_value_kind)? {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                     return Ok(());
                 }
@@ -476,7 +509,7 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<()> {
         self.set_map_index_handle(
@@ -572,10 +605,11 @@ impl Executor {
     fn try_set_typed_string_map(
         &mut self,
         handle: HeapRef,
-        key_str: &str,
+        key: KeyText<'_>,
         value: &RuntimeVal,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<bool> {
+        let key_str = key.as_str();
         match (
             known_value_kind.unwrap_or_default(),
             self.state
@@ -588,7 +622,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *iv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *iv);
+                    values.insert(key.to_arc(), *iv);
                 }
                 Ok(true)
             }
@@ -596,7 +630,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *fv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *fv);
+                    values.insert(key.to_arc(), *fv);
                 }
                 Ok(true)
             }
@@ -604,7 +638,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *bv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *bv);
+                    values.insert(key.to_arc(), *bv);
                 }
                 Ok(true)
             }
@@ -612,7 +646,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *iv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *iv);
+                    values.insert(key.to_arc(), *iv);
                 }
                 Ok(true)
             }
@@ -620,7 +654,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *fv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *fv);
+                    values.insert(key.to_arc(), *fv);
                 }
                 Ok(true)
             }
@@ -628,7 +662,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *bv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *bv);
+                    values.insert(key.to_arc(), *bv);
                 }
                 Ok(true)
             }

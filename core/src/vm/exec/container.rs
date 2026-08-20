@@ -841,7 +841,7 @@ impl Executor {
         &mut self,
         pc: usize,
         handle: HeapRef,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
     ) -> Result<Option<IndexInlineCache>> {
         let generation = self
             .state
@@ -859,7 +859,7 @@ impl Executor {
         Ok(self.state.inline_caches.index(pc, handle, generation))
     }
 
-    fn object_field_slot_from_heap(&self, handle: HeapRef, key: Option<&str>) -> Result<Option<u16>> {
+    fn object_field_slot_from_heap(&self, handle: HeapRef, key: Option<&Arc<str>>) -> Result<Option<u16>> {
         let Some(key) = key else {
             return Ok(None);
         };
@@ -881,14 +881,14 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         has_static_fact: bool,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<()> {
         let key: Arc<str> = match known_string_key {
             Some(key_str) => {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                Arc::<str>::from(key_str)
+                Arc::clone(key_str)
             }
             None => {
                 match moved_key.as_ref() {

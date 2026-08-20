@@ -171,7 +171,7 @@ impl Executor {
         pc: usize,
         target_reg: u8,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
@@ -223,7 +223,7 @@ impl Executor {
         pc: usize,
         handle: crate::val::HeapRef,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
@@ -449,7 +449,7 @@ impl Executor {
         pc: usize,
         handle: crate::val::HeapRef,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
@@ -528,7 +528,7 @@ impl Executor {
                 let key = match known_string_key {
                     Some(key_str) => {
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                        Arc::<str>::from(key_str)
+                        Arc::clone(key_str)
                     }
                     None => {
                         record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);

@@ -302,7 +302,7 @@ impl ConstPoolData {
         Self {
             ints: pool.ints.clone(),
             floats: pool.floats.clone(),
-            strings: pool.strings.clone(),
+            strings: pool.strings.iter().map(|s| s.to_string()).collect(),
             heap_values,
         }
     }
@@ -311,7 +311,7 @@ impl ConstPoolData {
         Ok(ConstPool {
             ints: self.ints,
             floats: self.floats,
-            strings: self.strings,
+            strings: self.strings.into_iter().map(Arc::<str>::from).collect(),
             heap_values: {
                 let mut values = Vec::with_capacity(self.heap_values.len());
                 for value in self.heap_values {
