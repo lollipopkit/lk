@@ -53,6 +53,16 @@ const MUST_REFUSE: &[(&str, &str)] = &[
     ("return type", "fn f() -> Int { return \"x\"; }\nprintln(f());\n"),
     ("undefined name", "println(nope);\n"),
     ("unknown method", "println(\"a\".nope());\n"),
+    // A map is the one container where `m.f(x)` need not be a method: its
+    // entries are its fields. That reading needs a key spelled like the name,
+    // and a map keyed by anything but a string can never have one — so
+    // `m.contains(k)` on a `Map<Int, _>` always raises ("a Map has no method
+    // `contains`, and this map has no key `contains`"), and `lk check` used to
+    // wait for the program to start to say it.
+    (
+        "a method no map has, on a map whose keys cannot be names",
+        "let m: Map<Int, Int> = {1: 2};\nprintln(m.contains(1));\n",
+    ),
     (
         "unknown field",
         "struct P { x: Int }\nlet p = P { x: 1 };\nprintln(p.y);\n",
@@ -149,6 +159,23 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
     ("empty list annotation", "let xs: List<Int> = [];\nprintln(xs);\n"),
+    // The other side of the map rule above: a string-keyed map can answer any
+    // name, because its type does not say which keys it has. The value type is
+    // not part of the question — a field call does not need a callable, and
+    // `{"score": 40}.score()` is `40`.
+    (
+        "a field call on a map that can hold the name",
+        "let m = {\"score\": || 7};\nprintln(m.score());\n",
+    ),
+    (
+        "a field call whose value is not a function",
+        "let m: Map<String, Int> = {\"score\": 40};\nprintln(m.score());\n",
+    ),
+    // And the empty literal, whose key type is still open.
+    (
+        "a name on a map with nothing pinned",
+        "let m = {};\nprintln(m.has(1));\n",
+    ),
     ("heterogeneous list", "let xs = [1, \"a\"];\nprintln(xs);\n"),
     (
         "nullable field",

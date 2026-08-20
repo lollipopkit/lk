@@ -702,11 +702,19 @@ fn differential_strings() {
             // The receiver has to *have* the method before "it cannot hold this"
             // is an answer. A map has `has` and `delete` and no `contains`,
             // `index_of` or `count` at all, so folding those to "absent" made
-            // `{}.contains(x)` answer `false` where the interpreter says "a Map
+            // `m.contains(x)` answer `false` where the interpreter says "a Map
             // has no method `contains`".
+            //
+            // The receiver is the *empty* map literal, which is the shape that
+            // still reaches the fold. `{1: 2}.index_of(k)` used to be here and
+            // is now a check error — a map whose key type cannot be a string
+            // and whose value type cannot be a function has no field to call,
+            // so the checker says so before the program runs. `{}` has neither
+            // type pinned, so it type-checks and the fold is what decides the
+            // answer.
             new(
                 "a_fold_needs_the_method_to_exist",
-                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {}.contains([1, 2]); return \"ok \" + r; }\n    if f == 1 { let r: Any = {1: 2}.index_of({\"k\": 1}); return \"ok \" + r; }\n    if f == 2 { let r: Any = {1: 2}.count(2.5); return \"ok \" + r; }\n    if f == 3 { let r: Any = [1, 2].contains(\"a\"); return \"ok \" + r; }\n    let r: Any = {\"a\": 1}.has(1);\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nprintln(p(4));\nreturn 0;\n",
+                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {}.contains([1, 2]); return \"ok \" + r; }\n    if f == 1 { let r: Any = {}.index_of({\"k\": 1}); return \"ok \" + r; }\n    if f == 2 { let r: Any = {}.count(2.5); return \"ok \" + r; }\n    if f == 3 { let r: Any = [1, 2].contains(\"a\"); return \"ok \" + r; }\n    let r: Any = {\"a\": 1}.has(1);\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nprintln(p(4));\nreturn 0;\n",
             ),
             // Removing something that cannot be a key removes nothing — and the
             // answer has to come back under the tag the caller unboxes.

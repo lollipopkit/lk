@@ -503,6 +503,30 @@ impl TypeChecker {
     /// through to the hand-written arms and then to `Any`. A receiver still
     /// typed as a variable lands here, which is deliberate: constraining a call
     /// on it would decide its type from the method name.
+    /// Whether `m.name(…)` on this map could be a **field** call rather than a
+    /// method call.
+    ///
+    /// The question is only about the *key* type. A map keyed by anything but a
+    /// string holds no key spelled like a name, so no name can be a field of
+    /// it. The value type says nothing: `m.name()` does not require a callable
+    /// there — `{"score": 40}.score()` is `40`, which
+    /// `compiler_dynamic_method_helper_reads_runtime_properties` pins — so a
+    /// `Map<String, Int>` can answer any name its keys happen to include, and
+    /// its type does not say which those are.
+    ///
+    /// `Any`, `Unknown` and an unresolved variable are all "could be a string",
+    /// so an unannotated map keeps accepting any name.
+    fn map_field_call_is_possible(&mut self, receiver: &Type) -> bool {
+        let Type::Map(key, _value) = receiver else {
+            return true;
+        };
+        let erased = |ty: &Type| matches!(ty, Type::Any | Type::Unknown | Type::Variable(_));
+        let key = self.resolve_aliases(key);
+        erased(&key)
+            || matches!(key, Type::String)
+            || matches!(&key, Type::Union(arms) if arms.iter().any(|arm| erased(arm) || matches!(arm, Type::String)))
+    }
+
     fn check_declared_builtin_method(
         &mut self,
         receiver_ty: &Type,
@@ -520,10 +544,25 @@ impl TypeChecker {
             // Except on a map, where `m.f(x)` need not be a method at all: a
             // map's entries *are* its fields, so `m.score` may hold a function
             // and calling it is an ordinary property call. Nothing in the map's
-            // type says which keys it has, so there is no such thing here as a
-            // name it cannot answer.
+            // type says which *keys* it has — but it does say two things that
+            // can rule the field call out, and the exemption used to be wider
+            // than its own reason:
+            //
+            //   - the key type. A `Map<Int, _>` cannot hold the string
+            //     `"score"` at all, so no name can be a field of it, and
+            //     `m.contains(k)` on one always raises. `lk check` is the same
+            //     check the executors run, so it should not wait for the
+            //     program to start.
+            //
+            // The *value* type is not one of them, though it reads like it
+            // should be: a field call does not need a callable. `{"score":
+            // 40}.score()` answers `40`, which
+            // `compiler_dynamic_method_helper_reads_runtime_properties` pins —
+            // so a `Map<String, Int>` can answer any name its keys include, and
+            // its type does not say which those are.
             if let Some(kind) = crate::typ::receiver_kind(&resolved_receiver)
-                && kind != crate::typ::BuiltinReceiverKind::Map
+                && (kind != crate::typ::BuiltinReceiverKind::Map
+                    || !self.map_field_call_is_possible(&resolved_receiver))
             {
                 return Err(Self::type_err(
                     &format!("{} has no method '{method}'", receiver_kind_name(kind)),
