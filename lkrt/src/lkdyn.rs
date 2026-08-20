@@ -1463,6 +1463,50 @@ pub extern "C" fn lkrt_dyn_list_push(v: LkDyn, value: LkDyn) {
     crate::lklist::typed_list_push(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, value);
 }
 
+/// `xs.insert(i, v)` / `xs.remove_at(i)` / `pop`'s drop half where `xs` is
+/// boxed — the mutating siblings of [`lkrt_dyn_list_push`], and boxed for the
+/// same reason: `dyn.as_list` is read-only, so a write through it would land
+/// in a materialized copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_insert(v: LkDyn, index: i64, value: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`.
+        unsafe { crate::lklist::lkrt_lklist_dyn_insert(v.payload as *mut c_void, index, value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_insert(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index, value);
+}
+
+/// See [`lkrt_dyn_list_insert`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_remove_at(v: LkDyn, index: i64) -> LkDyn {
+    if v.tag == DYN_LIST {
+        // SAFETY: as above.
+        return unsafe { crate::lklist::lkrt_lklist_dyn_remove_at(v.payload as *mut c_void, index) };
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_remove_at(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index)
+}
+
+/// See [`lkrt_dyn_list_insert`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_drop_last(v: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: as above.
+        unsafe { crate::lklist::lkrt_lklist_dyn_drop_last(v.payload as *mut c_void) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_drop_last(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_map(handle: *mut c_void) -> LkDyn {
     LkDyn {

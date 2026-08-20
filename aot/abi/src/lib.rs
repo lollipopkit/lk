@@ -787,6 +787,9 @@ macro_rules! for_each_abi_fn {
             ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
             ("dyn", "map_get_or", lkrt_dyn_map_get_or, ReadsHost, [DynVal, DynVal, DynVal], DynVal);
             ("dyn", "clear", lkrt_dyn_clear, WritesHost, [DynVal], Nil);
+            ("dyn", "list_insert", lkrt_dyn_list_insert, WritesHost, [DynVal, I64, DynVal], Nil);
+            ("dyn", "list_remove_at", lkrt_dyn_list_remove_at, WritesHost, [DynVal, I64], DynVal);
+            ("dyn", "list_drop_last", lkrt_dyn_list_drop_last, WritesHost, [DynVal], Nil);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
             // `Set`/`Bytes` in the boxed universe: without these two tags they
             // could not enter a mixed container, a struct field, or a bridged

@@ -2077,6 +2077,53 @@ pub(crate) fn typed_list_len(kind: i64, handle: *mut c_void) -> i64 {
 /// The element is unboxed back to the carrier's type. A value the carrier
 /// cannot hold is the VM's loud failure — the same one the unboxed spelling
 /// gives, because the static types would have rejected it there.
+/// `xs.insert(i, v)` / `xs.remove_at(i)` / `pop`'s drop half on a **typed**
+/// list handle, by carrier kind.
+///
+/// The siblings of [`typed_list_push`], and there for the same reason it is: a
+/// boxed list has no static carrier, and unboxing one through `dyn.as_list`
+/// materializes a copy for three of the four — so a write through that guard
+/// lands on the copy and the original never changes.
+pub(crate) fn typed_list_insert(kind: i64, handle: *mut c_void, index: i64, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: `handle` addresses a list of the carrier `kind` names; the
+    // per-carrier entry points range-check the index themselves.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_insert(handle, index, crate::lkdyn::lkrt_dyn_as_i64(value)),
+            TLIST_F64 => lkrt_lklist_f64_insert(handle, index, crate::lkdyn::lkrt_dyn_as_f64(value)),
+            TLIST_STR => lkrt_lklist_str_insert(handle, index, crate::lkdyn::lkrt_dyn_as_str(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_remove_at(kind: i64, handle: *mut c_void, index: i64) -> crate::lkdyn::LkDyn {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: as above.
+    unsafe {
+        match kind {
+            TLIST_I64 => crate::lkdyn::lkrt_dyn_from_i64(lkrt_lklist_i64_remove_at(handle, index)),
+            TLIST_F64 => crate::lkdyn::lkrt_dyn_from_f64(lkrt_lklist_f64_remove_at(handle, index)),
+            TLIST_STR => crate::lkdyn::lkrt_dyn_from_str(lkrt_lklist_str_remove_at(handle, index)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_drop_last(kind: i64, handle: *mut c_void) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: as above.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_drop_last(handle),
+            TLIST_F64 => lkrt_lklist_f64_drop_last(handle),
+            TLIST_STR => lkrt_lklist_str_drop_last(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
 pub(crate) fn typed_list_push(kind: i64, handle: *mut c_void, value: crate::lkdyn::LkDyn) {
     use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
     if handle.is_null() {

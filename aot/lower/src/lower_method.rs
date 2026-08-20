@@ -1978,7 +1978,7 @@ pub(crate) fn lower_method_dispatch(
         // already nil, so its `Maybe` is the `Dyn` itself. That also means an
         // empty `pop` and a stored nil are the same answer — which is what the VM
         // says too.
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, name @ ("first" | "last" | "pop"), []) => {
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, name @ ("first" | "last" | "pop"), []) => {
             let idx = ssa.new_val();
             if name == "first" {
                 insts.push(Inst::Const {
@@ -1988,16 +1988,19 @@ pub(crate) fn lower_method_dispatch(
             } else {
                 // `len - 1`, which is -1 for an empty list — and every carrier's
                 // read answers nil for that, so emptiness needs no branch.
-                let len_fn = match receiver_ty {
-                    Ty::ListI64 => "i64_len",
-                    Ty::ListF64 => "f64_len",
-                    Ty::ListStr => "str_len",
-                    _ => "dyn_len",
+                let (len_mod, len_fn) = match receiver_ty {
+                    Ty::ListI64 => ("list_h", "i64_len"),
+                    Ty::ListF64 => ("list_h", "f64_len"),
+                    Ty::ListStr => ("list_h", "str_len"),
+                    // A boxed receiver: the tag says which carrier, here and at
+                    // each of the two steps below.
+                    Ty::Dyn => ("dyn", "len_of"),
+                    _ => ("list_h", "dyn_len"),
                 };
                 let len = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(len),
-                    callee: AbiRef::new("list_h", len_fn),
+                    callee: AbiRef::new(len_mod, len_fn),
                     args: vec![receiver],
                 });
                 let one = ssa.new_val();
@@ -2038,6 +2041,14 @@ pub(crate) fn lower_method_dispatch(
                     });
                     Ty::MaybeStr
                 }
+                Ty::Dyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "index"),
+                        args: vec![receiver, idx],
+                    });
+                    Ty::Dyn
+                }
                 _ => {
                     insts.push(Inst::Call {
                         dst: Some(dst),
@@ -2050,15 +2061,16 @@ pub(crate) fn lower_method_dispatch(
             // `pop` is that read plus the drop. Read first: the value has to come
             // out before the element it names is gone.
             if name == "pop" {
-                let drop_fn = match receiver_ty {
-                    Ty::ListI64 => "i64_drop_last",
-                    Ty::ListF64 => "f64_drop_last",
-                    Ty::ListStr => "str_drop_last",
-                    _ => "dyn_drop_last",
+                let (drop_mod, drop_fn) = match receiver_ty {
+                    Ty::ListI64 => ("list_h", "i64_drop_last"),
+                    Ty::ListF64 => ("list_h", "f64_drop_last"),
+                    Ty::ListStr => ("list_h", "str_drop_last"),
+                    Ty::Dyn => ("dyn", "list_drop_last"),
+                    _ => ("list_h", "dyn_drop_last"),
                 };
                 insts.push(Inst::Call {
                     dst: None,
-                    callee: AbiRef::new("list_h", drop_fn),
+                    callee: AbiRef::new(drop_mod, drop_fn),
                     args: vec![receiver],
                 });
             }
@@ -2068,7 +2080,7 @@ pub(crate) fn lower_method_dispatch(
         // evaluates to the list); `xs.remove_at(i)` answers the element it took
         // out, and raises rather than answering nil when the index is out of
         // range — so unlike `pop` its result is the element type, not a `Maybe`.
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "insert", [(at, _), (value, vty)]) => {
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, "insert", [(at, _), (value, vty)]) => {
             // A nullable value has no place in a typed list, and this arm would
             // otherwise hand the carrier straight to `i64_insert` — caught, but
             // by an argument-count mismatch inside the ABI rather than by
@@ -2080,6 +2092,18 @@ pub(crate) fn lower_method_dispatch(
             {
                 return Err(crate::inst::container::carrier_contradicted(ssa, receiver, receiver_ty)
                     .unwrap_or(Unsupported::TypeMismatch { pc }));
+            }
+            // A boxed receiver reaches the carrier behind the tag rather than
+            // unboxing: `dyn.as_list` is read-only, so the insert would land in
+            // a materialized copy. Same rule `push` follows.
+            if receiver_ty == Ty::Dyn {
+                let boxed = to_dyn(ssa, insts, *value, *vty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("dyn", "list_insert"),
+                    args: vec![receiver, *at, boxed],
+                });
+                return Ok((receiver, receiver_ty));
             }
             let (callee, value) = match receiver_ty {
                 Ty::ListI64 => ("i64_insert", *value),
@@ -2094,7 +2118,17 @@ pub(crate) fn lower_method_dispatch(
             });
             (receiver, receiver_ty)
         }
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "remove_at", [(at, Ty::I64)]) => {
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, "remove_at", [(at, Ty::I64)]) => {
+            // See `insert`: a boxed receiver reaches the carrier by tag.
+            if receiver_ty == Ty::Dyn {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "list_remove_at"),
+                    args: vec![receiver, *at],
+                });
+                return Ok((dst, Ty::Dyn));
+            }
             let (callee, out) = match receiver_ty {
                 Ty::ListI64 => ("i64_remove_at", Ty::I64),
                 Ty::ListF64 => ("f64_remove_at", Ty::F64),

@@ -358,6 +358,114 @@ fn every_builtin_method_lowers_on_a_typed_receiver() {
     );
 }
 
+/// Every built-in method again, on a receiver the lowering cannot type.
+///
+/// A parameter reached with two *different carriers of the same kind* is a
+/// `Dyn`: `fn empty(c) { c.clear(); }` called with a `Map<String, Int>` and a
+/// `Map<String, Float>` has no carrier to specialize to. That is a different
+/// set of arms from the typed case above, and only lists had a gate for it
+/// (`boxed_receiver_coverage_test`, which also covers the mutating names this
+/// deliberately does not re-litigate).
+///
+/// It found `clear`, which had an arm for every carrier and none for `Dyn`.
+///
+/// Only kinds this table gives two carriers for can be boxed this way; `Str`
+/// and `Bytes` have one apiece, so a probe over them would be the typed case
+/// again under another name.
+#[test]
+fn every_builtin_method_lowers_on_a_boxed_receiver() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut refused = Vec::new();
+    let mut checked = 0usize;
+
+    for kind in [
+        BuiltinReceiverKind::List,
+        BuiltinReceiverKind::Map,
+        BuiltinReceiverKind::Set,
+    ] {
+        let carriers: Vec<&Receiver> = RECEIVERS.iter().filter(|r| r.kind == kind).collect();
+        let [first, second, ..] = carriers.as_slice() else {
+            continue;
+        };
+        for sig in BUILTIN_METHODS.iter().filter(|s| s.receiver == kind) {
+            // The first carrier's spelling for the arguments: the receiver is
+            // erased, so the *call* has to be one both carriers accept, and
+            // anything else is reported as inapplicable by the run below.
+            let args = match ARG_OVERRIDE.iter().find(|(k, name, _)| *k == kind && name == &sig.name) {
+                Some((_, _, text)) => (*text).to_string(),
+                None => sig
+                    .params
+                    .iter()
+                    .filter(|p| !p.optional)
+                    .map(|p| argument_for(p.ty, first))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            let label = format!("Dyn({:?}).{}({args})", kind, sig.name);
+            let stem = format!("boxed_{:?}_{}", kind, sig.name).to_lowercase();
+            let source = dir.path().join(format!("{stem}.lk"));
+            std::fs::write(
+                &source,
+                format!(
+                    "fn probe(r) {{\n    return r.{}({args});\n}}\nprintln(probe({}));\nprintln(probe({}));\n",
+                    sig.name, first.expr, second.expr
+                ),
+            )
+            .expect("write probe");
+
+            // Checked and run first, for the same reason the typed sweep does
+            // it: a method that does not apply to one of the two carriers is a
+            // fact about the language, not a coverage gap.
+            if !std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+                .args(["check", source.to_str().expect("utf-8 path")])
+                .output()
+                .expect("run lk check")
+                .status
+                .success()
+            {
+                continue;
+            }
+            if !std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+                .arg(source.to_str().expect("utf-8 path"))
+                .env("LK_FORCE_VM", "1")
+                .output()
+                .expect("run under the VM")
+                .status
+                .success()
+            {
+                continue;
+            }
+
+            checked += 1;
+            // `slice` answers a *window* over the receiver, and reaching a
+            // boxed one means `dyn.as_list`, which materializes a plain list
+            // for three of the four carriers — so unboxing would change the
+            // answer's kind. `boxed_receiver_coverage_test` excludes it for
+            // the same reason and states it at length.
+            if sig.name == "slice" {
+                continue;
+            }
+            if !lowers_natively(&source, &dir.path().join(stem)) {
+                refused.push(label);
+            }
+        }
+    }
+
+    assert!(
+        checked > 40,
+        "only {checked} boxed-receiver probes reached the compiler, far below what this table \
+         generates — they are failing for a reason other than coverage"
+    );
+    assert!(
+        refused.is_empty(),
+        "{} of {checked} built-in methods do not lower on a boxed receiver:\n  {}\n\
+         A program whose container parameter meets two carriers drops its whole module to the VM \
+         for each of them, silently.",
+        refused.len(),
+        refused.join("\n  ")
+    );
+}
+
 /// An expression of the declared parameter type, with the receiver's own
 /// spelling substituted for the placeholders the table writes signatures
 /// against.
