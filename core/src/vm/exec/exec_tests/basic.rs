@@ -65,7 +65,7 @@ fn execute_branches_with_test_and_jump() {
 fn execute_not_rejects_string_operand() {
     let function = Function {
         consts: ConstPool {
-            strings: vec!["ok".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("ok")],
             ..ConstPool::default()
         },
         code: vec![
@@ -263,7 +263,7 @@ fn execute_allocates_mixed_list_on_heap() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["x".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("x")],
             ..ConstPool::default()
         },
         code: vec![
@@ -431,7 +431,7 @@ fn execute_reads_len_for_typed_list_and_short_string() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["abc".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("abc")],
             ..ConstPool::default()
         },
         code: vec![
@@ -462,7 +462,7 @@ fn execute_to_iter_materializes_map_entries_as_pairs() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2, 0, 1],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -551,7 +551,10 @@ fn execute_allocates_object_and_reads_string_field() {
     let function = Function {
         consts: ConstPool {
             ints: vec![42],
-            strings: vec!["User".to_string(), "score".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("User"),
+                alloc::sync::Arc::<str>::from("score"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -574,13 +577,10 @@ fn execute_allocates_object_and_reads_string_field() {
     let result = execute(&function).expect("execute");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    let cache = result
-        .state
-        .inline_caches
-        .index_cache_for_tests(4)
-        .expect("index cache");
-    assert_eq!(cache.fact.target_kind, PerfIndexTargetKind::Object);
-    assert_eq!(cache.object_field_slot, Some(0));
+    // No inline cache: a read whose target the heap can name outright is
+    // answered on the fast path, and the cache exists to spare the *cold* one.
+    // It used to be filled here because every object read went cold.
+    assert!(result.state.inline_caches.index_cache_for_tests(4).is_none());
 }
 
 #[test]
@@ -588,7 +588,7 @@ fn execute_allocates_typed_string_int_map_and_reads_string_key() {
     let function = Function {
         consts: ConstPool {
             ints: vec![42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -617,9 +617,9 @@ fn execute_allocates_typed_string_int_map_and_reads_string_key() {
         panic!("expected typed string-int map");
     };
     assert_eq!(values.get("answer"), Some(&42));
-    let cache = result.state.inline_caches.index_fact_for_tests(4).expect("index cache");
-    assert_eq!(cache.target_kind, PerfIndexTargetKind::Map);
-    assert_eq!(cache.value_kind, PerfValueKind::Int);
+    // As above: a map the heap names outright is read on the fast path, so
+    // nothing is cached for it.
+    assert!(result.state.inline_caches.index_fact_for_tests(4).is_none());
 }
 
 #[test]
@@ -627,7 +627,7 @@ fn execute_new_map_without_build_fact_clones_source_registers() {
     let function = Function {
         consts: ConstPool {
             heap_values: vec![ConstHeapValue::LongString(Arc::<str>::from("longer-than-seven"))],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -664,7 +664,7 @@ fn execute_new_map_build_fact_consumes_source_registers() {
     let function = Function {
         consts: ConstPool {
             heap_values: vec![ConstHeapValue::LongString(Arc::<str>::from("longer-than-seven"))],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -700,7 +700,7 @@ fn execute_writes_mixed_map_by_string_key() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -731,7 +731,7 @@ fn execute_updates_typed_string_int_map_without_materializing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -767,7 +767,11 @@ fn execute_materializes_typed_string_int_map_to_string_mixed_on_value_pollution(
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
-            strings: vec!["answer".to_string(), "label".to_string(), "ok".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("answer"),
+                alloc::sync::Arc::<str>::from("label"),
+                alloc::sync::Arc::<str>::from("ok"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -804,7 +808,11 @@ fn execute_adds_and_subtracts_typed_string_int_maps_without_runtime_entry_materi
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2, 3],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -858,7 +866,7 @@ fn execute_subtracts_string_key_from_typed_string_int_map_without_cloning_remove
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -954,7 +962,7 @@ fn execute_pollutes_typed_int_list_by_string_write_without_reclassifying() {
     let function = Function {
         consts: ConstPool {
             ints: vec![7, 8, 1],
-            strings: vec!["nine".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("nine")],
             ..ConstPool::default()
         },
         code: vec![
@@ -991,7 +999,11 @@ fn execute_updates_typed_string_list_without_materializing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -1206,7 +1218,10 @@ fn execute_materializes_typed_string_list_on_non_string_write() {
     let function = Function {
         consts: ConstPool {
             ints: vec![0, 42],
-            strings: vec!["short".to_string(), "longer-than-seven".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("short"),
+                alloc::sync::Arc::<str>::from("longer-than-seven"),
+            ],
             ..ConstPool::default()
         },
         code: vec![

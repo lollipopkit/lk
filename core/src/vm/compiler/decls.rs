@@ -220,8 +220,8 @@ impl Compiler {
         );
         self.function.performance.clear_register(dst);
         // The declared width of the global, onto the register it landed in.
-        if let Some(kind) = name.and_then(|name| self.global_machine_widths.get(name).copied()) {
-            self.machine_regs.insert(dst, kind);
+        if let Some(width) = name.and_then(|name| self.global_machine_widths.get(name).copied()) {
+            self.machine_regs.insert(dst, width);
         }
         Ok(dst)
     }

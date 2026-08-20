@@ -646,7 +646,7 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     let entry = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["y".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("y")],
             ..ConstPool::default()
         },
         code: vec![
@@ -686,7 +686,7 @@ fn runtime_callable_error_keeps_shared_module_state() {
     let callee = Function {
         consts: ConstPool {
             ints: vec![41],
-            strings: vec!["boom".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("boom")],
             ..ConstPool::default()
         },
         code: vec![

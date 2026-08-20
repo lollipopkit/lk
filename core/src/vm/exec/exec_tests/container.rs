@@ -30,7 +30,7 @@ fn execute_compares_int_ordering() {
 fn execute_compares_nil_and_short_strings_on_fast_path() {
     let function = Function {
         consts: ConstPool {
-            strings: vec!["ok".to_string(), "no".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("ok"), alloc::sync::Arc::<str>::from("no")],
             ..ConstPool::default()
         },
         code: vec![
@@ -71,11 +71,11 @@ fn execute_checks_contains_for_typed_list_map_and_string() {
         consts: ConstPool {
             ints: vec![2, 9, 1],
             strings: vec![
-                "ab".to_string(),
-                "z".to_string(),
-                "abc".to_string(),
-                "answer".to_string(),
-                "1".to_string(),
+                alloc::sync::Arc::<str>::from("ab"),
+                alloc::sync::Arc::<str>::from("z"),
+                alloc::sync::Arc::<str>::from("abc"),
+                alloc::sync::Arc::<str>::from("answer"),
+                alloc::sync::Arc::<str>::from("1"),
             ],
             ..ConstPool::default()
         },
@@ -138,7 +138,7 @@ fn execute_to_iter_reads_typed_string_int_map_backing_as_pairs() {
     let function = Function {
         consts: ConstPool {
             ints: vec![10, 20],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -247,7 +247,7 @@ fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
     let function = Function {
         consts: ConstPool {
             ints: vec![9],
-            strings: vec!["a".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a")],
             heap_values: vec![
                 ConstHeapValue::Map(map),
                 ConstHeapValue::LongString(alloc::sync::Arc::<str>::from("a")),
@@ -311,7 +311,11 @@ fn execute_builds_map_rest_without_removed_keys() {
     let function = Function {
         consts: ConstPool {
             ints: vec![40, 2, 9],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -347,7 +351,7 @@ fn execute_map_rest_preserves_typed_string_int_backing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![

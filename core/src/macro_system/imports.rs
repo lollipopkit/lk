@@ -893,7 +893,7 @@ return util::answer!();
         .expect("package namespace macro import should expand");
         let rendered = render_tokens(&expanded.tokens);
         assert!(rendered.contains("use util;"));
-        assert!(rendered.contains("return 42;"));
+        assert!(rendered.contains("return (42);"));
     }
 
     #[test]
@@ -920,7 +920,7 @@ return u::answer!();
             },
         )
         .expect("package alias macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -938,7 +938,7 @@ return answer!();
             },
         )
         .expect("workspace member macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -965,7 +965,7 @@ return public!();
             },
         )
         .expect("re-exported macro alias should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -1068,7 +1068,7 @@ return macros::hidden!();
         )
         .expect("public macro should expand and private macro should remain untouched");
         let rendered = render_tokens(&expanded.tokens);
-        assert!(rendered.contains("let value = 42;"));
+        assert!(rendered.contains("let value = (42);"));
         assert!(rendered.contains("return macros::hidden !"));
     }
 

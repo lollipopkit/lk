@@ -170,7 +170,7 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     let entry = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["y".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("y")],
             ..ConstPool::default()
         },
         code: vec![

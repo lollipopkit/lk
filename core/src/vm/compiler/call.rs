@@ -137,7 +137,7 @@ impl Compiler {
         {
             let dst = self.lower_named_call_body(name, args)?;
             self.emit_machine_wrap(dst, kind)?;
-            self.machine_regs.insert(dst, kind);
+            self.machine_regs.insert(dst, super::RegisterWidth::Scalar(kind));
             return Ok(dst);
         }
         let dst = self.lower_named_call_body(name, args)?;
@@ -147,10 +147,17 @@ impl Compiler {
         // v + 10` answered 4. The fact existed (`function_machine_returns`) and
         // only `expr_machine_width` consulted it — and the arithmetic path asks
         // the *register*, not the expression.
-        if let Some(kind) = self.call_machine_width(name) {
-            self.machine_regs.insert(dst, kind);
-        } else {
-            self.machine_regs.remove(&dst);
+        // The declared return type's width, whichever half it is: a `u8`
+        // return and a `List<u8>` return are the same fact one level apart, and
+        // recording only the first is what let `ret_buf()[0] + 10` add at 64
+        // bits.
+        match self.call_register_width(name) {
+            Some(width) => {
+                self.machine_regs.insert(dst, width);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
         }
         Ok(dst)
     }

@@ -119,16 +119,17 @@ pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {
 /// wrap: `fn read() -> u32` makes `let a = read(); a + b` `u32` arithmetic, and
 /// before this the width was simply lost unless somebody wrote it down again at
 /// the binding.
-pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<String, crate::val::IntKind> {
+pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<String, super::RegisterWidth> {
     let mut widths = HashMap::new();
     for stmt in &program.statements {
         if let Stmt::Function {
             name,
-            return_type: Some(crate::val::Type::MachineInt(kind)),
+            return_type: Some(declared),
             ..
         } = item_without_attributes(stmt)
+            && let Some(width) = super::register_width_of(declared)
         {
-            widths.insert(name.clone(), *kind);
+            widths.insert(name.clone(), width);
         }
     }
     widths
@@ -182,14 +183,14 @@ pub(super) fn collect_impl_method_names(program: &Program) -> HashSet<String> {
 
 pub(super) fn collect_struct_field_machine_widths(
     program: &Program,
-) -> HashMap<String, HashMap<String, crate::val::IntKind>> {
-    let mut structs: HashMap<String, HashMap<String, crate::val::IntKind>> = HashMap::new();
+) -> HashMap<String, HashMap<String, super::RegisterWidth>> {
+    let mut structs: HashMap<String, HashMap<String, super::RegisterWidth>> = HashMap::new();
     for stmt in &program.statements {
         if let Stmt::Struct { name, fields } = item_without_attributes(stmt) {
             let mut widths = HashMap::new();
             for (field, declared) in fields {
-                if let Some(crate::val::Type::MachineInt(kind)) = declared {
-                    widths.insert(field.clone(), *kind);
+                if let Some(width) = declared.as_ref().and_then(super::register_width_of) {
+                    widths.insert(field.clone(), width);
                 }
             }
             if !widths.is_empty() {
@@ -206,16 +207,17 @@ pub(super) fn collect_struct_field_machine_widths(
 /// `drivers/e1000.lk` alone has two dozen — and a read of one lands in a fresh
 /// register through `GetGlobal`, which carries no width. Without this every use
 /// of a register constant computed at 64 bits.
-pub(super) fn collect_top_level_machine_widths(program: &Program) -> HashMap<String, crate::val::IntKind> {
+pub(super) fn collect_top_level_machine_widths(program: &Program) -> HashMap<String, super::RegisterWidth> {
     let mut widths = HashMap::new();
     for stmt in &program.statements {
         if let Stmt::Let {
             pattern: crate::expr::Pattern::Variable(name),
-            type_annotation: Some(crate::val::Type::MachineInt(kind)),
+            type_annotation: Some(declared),
             ..
         } = item_without_attributes(stmt)
+            && let Some(width) = super::register_width_of(declared)
         {
-            widths.insert(name.clone(), *kind);
+            widths.insert(name.clone(), width);
         }
     }
     widths

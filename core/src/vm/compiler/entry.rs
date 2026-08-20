@@ -244,10 +244,10 @@ impl Compiler {
         global_names: Rc<HashMap<String, u32>>,
         user_let_globals: Rc<HashSet<String>>,
         top_level_data_globals: Rc<HashSet<String>>,
-        machine_returns: Rc<HashMap<String, crate::val::IntKind>>,
-        struct_widths: Rc<HashMap<String, HashMap<String, crate::val::IntKind>>>,
+        machine_returns: Rc<HashMap<String, super::RegisterWidth>>,
+        struct_widths: Rc<HashMap<String, HashMap<String, super::RegisterWidth>>>,
         impl_methods: Rc<HashSet<String>>,
-        global_widths: Rc<HashMap<String, crate::val::IntKind>>,
+        global_widths: Rc<HashMap<String, super::RegisterWidth>>,
         capture_names: HashMap<String, u16>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {
@@ -323,19 +323,23 @@ impl Compiler {
         // No differential test could see it: the fact is missing in the
         // compiler, so both backends are handed the same wrong instruction.
         for (index, declared) in param_types.iter().enumerate() {
-            if let Some(crate::val::Type::MachineInt(kind)) = declared
+            if let Some(width) = declared.as_ref().and_then(crate::vm::compiler::register_width_of)
                 && index < params.len()
             {
-                compiler.machine_regs.insert(index as u16, *kind);
+                compiler.machine_regs.insert(index as u16, width);
             }
         }
         // Named parameters carry their own annotations and sit after the
         // positional ones in the frame, in `function_frame_params` order.
         for (offset, named) in named_params.iter().enumerate() {
-            if let Some(crate::val::Type::MachineInt(kind)) = &named.type_annotation {
+            if let Some(width) = named
+                .type_annotation
+                .as_ref()
+                .and_then(crate::vm::compiler::register_width_of)
+            {
                 let index = params.len() + offset;
                 if index < frame_params.len() {
-                    compiler.machine_regs.insert(index as u16, *kind);
+                    compiler.machine_regs.insert(index as u16, width);
                 }
             }
         }

@@ -366,6 +366,11 @@ impl Compiler {
                 0,
             ));
             self.set_register_kind(iterable, PerfValueKind::List);
+            // The snapshot holds the same elements, so it holds the same
+            // element width — without this a `for` over anything the compiler
+            // cannot prove is already a list (a parameter, most of the time)
+            // lost it at the `ToIter`.
+            self.copy_element_width(iterable_value, iterable);
             iterable
         };
         let len = self.alloc_reg();
@@ -403,6 +408,7 @@ impl Compiler {
                 self.function.performance.set_index_fact(pc, fact);
             }
         }
+        self.carry_element_width(iterable, value);
         let previous_binding = self.bind_for_pattern(pattern, value)?;
         let previous_single_char_locals = self.single_char_string_locals.clone();
         if matches!(iterable_kind, PerfValueKind::String)

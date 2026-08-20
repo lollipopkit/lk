@@ -1245,7 +1245,7 @@ mod tests {
         .expect("macro expansion succeeds");
         assert_eq!(expanded.trace.len(), 1);
         assert_eq!(expanded.trace[0].macro_name, "id");
-        assert!(render_tokens(&expanded.tokens).contains("return 7;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (7);"));
     }
 
     #[test]
@@ -1530,7 +1530,7 @@ mod tests {
             },
         )
         .expect("aliased macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -1556,7 +1556,7 @@ mod tests {
             },
         )
         .expect("namespaced file macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -1582,7 +1582,7 @@ mod tests {
             },
         )
         .expect("aliased namespace macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]

@@ -203,7 +203,7 @@ impl Compiler {
                     Some(_) => self.note_machine_reg(slot, type_annotation.as_ref()),
                     None => {
                         if let Some(kind) = self.initializer_machine_width(value) {
-                            self.machine_regs.insert(slot, kind);
+                            self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
                         }
                     }
                 }
@@ -212,7 +212,7 @@ impl Compiler {
             Stmt::Define { name, value, .. } => {
                 let slot = self.bind_inline_local(name, value)?;
                 if let Some(kind) = self.initializer_machine_width(value) {
-                    self.machine_regs.insert(slot, kind);
+                    self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
                 }
                 Ok(())
             }

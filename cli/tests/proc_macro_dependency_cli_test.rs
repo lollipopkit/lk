@@ -96,7 +96,7 @@ args = ["-c", "cat >/dev/null; printf '%s' '{{\"protocol_version\":1,\"output_to
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(
-        stdout.contains("return 42;"),
+        stdout.contains("return (42);"),
         "expected trusted provider output: {stdout}"
     );
 
@@ -167,7 +167,7 @@ args = ["-c", "touch '{}'; cat >/dev/null; printf '%s' '{{\"protocol_version\":1
          between a dependency and arbitrary compile-time execution"
     );
     assert!(
-        !stdout.contains("return 42;"),
+        !stdout.contains("return (42);"),
         "an untrusted provider's output reached the program: {stdout}"
     );
 

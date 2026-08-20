@@ -64,7 +64,10 @@ return id!(7);
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(stdout.contains("# macro id at"), "expected trace line, got: {stdout}");
-    assert!(stdout.contains("return 7;"), "expected expanded return, got: {stdout}");
+    assert!(
+        stdout.contains("return (7);"),
+        "expected expanded return, got: {stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -102,7 +105,7 @@ return answer!();
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(
-        stdout.contains("return 42;"),
+        stdout.contains("return (42);"),
         "expected imported macro expansion, got: {stdout}"
     );
 
@@ -307,7 +310,9 @@ return generated() + decorated() + proc_value!() + user.value();
         "expected manifest attribute provider output in AST expansion, got: {stdout}"
     );
     assert!(
-        stdout.contains("+ 5"),
+        // `(5)`: an expansion in expression position is one expression, and the
+        // rendering carries the grouping.
+        stdout.contains("+ (5)"),
         "expected manifest function-like provider output in token expansion, got: {stdout}"
     );
     assert!(
@@ -413,7 +418,7 @@ return answer!();
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(
-        stdout.contains("return 42;"),
+        stdout.contains("return (42);"),
         "expected package macro expansion, got: {stdout}"
     );
 

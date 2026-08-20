@@ -107,21 +107,27 @@ pub struct Compiler {
     /// driver-ish code annotates its widths — and anything it cannot prove
     /// simply does not get the wrap, which the type checker has already
     /// rejected by then.
-    pub(super) machine_regs: HashMap<u16, crate::val::IntKind>,
+    /// What a register's declared width says, when it says anything.
+    ///
+    /// One table with two answers rather than two tables: a producer records
+    /// what the register *is*, and the compiler cannot record the scalar half
+    /// while forgetting the element half — which is how seven of the ten
+    /// boundaries a width can cross came to drop it.
+    pub(super) machine_regs: HashMap<u16, RegisterWidth>,
     /// Top-level functions that declare a machine-int return, by name. Collected
     /// once so a `let` bound to a call can learn its width — see
     /// [`Compiler::initializer_machine_width`].
-    function_machine_returns: Rc<HashMap<String, crate::val::IntKind>>,
+    function_machine_returns: Rc<HashMap<String, RegisterWidth>>,
     /// Machine-int widths of the names this closure captured, learned from the
     /// enclosing scope at the moment the closure was built. A capture is read
     /// through `LoadCapture` into a fresh register, which carries nothing.
     capture_machine_widths: HashMap<String, crate::val::IntKind>,
     /// Machine-int widths of top-level bindings, by name — see
     /// [`support::collect_top_level_machine_widths`].
-    global_machine_widths: Rc<HashMap<String, crate::val::IntKind>>,
+    global_machine_widths: Rc<HashMap<String, RegisterWidth>>,
     /// Machine-int field widths, by struct name then field name — see
     /// [`support::collect_struct_field_machine_widths`].
-    struct_field_machine_widths: Rc<HashMap<String, HashMap<String, crate::val::IntKind>>>,
+    struct_field_machine_widths: Rc<HashMap<String, HashMap<String, RegisterWidth>>>,
     /// Method names any `impl` in this program declares — see
     /// [`support::collect_impl_method_names`]. A call to one of these is never
     /// lowered to a builtin opcode.
@@ -130,13 +136,6 @@ pub struct Compiler {
     /// initializer or a declared type. The compiler tracks no other types; this
     /// exists only to give `r.field` a width to wrap to.
     local_struct_types: HashMap<String, String>,
-    /// A local container's declared **element** width, when it has one.
-    ///
-    /// The twin of [`Self::local_struct_types`], for the other shape a machine
-    /// integer is read out of. `let bytes: List<u8> = …; bytes[0] + 10` added at
-    /// 64 bits and answered 260 where the type says 4, and a `Map<String, u8>`
-    /// did the same — a byte buffer is exactly what a driver reads through.
-    local_element_widths: HashMap<String, crate::val::IntKind>,
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
@@ -346,18 +345,24 @@ impl Compiler {
     /// The width a call to `name` produces: a user function that declares one,
     /// or a builtin whose name *is* one.
     pub(in crate::vm::compiler) fn call_machine_width(&self, name: &str) -> Option<crate::val::IntKind> {
+        self.call_register_width(name).and_then(RegisterWidth::scalar)
+    }
+
+    /// The width a call to `name` produces, scalar or elements — a user
+    /// function that declares one, or a builtin whose name *is* one.
+    pub(in crate::vm::compiler) fn call_register_width(&self, name: &str) -> Option<RegisterWidth> {
         self.function_machine_returns
             .get(name)
             .copied()
-            .or_else(|| crate::typ::builtin_machine_result(name))
+            .or_else(|| crate::typ::builtin_machine_result(name).map(RegisterWidth::Scalar))
     }
 
     pub(super) fn note_machine_reg(&mut self, reg: u16, ty: Option<&crate::val::Type>) {
-        match ty {
-            Some(crate::val::Type::MachineInt(kind)) => {
-                self.machine_regs.insert(reg, *kind);
+        match ty.and_then(register_width_of) {
+            Some(width) => {
+                self.machine_regs.insert(reg, width);
             }
-            _ => {
+            None => {
                 self.machine_regs.remove(&reg);
             }
         }
@@ -375,7 +380,8 @@ impl Compiler {
                 .locals
                 .get(name)
                 .copied()
-                .and_then(|reg| self.machine_regs.get(&reg).copied()),
+                .and_then(|reg| self.machine_regs.get(&reg).copied())
+                .and_then(RegisterWidth::scalar),
             // `r.value` where `value` is declared `u32`.
             //
             // The register a field lands in has no width of its own — it came
@@ -383,7 +389,9 @@ impl Compiler {
             // field added at 64 bits and answered 4294967296. Narrow on
             // purpose: only a local whose struct is known, which is the shape a
             // register block is read through.
-            Expr::Access(target, key) => self.access_machine_width_of(target, key),
+            Expr::Access(target, key) => self
+                .access_register_width_of(target, key)
+                .and_then(RegisterWidth::scalar),
             other => self.initializer_machine_width(other),
         }
     }
@@ -415,48 +423,26 @@ impl Compiler {
         }
     }
 
-    /// Records a local container's declared element width, for the same reason
-    /// [`Self::note_local_struct_type`] records its struct: so that a value read
-    /// out of it has a width to wrap to.
-    pub(in crate::vm::compiler) fn note_local_element_width(
-        &mut self,
-        name: &str,
-        type_annotation: Option<&crate::val::Type>,
-    ) {
-        let element = match type_annotation {
-            Some(crate::val::Type::List(element) | crate::val::Type::Set(element)) => Some(element.as_ref()),
-            Some(crate::val::Type::Map(_, value)) => Some(value.as_ref()),
-            _ => None,
-        };
-        match element {
-            Some(crate::val::Type::MachineInt(kind)) => {
-                self.local_element_widths.insert(String::from(name), *kind);
-            }
-            _ => {
-                self.local_element_widths.remove(name);
-            }
-        }
-    }
-
-    /// The declared width of `target.key`, when the compiler knows both.
-    pub(in crate::vm::compiler) fn access_machine_width_of(
-        &self,
-        target: &Expr,
-        key: &Expr,
-    ) -> Option<crate::val::IntKind> {
+    /// What a register holding `target.key` — or `target[key]` — is worth.
+    ///
+    /// Two answers because the read can produce either: `s.count` where `count`
+    /// is a `u32` is a `Scalar`, and `s.buf` where `buf` is a `List<u8>` is
+    /// `Elements`, so `s.buf[0] + 1` has a width one step further on.
+    pub(in crate::vm::compiler) fn access_register_width_of(&self, target: &Expr, key: &Expr) -> Option<RegisterWidth> {
         let target = match target {
             Expr::Paren(inner) => inner.as_ref(),
             other => other,
         };
+        // Indexing *out of* something whose elements have a width: the register
+        // holding the container is the fact's carrier, so this reaches every
+        // container the compiler has a register for — a local, a parameter, a
+        // capture, a global, a call's result, a field.
+        if let Some(kind) = self.expr_register_width(target).and_then(RegisterWidth::element) {
+            return Some(RegisterWidth::Scalar(kind));
+        }
         let Expr::Var(name) = target else {
             return None;
         };
-        // An element read out of a declared container: `bytes[i]`, `counts[k]`.
-        // Any key expression, because an index is any expression — which is
-        // also why a bare `Var` below is *not* a field name.
-        if let Some(kind) = self.local_element_widths.get(name.as_str()).copied() {
-            return Some(kind);
-        }
         // A member is a string literal; `p[field]` is an index, not `p.field`.
         let field = match key {
             Expr::Literal(value) => value.as_str()?,
@@ -467,6 +453,35 @@ impl Compiler {
             .get(struct_name.as_str())?
             .get(field)
             .copied()
+    }
+
+    /// The width fact a register holding `expr` carries, either half.
+    ///
+    /// [`Self::expr_machine_width`] is the scalar half of this; the element half
+    /// is what an index read consults.
+    pub(in crate::vm::compiler) fn expr_register_width(&self, expr: &Expr) -> Option<RegisterWidth> {
+        match expr {
+            Expr::Paren(inner) => self.expr_register_width(inner),
+            Expr::Var(name) => self
+                .locals
+                .get(name)
+                .copied()
+                .and_then(|reg| self.machine_regs.get(&reg).copied())
+                .or_else(|| {
+                    self.capture_machine_widths
+                        .get(name)
+                        .copied()
+                        .map(RegisterWidth::Scalar)
+                })
+                .or_else(|| self.global_machine_widths.get(name).copied()),
+            Expr::Access(target, key) => self.access_register_width_of(target, key),
+            Expr::Call(name, _) => self.call_register_width(name),
+            Expr::CallExpr(callee, _) => match callee.as_ref() {
+                Expr::Var(name) => self.call_register_width(name),
+                _ => None,
+            },
+            other => self.initializer_machine_width(other).map(RegisterWidth::Scalar),
+        }
     }
 
     /// A string concatenation's operands, with a carrier-filling one rendered.
@@ -520,9 +535,49 @@ impl Compiler {
     /// type checker rejects mixed widths, so a disagreement here means the
     /// compiler simply could not prove it, and the safe answer is not to wrap.
     pub(super) fn shared_machine_width(&self, lhs: u16, rhs: u16) -> Option<crate::val::IntKind> {
-        let left = self.machine_regs.get(&lhs).copied()?;
-        let right = self.machine_regs.get(&rhs).copied()?;
+        let left = self.machine_regs.get(&lhs).copied().and_then(RegisterWidth::scalar)?;
+        let right = self.machine_regs.get(&rhs).copied().and_then(RegisterWidth::scalar)?;
         (left == right).then_some(left)
+    }
+
+    /// Carries a container's element width onto the register a read of it
+    /// lands in.
+    ///
+    /// For the reads that go register to register with no access expression to
+    /// consult — a loop variable, a destructuring bind. `for b in bytes { b + 1 }`
+    /// and `let [head] = bytes;` are the same read as `bytes[0]`, and they were
+    /// the two positions left adding at 64 bits after the others were closed.
+    pub(in crate::vm::compiler) fn carry_element_width(&mut self, container: u16, dst: u16) {
+        match self.register_element_width(container) {
+            Some(kind) => {
+                self.machine_regs.insert(dst, RegisterWidth::Scalar(kind));
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
+    }
+
+    /// Copies a container's element width onto another register holding the
+    /// same elements — a `ToIter` snapshot, which is the same values in a
+    /// different container.
+    pub(in crate::vm::compiler) fn copy_element_width(&mut self, src: u16, dst: u16) {
+        match self.register_element_width(src) {
+            Some(kind) => {
+                self.machine_regs.insert(dst, RegisterWidth::Elements(kind));
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
+    }
+
+    /// The width of what an index or field read out of `container` produces.
+    pub(in crate::vm::compiler) fn register_element_width(&self, container: u16) -> Option<crate::val::IntKind> {
+        self.machine_regs
+            .get(&container)
+            .copied()
+            .and_then(RegisterWidth::element)
     }
 
     /// Gives an integer literal the machine width of the operand beside it.
@@ -542,16 +597,16 @@ impl Compiler {
         lhs_is_literal: bool,
         rhs_is_literal: bool,
     ) -> Result<()> {
-        let left = self.machine_regs.get(&lhs).copied();
-        let right = self.machine_regs.get(&rhs).copied();
+        let left = self.machine_regs.get(&lhs).copied().and_then(RegisterWidth::scalar);
+        let right = self.machine_regs.get(&rhs).copied().and_then(RegisterWidth::scalar);
         match (left, right) {
             (Some(kind), None) if rhs_is_literal => {
                 self.emit_machine_wrap(rhs, kind)?;
-                self.machine_regs.insert(rhs, kind);
+                self.machine_regs.insert(rhs, RegisterWidth::Scalar(kind));
             }
             (None, Some(kind)) if lhs_is_literal => {
                 self.emit_machine_wrap(lhs, kind)?;
-                self.machine_regs.insert(lhs, kind);
+                self.machine_regs.insert(lhs, RegisterWidth::Scalar(kind));
             }
             _ => {}
         }
@@ -567,7 +622,7 @@ impl Compiler {
         };
         let encoded = checked_u8("wrap reg", reg)?;
         self.emit(Instr::abc(super::ir::Opcode::CastTo, encoded, encoded, target as u8));
-        self.machine_regs.insert(reg, kind);
+        self.machine_regs.insert(reg, RegisterWidth::Scalar(kind));
         Ok(())
     }
 
@@ -1030,7 +1085,7 @@ impl Compiler {
                 cell_or_value
             };
             if let Some(kind) = width {
-                self.machine_regs.insert(dst, kind);
+                self.machine_regs.insert(dst, RegisterWidth::Scalar(kind));
             }
             return Ok(dst);
         }
@@ -1381,6 +1436,62 @@ impl Compiler {
 /// both emitted a pointless `CastTo` on a 0/1 and recorded the destination
 /// register as holding a `u8` — a stale width fact that a later, unrelated value
 /// in the same register would inherit.
+/// The declared width behind a register.
+///
+/// A machine integer's width is a *static* fact — a `RuntimeVal::Int` carries
+/// no width, and giving it one would put a tag check on the hottest path in the
+/// language — so it travels register to register, from wherever the declaration
+/// was read to wherever the arithmetic happens.
+///
+/// Two answers because a register holds either the number or the container it
+/// comes out of, and both facts have the same producers: a parameter, a `let`
+/// annotation, a global, a capture, a declared return, a struct field. Recording
+/// only the first is what made `bytes[0] + 10` add at 64 bits for a
+/// `List<u8>` — the value's own width was right there in the declaration and
+/// nothing carried it past the container.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::vm) enum RegisterWidth {
+    /// The register holds a machine integer of this width.
+    Scalar(crate::val::IntKind),
+    /// The register holds a container whose *elements* are this wide.
+    Elements(crate::val::IntKind),
+}
+
+impl RegisterWidth {
+    /// The width when the register holds the number itself.
+    fn scalar(self) -> Option<crate::val::IntKind> {
+        match self {
+            Self::Scalar(kind) => Some(kind),
+            Self::Elements(_) => None,
+        }
+    }
+
+    /// The width of what comes *out* of this register: the elements of a
+    /// container, and nothing for a number (indexing one is not a thing).
+    fn element(self) -> Option<crate::val::IntKind> {
+        match self {
+            Self::Elements(kind) => Some(kind),
+            Self::Scalar(_) => None,
+        }
+    }
+}
+
+/// The width a declared type contributes to the register that holds it.
+pub(in crate::vm::compiler) fn register_width_of(ty: &Type) -> Option<RegisterWidth> {
+    match ty {
+        Type::MachineInt(kind) => Some(RegisterWidth::Scalar(*kind)),
+        Type::List(element) | Type::Set(element) => match element.as_ref() {
+            Type::MachineInt(kind) => Some(RegisterWidth::Elements(*kind)),
+            _ => None,
+        },
+        Type::Map(_, value) => match value.as_ref() {
+            Type::MachineInt(kind) => Some(RegisterWidth::Elements(*kind)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn binary_machine_width(op: &BinOp) -> bool {
     matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
 }

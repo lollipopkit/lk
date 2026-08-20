@@ -550,6 +550,28 @@ fn a_declared_width_survives_a_call_a_container_and_a_shift() {
                  println(ret() + 10);\n",
             ),
             new(
+                "every_boundary_a_container_crosses",
+                "struct S { f: u8, buf: List<u8> }\n\
+                 let gbuf: List<u8> = [250];\n\
+                 fn from_param_elem(bytes: List<u8>) -> u8 { return bytes[0] + 10; }\n\
+                 fn from_param_map(m: Map<String, u8>) -> u8 { return m[\"k\"] + 10; }\n\
+                 fn from_global_elem() -> u8 { return gbuf[0] + 10; }\n\
+                 fn ret_buf() -> List<u8> { return [250]; }\n\
+                 fn for_over_param(bytes: List<u8>) -> u8 { let t: u8 = 0; for b in bytes { t = b + 10; } return t; }\n\
+                 let s = S { f: 250, buf: [250] };\n\
+                 println(from_param_elem([250]));\n\
+                 println(from_param_map({\"k\": 250}));\n\
+                 println(from_global_elem());\n\
+                 println(s.buf[0] + 10);\n\
+                 println(ret_buf()[0] + 10);\n\
+                 println(for_over_param([250]));\n\
+                 let cap: List<u8> = [250];\n\
+                 let f = || cap[0] + 10;\n\
+                 println(f());\n\
+                 let [head] = gbuf;\n\
+                 println(head + 10);\n",
+            ),
+            new(
                 "shifts_wrap_to_their_width",
                 "fn shl8(a: u8, n: u8) -> u8 { return a << n; }\n\
                  fn shr8(a: u8, n: u8) -> u8 { return a >> n; }\n\

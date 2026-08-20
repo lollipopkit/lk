@@ -106,7 +106,6 @@ impl Compiler {
             // the only type the compiler tracks, and only so that `r.field` has
             // a declared width to wrap to.
             self.note_local_struct_type(name, type_annotation, value);
-            self.note_local_element_width(name, type_annotation);
             match type_annotation {
                 Some(_) => self.note_machine_reg(slot, type_annotation),
                 // A call establishes nothing on its own, so its declared width
@@ -115,7 +114,7 @@ impl Compiler {
                 // rather than a guess.
                 None => {
                     if let Some(kind) = self.initializer_machine_width(value) {
-                        self.machine_regs.insert(slot, kind);
+                        self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
                     }
                 }
             }
@@ -230,6 +229,7 @@ impl Compiler {
                 checked_u8("let sequence value", value)?,
                 checked_u8("let sequence index", key)?,
             ));
+            self.carry_element_width(value, field);
             self.bind_let_pattern(pattern, field)?;
         }
         Ok(())

@@ -17,9 +17,9 @@ impl Compiler {
         //
         // Recorded before the access lowers rather than after: the lowering
         // below has several returns, and one of them is a fused opcode.
-        match self.access_machine_width_of(target, key) {
-            Some(kind) => {
-                self.machine_regs.insert(dst, kind);
+        match self.access_register_width_of(target, key) {
+            Some(width) => {
+                self.machine_regs.insert(dst, width);
             }
             None => {
                 self.machine_regs.remove(&dst);
