@@ -161,7 +161,7 @@ impl Executor {
             CastTarget::Int => RuntimeVal::Int(cast_source_to_i64(&source)?),
             machine => {
                 let kind = machine.int_kind().expect("non-scalar targets handled above");
-                RuntimeVal::Int(truncate_to_width(cast_source_to_i64(&source)?, kind))
+                RuntimeVal::Int(cast_to_machine_int(&source, kind)?)
             }
         };
 
@@ -845,6 +845,59 @@ fn cast_source_to_i64(source: &RuntimeVal) -> Result<i64> {
         // `Object` and names itself for saying it.
         other => bail!("cannot cast {} to an integer", other.kind().scalar_type_name()),
     })
+}
+
+/// The `i64` carrier holding `source` narrowed to `kind`.
+///
+/// An integer source **wraps** — `300 as u8` is 44, which is what `as` means
+/// between integers. A float source **saturates to `kind`'s own range**, and
+/// that is the difference this exists for: going through `i64` first saturated
+/// to *its* range and then masked the result, so a value out of range came back
+/// as an arbitrary bit pattern rather than as the nearest representable one.
+///
+/// It showed on division, because `/` is float division and dividing by zero is
+/// `inf`:
+///
+/// | expression | was | now |
+/// | --- | --- | --- |
+/// | `1 / 0` at `i32` | `-1` | `2147483647` |
+/// | `-1 / 0` at `i32` | `0` | `-2147483648` |
+/// | `1 / 0` at `u8` | `255` | `255` |
+/// | `0 / 0` at `u8` | `0` | `0` |
+///
+/// Two of the four were already right by coincidence — `u8`'s mask happens to
+/// keep the low byte of `i64::MAX`, which is `255`.
+fn cast_to_machine_int(source: &RuntimeVal, kind: crate::val::IntKind) -> Result<i64> {
+    if let RuntimeVal::Float(value) = source {
+        let bits = kind.bits().unwrap_or(usize::BITS);
+        if bits >= 64 {
+            // The `i64`/`u64` carriers are the full width, so `as` already
+            // saturates to exactly the right range — except `u64`, whose range
+            // the carrier holds as a bit pattern.
+            return Ok(if kind.is_signed() {
+                *value as i64
+            } else {
+                *value as u64 as i64
+            });
+        }
+        let (low, high) = if kind.is_signed() {
+            (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+        } else {
+            (0, (1i64 << bits) - 1)
+        };
+        // NaN casts to zero, as it does everywhere `as` is defined.
+        if value.is_nan() {
+            return Ok(0);
+        }
+        return Ok(if *value <= low as f64 {
+            low
+        } else if *value >= high as f64 {
+            high
+        } else {
+            *value as i64
+        });
+    }
+    Ok(truncate_to_width(cast_source_to_i64(source)?, kind))
 }
 
 /// Reduce `value` to `kind`'s width, then widen it back into the `i64` carrier

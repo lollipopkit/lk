@@ -417,6 +417,7 @@ macro_rules! for_each_abi_fn {
             ("fs", "read_dir_list", lkrt_fs_read_dir_list, ReadsHost, [StrPtr], Ptr);
             // `math.floor(Float) -> Int` with the VM's exact rounding (`floor()
             // as i64`, saturating); an `Int` argument short-circuits in the lowering.
+            ("math", "f64_to_machine_int", lkrt_f64_to_machine_int, Pure, [F64, I64, I64], I64);
             ("math", "floor", lkrt_math_floor, Pure, [F64], I64);
             ("math", "ceil", lkrt_math_ceil, Pure, [F64], I64);
             ("math", "round", lkrt_math_round, Pure, [F64], I64);

@@ -165,3 +165,36 @@ mod tests {
         assert_eq!(lkrt_f64_mod_checked(7.0, 2.0), 1.0);
     }
 }
+
+/// `value as <machine int>` — a float narrowed to a fixed width.
+///
+/// Saturating to the *target's* range, which is what `as` means from a float.
+/// Both engines used to saturate to `i64` first and then mask, so a value out
+/// of range came back as an arbitrary bit pattern: at `i32`, `1 / 0` (which is
+/// `inf`, since `/` is float division) answered `-1` and `-1 / 0` answered `0`.
+///
+/// One implementation for both ends, called from the native lowering and
+/// mirrored by `cast_to_machine_int` in the VM — a cast is not hot enough to be
+/// worth two copies of a rule this easy to get subtly different.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_f64_to_machine_int(value: f64, bits: i64, signed: i64) -> i64 {
+    let signed = signed != 0;
+    if bits >= 64 {
+        return if signed { value as i64 } else { value as u64 as i64 };
+    }
+    if value.is_nan() {
+        return 0;
+    }
+    let (low, high) = if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0, (1i64 << bits) - 1)
+    };
+    if value <= low as f64 {
+        low
+    } else if value >= high as f64 {
+        high
+    } else {
+        value as i64
+    }
+}

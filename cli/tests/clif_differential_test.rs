@@ -515,6 +515,50 @@ fn a_map_that_is_one_still_lowers_its_collection_methods() {
     );
 }
 
+/// A float narrowed to a fixed width saturates to *that* width's range.
+///
+/// Both engines used to saturate to `i64` first and then mask the result, so a
+/// value out of range came back as an arbitrary bit pattern. `/` is float
+/// division, so dividing by zero is `inf` and lands here: at `i32`, `1 / 0`
+/// answered `-1` and `-1 / 0` answered `0`. Two of the four cases were right by
+/// coincidence — `u8`'s mask keeps the low byte of `i64::MAX`, which is 255.
+#[test]
+fn a_float_narrowed_to_a_width_saturates_to_that_width() {
+    run_clif_differential(
+        "machine_int_narrowing",
+        &[
+            new(
+                "division_by_zero",
+                "fn d8(a: u8, b: u8) -> u8 { return a / b; }\n\
+                 fn d32(a: i32, b: i32) -> i32 { return a / b; }\n\
+                 println(d8(1, 0));\n\
+                 println(d8(0, 0));\n\
+                 println(d32(1, 0));\n\
+                 println(d32(0 - 1, 0));\n\
+                 println(d8(7, 2));\n\
+                 println(d32(0 - 7, 2));\n",
+            ),
+            new(
+                "out_of_range_casts",
+                "println(1e300 as u8 as Int);\n\
+                 println(1e300 as i8 as Int);\n\
+                 println(1e300 as i32 as Int);\n\
+                 println((0.0 - 1e300) as i32 as Int);\n\
+                 println((0.0 / 0.0) as i16 as Int);\n\
+                 println(2.7 as u8 as Int);\n\
+                 println((0.0 - 2.7) as i8 as Int);\n",
+            ),
+            new(
+                "integer_casts_still_wrap",
+                "println(300 as u8 as Int);\n\
+                 println(200 as i8 as Int);\n\
+                 println(70000 as u16 as Int);\n\
+                 println(4294967296 as u32 as Int);\n",
+            ),
+        ],
+    );
+}
+
 #[test]
 fn a_declared_width_crosses_a_function_boundary() {
     let dir = unique_tmp_dir("param_width");

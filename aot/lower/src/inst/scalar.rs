@@ -265,6 +265,34 @@ pub(super) fn lower(
                         // the same source conversion the VM's
                         // `cast_source_to_i64` performs.
                         Ty::F64 => {
+                            // A narrow target saturates to *its* range, so the
+                            // conversion has to know the width. One shared
+                            // implementation (`math.f64_to_machine_int`), the
+                            // VM mirroring it: truncating to `i64` and then
+                            // masking gave `-1` for `1 / 0` at `i32`.
+                            if let Some(bits) = integer.int_kind().and_then(|kind| kind.bits())
+                                && bits < 64
+                            {
+                                let signed = integer.int_kind().expect("machine target").is_signed();
+                                let bits_v = ssa.new_val();
+                                insts.push(Inst::Const {
+                                    dst: bits_v,
+                                    value: Const::I64(i64::from(bits)),
+                                });
+                                let signed_v = ssa.new_val();
+                                insts.push(Inst::Const {
+                                    dst: signed_v,
+                                    value: Const::I64(i64::from(signed)),
+                                });
+                                let narrowed = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(narrowed),
+                                    callee: AbiRef::new("math", "f64_to_machine_int"),
+                                    args: vec![v, bits_v, signed_v],
+                                });
+                                ssa.write(instr.a(), block, (narrowed, Ty::I64));
+                                return Ok(());
+                            }
                             let truncated = ssa.new_val();
                             insts.push(Inst::FloatToInt { dst: truncated, src: v });
                             truncated
