@@ -239,6 +239,14 @@ pub(crate) struct Ssa {
     /// (`convert::read_typed_scalar`), so a lambda pushed into a guessed `[]`
     /// widens the literal instead of compiling to an unbox that raises on the
     /// one value the list was built to hold.
+    /// Values that are a **materialized stream**: a list this side built where
+    /// the interpreter has a `Stream`.
+    ///
+    /// The materialization is sound only where the difference cannot be seen,
+    /// and three things can see it — `typeof` answers `Stream`, display writes
+    /// `<Stream>`, and a trait dispatches to `impl … for Stream`. Each of those
+    /// consults this and declines to lower rather than answering as a list.
+    pub(crate) stream_values: std::collections::HashSet<ValueId>,
     pub(crate) closure_values: std::collections::HashSet<ValueId>,
     /// A closure value with an *empty* environment → the function it names.
     ///
@@ -353,6 +361,7 @@ impl Ssa {
             dyn_loop_slots: std::collections::HashSet::new(),
             no_provenance_slots: std::collections::HashSet::new(),
             dyn_literal_pcs: std::collections::HashSet::new(),
+            stream_values: std::collections::HashSet::new(),
             closure_values: std::collections::HashSet::new(),
             closure_fidx: std::collections::HashMap::new(),
             literal_carrier: std::collections::HashMap::new(),

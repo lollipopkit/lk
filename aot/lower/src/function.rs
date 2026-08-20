@@ -1299,6 +1299,15 @@ pub(crate) fn lower_function(
                     bi,
                     start,
                 )?;
+                // A materialized stream leaving the function loses its mark:
+                // the caller sees a plain list and would answer as one. Asked
+                // *after* the read the return already performs — `Ssa::read`
+                // creates phis on demand, so asking it early is not a question
+                // but a change, and one that left a phi without an operand for
+                // every predecessor. See `Ssa::stream_values`.
+                if ssa.stream_values.contains(&v) {
+                    return Err(Unsupported::TypeMismatch { pc: start });
+                }
                 // A try body's `return` is the enclosing function's, not this
                 // one's: set the flag, park the value, and return normally so
                 // the trampoline reports "did not raise". The caller checks the

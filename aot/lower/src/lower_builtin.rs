@@ -730,6 +730,11 @@ pub(crate) fn lower_builtin_call(
                 });
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            // A materialized stream is a list here and a `Stream` there, and
+            // this is the question that asks. See `Ssa::stream_values`.
+            if ssa.stream_values.contains(&v) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
             // Every proven type, not just the scalars: `typeof` asks what the
             // value *is*, and a container is as proven as an `Int` here. With
             // only the five scalars, `typeof([1, 2])` — and every other

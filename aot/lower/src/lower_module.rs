@@ -34,6 +34,11 @@ pub(crate) fn lower_module_call(
                 if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
                     return Err(Unsupported::TypeMismatch { pc });
                 }
+                // `collect` answers a List on both sides; `from_list` answers a
+                // Stream, and only that one carries the mark.
+                if name == "from_list" {
+                    ssa.stream_values.insert(v);
+                }
                 ssa.write(base, block, (v, ty));
                 return Ok(());
             }
@@ -76,6 +81,7 @@ pub(crate) fn lower_module_call(
                     callee: AbiRef::new("list_h", "i64_from_range"),
                     args: vec![start, end, one, exclusive],
                 });
+                ssa.stream_values.insert(handle);
                 ssa.write(base, block, (handle, Ty::ListI64));
                 return Ok(());
             }

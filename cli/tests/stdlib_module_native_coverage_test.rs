@@ -54,6 +54,13 @@ const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("stream.repeat", "see `stream.iterate`."),
     (
+        "stream.range",
+        "it *does* lower — as a materialized list, which is sound exactly while nothing can tell \
+         the difference. This probe prints the value, and that is one of the three things that \
+         can: display writes `<Stream>`, `typeof` answers `Stream`, and a trait finds `impl … for \
+         Stream`. Each of those declines rather than answering as a list, so the probe declines.",
+    ),
+    (
         "task.stats",
         "reports the async runtime's internal counters, and a native binary has no async runtime to \
          report on.",
