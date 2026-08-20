@@ -655,6 +655,21 @@ fn differential_strings() {
             // And a `Tuple` slices: each container arm carries a range guard
             // and that one did not, so a heterogeneous literal was the one list
             // that could not be sliced.
+            // A value nested past `MAX_VALUE_DEPTH`. The interpreter refuses to
+            // print it and refuses to compare it, and lkrt had no bound on
+            // either: a 520-deep value compared `true` compiled and stopped the
+            // program interpreted, and `println` printed it compiled.
+            //
+            // Relying on the stack instead is not the same rule twice — where
+            // it lands depends on the build and on how much stack was left, so
+            // the threshold would not be a property of the language. The
+            // message it gave said so: "a native binary is bounded by the real
+            // stack, not by LK_MAX_CALL_DEPTH", which is true of LK recursion
+            // and was not what had happened.
+            new(
+                "a_value_too_deep_is_refused_the_same_way",
+                "fn build(n: Int) -> Any {\n    let v: Any = 1;\n    let i = 0;\n    while i < n { v = [v]; i = i + 1; }\n    return v;\n}\nfn t(label: String, f: Int, d: Any, e: Any) -> String {\n    try {\n        if f == 0 { return label + \": \" + (d == e); }\n        if f == 1 { return label + \": \" + [d].contains(e); }\n        if f == 2 { return label + \": \" + [d, e].index_of(e); }\n        if f == 3 { return label + \": \" + ([d] - [e]).len(); }\n        return label + \": \" + [d, e].sort().len();\n    } catch err { return label + \": E \" + err; }\n}\nlet a = build(600);\nlet b = build(600);\nprintln(t(\"eq\", 0, a, b));\nprintln(t(\"contains\", 1, a, b));\nprintln(t(\"index_of\", 2, a, b));\nprintln(t(\"sub\", 3, a, b));\nprintln(t(\"sort\", 4, a, b));\nlet shallow = build(100);\nprintln(shallow == build(100));\nreturn 0;\n",
+            ),
             new(
                 "a_key_of_another_type_is_a_miss",
                 "println([1, \"a\"][0..2]);\nprintln([1, \"a\"][1..2]);\nprintln([1, 2, 3][0..2]);\nprintln({\"k\": 1}[0]);\nprintln({1: 2}[\"k\"]);\nprintln({\"k\": 1}[\"k\"]);\nreturn 0;\n",

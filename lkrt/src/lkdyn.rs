@@ -706,7 +706,7 @@ pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_ch
 /// `false` (nothing written) when the value is not a marked struct or its type
 /// was never described, so the caller falls through to the map rendering — which
 /// is also what the VM does for a struct whose declaration is out of reach.
-fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool) -> bool {
+fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool, depth: u32) -> bool {
     if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
         return false;
     }
@@ -729,7 +729,7 @@ fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool) -> 
         out.push_str(field);
         out.push(':');
         match entries.iter().find(|(k, _)| *k == field.as_str()) {
-            Some((_, value)) => display_into_impl(out, *value, true, raise_on_unknown),
+            Some((_, value)) => display_into_at(out, *value, true, raise_on_unknown, depth),
             None => out.push_str("nil"),
         }
     }
@@ -1017,6 +1017,30 @@ pub unsafe extern "C" fn lkrt_dyn_eq(a: LkDyn, b: LkDyn) -> i64 {
 }
 
 pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
+    dyn_eq_at(a, b, 0)
+}
+
+/// [`dyn_eq_inner`], counting how deep it has gone.
+///
+/// The interpreter's equality refuses past [`MAX_VALUE_DEPTH`] with "comparison
+/// nested deeper than … levels; the values are cyclic or too deeply nested to
+/// compare". This had no bound at all, so a value 520 levels deep compared
+/// `true` compiled and stopped the program interpreted — the two back ends
+/// disagreed about whether the program has an answer.
+///
+/// Relying on the stack instead is not the same thing twice: where it lands
+/// depends on the build and on how much stack the caller had left, so the
+/// threshold is not a property of the language. The message it produced said so
+/// out loud — "a native binary is bounded by the real stack, not by
+/// LK_MAX_CALL_DEPTH" — which is true of LK recursion and was not what had
+/// happened here.
+fn dyn_eq_at(a: LkDyn, b: LkDyn, depth: u32) -> bool {
+    if depth >= MAX_VALUE_DEPTH {
+        crate::panic::raise_str(&alloc::format!(
+            "comparison nested deeper than {MAX_VALUE_DEPTH} levels; the values are cyclic or too deeply nested to compare"
+        ));
+    }
+    let depth = depth + 1;
     if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
         return match (x, y) {
             (Numeric::Int(x), Numeric::Int(y)) => x == y,
@@ -1042,7 +1066,10 @@ pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             }
         };
         let (xs, ys) = (keyed(a), keyed(b));
-        return xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)));
+        return xs.len() == ys.len()
+            && xs
+                .iter()
+                .all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_at(v, w, depth)));
     }
     // A window compares by *content*, against another window or against a
     // list: the VM says `xs.slice(0, 2) == [3, 1]`, because a window is a range
@@ -1065,7 +1092,7 @@ pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             }
         };
         let (xs, ys) = (boxed(a), boxed(b));
-        return xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, y)| dyn_eq_inner(x, y));
+        return xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, y)| dyn_eq_at(x, y, depth));
     }
     // Two lists compare element-wise across representations, for the same
     // reason the two map representations do: `[1]` written as a typed carrier
@@ -1073,7 +1100,7 @@ pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
     // happens to hold is not something it can see.
     if is_list_tag(a.tag) && is_list_tag(b.tag) {
         let (xs, ys) = (dyn_list_values(a), dyn_list_values(b));
-        return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(&x, &y)| dyn_eq_inner(x, y));
+        return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(&x, &y)| dyn_eq_at(x, y, depth));
     }
     if a.tag != b.tag {
         return false;
@@ -1101,7 +1128,10 @@ pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             let (xs, ys) = (dyn_map(a), dyn_map(b));
             // Structural, order-free (hash iteration order is not portable,
             // but key-lookup equality is).
-            xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)))
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_at(v, w, depth)))
         }
         // Both compare by *content*, the same rule their unboxed spellings
         // follow (`set.eq` is order-free; `bytes.eq` is byte-wise).
@@ -1163,6 +1193,22 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
 }
 
 fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool) {
+    display_into_at(out, v, quoted, raise_on_unknown, 0)
+}
+
+/// [`display_into_impl`], counting how deep it has gone.
+///
+/// The interpreter refuses to print past [`MAX_VALUE_DEPTH`] — "value nested
+/// deeper than … levels; it is cyclic or too deeply nested to print" — and this
+/// had no bound, so `println(deep)` printed the value compiled and stopped the
+/// program interpreted.
+fn display_into_at(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool, depth: u32) {
+    if depth >= MAX_VALUE_DEPTH {
+        crate::panic::raise_str(&alloc::format!(
+            "value nested deeper than {MAX_VALUE_DEPTH} levels; it is cyclic or too deeply nested to print"
+        ));
+    }
+    let depth = depth + 1;
     match v.tag {
         DYN_NIL => out.push_str("nil"),
         DYN_BOOL => out.push_str(if v.payload != 0 { "true" } else { "false" }),
@@ -1193,11 +1239,11 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                 if i > 0 {
                     out.push(',');
                 }
-                display_into_impl(out, e, true, raise_on_unknown);
+                display_into_at(out, e, true, raise_on_unknown, depth);
             }
             out.push(']');
         }
-        DYN_MAP if display_marked_struct(out, v, raise_on_unknown) => {}
+        DYN_MAP if display_marked_struct(out, v, raise_on_unknown, depth) => {}
         DYN_MAP => {
             // Quoted keys *and* values (`{"k":1,"s":"txt"}`) — a value in a
             // map is inside a container too, and the keys were already quoted.
@@ -1216,7 +1262,7 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                     }
                     out.push_str(&format!("{k:?}"));
                     out.push(':');
-                    display_into_impl(out, e, true, raise_on_unknown);
+                    display_into_at(out, e, true, raise_on_unknown, depth);
                 }
             }
             out.push('}');
