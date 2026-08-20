@@ -162,14 +162,30 @@ fn literal_for(ty: &Type) -> Option<String> {
 
 /// Whether `source` compiles with the bridge off and fallback forbidden.
 fn lowers_natively(source: &Path, exe: &Path) -> bool {
-    std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
         .args(["compile", source.to_str().expect("utf-8 path")])
         .arg("--output")
         .arg(exe.to_str().expect("utf-8 path"))
         .env("LK_AOT_NO_FALLBACK", "1")
         .env("LK_AOT_HYBRID", "0")
         .output()
-        .expect("run lk compile")
-        .status
-        .success()
+        .expect("run lk compile");
+    if out.status.success() {
+        return true;
+    }
+    // A failed compile is only an answer about *coverage* when the compiler
+    // says so. Everything else — a linker that could not write, a full disk —
+    // exits non-zero too, and reading that as "does not lower" reports a
+    // coverage regression for a machine problem. A full `/tmp` did exactly
+    // that here: the last two receivers in the table failed as a block, which
+    // is what a resource running out looks like and not what a lowering gap
+    // looks like.
+    let message = String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        message.contains("native AOT does not support this program yet"),
+        "`lk compile` failed for a reason that is not a lowering refusal, so this run says nothing \
+         about coverage:\n{}",
+        message.trim()
+    );
+    false
 }

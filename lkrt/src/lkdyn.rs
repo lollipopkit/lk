@@ -1575,6 +1575,35 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     }
 }
 
+/// `m.get(k, default)` where the key is boxed.
+///
+/// The key kinds split three ways, which is what makes this its own entry
+/// rather than `dyn.get` plus a nil test. A key kind a map cannot hold —
+/// a Float, a container — *raises*, and the interpreter prefixes that refusal
+/// with the call (`map.get() key: …`). A key that is a key but absent answers
+/// the default. And so does a key whose stored value is nil: the interpreter
+/// cannot tell those apart either, so `{"k": nil}.get("k", 9)` is `9`.
+///
+/// `m.has(k)` with a boxed key needs no entry of its own — `dyn.contains`'s
+/// map arm is already that question, and total the same way. `m.delete(k)`
+/// does need one and does not have it: removing a key of another kind means
+/// reaching a carrier by a key it is not indexed by, which is the general-key
+/// representation §62 describes.
+///
+/// # Safety
+/// `v` must be a live boxed map; `key` and `default` live `LkDyn` values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_get_or(v: LkDyn, key: LkDyn, default: LkDyn) -> LkDyn {
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    let key = crate::vm_mirror::key_from_dyn_in(key, "map.get() key");
+    match map_entries(v).get(&key).copied() {
+        Some(found) if found.tag != DYN_NIL => found,
+        _ => default,
+    }
+}
+
 /// `for pair in m` / `m.keys()` / `m.values()` / `m.has(k)` / `m.delete(k)` on
 /// a **boxed** map, dispatched on the tag.
 ///

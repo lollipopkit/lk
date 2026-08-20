@@ -562,7 +562,21 @@ pub(crate) fn empty_map_is_int_keyed(func: &FunctionData, start_pc: usize, dst_r
                     strlist_regs.remove(&instr.a());
                 }
                 regs.remove(&instr.a());
-                str_regs.remove(&instr.a());
+                // A string literal of **eight bytes or more** is a heap
+                // constant, not a `LoadString` — the inline/heap cut is at
+                // seven — so this is where a long one arrives, and clearing the
+                // mark for it made the key look like anything but a string.
+                // `let m = {}; m["averylongkey"] = 1;` guessed an integer-keyed
+                // map and the whole program fell back, while the same code with
+                // a seven-byte key lowered.
+                if matches!(
+                    func.consts.heap_values.get(instr.bx() as usize),
+                    Some(ConstHeapValueData::LongString(_))
+                ) {
+                    str_regs.insert(instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                }
             }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());

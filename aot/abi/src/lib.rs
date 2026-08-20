@@ -785,6 +785,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
             ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "map_get_or", lkrt_dyn_map_get_or, ReadsHost, [DynVal, DynVal, DynVal], DynVal);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
             // `Set`/`Bytes` in the boxed universe: without these two tags they
             // could not enter a mixed container, a struct field, or a bridged

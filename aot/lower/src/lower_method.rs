@@ -2204,10 +2204,30 @@ pub(crate) fn lower_method_dispatch(
         // Both are total: a value that cannot be a key is not one the map
         // holds, so the answer is `false` rather than a raise. Building a key
         // still refuses — `m.set(1.5, x)` says so.
+        //
+        // The `Maybe` carriers are here because that is what iterating a typed
+        // list hands you: the element read is bounds-checked, so `for w in
+        // words { m.has(w) }` — the ordinary way to write it — arrives as
+        // `maybe<str>` and matched none of these. Boxing preserves the absent
+        // case as nil, which the map answers `false` for, exactly as the
+        // interpreter does.
         (
-            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::Dyn,
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 | Ty::Dyn,
             "has",
-            [(key, kty @ (Ty::Dyn | Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil))],
+            [
+                (
+                    key,
+                    kty @ (Ty::Dyn
+                    | Ty::I64
+                    | Ty::F64
+                    | Ty::Bool
+                    | Ty::Nil
+                    | Ty::MaybeI64
+                    | Ty::MaybeF64
+                    | Ty::MaybeStr
+                    | Ty::MaybeBool),
+                ),
+            ],
         ) => {
             let map = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
             let boxed = to_dyn(ssa, insts, *key, *kty, pc)?;
@@ -3007,6 +3027,33 @@ pub(crate) fn lower_method_dispatch(
                 ty: scalar_ty,
             });
             (dst, scalar_ty)
+        }
+        // `m.get(k, default)` with a key this side cannot type, or one of
+        // another kind. The typed arm above needs the carrier's own key type;
+        // this reaches the runtime's keyed lookup, which is total for a key
+        // kind the map simply does not hold and raises — with the
+        // interpreter's own `map.get() key:` prefix — for a kind that is not a
+        // key at all. A stored nil answers the default, because the
+        // interpreter cannot tell it from an absent key either.
+        (
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 | Ty::Dyn,
+            "get",
+            [(key, kty), (fallback, fty)],
+        ) if !matches!(
+            (receiver_ty, kty),
+            (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, Ty::Str) | (Ty::MapI64I64 | Ty::MapI64F64, Ty::I64)
+        ) =>
+        {
+            let map = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed_key = to_dyn(ssa, insts, *key, *kty, pc)?;
+            let boxed_default = to_dyn(ssa, insts, *fallback, *fty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "map_get_or"),
+                args: vec![map, boxed_key, boxed_default],
+            });
+            (dst, Ty::Dyn)
         }
         // `m.set(key, value)` on string-keyed maps.
         //
