@@ -706,7 +706,7 @@ pub unsafe extern "C" fn lkrt_lkmap_obj_mark_checked(handle: *mut c_void, type_i
     // SAFETY: a marked handle is a live `Map<str, Dyn>`.
     let entries: Vec<(String, LkDyn)> = unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
         .iter()
-        .map(|(key, &value)| (key.clone(), value))
+        .map(|(key, &value)| (String::from(key.as_str()), value))
         .collect();
     for (key, value) in entries {
         check_declared_value(type_id, &key, value);
@@ -1503,7 +1503,10 @@ fn display_into_at(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: b
                     if i > 0 {
                         out.push(',');
                     }
-                    out.push_str(&format!("{k:?}"));
+                    // `k.as_str()`, not `k`: the key carries whether it is
+                    // borrowed from the program image, and `{:?}` on the key
+                    // itself printed that (`Owned("x")`) instead of the text.
+                    out.push_str(&format!("{:?}", k.as_str()));
                     out.push(':');
                     display_into_at(out, e, true, raise_on_unknown, depth);
                 }

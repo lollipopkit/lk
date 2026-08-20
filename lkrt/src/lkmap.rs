@@ -343,7 +343,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge_typed(
 /// A `Vec`, not a map: the order is the payload here, and a hash table would
 /// impose its own. See [`typed_map_keyed`] for the order-free counterpart that
 /// equality uses.
-fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(String, crate::lkdyn::LkDyn)> {
+fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(StrKey, crate::lkdyn::LkDyn)> {
     use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
     if handle.is_null() {
         return Vec::new();
@@ -353,15 +353,15 @@ fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(String, crate::lkdyn:
         match kind {
             KIND_STR_I64 => (*(handle as *mut StrI64Map))
                 .iter()
-                .map(|(k, v)| (k.clone(), lkrt_dyn_from_i64(*v)))
+                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_i64(*v)))
                 .collect(),
             KIND_STR_F64 => (*(handle as *mut StrF64Map))
                 .iter()
-                .map(|(k, v)| (k.clone(), lkrt_dyn_from_f64(*v)))
+                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_f64(*v)))
                 .collect(),
             KIND_STR_BOOL => (*(handle as *mut StrI64Map))
                 .iter()
-                .map(|(k, v)| (k.clone(), lkrt_dyn_from_bool(*v)))
+                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_bool(*v)))
                 .collect(),
             // An int-keyed overlay has no string keys to merge into a field map;
             // the VM refuses it before this can be reached.
@@ -809,7 +809,9 @@ pub(crate) fn str_dyn_from_ordered(entries: Vec<(RtKey, crate::lkdyn::LkDyn)>) -
     let mut out = StrDynMap::default();
     for (key, value) in entries {
         match &key {
-            RtKey::ShortStr(_) | RtKey::String(_) => out.insert(crate::vm_mirror::key_str(&key).to_string(), value),
+            RtKey::ShortStr(_) | RtKey::String(_) => {
+                out.insert(StrKey::Owned(crate::vm_mirror::key_str(&key).to_string()), value)
+            }
             _ => crate::panic::raise_str("map merge with a non-string key has no native carrier"),
         };
     }
@@ -1176,16 +1178,93 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_out(
 /// the interpreter said `P`, and `println` printed `{"p":1,"q":2}` for
 /// `P{p:1,q:2}`. Carrying it here also drops a hash lookup from every `typeof`,
 /// trait dispatch and declared-field check.
+/// A `str -> Dyn` map's key.
+///
+/// `Static` borrows a string constant out of the program image, which is what a
+/// struct's field names and a map literal's keys are: the lowering emits them as
+/// data symbols (`materialize_key` interns a global), so they outlive every map
+/// that uses them. Copying each one into an owned `String` per *instance* was
+/// an allocation and a free per field per construction — the frees alone were
+/// 42% of a loop building one struct.
+///
+/// `Owned` is for a key computed at run time, which must be owned because the
+/// string it came from can be released while the map lives.
+///
+/// Hashing and comparison go through `as_str`, so the two forms of the same text
+/// are one key — and the hash is `str`'s, byte for byte what `String` gave
+/// before, which is what keeps map iteration order identical (`vm_mirror`
+/// asserts that order against the VM).
+#[derive(Clone, Debug)]
+pub(crate) enum StrKey {
+    Static(&'static str),
+    Owned(String),
+}
+
+impl StrKey {
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Owned(text) => text.as_str(),
+        }
+    }
+}
+
+impl core::ops::Deref for StrKey {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<str> for StrKey {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl core::borrow::Borrow<str> for StrKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl core::hash::Hash for StrKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq for StrKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for StrKey {}
+
+impl From<&str> for StrKey {
+    fn from(text: &str) -> Self {
+        Self::Owned(String::from(text))
+    }
+}
+
+impl core::fmt::Display for StrKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct StrDynMap {
-    entries: FxMap<String, crate::lkdyn::LkDyn>,
+    entries: FxMap<StrKey, crate::lkdyn::LkDyn>,
     /// The declared struct's id, or `0` for an ordinary map. Written by
     /// `lkrt_lkmap_obj_mark` right after construction.
     pub(crate) type_id: i64,
 }
 
 impl core::ops::Deref for StrDynMap {
-    type Target = FxMap<String, crate::lkdyn::LkDyn>;
+    type Target = FxMap<StrKey, crate::lkdyn::LkDyn>;
 
     fn deref(&self) -> &Self::Target {
         &self.entries
@@ -1199,8 +1278,8 @@ impl core::ops::DerefMut for StrDynMap {
 }
 
 impl<'a> IntoIterator for &'a StrDynMap {
-    type Item = (&'a String, &'a crate::lkdyn::LkDyn);
-    type IntoIter = <&'a FxMap<String, crate::lkdyn::LkDyn> as IntoIterator>::IntoIter;
+    type Item = (&'a StrKey, &'a crate::lkdyn::LkDyn);
+    type IntoIter = <&'a FxMap<StrKey, crate::lkdyn::LkDyn> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         (&self.entries).into_iter()
@@ -1236,7 +1315,45 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const
         return;
     }
     let map = unsafe { &mut *(handle as *mut StrDynMap) };
-    set_str_key(map, unsafe { key_str(key) }, value);
+    let key = unsafe { key_str(key) };
+    // Replacing an existing key keeps the key that is already there, so a
+    // repeated store costs no allocation either way.
+    match map.entries.get_mut(key) {
+        Some(existing) => *existing = value,
+        None => {
+            map.entries.insert(StrKey::Owned(String::from(key)), value);
+        }
+    }
+}
+
+/// [`lkrt_lkmap_str_dyn_set`] for a key that is a **program constant** — a
+/// struct's field name, a map literal's key.
+///
+/// The key is borrowed rather than copied, which is an allocation and a later
+/// free saved per field per construction.
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_dyn_set`], and `key` must point at data that lives as
+/// long as the process: the lowering only passes interned globals here
+/// (`materialize_key`), which are symbols in the program image.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set_const(
+    handle: *mut c_void,
+    key: *const c_char,
+    value: crate::lkdyn::LkDyn,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let map = unsafe { &mut *(handle as *mut StrDynMap) };
+    // SAFETY: as documented — the caller guarantees program lifetime.
+    let key: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(key_str(key)) };
+    match map.entries.get_mut(key) {
+        Some(existing) => *existing = value,
+        None => {
+            map.entries.insert(StrKey::Static(key), value);
+        }
+    }
 }
 
 /// A missing key is `nil` — the Dyn carrier's Nil tag *is* the absent case,

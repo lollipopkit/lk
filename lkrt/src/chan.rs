@@ -79,7 +79,12 @@ pub(crate) fn own(v: LkDyn) -> OwnedVal {
             }
             // SAFETY: DYN_MAP payloads are live `StrDynMap` handles.
             let map = unsafe { &*(handle as *mut StrDynMap) };
-            OwnedVal::Map(map.iter().map(|(k, &val)| (k.clone(), own(val))).collect(), map.type_id)
+            OwnedVal::Map(
+                map.iter()
+                    .map(|(k, &val)| (String::from(k.as_str()), own(val)))
+                    .collect(),
+                map.type_id,
+            )
         }
         // A closure copies its captures the same way and shares its code.
         crate::lkdyn::DYN_CLOSURE => crate::lkclosure::own_closure(v),
@@ -127,7 +132,7 @@ pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
         OwnedVal::Map(entries, type_id) => {
             let mut map = StrDynMap::default();
             for (k, val) in entries {
-                map.insert(k.clone(), materialize(val));
+                map.insert(crate::lkmap::StrKey::Owned(k.clone()), materialize(val));
             }
             map.type_id = *type_id;
             LkDyn {

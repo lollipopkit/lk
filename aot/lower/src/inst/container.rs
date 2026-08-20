@@ -879,7 +879,9 @@ pub(super) fn lower(
                 }
                 insts.push(Inst::Call {
                     dst: None,
-                    callee: AbiRef::new("map_h", "str_dyn_set"),
+                    // The field name is an interned global, so the map borrows
+                    // it instead of copying it into every instance.
+                    callee: AbiRef::new("map_h", "str_dyn_set_const"),
                     args: vec![map, key_v, boxed],
                 });
             }

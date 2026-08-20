@@ -161,7 +161,7 @@ pub(crate) fn str_dyn_map_mirrored(pairs: Vec<(String, LkDyn)>) -> *mut c_void {
     }
     let mut out = StrDynMap::default();
     for (key, value) in &stage1 {
-        out.insert(key_str(key).to_owned(), *value);
+        out.insert(crate::lkmap::StrKey::Owned(key_str(key).to_owned()), *value);
     }
     arena_handle(out)
 }
@@ -295,7 +295,7 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_bool(handle: *mut c_void) -> 
 pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_dyn(handle: *mut c_void) -> *mut c_void {
     let mut out: StrDynMap = StrDynMap::default();
     for (key, value) in builder(handle) {
-        out.insert(key_str(key).to_owned(), *value);
+        out.insert(crate::lkmap::StrKey::Owned(key_str(key).to_owned()), *value);
     }
     arena_handle(out)
 }
