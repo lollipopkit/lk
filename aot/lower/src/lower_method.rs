@@ -274,7 +274,10 @@ fn builtin_impl_type_name(ty: Ty) -> Option<&'static str> {
         Ty::I64 => Some("Int"),
         Ty::F64 => Some("Float"),
         Ty::Str => Some("String"),
-        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => Some("List"),
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => Some("List"),
+        // A window's impl target is `Slice`, not `List`: the interpreter
+        // dispatches it as `Slice<Any>`.
+        Ty::SliceI64 => Some("Slice"),
         Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => Some("Map"),
         Ty::Set => Some("Set"),
         Ty::Bytes => Some("Bytes"),

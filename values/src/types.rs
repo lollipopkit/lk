@@ -738,6 +738,15 @@ impl Type {
             "List" => Some(Type::List(Box::new(Type::Any))),
             "Map" => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
             "Set" => Some(Type::Set(Box::new(Type::Any))),
+            // A window is `Slice<Elem>`, and a bare `Slice` is the same
+            // "whatever it holds" the three above mean. Without it `impl Slice`
+            // typed `self` as a `Slice` with no element at all, which unified
+            // with no receiver — so the block's methods could not be called,
+            // and the diagnostic said the window had no such method.
+            "Slice" => Some(Type::Generic {
+                name: "Slice".to_string(),
+                params: vec![Type::Any],
+            }),
             _ => {
                 // Assume it's a named custom type
                 if is_type_name(s) {

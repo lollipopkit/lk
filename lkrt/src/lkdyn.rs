@@ -778,7 +778,10 @@ fn dispatch_builtin_code(v: LkDyn) -> i64 {
         DYN_STR => 5,
         DYN_SET => 7,
         DYN_BYTES => 8,
-        DYN_SLICE => 6,
+        // A window is its own type for dispatch — the interpreter's
+        // `heap_dispatch_type` answers `Slice<Any>`, not `List<Any>` — so
+        // `impl Describe for List` must not catch one.
+        DYN_SLICE => 10,
         tag if is_list_tag(tag) => 6,
         tag if is_map_tag(tag) => 9,
         _ => 0,

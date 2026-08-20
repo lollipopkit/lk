@@ -47,6 +47,12 @@ impl Set {
     }
 }
 
+impl Slice {
+    fn window_len(self) -> Int {
+        return self.len();
+    }
+}
+
 println((5).doubled());
 println((3.0).halved());
 println("hi".shout());
@@ -54,6 +60,7 @@ println(true.flipped());
 println([1, 2, 3].second());
 println(["a", "b"].second());
 println([1.5, 2.5].second());
+println([1, 2, 3].slice(0, 2).window_len());
 println({ "k": 1 }.size());
 println(Set([1, 2]).is_any());
 

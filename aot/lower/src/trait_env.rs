@@ -88,6 +88,7 @@ fn dispatch_builtin_type_id(type_name: &str) -> Option<i64> {
         "Set" => 7,
         "Bytes" => 8,
         "Map" => 9,
+        "Slice" => 10,
         _ => return None,
     };
     Some(BASE + code)

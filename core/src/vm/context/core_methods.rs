@@ -2353,7 +2353,10 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
             params: vec![stream.inner_type.clone()],
         },
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
-        HeapValue::Slice(_) => Type::Named("Slice".to_string()),
+        // `Slice<Any>`, not a bare `Slice`: an impl target written `Slice` is
+        // parsed as `Slice<Any>` the way `List` is parsed as `List<Any>`, and
+        // this is the key the registration is looked up by.
+        HeapValue::Slice(_) => crate::typ::slice_of(Type::Any),
         HeapValue::Resource(resource) => Type::Named(resource.kind.to_string()),
         HeapValue::Object(object) => Type::Named(object.type_name().to_string()),
         HeapValue::UpvalCell(_) => Type::Any,

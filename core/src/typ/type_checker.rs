@@ -473,6 +473,17 @@ impl TypeChecker {
             Type::List(_) => Type::List(Box::new(Type::Any)),
             Type::Map(_, _) => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
             Type::Set(_) => Type::Set(Box::new(Type::Any)),
+            // A window is `Slice<Elem>` and its impl target is written `Slice`,
+            // so the element has to be dropped here as it is for the three
+            // above — otherwise a `Slice<Int>` receiver keys on `Slice<Int>`,
+            // finds nothing, and `impl Slice { … }` is a block whose methods
+            // cannot be called. Every other built-in container was normalized;
+            // this one was missed because its type is `Generic` rather than a
+            // variant of its own.
+            Type::Generic { name, params } if name == "Slice" && params.len() == 1 => Type::Generic {
+                name: name.clone(),
+                params: vec![Type::Any],
+            },
             other => other.clone(),
         }
     }

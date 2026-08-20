@@ -56,6 +56,14 @@ impl Describe for Set {
     }
 }
 
+// A window is its own type here, not a list: `[1, 2, 3].slice(0, 2)` picks
+// this impl and not the `List` one.
+impl Describe for Slice {
+    fn describe(self) -> String {
+        return "window of " + self.len();
+    }
+}
+
 impl Describe for Bytes {
     fn describe(self) -> String {
         return "bytes of " + self.len();
@@ -83,6 +91,7 @@ println(tell("hi"));
 println(tell([1, 2, 3]));
 println(tell({ "a": 1, "b": 2 }));
 println(tell(Set([1])));
+println(tell([1, 2, 3].slice(0, 2)));
 println(tell("ab".bytes()));
 println(tell(Point { x: 4 }));
 

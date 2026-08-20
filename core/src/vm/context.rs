@@ -708,15 +708,16 @@ fn impl_target_scope(target_type: &str, declaring: &crate::val::TypeScope) -> cr
         // as a plain `Named`: two modules may each declare their own `Wrapper`.
         // Lumping it in with the builtins made them share one coherence key and
         // conflict with each other.
-        // Two builtin types have no `Type` variant and so parse as `Named`:
-        // `Bytes` and `Slice`. Filing them with the declared types put
-        // `impl Bytes { … }` in the *module's* scope while a bytes value
-        // dispatches in the builtin one — `receiver_type_scope` has no declared
-        // type to read off a non-`Object` — so the impl was registered where
-        // nothing would look for it and `"ab".bytes().mine()` said "Bytes has
-        // no method 'mine'". They are the only two: every other builtin has a
-        // variant and takes the arm below.
-        Some(Type::Named(name)) if matches!(name.as_str(), "Bytes" | "Slice") => crate::val::TypeScope::builtin(),
+        // Two builtin types have no `Type` variant of their own: `Bytes` parses
+        // as `Named` and `Slice` as a `Generic`, so both were filed with the
+        // declared types. That put `impl Bytes { … }` in the *module's* scope
+        // while a bytes value dispatches in the builtin one —
+        // `receiver_type_scope` has no declared type to read off a non-`Object`
+        // — so the impl was registered where nothing would look for it and
+        // `"ab".bytes().mine()` said "Bytes has no method 'mine'". They are the
+        // only two; every other builtin has a variant and takes the last arm.
+        Some(Type::Named(name)) if name == "Bytes" => crate::val::TypeScope::builtin(),
+        Some(Type::Generic { ref name, .. }) if name == "Slice" => crate::val::TypeScope::builtin(),
         Some(Type::Named(_)) | Some(Type::Generic { .. }) | None => declaring.clone(),
         Some(_) => crate::val::TypeScope::builtin(),
     }
