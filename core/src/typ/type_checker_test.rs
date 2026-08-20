@@ -1408,6 +1408,61 @@ mod tests {
             "the slice keeps what the tuple held"
         );
     }
+    /// A tree at the bound is walked; past it is refused rather than aborting.
+    ///
+    /// The parser bounds its own recursion, and a chain is not recursion: it is
+    /// a loop that builds a tree as deep as the chain is long. So
+    /// `a + a + a…` and `x.f().f()…` parsed clean at any length and then
+    /// overflowed the stack in a later walk — `SIGABRT`, not a diagnostic, on
+    /// input the parser had accepted. The interpreter, the LSP and the browser
+    /// playground all read text they did not write.
+    ///
+    /// The accepting half is `one_expression_reuses_its_scratch_registers`,
+    /// which sums 300 terms through the real binary — that is what sets the
+    /// floor under [`MAX_TREE_DEPTH`]. This is the other end: past the bound is
+    /// an error message, at eight times the bound as much as at the bound, and
+    /// on a thread the size the front end runs on.
+    #[test]
+    fn a_tree_at_the_bound_is_walked_and_past_it_refused() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                // `check_program` panics on a parse error rather than
+                // returning it, so a refusal has to be read from the parser.
+                let parse = |src: &str| crate::syntax::parse_program_source(src, Default::default()).map(|_| ());
+                let bound = crate::ast::parser::MAX_TREE_DEPTH;
+
+                // Inside the bound is walked, not refused — the whole front
+                // end, on the stack it runs on.
+                let terms = "a".to_string() + &" + a".repeat(bound / 4);
+                check_program(&format!("let a = 1;\nlet v = {terms};\nprintln(v);\n"))
+                    .expect("a sum well inside the bound is checked");
+                let chain = ".chain([1])".repeat(bound / 8);
+                check_program(&format!("let xs = [1]{chain};\nprintln(xs.len());\n"))
+                    .expect("a chain well inside the bound is checked");
+
+                for over in [bound + 8, bound * 8] {
+                    // A sum, which every precedence level builds the same way.
+                    let terms = "a".to_string() + &" + a".repeat(over);
+                    let error = parse(&format!("let a = 1;\nlet v = {terms};\nprintln(v);\n"))
+                        .expect_err("past the bound is refused, not aborted")
+                        .to_string();
+                    assert!(error.contains("nesting too deep"), "{over} terms: {error}");
+
+                    // A postfix chain, which is the other loop — and the one
+                    // that took a 1700-link program down.
+                    let chain = ".chain([1])".repeat(over);
+                    let error = parse(&format!("let xs = [1]{chain};\nprintln(xs.len());\n"))
+                        .expect_err("past the bound is refused, not aborted")
+                        .to_string();
+                    assert!(error.contains("nesting too deep"), "{over} links: {error}");
+                }
+            })
+            .expect("spawn")
+            .join()
+            .expect("the front end must refuse rather than overflow");
+    }
+
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first

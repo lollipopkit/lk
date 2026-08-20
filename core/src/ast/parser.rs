@@ -26,6 +26,11 @@ pub struct Parser<'a> {
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
     /// nested instances don't shadow each other's synthesized locals.
     pub(super) desugar_counter: usize,
+    /// Live *left*-nesting charged by [`Parser::nest_left`] — chain links,
+    /// which cost tree depth but no parser stack. Kept apart from `depth`
+    /// because the two are bounded by different things, and summed because a
+    /// later walk recurses over both.
+    pub(crate) left: usize,
     /// Live nesting depth of `parse_expr`, bounded by [`MAX_PARSE_DEPTH`].
     ///
     /// Expression parsing is recursive descent, so nesting depth in the source
@@ -60,9 +65,40 @@ pub struct Parser<'a> {
 /// whole test process rather than fail if the cap is ever raised past it.
 #[cfg(feature = "std")]
 pub(crate) const MAX_PARSE_DEPTH: usize = 64;
+
+/// How deep the *tree* may get, counting chain links as well as recursion.
+///
+/// Recursion is bounded lower ([`MAX_PARSE_DEPTH`]) because each level is a
+/// parser stack frame. A chain link is not — it costs only tree depth — so it
+/// gets the larger allowance, and the two are summed because the walks that run
+/// afterwards recurse over the tree without caring which built it.
+///
+/// Measured: a left-nested tree overflows a debug build's stack between 700 and
+/// 900 levels, and the walks that run after the parser are what overflow — the
+/// parser itself only loops. `a_tree_at_the_bound_is_checked_not_aborted` runs
+/// a tree of exactly this depth through the whole front end on a libtest
+/// thread, which is the smallest stack any of this has to survive, so the value
+/// is pinned by measurement rather than by this comment.
+///
+/// The floor is real code: `one_expression_reuses_its_scratch_registers` sums
+/// 300 terms on purpose, so anything under about 320 refuses a program the
+/// repository itself contains. 400 clears that and keeps a two-fold margin
+/// against the measured overflow.
+///
+/// The stack it is measured against is a *main thread's* 8MiB, which is what
+/// the CLI, the LSP and the playground run the front end on. A 2MiB libtest
+/// thread takes fewer levels, so the test that pins this spawns a thread of the
+/// real size rather than pretending the default is the requirement.
+#[cfg(feature = "std")]
+pub(crate) const MAX_TREE_DEPTH: usize = 400;
+
 /// An MCU stack is kilobytes, not megabytes, so bare metal gets a tighter cap.
 #[cfg(not(feature = "std"))]
 pub(crate) const MAX_PARSE_DEPTH: usize = 16;
+
+/// The bare-metal twin of [`MAX_TREE_DEPTH`], scaled to that stack.
+#[cfg(not(feature = "std"))]
+pub(crate) const MAX_TREE_DEPTH: usize = 64;
 
 /// Nesting-budget exhaustion, kept distinguishable from an ordinary syntax
 /// error.
@@ -413,12 +449,42 @@ impl<'a> Parser<'a> {
         if self.depth >= MAX_PARSE_DEPTH {
             return Err(anyhow::Error::new(NestingTooDeep).context(self.err("Expression nesting too deep")));
         }
+        let entry = (self.depth, self.left);
         self.depth += 1;
-        // Decremented on the error path too — a bounded parse that fails must
-        // not leave the counter raised for whatever the caller tries next.
+        // Restored on the error path too — a bounded parse that fails must not
+        // leave the counter raised for whatever the caller tries next. And
+        // restored *absolutely* rather than by one, because `nest_left` charges
+        // this same counter without a matching decrement of its own: a chain's
+        // levels belong to the expression that contains it, and this is where
+        // that expression ends.
         let parsed = parse(self);
-        self.depth -= 1;
+        (self.depth, self.left) = entry;
         parsed
+    }
+
+    /// Charges one more level of *left* nesting against the same budget.
+    ///
+    /// `deeper` bounds recursive descent. These loops are the other half:
+    /// `a.b().c()…`, `a + b + c…` and every other precedence level are parsed
+    /// by iteration and build a tree exactly as deep as the chain is long, so
+    /// they spent nothing and were unbounded. A 1700-link method chain and a
+    /// 1200-term sum both parsed clean and then overflowed the stack in a later
+    /// walk — `SIGABRT`, not a diagnostic, on input the parser had accepted.
+    /// The interpreter, the LSP and the browser playground all parse text they
+    /// did not write.
+    ///
+    /// The budget is the *tree's* depth, so this shares `self.depth` rather
+    /// than keeping its own count: two chains at different precedence levels on
+    /// one path add up, and separate counters would each see only their half.
+    /// The language already says expression nesting is bounded at
+    /// [`MAX_PARSE_DEPTH`] — a chain is nesting, and this is what makes it
+    /// count.
+    fn nest_left(&mut self) -> Result<()> {
+        if self.depth + self.left >= MAX_TREE_DEPTH {
+            return Err(anyhow::Error::new(NestingTooDeep).context(self.err("Expression nesting too deep")));
+        }
+        self.left += 1;
+        Ok(())
     }
 
     /// A parser over a token sub-slice that continues *this* parser's depth
@@ -428,6 +494,7 @@ impl<'a> Parser<'a> {
     fn sub_parser<'b>(&self, tokens: &'b [Token]) -> Parser<'b> {
         let mut parser = Parser::new(tokens);
         parser.depth = self.depth;
+        parser.left = self.left;
         parser
     }
 
@@ -445,6 +512,7 @@ impl<'a> Parser<'a> {
     /// - `cond ? then : else` (ternary conditional)
     ///   Right-associative; precedence lower than nullish coalescing/or/and.
     fn parse_conditional(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_nullish_coalescing()?;
         if !self.eof() && self.tokens[self.pos] == Token::Question {
             // consume '?'
@@ -462,56 +530,67 @@ impl<'a> Parser<'a> {
             // parse else branch (allow nesting: right-associative)
             let else_expr = self.parse_expr()?;
 
+            self.nest_left()?;
             expr = Expr::Conditional(Box::new(expr), Box::new(then_expr), Box::new(else_expr));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr ?? expr` (nullish coalescing)
     fn parse_nullish_coalescing(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_or()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::NullishCoalescing => {
                     self.pos += 1;
                     let right = self.parse_or()?;
+                    self.nest_left()?;
                     expr = Expr::NullishCoalescing(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr || expr`
     fn parse_or(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_and()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::Or => {
                     self.pos += 1;
                     let right = self.parse_and()?;
+                    self.nest_left()?;
                     expr = Expr::Or(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// `expr && expr`
     fn parse_and(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_bit_or()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::And => {
                     self.pos += 1;
                     let right = self.parse_bit_or()?;
+                    self.nest_left()?;
                     expr = Expr::And(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -598,6 +677,7 @@ impl<'a> Parser<'a> {
     /// - `expr != expr`
     ///   ...
     fn parse_cmp(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_range()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -612,8 +692,10 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_range()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -671,6 +753,7 @@ impl<'a> Parser<'a> {
     /// - `expr + expr`
     /// - `expr - expr`
     fn parse_add_sub(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_mul_div()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -680,14 +763,17 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_mul_div()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr * expr`
     /// - `expr / expr`
     fn parse_mul_div(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_cast()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -698,8 +784,10 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_cast()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -757,12 +845,15 @@ impl<'a> Parser<'a> {
     /// the same precedence Rust gives it. Left-associative: `x as u8 as u32`
     /// is `(x as u8) as u32`, which is how a double conversion is written.
     fn parse_cast(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_unary()?;
         while !self.eof() && self.tokens[self.pos] == Token::As {
             self.pos += 1;
             let ty = self.parse_cast_target()?;
+            self.nest_left()?;
             expr = Expr::Cast(Box::new(expr), ty);
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -815,6 +906,7 @@ impl<'a> Parser<'a> {
     /// - `func_name(args)`
     /// - `TypeName { field: expr, ... }` (struct literal)
     fn parse_postfix(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_primary()?;
 
         loop {
@@ -877,8 +969,10 @@ impl<'a> Parser<'a> {
                     self.desugar_counter += 1;
                     expr = desugar_optional_call(id, *receiver, *field, pos_args);
                 } else if saw_named {
+                    self.nest_left()?;
                     expr = Expr::CallNamed(Box::new(expr), pos_args, named_args);
                 } else {
+                    self.nest_left()?;
                     expr = Expr::CallExpr(Box::new(expr), pos_args);
                 }
             } else if !self.eof() && self.tokens[self.pos] == Token::LBrace {
@@ -904,6 +998,7 @@ impl<'a> Parser<'a> {
                 }
 
                 let field = self.parse_field_name()?;
+                self.nest_left()?;
                 expr = Expr::Access(Box::new(expr), Box::new(field));
             } else if !self.eof() && self.tokens[self.pos] == Token::OptionalDot {
                 // Optional dot access (?.)
@@ -923,6 +1018,7 @@ impl<'a> Parser<'a> {
                 // constructs: the result is `T?` because one branch is nil,
                 // which is the rule every other maybe-missing branch follows.
                 // Optional access is only supported on regular expressions, not @ expressions
+                self.nest_left()?;
                 expr = Expr::OptionalAccess(Box::new(expr), Box::new(field));
             } else if !self.eof()
                 && self.tokens[self.pos] == Token::Question
@@ -961,6 +1057,7 @@ impl<'a> Parser<'a> {
                 }
                 self.pos += 1; // skip ']'
 
+                self.nest_left()?;
                 expr = Expr::OptionalAccess(Box::new(expr), index_expr);
             } else if !self.eof() && self.tokens[self.pos] == Token::LBracket {
                 // Bracket indexing: expr[expr]
@@ -996,6 +1093,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1; // skip ']'
 
                 // Build bracket Access
+                self.nest_left()?;
                 expr = Expr::Access(Box::new(expr), index_expr);
             } else if !self.eof() && self.tokens[self.pos] == Token::Not && !self.macro_invocation_follows(&expr) {
                 // Postfix `!` — Swift-style force unwrap, parse-time sugar:
@@ -1031,6 +1129,7 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.left = entry_left;
         Ok(expr)
     }
 

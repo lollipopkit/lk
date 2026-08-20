@@ -1763,8 +1763,10 @@ impl TypeChecker {
             // rather than building one, which is the line `m[k]` and
             // `m.set(k, v)` stay on the other side of.
             (Type::Map(key, value), _) => Ok(Type::Map(key, value)),
-            (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
-                "map removal requires a map or a key on the right",
+            // Only the right-map case is left: a map on the *left* takes
+            // anything, per the arm above.
+            (other, Type::Map(_, _)) => Err(Self::type_err(
+                "map removal requires a map on the left",
                 Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
                 Some(other),
                 Some(Expr::Bin(

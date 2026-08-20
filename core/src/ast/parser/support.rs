@@ -32,6 +32,7 @@ impl<'a> Parser<'a> {
             prefix_mode: false,
             desugar_counter: 0,
             depth: 0,
+            left: 0,
         }
     }
 
@@ -46,6 +47,7 @@ impl<'a> Parser<'a> {
             prefix_mode: false,
             desugar_counter: 0,
             depth: 0,
+            left: 0,
         }
     }
 
