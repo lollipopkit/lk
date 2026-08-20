@@ -208,13 +208,18 @@ pub(super) fn lower(
             for i in 0..count {
                 let key_reg = instr.b().wrapping_add((i * 2) as u8);
                 let val_reg = key_reg.wrapping_add(1);
+                // The written text of a constant key, so the map can borrow it
+                // out of the program image instead of copying it per instance.
+                // A computed key (`{name: 1}`) has none, and its string may be
+                // released while the map lives — that one is copied.
+                let const_key = ssa.const_str_at(key_reg, block, pc);
                 let key = ssa.read(key_reg, block, pc)?;
                 // Through `read_value`: a lambda written as a map's value
                 // becomes a closure here, the same way it does in a list
                 // literal. A *key* cannot be one — a callable is not a map key
                 // in this language — so that read stays as it was.
                 let val = read_value(ssa, insts, sig, funcs, cap_ctx, val_reg, block, pc)?;
-                entries.push((key, val));
+                entries.push((key, val, const_key));
             }
             if entries.is_empty() {
                 // `{}` written as a window rather than a constant. The constant
@@ -229,8 +234,8 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (handle, Ty::MapStrI64));
                 return Ok(());
             }
-            let all_keys = |t: Ty| entries.iter().all(|&((_, kt), _)| kt == t);
-            let all_vals = |t: Ty| entries.iter().all(|&(_, (_, vt))| vt == t);
+            let all_keys = |t: Ty| entries.iter().all(|((_, kt), _, _)| *kt == t);
+            let all_vals = |t: Ty| entries.iter().all(|(_, (_, vt), _)| *vt == t);
             let (finish_fn, map_ty) = if all_keys(Ty::Str) && all_vals(Ty::Bool) {
                 ("lit_finish_str_bool", Ty::MapStrBool)
             } else if all_keys(Ty::Str) && all_vals(Ty::I64) {
@@ -272,16 +277,31 @@ pub(super) fn lower(
                 _ => ("str_dyn_new", "str_dyn_set"),
             };
             let handle = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(handle),
-                callee: AbiRef::new("map_h", new_fn),
-                args: Vec::new(),
-            });
+            // The entry count is known here, so the map is built at its final
+            // size rather than rehashing as it fills.
+            if new_fn == "str_dyn_new" {
+                let capacity = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: capacity,
+                    value: Const::I64(entries.len() as i64),
+                });
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("map_h", "str_dyn_new_sized"),
+                    args: vec![capacity],
+                });
+            } else {
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("map_h", new_fn),
+                    args: Vec::new(),
+                });
+            }
             // A literal is an ordinary map. Only `NewObject` builds a struct,
             // and the two share the `MapStrDyn` carrier, so the collection
             // operations need this said out loud to answer at all.
             ssa.set_plain_map(handle);
-            for &((k, kt), (v, vt)) in &entries {
+            for ((k, kt), (v, vt), const_key) in entries.clone() {
                 let value = match map_ty {
                     Ty::MapStrDyn => to_dyn(ssa, insts, v, vt, pc)?,
                     // A `bool` carrier stores its members as `i64` (it shares
@@ -294,6 +314,12 @@ pub(super) fn lower(
                     _ => v,
                 };
                 let _ = (kt, vt);
+                // A constant key is re-materialised as the interned global and
+                // borrowed; anything else keeps the copying setter.
+                let (set_fn, k) = match (set_fn, const_key.as_deref()) {
+                    ("str_dyn_set", Some(text)) => ("str_dyn_set_const", materialize_key(ssa, insts, globals, text)),
+                    _ => (set_fn, k),
+                };
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("map_h", set_fn),
@@ -569,11 +595,26 @@ pub(super) fn lower(
                         _ => ("str_dyn_new", "str_dyn_set"),
                     };
                     let handle = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(handle),
-                        callee: AbiRef::new("map_h", new_fn),
-                        args: Vec::new(),
-                    });
+                    // A literal knows how many entries it has, so the map is
+                    // built at its final size instead of rehashing on the way.
+                    if new_fn == "str_dyn_new" {
+                        let capacity = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: capacity,
+                            value: Const::I64(entries.len() as i64),
+                        });
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("map_h", "str_dyn_new_sized"),
+                            args: vec![capacity],
+                        });
+                    } else {
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("map_h", new_fn),
+                            args: Vec::new(),
+                        });
+                    }
                     ssa.set_plain_map(handle);
                     for (k, v) in entries {
                         let key = match k {
@@ -594,6 +635,13 @@ pub(super) fn lower(
                             Ty::MapStrDyn => box_const_scalar(ssa, insts, globals, v),
                             _ => unboxed_const_scalar(ssa, insts, globals, v)
                                 .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?,
+                        };
+                        // A literal's string key is an interned global, so the
+                        // map borrows it rather than copying it per instance.
+                        let set_fn = if set_fn == "str_dyn_set" && !matches!(k, RuntimeMapKeyData::Int(_)) {
+                            "str_dyn_set_const"
+                        } else {
+                            set_fn
                         };
                         insts.push(Inst::Call {
                             dst: None,
