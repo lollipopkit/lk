@@ -2221,5 +2221,36 @@ LK 的 map 同时收 nil / Bool / Int / String,载体是原生这边的表示选
 `RtKey::ShortStr` / `RtKey::String` 逐位一致,包括 7 字节那道分界。那是一份会在
 沉默中漂移的副本 —— 正是 [[lkrt-mirror-drift]] 那一类。
 
-规模与此前记下的 `MapI64Dyn` 载体相当(15 个 ABI 入口 + 约 48 处内部引用)。
-要做就连同一个借用键的 hash 一致性测试一起做,不要只搬类型。
+### 第四次撞上它:hybrid 桥接会中止(2026-08-20)
+
+`lk-api` 的 `marshal_map` 把 VM 的 map 搬成原生装箱 map,遇到非字符串键
+`hybrid_die`。于是一个**桥接函数返回混合键 map** 的程序,在默认设置下直接中止:
+
+    fn put(m: Any, k: Any) { m[k] = 1; return m; }   // 这个函数降级不了 → 走桥
+    println(put({"a": 1}, 7));
+    → lk hybrid bridge: bridged return kind not yet marshalable: map with non-string key Int(7)
+
+写入那一侧已经靠"降级层拒绝"修掉了(见上),桥接这一侧修不掉:它是运行期性质,
+而桥的资格是编译期定的,返回值又是动态的 —— 不可能静态排除"会返回 map 的函数"。
+这条是**目前仅剩的错答**,而且默认可达。
+
+### 实际动手之后的清单(2026-08-20,已回滚)
+
+把 `StrDynMap` 换成 `FxMap<RtKey, LkDyn>` 试了一次,`cargo build -p lkrt` 报 26 处。
+比预估的"换个类型"大,因为**共享的辅助件按 `String` 写死**:
+
+- `set_str_key<V>(map: &mut FxMap<String, V>, ...)` —— 同时服务 str_i64 / str_f64 /
+  str_bool / str_dyn 四个载体,装箱那个要拆出自己的 setter。
+- `map_iter_family!` 宏 —— 四次实例化共用,里面 `boxed_str_key(k: &String)`,
+  装箱载体需要按键种装箱的版本。
+- `boxed_map_keyed` / `str_dyn_map_mirrored` 的两段式镜像,以及 `chan.rs` 四处、
+  `vm_mirror.rs` 两处。
+- 显示要按键种渲染(`{nil:1,true:2}`),不能再直接打字符串。
+
+**先量再改**:换类型之后 `map.get(text)` 变成 `map.get(&str_key(text))`,超过 7 字节
+的键每次查找会构造 `RtKey::String(String)`。要不要做借用键(`Equivalent<RtKey> for
+&str`,附 hash 一致性测试)**应该由性能门禁回答**,而不是预先假设 —— 结构体字段读取
+走的是 `str_dyn_get_at` 的按位置路径,根本不查哈希,所以这条分配可能无关紧要。
+先做朴素版本、跑 `bench/run_workload_bench.sh`,再决定要不要那份镜像。
+
+规模与此前记下的 `MapI64Dyn` 载体相当。
