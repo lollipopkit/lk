@@ -245,6 +245,67 @@ pub(crate) fn lower_method_call_k(
 ///    return via `dyn_rets` — both retriable discoveries).
 ///
 /// Returns `Ok(None)` when neither shape applies (generic dispatch decides).
+/// The `impl` registered for a built-in type constructor, by base name.
+///
+/// The table is keyed by the impl target's *type text*, and a container's is
+/// written out: `impl List` is recorded as `List<Any>`, `impl Map` as
+/// `Map<Any, Any>`. Matching the base name is exact rather than a guess,
+/// because the language refuses an impl that names an element type — "`List<Int>`
+/// is not distinguishable from another element type at run time — write `List`"
+/// — so a constructor has at most one impl block's worth of methods.
+///
+/// Linear, like `TraitEnv::impl_owner` beside it and for the same reason: impl
+/// blocks are counted in the dozens.
+fn builtin_impl_for<'a>(sig: &'a SigInfer, type_name: &str, method: &str) -> Option<&'a u32> {
+    sig.traits.impls.iter().find_map(|((target, name), fidx)| {
+        let base = target.split('<').next().unwrap_or(target);
+        (base == type_name && name == method).then_some(fidx)
+    })
+}
+
+/// The language's name for a built-in receiver, as an `impl` block spells it.
+///
+/// `None` for the carriers that are not a type a program can write an `impl`
+/// for — a `Maybe`, a cell, a boxed `Dyn` whose real type is only known at run
+/// time (that one dispatches through `traits.methods` instead).
+fn builtin_impl_type_name(ty: Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Bool => Some("Bool"),
+        Ty::I64 => Some("Int"),
+        Ty::F64 => Some("Float"),
+        Ty::Str => Some("String"),
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => Some("List"),
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => Some("Map"),
+        Ty::Set => Some("Set"),
+        Ty::Bytes => Some("Bytes"),
+        // `MapStrDyn` is the struct carrier as well as a map, and the struct
+        // arm above claims it first.
+        _ => None,
+    }
+}
+
+/// Whether the built-in method table declares `name` for this receiver.
+///
+/// The precedence check for the arm above, asked of `builtin_method_arity` —
+/// the same declaration `lk check` reads — so a method added to the language
+/// cannot be shadowed here by an `impl` that predates it.
+fn builtin_declares_method(ty: Ty, name: &str) -> bool {
+    use lk_core::typ::BuiltinReceiverKind;
+    let kind = match ty {
+        Ty::Str => BuiltinReceiverKind::Str,
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => BuiltinReceiverKind::List,
+        Ty::SliceI64 => BuiltinReceiverKind::Slice,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
+            BuiltinReceiverKind::Map
+        }
+        Ty::Set => BuiltinReceiverKind::Set,
+        Ty::Bytes => BuiltinReceiverKind::Bytes,
+        // A scalar has no built-in method surface at all, so nothing to shadow.
+        _ => return false,
+    };
+    lk_core::typ::builtin_method_arity(kind, name).is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_trait_method_k(
     ssa: &mut Ssa,
@@ -260,6 +321,38 @@ pub(crate) fn lower_trait_method_k(
     block: usize,
     pc: usize,
 ) -> Result<Option<(ValueId, Ty)>, Unsupported> {
+    // `impl Int { fn dbl(self) … }` — a user method on a *built-in* receiver.
+    // The struct case below has always dispatched; this one had no path at all,
+    // so `(5).dbl()`, `"a".shout()` and `[1,2].second()` each dropped their
+    // whole module to the VM.
+    //
+    // Only when the built-in table declares nothing by that name for this
+    // receiver, because that is the interpreter's precedence: `impl List { fn
+    // len(self) -> Int { return 99; } }` does not shadow `len`, and
+    // `[1, 2].len()` is 2. Asked of the same table the checker asks, rather
+    // than of a list kept here.
+    if let Some(type_name) = builtin_impl_type_name(receiver_ty)
+        && !builtin_declares_method(receiver_ty, name)
+        && let Some(&fidx) = builtin_impl_for(sig, type_name, name)
+    {
+        let mut call_args = Vec::with_capacity(argc + 1);
+        call_args.push((receiver, receiver_ty));
+        for i in 0..argc {
+            call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            call_args,
+            Opcode::CallMethodK,
+            pc,
+        )
+        .map(Some);
+    }
     if receiver_ty == Ty::MapStrDyn
         && let Some(type_name) = ssa.struct_types.get(&receiver).cloned()
         && let Some(&fidx) = sig.traits.impls.get(&(type_name, name.to_string()))
@@ -1154,6 +1247,24 @@ pub(crate) fn lower_method_dispatch(
         // too, and unboxing one to a list aborts. `len_of` is the dispatch
         // `xs.len()` already takes on a boxed receiver, so the two spellings
         // answer through one function.
+        // `xs.len()` written as a *method call*. Normally it is the fused `Len`
+        // opcode and never reaches this table — but the compiler cannot use the
+        // opcode when the module has a user `impl` that could shadow the name,
+        // and then every carrier without an arm here fell back. Six had one;
+        // the typed lists and the typed maps did not.
+        //
+        // The same `container_len_abi` row `Len` and `is_empty` read. `Str` is
+        // not in it (a string's length is its count of Unicode scalar values)
+        // and keeps its own arm below.
+        (_, "len", []) if container_len_abi(receiver_ty).is_some() => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: container_len_abi(receiver_ty).expect("guarded by the arm"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
         //
         // The carrier list is `container_len_abi`'s, shared with the `Len`
         // opcode. It used to be a second table naming eight of them, and the
@@ -1470,15 +1581,6 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver, *start, *end],
             });
             (dst, Ty::SliceI64)
-        }
-        (Ty::SliceI64, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("slice_h", "i64_len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
         }
         // The copy, asked for by name — the operation `.slice()` used to
         // perform silently.
@@ -1811,15 +1913,6 @@ pub(crate) fn lower_method_dispatch(
         // Set methods (VM `core_methods` set family): membership/mutation
         // return Bool, `len` Int, `clear` Nil. Elements box to Dyn — a Float
         // aborts inside lkrt (the VM's loud "cannot be used as a key").
-        (Ty::Set, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("set", "len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
         // Only the spellings the language actually has. This accepted `has` and
         // `remove` too, and the type checker rejects both — so those two names
         // could never reach a lowering, while a reader here would conclude
@@ -2309,24 +2402,6 @@ pub(crate) fn lower_method_dispatch(
             (b, Ty::Bool)
         }
         // `m.len()` / `xs.len()` on Dyn containers (method form of `Len`).
-        (Ty::MapStrDyn, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("map_h", "str_dyn_len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
-        (Ty::ListDyn, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
         // Methods whose VM result is a mixed list regardless of the receiver
         // (chunk/enumerate/zip pairs are nested; unique/flatten come back
         // `TypedList::Mixed`): the receiver converts to a dyn-list handle up
@@ -2814,15 +2889,6 @@ pub(crate) fn lower_method_dispatch(
             (dst, Ty::Bytes)
         }
         // The `bytes` module's members are also reachable as methods.
-        (Ty::Bytes, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("bytes_h", "len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
         (Ty::Bytes, "is_empty", []) => {
             // Through `len == 0`, like `Set::is_empty`: the ABI answers an `i64`
             // and a `Bool` operand has to be an i1.
