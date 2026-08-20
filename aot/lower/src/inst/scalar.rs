@@ -1000,6 +1000,15 @@ pub(super) fn lower(
             // errors, so they reject.
             let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
             let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+            // A channel or a task is an `i64` id here and a `Channel` or `Task`
+            // to the interpreter, so comparing one against anything but its own
+            // kind compares the *representation*: `chan(1) == 1` was true
+            // compiled and false interpreted. Comparing two disguised values is
+            // the identity question both sides answer alike, so it stays.
+            // See `Ssa::disguised_values`.
+            if ssa.disguised_values.contains(&lv_raw) != ssa.disguised_values.contains(&rv_raw) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
             if lty_raw == Ty::Nil || rty_raw == Ty::Nil {
                 let cop = cmp_op(op);
                 if !matches!(cop, CmpOp::Eq | CmpOp::Ne) {

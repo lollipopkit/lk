@@ -226,6 +226,8 @@ pub(crate) fn lower_builtin_call(
                 callee: AbiRef::new("chan", "new"),
                 args: vec![cap],
             });
+            // An `i64` id where the interpreter has a `Channel`.
+            ssa.disguised_values.insert(dst);
             ssa.write(base, block, (dst, Ty::I64));
             return Ok(());
         }
@@ -731,8 +733,8 @@ pub(crate) fn lower_builtin_call(
             }
             let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
             // A materialized stream is a list here and a `Stream` there, and
-            // this is the question that asks. See `Ssa::stream_values`.
-            if ssa.stream_values.contains(&v) {
+            // this is the question that asks. See `Ssa::disguised_values`.
+            if ssa.disguised_values.contains(&v) {
                 return Err(Unsupported::TypeMismatch { pc });
             }
             // Every proven type, not just the scalars: `typeof` asks what the

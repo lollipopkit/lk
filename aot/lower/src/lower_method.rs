@@ -337,7 +337,7 @@ pub(crate) fn lower_trait_method_k(
     // than of a list kept here.
     // A materialized stream is a list here, so a built-in impl lookup would
     // find `impl … for List` where the interpreter finds `impl … for Stream`.
-    if ssa.stream_values.contains(&receiver) {
+    if ssa.disguised_values.contains(&receiver) {
         return Err(Unsupported::TypeMismatch { pc });
     }
     if let Some(type_name) = builtin_impl_type_name(receiver_ty)

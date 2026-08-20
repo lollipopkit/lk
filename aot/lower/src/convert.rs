@@ -324,8 +324,8 @@ pub(crate) fn to_display_str(
     // A materialized stream is a list this side and a `Stream` to the
     // interpreter, which writes `<Stream>`. Displaying one would answer the
     // list, so the program declines to lower instead. See
-    // `Ssa::stream_values`.
-    if ssa.stream_values.contains(&v) {
+    // `Ssa::disguised_values`.
+    if ssa.disguised_values.contains(&v) {
         return Err(Unsupported::TypeMismatch { pc });
     }
     match ty {

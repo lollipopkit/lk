@@ -117,6 +117,8 @@ pub(crate) fn lower_spawn(
         callee: AbiRef::new("rt", spawn_fn),
         args,
     });
+    // An `i64` id where the interpreter has a `Task`.
+    ssa.disguised_values.insert(dst);
     ssa.write(base, block, (dst, Ty::I64));
     Ok(())
 }

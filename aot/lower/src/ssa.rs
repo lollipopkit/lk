@@ -239,14 +239,32 @@ pub(crate) struct Ssa {
     /// (`convert::read_typed_scalar`), so a lambda pushed into a guessed `[]`
     /// widens the literal instead of compiling to an unbox that raises on the
     /// one value the list was built to hold.
-    /// Values that are a **materialized stream**: a list this side built where
-    /// the interpreter has a `Stream`.
+    /// Values this side represents as something the interpreter would not
+    /// agree with: a materialized stream (a list where the interpreter has a
+    /// `Stream`), and a channel or task handle (an `i64` id where the
+    /// interpreter has a `Channel` or a `Task`).
     ///
-    /// The materialization is sound only where the difference cannot be seen,
-    /// and three things can see it — `typeof` answers `Stream`, display writes
-    /// `<Stream>`, and a trait dispatches to `impl … for Stream`. Each of those
-    /// consults this and declines to lower rather than answering as a list.
-    pub(crate) stream_values: std::collections::HashSet<ValueId>,
+    /// Each substitution is sound only where the difference cannot be seen, and
+    /// four things can see it — `typeof` answers the representation, display
+    /// writes it, `==` compares it (a channel was *equal to the integer 1*),
+    /// and a trait dispatches on it. Escaping counts too: boxing, crossing to a
+    /// typed parameter and returning all drop the mark and hand the bare
+    /// representation to code that would answer for it.
+    ///
+    /// The first three decline to lower rather than answering.
+    ///
+    /// *Escaping* is guarded for streams only, in [`Self::escape_is_visible`].
+    /// It is the same hazard for a handle — a channel in a list, printed, shows
+    /// the id — but the cost is not the same: a channel is passed to functions
+    /// and put in `select`'s lists constantly, and guarding that took two
+    /// examples out of native lowering, while for a stream it took nothing.
+    /// The residual is recorded in `docs/aot/aot-gaps-and-lkrt.md`; closing it
+    /// means giving a handle a type of its own rather than tracking a value.
+    pub(crate) disguised_values: std::collections::HashSet<ValueId>,
+    /// The subset of [`Self::disguised_values`] whose *escape* is guarded too:
+    /// boxing, crossing to a typed parameter, or being returned all drop the
+    /// mark and hand the bare representation to code that would answer for it.
+    pub(crate) escape_is_visible: std::collections::HashSet<ValueId>,
     pub(crate) closure_values: std::collections::HashSet<ValueId>,
     /// A closure value with an *empty* environment → the function it names.
     ///
@@ -361,7 +379,8 @@ impl Ssa {
             dyn_loop_slots: std::collections::HashSet::new(),
             no_provenance_slots: std::collections::HashSet::new(),
             dyn_literal_pcs: std::collections::HashSet::new(),
-            stream_values: std::collections::HashSet::new(),
+            disguised_values: std::collections::HashSet::new(),
+            escape_is_visible: std::collections::HashSet::new(),
             closure_values: std::collections::HashSet::new(),
             closure_fidx: std::collections::HashMap::new(),
             literal_carrier: std::collections::HashMap::new(),

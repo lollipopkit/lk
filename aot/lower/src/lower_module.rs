@@ -34,11 +34,18 @@ pub(crate) fn lower_module_call(
                 if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
                     return Err(Unsupported::TypeMismatch { pc });
                 }
-                // `collect` answers a List on both sides; `from_list` answers a
-                // Stream, and only that one carries the mark.
-                if name == "from_list" {
-                    ssa.stream_values.insert(v);
-                }
+                // Neither one is marked, and both would want to be: the
+                // *value* passes straight through, so a mark on it is a mark on
+                // the caller's list as well. `stream.from_list(xs)` shares its
+                // SSA value with `xs`, so marking it would refuse `println(xs)`
+                // — and `stream.collect(s)` shares one with `s`, so the mark
+                // would ride onto a list that legitimately *is* a list and
+                // refuse comparing it.
+                //
+                // Marking a pass-through needs a value of its own to mark, and
+                // MIR has no copy that would make one. `range` constructs a
+                // fresh handle and is marked; `from_list` is the residual, and
+                // `docs/aot/aot-gaps-and-lkrt.md` records it.
                 ssa.write(base, block, (v, ty));
                 return Ok(());
             }
@@ -81,7 +88,8 @@ pub(crate) fn lower_module_call(
                     callee: AbiRef::new("list_h", "i64_from_range"),
                     args: vec![start, end, one, exclusive],
                 });
-                ssa.stream_values.insert(handle);
+                ssa.disguised_values.insert(handle);
+                ssa.escape_is_visible.insert(handle);
                 ssa.write(base, block, (handle, Ty::ListI64));
                 return Ok(());
             }

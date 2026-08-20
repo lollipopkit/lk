@@ -2254,3 +2254,45 @@ LK 的 map 同时收 nil / Bool / Int / String,载体是原生这边的表示选
 先做朴素版本、跑 `bench/run_workload_bench.sh`,再决定要不要那份镜像。
 
 规模与此前记下的 `MapI64Dyn` 载体相当。
+
+## §63 原生这边换了表示的值,有四种办法被看出来(2026-08-20)
+
+降级层有两处把值换成别的东西:**流物化成列表**(有限来源 + 纯 lambda),
+**channel / task 表示成 `i64` 句柄**。两处的理由都是"看不出区别"。四种办法能看出来:
+
+| 办法 | 解释器 | 换表示之后 |
+| --- | --- | --- |
+| `typeof(v)` | `Stream` / `Channel` | `List` / `Int` |
+| `println(v)` | `<Stream>` / `<Channel>` | `[0,1,2]` / `1` |
+| `v == 1` | `false` | **`true`** |
+| trait 分派 | `impl … for Stream` | `impl … for List` |
+
+第三行是最糟的:**一个 channel 等于整数 1**。
+
+前三种已经拦住(`Ssa::disguised_values`):`typeof`、显示、以及"一边有标记另一边没有"
+的比较,都拒绝降级而不是照表示回答。trait 分派同此。
+
+### 逃逸只对流拦
+
+装箱进容器、跨到类型化参数、被返回 —— 这三种都会把标记丢掉,把裸表示交给会照它
+回答的代码。对流拦了(`Ssa::escape_is_visible`),实测代价为零。对句柄**没拦**:
+channel 天天被传进函数、被塞进 `select` 的列表,拦下来当场让两个例子不再原生化
+(`concurrency_demo.lk`、`select.lk`)。
+
+**残留**:`println([c])` 打印的是 `[1]` 而不是 `[<Channel>]`。
+
+### `stream.from_list` 标不了
+
+`from_list` 和 `collect` 都是**值直通**:结果与入参共用同一个 SSA 值。所以标记
+`from_list` 的结果等于同时标记了调用方的那个列表 —— `println(xs)` 会被拒;标记
+`collect` 的结果等于标记了一个**确实是列表**的东西 —— `collected == [...]` 会被拒。
+两个都试过,两个都当场把 `stream_demo.lk` 或它的比较打掉。
+
+标记一个直通值需要它有自己的值可标,而 MIR 没有 copy 指令能造一个。
+`stream.range` 构造新句柄,标了。
+
+### 正解
+
+两处都是"表示不同"而不是"跟踪不到位":给 channel / task 一个自己的 `Ty`
+(而不是 `Ty::I64`),给流一个自己的载体,那么 `typeof`、显示、`==` 自然走不同的臂,
+逃逸也不再丢信息。规模与 §62 相当。

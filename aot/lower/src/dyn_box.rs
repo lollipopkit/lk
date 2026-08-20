@@ -211,8 +211,8 @@ pub(crate) fn coerce_arg(
     // box, and the mark does not cross with it — the callee sees a plain list
     // and would answer as one. Carrying the fact across the boundary is what
     // `try_body_closure_inputs` does for a closure; a stream is rare enough
-    // that declining is the better trade. See `Ssa::stream_values`.
-    if ssa.stream_values.contains(&v) {
+    // that declining is the better trade. See `Ssa::disguised_values`.
+    if ssa.escape_is_visible.contains(&v) {
         return Err(Unsupported::TypeMismatch { pc });
     }
     Ok(v)
@@ -245,8 +245,8 @@ pub(crate) fn to_dyn(
     // does not survive the box — the value on the other side is a plain list —
     // and everything that could see the difference is on the other side. So the
     // program declines to lower rather than answering as a list. See
-    // `Ssa::stream_values`.
-    if ssa.stream_values.contains(&v) {
+    // `Ssa::disguised_values`.
+    if ssa.escape_is_visible.contains(&v) {
         return Err(Unsupported::TypeMismatch { pc });
     }
     let from = match ty {

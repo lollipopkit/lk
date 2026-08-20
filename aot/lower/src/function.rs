@@ -1304,8 +1304,8 @@ pub(crate) fn lower_function(
                 // *after* the read the return already performs — `Ssa::read`
                 // creates phis on demand, so asking it early is not a question
                 // but a change, and one that left a phi without an operand for
-                // every predecessor. See `Ssa::stream_values`.
-                if ssa.stream_values.contains(&v) {
+                // every predecessor. See `Ssa::disguised_values`.
+                if ssa.escape_is_visible.contains(&v) {
                     return Err(Unsupported::TypeMismatch { pc: start });
                 }
                 // A try body's `return` is the enclosing function's, not this
