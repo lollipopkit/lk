@@ -762,6 +762,13 @@ pub(super) fn lower(
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
+                    // A struct instance rides the `MapStrDyn` carrier and is
+                    // not iterable — the VM raises `ToIter target object is not
+                    // iterable`. Iterating one handed the loop its fields as
+                    // pairs.
+                    if ty == Ty::MapStrDyn && !ssa.is_plain_map(v) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
                     let iter_fn = match ty {
                         Ty::MapStrI64 => "str_i64_iter_pairs",
                         Ty::MapStrF64 => "str_f64_iter_pairs",

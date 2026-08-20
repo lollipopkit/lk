@@ -1896,6 +1896,11 @@ unsafe fn dyn_map_pair_column(v: LkDyn, column: usize) -> *mut c_void {
 /// The payload must be a live handle of the carrier its tag names.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
+    // A struct instance is not iterable, and its carrier is a map, which is.
+    // The VM's wording names the object rather than a method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("ToIter target object is not iterable: {name:?}"));
+    }
     if is_map_tag(v.tag) {
         return unsafe { lkrt_dyn_map_pairs(v) };
     }

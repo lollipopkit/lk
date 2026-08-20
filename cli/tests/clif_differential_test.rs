@@ -343,6 +343,13 @@ fn a_struct_is_not_a_map_and_the_collection_methods_say_so() {
                  println(has(p));\n\
                  println(empty({\"p\": 1}));\n",
             ),
+            new(
+                "iterating_a_struct",
+                "struct P { p: Int, q: Int }\n\
+                 fn f(v: Any) -> String { try { let s = \"\"; for k in v { s = s + k; } return \"ok \" + s; } catch e { return \"E \" + e; } }\n\
+                 println(f(P { p: 1, q: 2 }));\n\
+                 println(f({\"p\": 1}));\n",
+            ),
         ],
         NativePath::MayDegrade,
     );
@@ -366,6 +373,15 @@ fn a_map_that_is_one_still_lowers_its_collection_methods() {
                  println(empty(m));\n\
                  println(has(m));\n\
                  println(m.keys());\n",
+            ),
+            new(
+                "iterating_a_map",
+                "let m = {\"a\": 1, \"b\": 2};\n\
+                 let keys = \"\";\n\
+                 for pair in m {\n\
+                   keys = keys + pair[0];\n\
+                 }\n\
+                 println(keys);\n",
             ),
             new(
                 "across_a_loop_header",

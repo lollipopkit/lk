@@ -2347,6 +2347,12 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 `PlainMap` 不一致就归零),跨函数的 `param_structs` / `ret_structs`,跨 `try` 区域的
 `try_body_struct_inputs`。`PlainMap` 目前在三个 map 字面量构造点写入。
 
+把剩下的观察点按同一张表走了一遍——相等、显示、`typeof`、下标读写、`get`、
+`values`、`clear`、`delete`、装进列表——只多出一处:`for k in v` 在原生这边
+按 map 迭代,把字段当成 pair 发给循环,解释器那边是
+`ToIter target object is not iterable: "P"`。两层各补一处:`ToIter` 的
+`MapStrDyn` 分支要 `PlainMap` 证明,`dyn.to_iter` 读类型标记。
+
 覆盖率没有掉:门禁 71/71,VM/原生扫描 73 一致 1 允许分歧,300 例模糊测试通过。
 `a_map_that_is_one_still_lowers_its_collection_methods` 钉住反面——参数位置和
 循环头上的普通 map 仍然全原生下降。
