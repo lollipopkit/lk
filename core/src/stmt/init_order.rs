@@ -330,11 +330,11 @@ fn walk_callee(callee: &Expr, depth: Depth, out: &mut Facts) {
         out.calls.insert(name.clone());
         return;
     }
-    // `a.m(…)` is `CallExpr(Access(a, m), …)`, and `m` is a `Var` or a string
-    // literal (`vm::compiler::call::method_name` reads exactly these two).
+    // `a.m(…)` is `CallExpr(Access(a, m), …)`, and `m` is a string literal —
+    // that is what a member is. A bare `Var` is a bracket index (`a[m](…)`),
+    // which calls whatever the element holds and names no method.
     if let Expr::Access(target, field) | Expr::OptionalAccess(target, field) = callee {
         let name = match &**field {
-            Expr::Var(name) => Some(name.clone()),
             Expr::Literal(value) => value.as_str().map(alloc::string::ToString::to_string),
             _ => None,
         };

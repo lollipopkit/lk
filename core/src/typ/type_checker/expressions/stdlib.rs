@@ -353,9 +353,12 @@ fn access_segments(expr: &Expr) -> Option<Vec<&str>> {
     }
 }
 
+/// The name a path *segment* spells. Every caller passes the member half of an
+/// `Expr::Access`, and a member is a string literal — `math.floor` is
+/// `Access(Var("math"), Literal("floor"))`. A bare `Var` there is a bracket
+/// index, so `m[floor]` is not the path `m.floor`.
 pub(super) fn segment_name(expr: &Expr) -> Option<&str> {
     match expr {
-        Expr::Var(name) => Some(name.as_str()),
         Expr::Literal(value) => value.as_str(),
         _ => None,
     }
