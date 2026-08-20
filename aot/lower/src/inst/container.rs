@@ -1211,11 +1211,43 @@ pub(super) fn lower(
                 Some(_) => Ty::Str,
                 None => ssa.read(instr.c(), block, pc).map(|(_, t)| t).unwrap_or(Ty::Dyn),
             };
+            //
+            // A `Float` is not one of them, and it read like one for as long as
+            // this fold has existed. `nil`, `true` and an Int are all *keys* —
+            // a map simply does not have that one, so the read is a miss. A
+            // Float is not a key at all, and the interpreter says so out loud
+            // for a read exactly as it does for a store ("Float cannot be a map
+            // key or set member"). Folding it to nil answered where the
+            // interpreter raised, on both map key kinds.
+            let map_ty = matches!(
+                list_ty,
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+            );
+            if map_ty && key_ty == Ty::F64 {
+                let msg = materialize_key(ssa, insts, globals, "Float cannot be a map key or set member");
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "raise_msg"),
+                    args: vec![msg],
+                });
+                // A read has a destination and the store path does not, so the
+                // raise alone would leave this register undefined for whatever
+                // reads it next. `raise_msg` does not return, so the value is
+                // never observed — it only has to exist.
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_nil"),
+                    args: vec![],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             let map_key_mismatch = match list_ty {
                 Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
-                    matches!(key_ty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                    matches!(key_ty, Ty::I64 | Ty::Bool | Ty::Nil)
                 }
-                Ty::MapI64I64 | Ty::MapI64F64 => matches!(key_ty, Ty::Str | Ty::F64 | Ty::Bool | Ty::Nil),
+                Ty::MapI64I64 | Ty::MapI64F64 => matches!(key_ty, Ty::Str | Ty::Bool | Ty::Nil),
                 _ => false,
             };
             if map_key_mismatch {
@@ -1473,6 +1505,23 @@ pub(super) fn lower(
             // side has no carrier to check it against.
             if list_ty == Ty::Dyn {
                 let (kv, kty) = ssa.read(instr.b(), block, pc)?;
+                // `nil` and a Bool are keys the interpreter *stores* — `m[nil]
+                // = 1` gives `{nil:1}` — and no native map representation holds
+                // one: the boxed carrier is keyed by `String` and the typed ones
+                // by `String` or `i64`. So the store has no native form, and
+                // emitting one raised "runtime type error" on a program the
+                // interpreter answers. Falling back is the whole program on the
+                // VM, which is slower and right.
+                //
+                // Only these two, and only where the key's type says so. A `Str`
+                // or `I64` key stores natively as before, and a key this side
+                // cannot type still goes through — a fallback for every erased
+                // key would cost far more coverage than the shape is worth.
+                // Reading such a key is a different question and is answered:
+                // `lkrt_dyn_get` looks it up and misses.
+                if matches!(kty, Ty::Nil | Ty::Bool) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
                 let key = to_dyn(ssa, insts, kv, kty, pc)?;
                 let (cv, cty) = ssa.read(instr.c(), block, pc)?;
                 let boxed = to_dyn(ssa, insts, cv, cty, pc)?;

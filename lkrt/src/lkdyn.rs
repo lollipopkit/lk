@@ -1517,6 +1517,19 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     match key.tag {
         DYN_I64 => lkrt_dyn_index(v, key.payload),
         DYN_STR => unsafe { lkrt_dyn_field(v, key.payload as *const c_char) },
+        // A map's subscript is a **key**, and `nil` and a Bool are keys — the
+        // interpreter stores them (`m[nil] = 1` gives `{nil:1}`) and answers a
+        // miss with nil, where this raised "runtime type error". A Float is not
+        // a key at all and `key_from_dyn` raises with the interpreter's own
+        // wording for that and for every other non-key kind.
+        //
+        // The keyed view is built per lookup, which is what the typed branch of
+        // `lkrt_dyn_map_has` already does; only `nil` and `Bool` keys reach it,
+        // and an Int or a String key still takes its own direct path above.
+        _ if is_map_tag(v.tag) => {
+            let key = crate::vm_mirror::key_from_dyn(key);
+            map_entries(v).get(&key).copied().unwrap_or(LkDyn::NIL)
+        }
         _ => crate::panic::raise_str("runtime type error"),
     }
 }
