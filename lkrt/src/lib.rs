@@ -155,13 +155,14 @@ pub use host::{
     lkrt_math_atan, lkrt_math_atan2, lkrt_math_ceil, lkrt_math_clamp_i64, lkrt_math_cos, lkrt_math_exp,
     lkrt_math_floor, lkrt_math_log, lkrt_math_log2, lkrt_math_log10, lkrt_math_pow, lkrt_math_round, lkrt_math_sin,
     lkrt_math_sqrt, lkrt_math_tan, lkrt_os_arch, lkrt_os_clock, lkrt_os_epoch, lkrt_os_hostname, lkrt_os_name,
-    lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
+    lkrt_os_time, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
 };
 #[cfg(feature = "std")]
 pub use host::{
-    lkrt_math_cbrt, lkrt_math_hypot, lkrt_math_is_nan, lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_path_components,
-    lkrt_path_delimiter, lkrt_path_extension, lkrt_path_file_name, lkrt_path_file_stem, lkrt_path_is_absolute,
-    lkrt_path_parent, lkrt_path_sep, lkrt_path_with_extension,
+    lkrt_math_cbrt, lkrt_math_cosh, lkrt_math_fract_f64, lkrt_math_hypot, lkrt_math_is_inf, lkrt_math_is_nan,
+    lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_math_sinh, lkrt_math_tanh, lkrt_math_to_int_f64, lkrt_math_trunc_f64,
+    lkrt_path_components, lkrt_path_delimiter, lkrt_path_extension, lkrt_path_file_name, lkrt_path_file_stem,
+    lkrt_path_is_absolute, lkrt_path_normalize, lkrt_path_parent, lkrt_path_sep, lkrt_path_with_extension,
 };
 #[cfg(feature = "std")]
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};

@@ -2505,6 +2505,22 @@ pub(crate) fn lower_method_dispatch(
             (dst, Ty::Str)
         }
         // `first`/`last` are `[0]` and `[-1]`, which `char_at` already is —
+        // `s.get(i)` — the same call `first`/`last` make with a fixed index.
+        //
+        // Written as a method it reaches an *opcode* rather than this table, so
+        // this arm has one caller: `string.get(s, i)`, which forwards here. The
+        // module spelling was the one that fell back, while the method spelling
+        // it forwards to lowered — the split `string.join` documents from the
+        // other side.
+        (Ty::Str, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "char_at"),
+                args: vec![receiver, *index],
+            });
+            (dst, Ty::Dyn)
+        }
         // including the nil an empty string answers.
         (Ty::Str, "first" | "last", []) => {
             let index = ssa.new_val();

@@ -407,6 +407,7 @@ macro_rules! for_each_abi_fn {
             ("process", "cwd", lkrt_process_cwd, ReadsHost, [], StrPtr);
             ("os", "clock", lkrt_os_clock, ReadsHost, [], F64);
             ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
+            ("os", "time", lkrt_os_time, ReadsHost, [], I64);
             ("os", "hostname", lkrt_os_hostname, ReadsHost, [], StrPtr);
             ("os", "arch", lkrt_os_arch, ReadsHost, [], StrPtr);
             // The module member is `os.os` (renamed: the schema name pairs with
@@ -442,12 +443,20 @@ macro_rules! for_each_abi_fn {
             ("math", "hypot", lkrt_math_hypot, Pure, [F64, F64], F64);
             ("math", "cbrt", lkrt_math_cbrt, Pure, [F64], F64);
             ("math", "is_nan", lkrt_math_is_nan, Pure, [F64], I64);
+            ("math", "is_inf", lkrt_math_is_inf, Pure, [F64], I64);
+            ("math", "sinh", lkrt_math_sinh, Pure, [F64], F64);
+            ("math", "cosh", lkrt_math_cosh, Pure, [F64], F64);
+            ("math", "tanh", lkrt_math_tanh, Pure, [F64], F64);
+            ("math", "trunc_f64", lkrt_math_trunc_f64, Pure, [F64], F64);
+            ("math", "fract_f64", lkrt_math_fract_f64, Pure, [F64], F64);
+            ("math", "to_int_f64", lkrt_math_to_int_f64, Pure, [F64], I64);
             // `math.sign` keeps its argument's numeric flavor (Int → signum,
             // Float → ±1.0/0.0); the lowering dispatches on the static type.
             ("math", "sign_i64", lkrt_math_sign_i64, Pure, [I64], I64);
             ("math", "sign_f64", lkrt_math_sign_f64, Pure, [F64], F64);
             // The `path` module's fixed-arity members. `String?` results arrive
             // boxed, the same convention `string.strip_prefix` uses.
+            ("path", "normalize", lkrt_path_normalize, Pure, [StrPtr], StrPtr);
             ("path", "parent", lkrt_path_parent, Pure, [StrPtr], DynVal);
             ("path", "file_name", lkrt_path_file_name, Pure, [StrPtr], DynVal);
             ("path", "file_stem", lkrt_path_file_stem, Pure, [StrPtr], DynVal);

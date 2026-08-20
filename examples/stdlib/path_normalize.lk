@@ -1,0 +1,41 @@
+// `path.normalize` is the one path member the native runtime *copies* rather
+// than shares: lkrt walks `std::path::Component` itself, with the same two
+// rules the module states — `..` cancels only a named component, and above a
+// root it is dropped, because `/..` is `/` on every filesystem.
+//
+// Two copies of a rule drift in silence, so this walks the cases the loop
+// distinguishes. `scripts/vm_native_sweep.sh` compares this output between the
+// interpreter and the native build, which is what makes the drift loud.
+
+use path;
+
+fn show(p: String) {
+    println("${p} -> ${path.normalize(p)}");
+}
+
+// A `.` component disappears; a named component is kept.
+show("a/./b");
+show("./a");
+
+// `..` cancels the named component before it, and only that one.
+show("a/b/../c");
+show("a/../b");
+
+// Nothing named to cancel: a relative path keeps the `..`, so going up twice
+// really is two levels up.
+show("../..");
+show("a/../../b");
+show("..");
+
+// Above a root there is nothing to go up to, so the `..` is dropped rather
+// than kept.
+show("/../a");
+show("/a/../../b");
+
+// Trailing separators and repeated ones are not components at all.
+show("a//b/");
+show("a/b/");
+
+// The empty path and a bare root normalize to themselves.
+show("");
+show("/");

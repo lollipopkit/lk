@@ -322,6 +322,8 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("os", "clock", AbiRef::new("os", "clock"), &[], Ty::F64),
     // Unix epoch milliseconds.
     abi_row("os", "epoch", AbiRef::new("os", "epoch"), &[], Ty::I64),
+    // Unix *seconds*, where `epoch` is milliseconds.
+    abi_row("os", "time", AbiRef::new("os", "time"), &[], Ty::I64),
     // Monotonic milliseconds / sleep-for-milliseconds.
     abi_row("time", "now", AbiRef::new("time", "now"), &[], Ty::I64),
     abi_row("time", "sleep", AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil),
@@ -564,9 +566,22 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
     // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
     abi_row("math", "is_nan", AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool),
+    // `is_inf` is the same shape as `is_nan`: an Int argument promotes to a
+    // finite `f64` and answers false, which is what the module answers for it.
+    abi_row("math", "is_inf", AbiRef::new("math", "is_inf"), &[Ty::F64], Ty::Bool),
+    abi_row("math", "sinh", AbiRef::new("math", "sinh"), &[Ty::F64], Ty::F64),
+    abi_row("math", "cosh", AbiRef::new("math", "cosh"), &[Ty::F64], Ty::F64),
+    abi_row("math", "tanh", AbiRef::new("math", "tanh"), &[Ty::F64], Ty::F64),
     // The `path` module's fixed-arity members. `parent`/`file_name`/`file_stem`/
     // `extension` answer `String?`, which arrives boxed — the convention
     // `string.strip_prefix` established.
+    abi_row(
+        "path",
+        "normalize",
+        AbiRef::new("path", "normalize"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
     abi_row("path", "parent", AbiRef::new("path", "parent"), &[Ty::Str], Ty::Dyn),
     abi_row(
         "path",
@@ -699,6 +714,10 @@ pub(crate) const MODULE_ABI: &[ModuleAbiRow] = &[
     abi_row("time", "after", AbiRef::new("time", "after"), &[Ty::I64], Ty::I64),
     abi_row("chan", "new", AbiRef::new("chan", "new"), &[Ty::I64], Ty::I64),
     abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
+    // `task.sleep(ms)` and `time.sleep(ms)` are the same operation — both take
+    // milliseconds through `duration_millis` and block — so they share the
+    // entry rather than growing a second one.
+    abi_row("task", "sleep", AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil),
     // `encoding` submodules (VM `de.rs` mirrored in lkrt).
     abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),
     // The write direction. The argument is `Dyn`, so any carrier boxes into it,
@@ -1507,13 +1526,21 @@ mod tests {
             "components",
             "sep",
             "delimiter",
+            // `normalize` is a *copy* of the module's component walk rather
+            // than a shared implementation — the same `std::path::Component`
+            // loop, including the rule that `..` cancels only a named
+            // component and is dropped above a root. That makes it the one
+            // path member whose two sides can drift in silence, which is why
+            // `examples/stdlib/path_normalize.lk` walks the cases the loop
+            // distinguishes: the VM/native sweep compares its output.
+            "normalize",
         ] {
             assert!(
                 module_call_abi_rows("path", member).next().is_some(),
                 "path.{member} lost its native lowering"
             );
         }
-        for member in ["join", "normalize"] {
+        for member in ["join"] {
             assert!(
                 module_call_abi_rows("path", member).next().is_none(),
                 "path.{member} gained a native lowering; if that is intended, say here what \

@@ -561,6 +561,54 @@ pub extern "C" fn lkrt_math_cbrt(x: f64) -> f64 {
     x.cbrt()
 }
 
+/// `math.sinh(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_sinh(value: f64) -> f64 {
+    value.sinh()
+}
+
+/// `math.cosh(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_cosh(value: f64) -> f64 {
+    value.cosh()
+}
+
+/// `math.tanh(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_tanh(value: f64) -> f64 {
+    value.tanh()
+}
+
+/// `math.trunc(Float)` → Float. The module's Int arm hands the Int back
+/// unchanged, so only the Float half is a call.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_trunc_f64(value: f64) -> f64 {
+    value.trunc()
+}
+
+/// `math.fract(Float)` → Float. The Int arm answers `0.0` without a call.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_fract_f64(value: f64) -> f64 {
+    value.fract()
+}
+
+/// `math.to_int(Float)` → Int, the module's `value as i64`.
+///
+/// A call rather than a MIR cast because Rust's `as` saturates and Cranelift's
+/// `fcvt_to_sint` traps: `math.to_int(1e30)` is `i64::MAX` in the VM and would
+/// have aborted the native build.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_to_int_f64(value: f64) -> i64 {
+    value as i64
+}
+
+/// `math.is_inf(x)` → 0/1. Only a Float is ever infinite in the VM; an Int
+/// argument promotes to a finite `f64` and answers false, same as the module.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_is_inf(x: f64) -> i64 {
+    i64::from(x.is_infinite())
+}
+
 /// `math.is_nan(x)` → 0/1 (only a Float NaN is true in the VM; the lowering
 /// promotes Int args, whose result is always false — same as the module).
 #[unsafe(no_mangle)]
@@ -615,6 +663,38 @@ macro_rules! path_part {
             }
         }
     };
+}
+
+/// `path.normalize(p)` → String — the module's component walk, verbatim.
+///
+/// `..` cancels only a *named* component, so `normalize("../..")` keeps both;
+/// above a root it means nothing and is dropped, because `/..` is `/` on every
+/// filesystem and keeping it produces a path that normalizes to itself forever.
+///
+/// # Safety
+/// `path` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_path_normalize(path: *const c_char) -> *mut c_char {
+    use std::path::Component;
+    // SAFETY: the caller guarantees a valid C string.
+    let text = unsafe { core::ffi::CStr::from_ptr(path) }.to_str().unwrap_or("");
+    let path = std::path::Path::new(text);
+    let rooted = path.has_root();
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !rooted {
+                    out.push(component.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(out.to_string_lossy().as_ref()).unwrap_or_default())
 }
 
 path_part!(lkrt_path_parent, parent, "`path.parent(p)` → String?");
@@ -807,6 +887,17 @@ pub extern "C" fn lkrt_os_clock() -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_epoch() -> i64 {
     epoch_millis()
+}
+
+/// `os.time()` — Unix time in **seconds**, where `os.epoch()` is milliseconds.
+/// Truncating the millisecond count would answer one second early for a
+/// negative time, so this asks for seconds directly, as the module does.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_os_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[unsafe(no_mangle)]

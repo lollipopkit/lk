@@ -37,20 +37,34 @@ pub(crate) fn lower_module_call(
                 ssa.write(base, block, (v, ty));
                 return Ok(());
             }
-            "range" => {
-                if argc != 2 {
-                    return Err(Unsupported::CallShape {
-                        pc,
-                        reason: "no native lowering for this stdlib module function",
+            // The same three arities `iter.range` takes: the one-argument form
+            // counts from 0 and the third argument is the step. Only the
+            // two-argument form was accepted, so `stream.range(n)` — the
+            // shortest way to write it — dropped its module to the VM.
+            "range" if (1..=3).contains(&argc) => {
+                let (start, end) = if argc == 1 {
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
                     });
-                }
-                let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
-                let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
-                let one = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: one,
-                    value: Const::I64(1),
-                });
+                    let end = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                    (zero, end)
+                } else {
+                    let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                    let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+                    (start, end)
+                };
+                let one = if argc == 3 {
+                    read_typed_scalar(ssa, insts, base.wrapping_add(3), block, Ty::I64, pc)?
+                } else {
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    one
+                };
                 let exclusive = ssa.new_val();
                 insts.push(Inst::Const {
                     dst: exclusive,
@@ -172,6 +186,95 @@ pub(crate) fn lower_module_call(
             }
             _ => return Err(Unsupported::TypeMismatch { pc }),
         }
+        return Ok(());
+    }
+    // `math.clamp(v[, min[, max]])` — the module defaults `min` to 0 and `max`
+    // to 100, and a default lives in the export wrapper, which this side cannot
+    // read. So the two short arities materialize the same constants the
+    // declaration states rather than growing a row each; the full arity takes
+    // the row below. Named spellings (`clamp(v, max: 9)`) still go through the
+    // row, which is where the permutation is.
+    if module == "math" && name == "clamp" && (1..=2).contains(&argc) {
+        let value = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+        let min = if argc == 2 {
+            read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?
+        } else {
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            zero
+        };
+        let max = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: max,
+            value: Const::I64(100),
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("math", "clamp_i64"),
+            args: vec![value, min, max],
+        });
+        ssa.write(base, block, (dst, Ty::I64));
+        return Ok(());
+    }
+    // Four members that answer differently for an Int than for a Float, and so
+    // dispatch on the argument's static type the way `math.floor` and
+    // `math.abs` below do rather than taking a promoting ABI row. Each Int arm
+    // is the module's own: `trunc` and `to_int` hand an Int back unchanged,
+    // `fract` answers `0.0` for one, and `to_float` widens. A Bool is a number
+    // to the two converters and to nothing else, matching the module's arms.
+    if module == "math" && matches!(name, "trunc" | "fract" | "to_int" | "to_float") {
+        if argc != 1 {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this stdlib module function",
+            });
+        }
+        let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        // A Bool crosses as its word, which is the 0/1 the module converts.
+        let (v, ty) = if ty == Ty::Bool && matches!(name, "to_int" | "to_float") {
+            let wide = ssa.new_val();
+            insts.push(Inst::ZextBool { dst: wide, src: v });
+            (wide, Ty::I64)
+        } else {
+            (v, ty)
+        };
+        let result = match (name, ty) {
+            ("trunc", Ty::I64) | ("to_int", Ty::I64) => (v, Ty::I64),
+            ("to_float", Ty::F64) => (v, Ty::F64),
+            ("to_float", Ty::I64) => {
+                let f = ssa.new_val();
+                insts.push(Inst::IntToFloat { dst: f, src: v });
+                (f, Ty::F64)
+            }
+            ("fract", Ty::I64) => {
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::F64(0.0),
+                });
+                (zero, Ty::F64)
+            }
+            (_, Ty::F64) => {
+                let (helper, ret) = match name {
+                    "trunc" => ("trunc_f64", Ty::F64),
+                    "fract" => ("fract_f64", Ty::F64),
+                    _ => ("to_int_f64", Ty::I64),
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("math", helper),
+                    args: vec![v],
+                });
+                (dst, ret)
+            }
+            _ => return Err(Unsupported::TypeMismatch { pc }),
+        };
+        ssa.write(base, block, result);
         return Ok(());
     }
     // `math.abs` returns its argument's type: Int → wrapping integer abs

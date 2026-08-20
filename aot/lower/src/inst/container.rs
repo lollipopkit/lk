@@ -1648,6 +1648,14 @@ pub(super) fn lower(
         Opcode::GetFieldK => {
             // `a` = dst, `b` = map register, `c` = key string-constant index. A
             // missing key is `nil` → the `Maybe` model (i64- or f64-valued map).
+            //
+            // Except when the "map" is a **module object**: `m.get(k)` with one
+            // argument compiles to a map read whatever `m` is, so `env.get(k)`
+            // arrives here rather than as a call, with `env` where the map
+            // belongs and `k` as the key. The VM dispatches that at run time;
+            // this side read the module as a value and reported it as a
+            // compile-time reference, so `env.get(k)` fell back while
+            // `env.get_or(k, d)` — an ordinary call — lowered.
             let (handle, map_ty) = ssa.read(instr.b(), block, pc)?;
             let key = func
                 .consts
