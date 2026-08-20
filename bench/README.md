@@ -906,3 +906,28 @@ Some(Arc::from(joined))                                           // 分配 2 + 
 
 顺带一条给写 LK 的人:`join` 是线性的,`acc = acc + x` 的循环不是 —— 两个后端都不是。
 
+## 最慢的那个 workload profile 过了,没有可修的东西(2026-08-20)
+
+`fraud_rule_scoring` 是列表里最落后的一个(约 1.9x Lua)。把它的热循环单独抽出来
+跑 170 万次(327ms),`perf -F 999`:
+
+| 项 | 占比 |
+| --- | --- |
+| `dispatch_within_frame` | 47.3% |
+| `dispatch_call_method_k` | 8.2% |
+| `load_const_instr` | 7.3% |
+| `write_returns` + `finish_return` + `push_call_frame` | 11.4% |
+| `core_call_method_windowed` | 3.2% |
+| `from_utf8`(ShortStr 读) | 2.8% |
+| map 查找(`IndexMap<Arc<str>, bool, Fx>`) | 4.4% |
+
+**没有分配问题**:170 万次迭代只有 1005 次缺页,libc 合计约 4.5%。map 用的是
+`FxBuildHasher`(profile 里那点 SipHash 是编译期的噪声)。
+
+剩下的全是结构性的:解释器分发加调用开销。两条看着可疑的线索都已经被仓库
+自己量过并否掉了 —— `from_utf8` 换 `from_utf8_unchecked` 见
+`values/src/types.rs` 的注释(min-of-9:0.87s vs 0.89s,买不到东西)。
+
+结论:这个 workload 上没有具体缺陷,1.9x 是"LK 的解释器比 Lua 的慢 1.9x"。
+geomean 已经在 1.01x,尾巴上的这几个不值得再挖。**别重复这次 profile。**
+
