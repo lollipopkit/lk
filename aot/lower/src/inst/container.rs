@@ -1215,6 +1215,60 @@ pub(super) fn lower(
                 ssa.write(instr.a(), block, (dst, Ty::Dyn));
                 return Ok(());
             }
+            // A key of a type the map cannot hold is a *miss*, and the answer
+            // is nil for every value of that type — so it is a constant rather
+            // than a call. The interpreter answers the same way, and the
+            // checker stopped refusing the shape, so `{"k": 1}[0]` reaches here
+            // now instead of being turned back at check time.
+            // A constant string key is not in a register to be read, so it is
+            // asked for by name — which is also how an int-keyed map sees the
+            // only key type it can be handed wrongly.
+            let key_ty = match ssa.const_str_at(instr.c(), block, pc) {
+                Some(_) => Ty::Str,
+                None => ssa.read(instr.c(), block, pc).map(|(_, t)| t).unwrap_or(Ty::Dyn),
+            };
+            let map_key_mismatch = match list_ty {
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
+                    matches!(key_ty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Nil)
+                }
+                Ty::MapI64I64 | Ty::MapI64F64 => matches!(key_ty, Ty::Str | Ty::F64 | Ty::Bool | Ty::Nil),
+                _ => false,
+            };
+            if map_key_mismatch {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_nil"),
+                    args: vec![],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // A key the lowering cannot type, against a map whose key type it
+            // can: unboxing the key to the map's type raises for anything else,
+            // and a *read* has an answer — nil, the way a key that is simply
+            // absent does. So the map boxes and `dyn.get` dispatches on the
+            // key's tag at run time, which is what the interpreter does.
+            //
+            // Reads only. `m[k] = v` builds a key and stays where it was.
+            if key_ty == Ty::Dyn
+                && matches!(
+                    list_ty,
+                    Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+                )
+            {
+                let boxed_map = to_dyn(ssa, insts, handle, list_ty, pc)?;
+                let (key_v, key_v_ty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                let boxed_key = to_dyn(ssa, insts, key_v, key_v_ty, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "get"),
+                    args: vec![boxed_map, boxed_key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             // String-keyed map reads take a `Str` key (dynamic template keys
             // included); a missing key is the `Maybe` nil model.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
@@ -1616,6 +1670,20 @@ pub(super) fn lower(
                 .strings
                 .get(instr.c() as usize)
                 .ok_or(Unsupported::BadConst { pc })?;
+            // A constant *string* key against an int-keyed map is a miss, and
+            // nil for every such key — the same fold `GetIndex` takes for the
+            // other direction. Only reachable since the checker stopped
+            // refusing the shape.
+            if matches!(map_ty, Ty::MapI64I64 | Ty::MapI64F64) {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_nil"),
+                    args: vec![],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             let key_v = materialize_key(ssa, insts, globals, key);
             let dst = ssa.new_val();
             let result_ty = match map_ty {

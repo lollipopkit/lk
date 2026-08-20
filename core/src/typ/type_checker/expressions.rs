@@ -1633,6 +1633,24 @@ impl TypeChecker {
         }
     }
 
+    /// Whether a key type can be shown never to match the map's.
+    ///
+    /// Both have to be concrete and unrelated. `Any`, a type variable and a
+    /// union stay out, because the constraint they would have added is doing
+    /// real inference — `m[k]` is how an unbound `k` learns it is a key.
+    fn definitely_not_key(&mut self, field_ty: &Type, key_ty: &Type) -> bool {
+        let concrete = |t: &Type| {
+            matches!(
+                t,
+                Type::Int | Type::Float | Type::Bool | Type::String | Type::Nil | Type::List(_) | Type::Set(_)
+            ) || matches!(t, Type::Map(_, _))
+        };
+        concrete(field_ty)
+            && concrete(key_ty)
+            && !self.is_assignable(field_ty, key_ty)
+            && !self.is_assignable(key_ty, field_ty)
+    }
+
     /// A `Tuple` read as the list it is, everything else unchanged.
     ///
     /// A heterogeneous list *literal* infers to `Tuple`, and a tuple is a list
@@ -2483,6 +2501,14 @@ impl TypeChecker {
                 Ok(params.first().cloned().unwrap_or(Type::Any))
             }
             Type::Tuple(elems) => {
+                // `t[a..b]` is a slice, the way it is on every other sequence.
+                // Each arm above carries this guard and this one did not, so a
+                // heterogeneous literal — which is what a `Tuple` is — was the
+                // one list that could not be sliced: `[1, "a"][0..2]` said
+                // "Tuple index must be integer" while `[1, 2][0..2]` answered.
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::List(Box::new(Type::Union(elems.to_vec()))));
+                }
                 // Field must be integer index; if it's a literal index, pick that element
                 if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
@@ -2504,8 +2530,19 @@ impl TypeChecker {
                 Ok(u)
             }
             Type::Map(key_type, value_type) => {
-                // Field must match key type
-                self.inference_engine.add_constraint((**key_type).clone(), field_type);
+                // Reading a key of another type is a *miss*, not an error: the
+                // interpreter answers nil, the way it does for a key that is
+                // simply absent. Constraining the two unified them, so
+                // `{"k": 1}[0]` was "Cannot unify String with Int" — a message
+                // about the checker's own machinery, for a lookup that has an
+                // answer.
+                //
+                // Writing is the other side of the line and still refuses:
+                // `m[0] = 9` would put a key in the map that its type says is
+                // not there.
+                if !self.definitely_not_key(&field_type, key_type.as_ref()) {
+                    self.inference_engine.add_constraint((**key_type).clone(), field_type);
+                }
                 Ok((**value_type).clone())
             }
             Type::String => {
@@ -3074,11 +3111,18 @@ impl TypeChecker {
                         Ok(Type::Optional(elem_type))
                     }
                     Type::Map(key_type, value_type) => {
+                        // A miss, for the reason the read arm gives.
                         let field_ty = self.check_expr(field)?;
-                        self.inference_engine.add_constraint((*key_type).clone(), field_ty);
+                        if !self.definitely_not_key(&field_ty, key_type.as_ref()) {
+                            self.inference_engine.add_constraint((*key_type).clone(), field_ty);
+                        }
                         Ok(Type::Optional(value_type))
                     }
                     Type::Tuple(elems) => {
+                        // A slice, for the reason the read arm gives.
+                        if matches!(&field, Expr::Range { .. }) {
+                            return Ok(Type::List(Box::new(Type::Union(elems.to_vec()))));
+                        }
                         let field_ty = self.check_expr(field)?;
                         if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(

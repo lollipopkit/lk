@@ -645,6 +645,27 @@ fn differential_strings() {
             // their operator spellings always have. A container searched for
             // something it cannot hold answers "absent" — and where the type
             // settles it, the answer is a constant rather than a call.
+            // Reading a key of another type is a *miss*: the interpreter
+            // answers nil, the way it does for a key that is simply absent.
+            // The checker unified the two types instead — `{"k": 1}[0]` was
+            // "Cannot unify String with Int", a message about the checker's own
+            // machinery for a lookup that has an answer. Writing still refuses,
+            // because it would put a key in the map the type says is not there.
+            //
+            // And a `Tuple` slices: each container arm carries a range guard
+            // and that one did not, so a heterogeneous literal was the one list
+            // that could not be sliced.
+            new(
+                "a_key_of_another_type_is_a_miss",
+                "println([1, \"a\"][0..2]);\nprintln([1, \"a\"][1..2]);\nprintln([1, 2, 3][0..2]);\nprintln({\"k\": 1}[0]);\nprintln({1: 2}[\"k\"]);\nprintln({\"k\": 1}[\"k\"]);\nreturn 0;\n",
+            ),
+            // …and with a key the lowering cannot type, where unboxing it to
+            // the map's key type used to raise: the map boxes and the tag
+            // decides, which is what the interpreter does.
+            new(
+                "a_key_of_another_type_is_a_miss_erased",
+                "fn r(m: Any, k: Any) -> Any { return m[k]; }\nprintln(r({\"k\": 1}, 0));\nprintln(r({\"k\": 1}, \"k\"));\nreturn 0;\n",
+            ),
             new(
                 "a_predicate_takes_any_value",
                 "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",

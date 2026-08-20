@@ -1383,6 +1383,31 @@ mod tests {
         check_program("println([1, 2.5].sum());").expect("numbers add");
         check_program("println([1, 2].to_bytes());").expect("Ints are bytes");
     }
+    /// Reading a key of another type is a miss; writing one is still refused.
+    ///
+    /// `{"k": 1}[0]` was "Cannot unify String with Int" — the checker's own
+    /// machinery talking, for a lookup the interpreter answers with nil. The
+    /// constraint that produced it is still added wherever it does real
+    /// inference; it is skipped only when both types are concrete and unrelated,
+    /// which is when the lookup can only miss.
+    ///
+    /// A write is the other side of the line: `m[0] = 9` would put a key in the
+    /// map that its own type says is not there.
+    #[test]
+    fn reading_a_key_of_another_type_is_a_miss() {
+        check_program("let m = {\"k\": 1};\nprintln(m[0]);\n").expect("an Int key misses a string-keyed map");
+        check_program("let m = {1: 2};\nprintln(m[\"k\"]);\n").expect("and the other way");
+        check_program("let m = {\"k\": 1};\nm[0] = 9;\nprintln(m);\n").expect_err("writing one is refused");
+
+        // A `Tuple` slices like the list it is — every other container arm
+        // carries this guard.
+        check_program("println([1, \"a\"][0..2]);\n").expect("a heterogeneous literal slices");
+        assert_eq!(
+            infer("[1, \"a\"][0..2]"),
+            Type::List(Box::new(Type::Union(vec![Type::Int, Type::String]))),
+            "the slice keeps what the tuple held"
+        );
+    }
     /// Every position that binds a name refuses to bind one twice.
     ///
     /// A construct that binds one name twice can never read the first
