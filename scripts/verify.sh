@@ -26,7 +26,7 @@ for arg in "$@"; do
     case "$arg" in
     --fast) FAST=1 ;;
     --list)
-        printf '%s\n' fmt clippy tests coverage sweep no_std fuzz perf
+        printf '%s\n' fmt clippy tests coverage sweep no_std sweep_hybrid fuzz perf
         exit 0
         ;;
     *)
@@ -77,6 +77,13 @@ no_std_targets() {
 gate no_std no_std_targets
 
 if [ "$FAST" -eq 0 ]; then
+    # The *shipping* configuration. Every other AOT gate pins `LK_AOT_HYBRID=0`
+    # — the pure-native measurement is what they are for — so until this existed
+    # nothing swept the arrangement a user gets by default: hybrid on, fallback
+    # allowed. Slow for the same reason the pure pass is (a link per program),
+    # which is why it sits with the fuzz and the perf run rather than in
+    # `--fast`.
+    gate sweep_hybrid bash scripts/vm_native_sweep.sh --hybrid
     # The generative differential fuzz is not part of `cargo test --workspace`
     # (its own CI workflow runs it), and it is the only gate that *combines*
     # features. 300 cases is the floor the native-lowering count is stable at.

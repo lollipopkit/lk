@@ -33,6 +33,14 @@ if [ ! -x "$LK" ]; then
     exit 1
 fi
 
+# `--hybrid` sweeps the default configuration instead of the pure-native one.
+HYBRID=0
+for arg in "$@"; do
+    case "$arg" in
+    --hybrid) HYBRID=1 ;;
+    esac
+done
+
 identical=0
 diverged=0
 fallback=0
@@ -52,6 +60,33 @@ for src in $(git ls-files 'examples/**/*.lk' 'bench/*.lk' |
     # not lower falls back to the Tier 0 bundle, which embeds the interpreter —
     # comparing that against the VM compares the VM with itself, and it costs a
     # full Rust link per file to learn nothing.
+    if [ "$HYBRID" = 1 ]; then
+        # The *shipping* configuration: hybrid on, fallback allowed. Every other
+        # gate pins hybrid off, so nothing swept the arrangement a user actually
+        # gets — a program whose helper rides the bridge, or that fell back to
+        # the Tier 0 bundle, was compared against the VM by nothing at all.
+        #
+        # A Tier 0 bundle *is* the interpreter, so agreeing proves little there;
+        # the value is in the bridged programs, and the two cannot be told apart
+        # from outside without reading the build log.
+        if ! LK_AOT_HYBRID=1 "$LK" compile "$src" --output "$out_bin" >/dev/null 2>&1; then
+            fallback=$((fallback + 1))
+            echo "COMPILE-FAILED $src"
+            continue
+        fi
+        native_out=$(cd "$(dirname "$src")" && "$out_bin" 2>&1)
+        if [ "$vm_out" = "$native_out" ]; then
+            identical=$((identical + 1))
+        else
+            diverged=$((diverged + 1))
+            diverged_files="$diverged_files $src"
+            case " $ALLOW " in
+            *" $src "*) echo "DIVERGED (allowed) $src" ;;
+            *) echo "DIVERGED $src" ;;
+            esac
+        fi
+        continue
+    fi
     if ! LK_AOT_NO_FALLBACK=1 "$LK" compile "$src" --output "$out_bin" >/dev/null 2>&1; then
         fallback=$((fallback + 1))
         echo "FALLBACK $src"
