@@ -116,3 +116,38 @@ fn a_session_of_closures_collects_without_re_walking_the_module_graph() -> Resul
     );
     Ok(())
 }
+
+/// A statement typed over several lines, where the continuation opens no
+/// bracket.
+///
+/// Continuation used to be decided on bracket depth alone, and a method chain
+/// closes every bracket it opens on each line. So `let out = nums` ran on its
+/// own — "Expected Semicolon, found end of input" — and the `.map(…)` beneath
+/// it arrived as a line starting with `.`. Three example programs failed in the
+/// session for exactly this and no other reason.
+#[test]
+fn a_method_chain_split_across_lines_is_one_input() -> Result<(), Box<dyn Error>> {
+    let out = repl_stdout(
+        "let nums = [1, 2, 3];\n\
+         let out = nums\n\
+             .map(|v| v * 2)\n\
+             .filter(|v| v > 2);\n\
+         out\n",
+    )?;
+    assert!(out.contains("[4,6]"), "{out}");
+    Ok(())
+}
+
+/// An input that is *wrong* rather than unfinished still stops.
+///
+/// The continuation test asks the parser whether it ran out of input, and a
+/// session that waited on every parse error would hang on a typo with no way
+/// out.
+#[test]
+fn a_wrong_input_is_reported_rather_than_waited_on() -> Result<(), Box<dyn Error>> {
+    let out = repl_stdout("let x = 1 2;\nprintln(7)\n")?;
+    // The second line still ran, which it could not have if the session were
+    // still collecting the first.
+    assert!(out.contains('7'), "{out}");
+    Ok(())
+}

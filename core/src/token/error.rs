@@ -84,6 +84,22 @@ impl ParseError {
         }
     }
 
+    /// Whether the parse stopped because the input *ran out*, rather than
+    /// because it was wrong.
+    ///
+    /// Both parsers end a message with the context `(found end of input)` when
+    /// they reach the end of the token stream expecting more (`StmtParser::err`
+    /// and `Parser::err`, which is where that text is produced). It is the only
+    /// way to tell the two apart from outside: the message is the whole error.
+    ///
+    /// For a caller reading a *stream* of input — the REPL, deciding whether to
+    /// read another line. `let out = nums` followed by `.map(…)` on the next
+    /// line is one statement typed over two lines, and bracket depth cannot see
+    /// that: the first line closes every bracket it opens.
+    pub fn wants_more_input(&self) -> bool {
+        self.message.ends_with("(found end of input)")
+    }
+
     pub fn display_with_source(&self, source: &str) -> String {
         self.display_with_source_color(source, false)
     }
@@ -191,5 +207,45 @@ mod tests {
         let pos = Position::new(2, 10, 15);
         let err2 = ParseError::with_position("syntax error".to_string(), pos);
         assert_eq!(err2.to_string(), "syntax error at 2:10-10");
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod wants_more_input_tests {
+    use crate::syntax::{ParseOptions, parse_program_source};
+
+    fn error_of(source: &str) -> crate::token::ParseError {
+        parse_program_source(source, ParseOptions::default()).expect_err("this source must not parse")
+    }
+
+    /// The marker `ParseError::wants_more_input` reads is produced by the two
+    /// parsers' `err` helpers. If either stops writing it, this fails rather
+    /// than the REPL quietly going back to treating a half-typed statement as a
+    /// finished one.
+    #[test]
+    fn an_input_that_stopped_early_says_so() {
+        for source in [
+            "let out = nums",
+            "let out = nums\n    .map(|v| v)",
+            "fn f(a: Int",
+            "let m = {\"a\": 1",
+        ] {
+            assert!(
+                error_of(source).wants_more_input(),
+                "expected `{source}` to read as unfinished"
+            );
+        }
+    }
+
+    /// And an input that is *wrong* rather than unfinished does not, or the
+    /// session would wait forever for a line that cannot help.
+    #[test]
+    fn an_input_that_is_wrong_does_not() {
+        for source in ["fn 3() {}", "let x = ;", "let x = 1 2;"] {
+            assert!(
+                !error_of(source).wants_more_input(),
+                "expected `{source}` to read as wrong, not unfinished"
+            );
+        }
     }
 }

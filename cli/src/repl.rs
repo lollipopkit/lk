@@ -308,6 +308,21 @@ fn expression_program_source(source: &str) -> String {
 /// A tokenizer error means the line cannot be read as tokens at all — an
 /// unterminated string, say — and that is the parser's message to deliver, not
 /// a reason to keep waiting. (Waiting would hang the session on any typo.)
+///
+/// Brackets are not the whole story, because a continuation need not open one:
+///
+/// ```text
+/// > let out = nums
+/// > .map(|v| v * 2)
+/// ```
+///
+/// The first line closes every bracket it opens, so the session ran it, said
+/// "Expected Semicolon, found end of input", and then met a line starting with
+/// `.`. That is one statement typed over two lines, and what says so is the
+/// *parser*: it ran out of input rather than meeting something wrong. An input
+/// that is wrong rather than unfinished does not say that, so a typo still
+/// stops instead of waiting for a line that cannot help
+/// (`ParseError::wants_more_input`).
 pub(crate) fn should_continue_multiline(buf: &str) -> bool {
     if buf.trim_end().ends_with('\\') {
         return true;
@@ -323,7 +338,16 @@ pub(crate) fn should_continue_multiline(buf: &str) -> bool {
             _ => {}
         }
     }
-    depth > 0
+    if depth > 0 {
+        return true;
+    }
+    // The wrapper first, exactly as `execute_input` does: `1 + 1` is a finished
+    // input even though it is not a statement, and asking the program parser
+    // about it would answer "unfinished" forever.
+    if parse_program_source(&expression_program_source(buf), ParseOptions::default()).is_ok() {
+        return false;
+    }
+    parse_program_source(buf, ParseOptions::default()).is_err_and(|error| error.wants_more_input())
 }
 
 pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
