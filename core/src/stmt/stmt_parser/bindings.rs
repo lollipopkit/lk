@@ -293,8 +293,9 @@ impl<'a> StmtParser<'a> {
                 Some(Token::Id(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
                 Some(Token::Str(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
                 other => {
+                    let found = other.map_or_else(|| "end of input".to_string(), crate::token::token_lexeme);
                     return Err(anyhow!(
-                        self.err(&format!("Expected field name in assignment target, found {:?}", other))
+                        self.err(&format!("Expected field name in assignment target, found `{found}`"))
                     ));
                 }
             }

@@ -8,7 +8,10 @@ impl<'a> Parser<'a> {
     /// Parse map literal: `{key: value, key: value, ...}`
     pub(super) fn parse_map(&mut self) -> Result<Expr> {
         if self.tokens[self.pos] != Token::LBrace {
-            let msg = format!("Expecting '{{', found {:?}", self.tokens[self.pos]);
+            let msg = format!(
+                "Expecting '{{', found `{}`",
+                crate::token::token_lexeme(&self.tokens[self.pos])
+            );
             return Err(anyhow!(self.err(&msg)));
         }
         self.pos += 1;
@@ -54,7 +57,10 @@ impl<'a> Parser<'a> {
                     }
                     Token::RBrace => break,
                     _ => {
-                        let msg = format!("Expecting ',' or '}}', found {:?}", self.tokens[self.pos]);
+                        let msg = format!(
+                            "Expecting ',' or '}}', found `{}`",
+                            crate::token::token_lexeme(&self.tokens[self.pos])
+                        );
                         return Err(anyhow!(self.err(&msg)));
                     }
                 }

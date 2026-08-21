@@ -38,7 +38,7 @@ impl<'a> StmtParser<'a> {
 
         if core::mem::discriminant(&self.tokens[self.pos]) != core::mem::discriminant(&expected) {
             return Err(anyhow!(
-                self.err(&format!("Expected {:?}, found {:?}", expected, self.tokens[self.pos]))
+                self.err(&format!("Expected `{}`", crate::token::token_lexeme(&expected)))
             ));
         }
 
@@ -405,7 +405,11 @@ impl<'a> StmtParser<'a> {
 
     pub(super) fn err(&self, msg: &str) -> String {
         let ctx = if let Some(c) = self.tokens.get(self.pos) {
-            format!("found {:?}", c)
+            // `token_lexeme`, not `{:?}`: a reader is told what they typed, so
+            // the message has to spell it the way they typed it. Every
+            // statement-level syntax error used to name the *variant* —
+            // `found Semicolon`, `found LBrace`, `found Fn`.
+            format!("found `{}`", crate::token::token_lexeme(c))
         } else {
             "found end of input".to_string()
         };
@@ -471,65 +475,18 @@ impl<'a> StmtParser<'a> {
         Ok(pattern)
     }
 
-    /// TODO(remove): the second copy of [`crate::type_syntax::spelling`].
+    /// The written form of a collected type annotation.
     ///
-    /// `parse_type_annotation` now goes through the shared one; three positions
-    /// still collect their own tokens with their own stop rules
-    /// (`parse_inline_type_until_param_delim` and the two in `function.rs`) and
-    /// render with this. Give each a `StopAt` variant and this goes away — one
-    /// renderer, or the two will drift.
+    /// Three positions still collect their own tokens with their own stop rules
+    /// (`parse_inline_type_until_param_delim` and the two in `function.rs`);
+    /// they render through the shared spelling, which is what the rest of the
+    /// parser uses. There used to be a second copy here, with its own token
+    /// table — and that table listed no keyword at all, so a spelling holding
+    /// one rendered as the Debug name (`Fn(Int) -> Int`, `Nil`).
+    ///
+    /// TODO(remove): give each of the three a `StopAt` variant and this
+    /// forwarding method goes away with them.
     pub(super) fn tokens_to_type_string(&self, tokens: &[&Token]) -> String {
-        let mut result = String::new();
-
-        for (i, token) in tokens.iter().enumerate() {
-            if i > 0 {
-                match token {
-                    Token::Pipe => result.push_str(" | "),
-                    Token::Lt => result.push('<'),
-                    Token::Gt | Token::Comma | Token::RParen | Token::RBracket | Token::RBrace => {
-                        result.push_str(&self.token_to_string(token));
-                    }
-                    _ => {
-                        if !matches!(tokens.get(i - 1), Some(Token::Lt)) {
-                            result.push(' ');
-                        }
-                        result.push_str(&self.token_to_string(token));
-                    }
-                }
-            } else {
-                result.push_str(&self.token_to_string(token));
-            }
-        }
-
-        result
-    }
-
-    pub(super) fn token_to_string(&self, token: &Token) -> String {
-        match token {
-            Token::Id(name) => name.clone(),
-            Token::Str(s) => format!("\"{}\"", s),
-            Token::Int(i) => i.to_string(),
-            Token::UInt { value, radix } => crate::token::render_radix(*value, *radix),
-            Token::Float(f) => f.to_string(),
-            Token::Bool(b) => b.to_string(),
-            Token::LParen => "(".to_string(),
-            Token::RParen => ")".to_string(),
-            Token::LBrace => "{".to_string(),
-            Token::RBrace => "}".to_string(),
-            Token::LBracket => "[".to_string(),
-            Token::RBracket => "]".to_string(),
-            Token::Comma => ",".to_string(),
-            Token::Colon => ":".to_string(),
-            Token::ColonColon => "::".to_string(),
-            Token::Assign => "=".to_string(),
-            Token::Pipe => "|".to_string(),
-            Token::Question => "?".to_string(),
-            Token::FnArrow => "->".to_string(),
-            Token::Lt => "<".to_string(),
-            Token::Gt => ">".to_string(),
-            // Pointer types: `*u8`, `*mut u32`.
-            Token::Mul => "*".to_string(),
-            _ => format!("{:?}", token),
-        }
+        crate::type_syntax::spelling(tokens)
     }
 }

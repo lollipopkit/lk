@@ -3404,3 +3404,29 @@ LSP 客户端里都标红,而 `lk check` 接受它们。
 LSP 据此给 `WARNING` 和单独的 code `lk_type_lint`,真正的类型错误仍然是 `ERROR`。
 
 标记放在产出方而不是消费方,是因为另一条路只有"按消息文本匹配"。
+
+## 报错里的 token 说的是变体名,不是你打的字(2026-08-21)
+
+`format!("found {:?}", token)`——语句解析器每一条语法错误的结尾都是这么来的,
+于是读者看到的是 Rust 枚举的变体名:
+
+| 你写的 | 修复前 | 现在 |
+| --- | --- | --- |
+| `let a = 1` 少分号 | `found Let` | ``found `let` `` |
+| `for p in {"a":1} {}` | `found LBrace` | ``found `{` `` |
+| `f: fn(Int) -> Int` | `found Fn` | ``found `fn` `` |
+| `x!== 1` | `found Ne` | ``found `!=` `` |
+
+`token_lexeme` 一直存在,表达式解析器的一部分消息也在用它。五个位置改用它。
+
+**同一趟里还查出一处真的漂移。** `stmt_parser` 有一份 `type_syntax::spelling` 的
+副本(`tokens_to_type_string` + `token_to_string`),文件上的 TODO 预言过"两份会
+分家"。逐 token 比对两个渲染器:字面量(字符串、整数、浮点、布尔、标识符)一致,
+而**每一个关键字和多数运算符都不一致**——副本的 token 表里根本没有关键字,落到
+`format!("{:?}")`。所以经过那三个位置的类型拼写会印成 `Fn(Int) -> Int`、`Nil`。
+
+副本删掉,`tokens_to_type_string` 转发给共享的那个;TODO 缩小成"给三个位置各加一个
+`StopAt` 变体,这个转发方法也能去掉"。
+
+查法值得记:**先按 token 逐个比对两个实现的输出**,而不是读代码找差异。两个循环
+结构完全相同,差别只在它们各自调用的渲染函数里,读代码很容易看漏。

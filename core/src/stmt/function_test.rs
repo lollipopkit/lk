@@ -662,8 +662,10 @@ mod tests {
                 error.contains("`(Int) -> Int`, not `fn(Int) -> Int`"),
                 "`{source}` reported `{error}` instead of the spelling rule"
             );
+            // The token is named the way it was typed — `fn`, not the variant
+            // `Fn`, which is what every parser message used to print.
             assert!(
-                error.contains("found Fn"),
+                error.contains("found `fn`"),
                 "`{source}` reported `{error}`, pointing at something other than the `fn`"
             );
         }

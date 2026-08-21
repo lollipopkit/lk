@@ -373,7 +373,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn err(&self, msg: &str) -> String {
         let ctx = if let Some(token) = self.tokens.get(self.pos) {
-            format!("found {:?}", token)
+            format!("found `{}`", crate::token::token_lexeme(token))
         } else {
             "found end of input".to_string()
         };

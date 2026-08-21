@@ -139,7 +139,12 @@ fn collect(tokens: &[Token], from: usize, stop: StopAt) -> (Vec<&Token>, usize) 
 /// Spacing matters only where it separates identifiers; `<`, `>`, `,` and the
 /// closers attach to what precedes them, and `|` gets spaces because that is
 /// how a union prints.
-fn spelling(tokens: &[&Token]) -> String {
+/// The one renderer for a type's written form. `pub(crate)` because the
+/// statement parser's three token-collecting positions render with it too —
+/// they used to have their own copy, whose token table was missing every
+/// keyword, so a type spelling holding one came out as the *Debug* name:
+/// `fn(Int) -> Int` read `Fn(Int) -> Int`, `nil` read `Nil`.
+pub(crate) fn spelling(tokens: &[&Token]) -> String {
     let mut out = String::new();
     for (i, token) in tokens.iter().enumerate() {
         if i == 0 {
