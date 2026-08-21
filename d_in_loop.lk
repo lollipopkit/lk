@@ -1,9 +1,0 @@
-fn f() -> Int {
-  let i = 0;
-  while i < 3 {
-    defer println("d" + i);
-    i = i + 1;
-  }
-  return 0;
-}
-println("" + f());

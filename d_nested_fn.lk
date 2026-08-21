@@ -1,3 +1,0 @@
-fn inner() -> Int { defer println("inner defer"); return 1; }
-fn outer() -> Int { defer println("outer defer"); return inner() + 1; }
-println("" + outer());

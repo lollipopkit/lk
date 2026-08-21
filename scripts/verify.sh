@@ -14,8 +14,13 @@
 #
 # Usage:
 #   scripts/verify.sh            # the gates a change has to pass
-#   scripts/verify.sh --fast     # skips the two slow ones (fuzz, perf)
+#   scripts/verify.sh --fast     # skips the slow ones (gc_stress, fuzz, perf, …)
 #   scripts/verify.sh --list     # names the gates and exits
+#
+# Not covered here, because they need a toolchain or emulator this script
+# cannot assume: the QEMU bare-metal smokes (thumbv7em, aarch64), the wasm32
+# playground build, the Zed extension check, miri, and the ASan/UBSan
+# differential runs. `.github/workflows/` is the full set.
 #
 # The AOT gates need the `aot` feature, which is on by default for lk-cli.
 
@@ -26,7 +31,7 @@ for arg in "$@"; do
     case "$arg" in
     --fast) FAST=1 ;;
     --list)
-        printf '%s\n' fmt clippy tests coverage sweep no_std sweep_hybrid fuzz perf
+        printf '%s\n' fmt lk_fmt artifacts clippy tests coverage sweep no_std gc_stress verify_fuzz sweep_hybrid fuzz perf
         exit 0
         ;;
     *)
@@ -59,7 +64,35 @@ gate() {
 }
 
 gate fmt cargo fmt --check
-gate clippy cargo clippy --workspace --all-features -- -D warnings
+
+# `lk fmt --check` over every `.lk` in the repo. It shipped as a CI feature
+# with no workflow running it, and 36 of 97 files were then not in the shape
+# the tool produces — including the ones it is demonstrated on. Needs the
+# binary, so it builds one first.
+lk_fmt_shape() {
+    cargo build -p lk-cli || return 1
+    ./target/debug/lk fmt --check
+}
+gate lk_fmt lk_fmt_shape
+
+# `lk compile foo.lk` writes `foo` — extensionless, so no suffix pattern in
+# `.gitignore` reaches it and `git add -A` after a compile takes it. Two 20MB
+# binaries reached `main` that way. This catches a `git add -f` past the rule.
+no_tracked_artifacts() {
+    local found
+    found=$(git ls-files examples bench | grep -v '\.' || true)
+    if [ -n "$found" ]; then
+        echo "tracked files with no extension under examples/ or bench/ — build artifacts?" >&2
+        echo "$found" >&2
+        return 1
+    fi
+    return 0
+}
+gate artifacts no_tracked_artifacts
+
+# `--all-targets`, like CI: without it clippy never lints test code, which is
+# most of the code added in a normal change.
+gate clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 gate tests cargo test --workspace --all-features
 gate coverage env AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh
 gate sweep bash scripts/vm_native_sweep.sh
@@ -77,6 +110,14 @@ no_std_targets() {
 gate no_std no_std_targets
 
 if [ "$FAST" -eq 0 ]; then
+    # Every GC safepoint collects, so a value the host holds without rooting it
+    # is freed under the holder. The failure it catches is a wrong answer, not a
+    # crash — `json_process.lk` returning the wrong thing is what found it.
+    gate gc_stress env LK_GC_STRESS=1 cargo test -p lk-core -p lk-stdlib -p lk-cli
+    # The artifact decoder against random bytes: a `.lkm` is an untrusted input
+    # to `lk FILE.lkm`, and the verifier is what stands between a corrupt one
+    # and the executor.
+    gate verify_fuzz env LK_FUZZ_CASES=20000 cargo test -p lk-core verify_fuzz
     # The *shipping* configuration. Every other AOT gate pins `LK_AOT_HYBRID=0`
     # — the pure-native measurement is what they are for — so until this existed
     # nothing swept the arrangement a user gets by default: hybrid on, fallback

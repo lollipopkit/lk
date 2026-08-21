@@ -1,7 +1,0 @@
-fn f() -> Int {
-  let n = 1;
-  defer println("saw " + n);
-  n = 2;
-  return n;
-}
-println("" + f());

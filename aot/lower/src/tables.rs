@@ -1540,6 +1540,10 @@ mod tests {
                 "path.{member} lost its native lowering"
             );
         }
+        // A list of one, deliberately: it is the counterpart of the list above
+        // and a member moves between them when its lowering changes. Written as
+        // a loop so that move is an edit to the data, not to the shape.
+        #[allow(clippy::single_element_loop)]
         for member in ["join"] {
             assert!(
                 module_call_abi_rows("path", member).next().is_none(),

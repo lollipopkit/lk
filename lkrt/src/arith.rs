@@ -145,27 +145,6 @@ pub extern "C" fn lkrt_f64_mod_checked(lhs: f64, rhs: f64) -> f64 {
     lhs % rhs
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integer_division_and_remainder() {
-        assert_eq!(lkrt_i64_div_checked(7, 2), 3);
-        assert_eq!(lkrt_i64_mod_checked(7, 2), 1);
-        assert_eq!(lkrt_i64_div_checked(-7, 2), -3);
-        // MIN / -1 must not overflow (UB in raw sdiv); wrapping gives MIN / 0.
-        assert_eq!(lkrt_i64_div_checked(i64::MIN, -1), i64::MIN);
-        assert_eq!(lkrt_i64_mod_checked(i64::MIN, -1), 0);
-    }
-
-    #[test]
-    fn float_division_and_remainder() {
-        assert_eq!(lkrt_f64_div_checked(7.0, 2.0), 3.5);
-        assert_eq!(lkrt_f64_mod_checked(7.0, 2.0), 1.0);
-    }
-}
-
 /// `value as <machine int>` — a float narrowed to a fixed width.
 ///
 /// Saturating to the *target's* range, which is what `as` means from a float.
@@ -196,5 +175,26 @@ pub extern "C" fn lkrt_f64_to_machine_int(value: f64, bits: i64, signed: i64) ->
         high
     } else {
         value as i64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_division_and_remainder() {
+        assert_eq!(lkrt_i64_div_checked(7, 2), 3);
+        assert_eq!(lkrt_i64_mod_checked(7, 2), 1);
+        assert_eq!(lkrt_i64_div_checked(-7, 2), -3);
+        // MIN / -1 must not overflow (UB in raw sdiv); wrapping gives MIN / 0.
+        assert_eq!(lkrt_i64_div_checked(i64::MIN, -1), i64::MIN);
+        assert_eq!(lkrt_i64_mod_checked(i64::MIN, -1), 0);
+    }
+
+    #[test]
+    fn float_division_and_remainder() {
+        assert_eq!(lkrt_f64_div_checked(7.0, 2.0), 3.5);
+        assert_eq!(lkrt_f64_mod_checked(7.0, 2.0), 1.0);
     }
 }

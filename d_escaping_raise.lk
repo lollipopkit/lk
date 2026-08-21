@@ -1,6 +1,0 @@
-fn g() -> Int {
-  defer println("g defer");
-  let m = {"a": 1};
-  return m["missing"].len();
-}
-try { println("" + g()); } catch e { println("E " + e); }
