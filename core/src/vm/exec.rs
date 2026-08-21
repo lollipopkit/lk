@@ -1451,7 +1451,7 @@ impl Executor {
                     profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
                 }
                 Opcode::GetGlobal => {
-                    let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+                    let slot = self.global_slot_from_fact_or_instr(function, instr);
                     let value = self.read_global(slot)?;
                     self.write(instr.a(), value)?;
                     profile.record_write_source(VmRegisterWriteSource::Global, collect_metrics);

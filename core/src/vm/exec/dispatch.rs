@@ -647,7 +647,7 @@ impl Executor {
         } else {
             *self.read(instr.a())?
         };
-        let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+        let slot = self.global_slot_from_fact_or_instr(function, instr);
         self.write_global(slot, value)?;
         self.pc += 1;
         Ok(())

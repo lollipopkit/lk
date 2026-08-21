@@ -586,6 +586,18 @@ impl Executor {
         bail!("jump before start of function")
     }
 
+    /// The call's shape: the function's own fact, else read off the
+    /// instruction.
+    ///
+    /// There used to be a third source between them — a cache in the module
+    /// *state*, keyed by pc alone. Keyed by pc alone across every function in
+    /// the module: two functions with a call at the same pc shared an entry, so
+    /// the second would have taken the first's call base and argument counts.
+    /// It never fired (the compiler records a fact for every call site it
+    /// emits, and artifact v4 serializes them, so the first branch always
+    /// wins), which is the only reason that was not a wrong answer waiting for
+    /// a program to find it. Measured across `examples/` and the bench: zero
+    /// reads reached it, while every call paid the write that filled it.
     #[inline]
     pub(super) fn call_fact_from_static_cache_or_instr(
         &mut self,
@@ -596,10 +608,6 @@ impl Executor {
         if let Some(fact) = function.performance.call_site(self.pc).copied()
             && (named || fact.named_count == 0)
         {
-            self.state.inline_caches.set_call(self.pc, fact);
-            return fact;
-        }
-        if let Some(fact) = self.state.inline_caches.call(self.pc) {
             return fact;
         }
         let (positional_count, named_count) = if named {
@@ -608,27 +616,26 @@ impl Executor {
         } else {
             (instr.c() as u16, 0)
         };
-        let fact = PerfCallFact {
+        PerfCallFact {
             // A holds the call-window base. B is only 7 bits and would truncate call_base >= 128.
             call_base: instr.a() as u16,
             positional_count,
             named_count,
             target_kind: self.observe_call_target_kind(instr.a() as u16),
-        };
-        self.state.inline_caches.set_call(self.pc, fact);
-        fact
+        }
     }
 
+    /// The global slot a `GetGlobal`/`SetGlobal` names.
+    ///
+    /// Same story as the call shape above: a pc-keyed state cache sat between
+    /// the fact and the instruction, shared by every function in the module.
     #[inline]
-    pub(super) fn global_slot_from_fact_cache_or_instr(&mut self, function: &Function, instr: Instr) -> u16 {
-        let slot = function
+    pub(super) fn global_slot_from_fact_or_instr(&mut self, function: &Function, instr: Instr) -> u16 {
+        function
             .performance
             .global_op(self.pc)
             .map(|fact| fact.slot)
-            .or_else(|| self.state.inline_caches.global(self.pc))
-            .unwrap_or_else(|| instr.bx());
-        self.state.inline_caches.set_global(self.pc, slot);
-        slot
+            .unwrap_or_else(|| instr.bx())
     }
 
     #[inline(always)]

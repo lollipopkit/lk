@@ -1,9 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::{
-    val::HeapRef,
-    vm::analysis::{PerfCallFact, PerfIndexFact},
-};
+use crate::{val::HeapRef, vm::analysis::PerfIndexFact};
 
 #[derive(Clone, Copy, Debug)]
 pub struct IndexInlineCache {
@@ -15,23 +12,10 @@ pub struct IndexInlineCache {
 
 #[derive(Clone, Debug, Default)]
 pub struct InlineCaches {
-    pub globals: Vec<Option<u16>>,
     pub indexes: Vec<Option<IndexInlineCache>>,
-    pub calls: Vec<Option<PerfCallFact>>,
 }
 
 impl InlineCaches {
-    pub fn global(&self, pc: usize) -> Option<u16> {
-        self.globals.get(pc).copied().flatten()
-    }
-
-    pub fn set_global(&mut self, pc: usize, slot: u16) {
-        if self.globals.len() <= pc {
-            self.globals.resize(pc + 1, None);
-        }
-        self.globals[pc] = Some(slot);
-    }
-
     pub fn index(&self, pc: usize, handle: HeapRef, generation: u64) -> Option<IndexInlineCache> {
         self.indexes
             .get(pc)
@@ -65,17 +49,6 @@ impl InlineCaches {
 
     pub fn index_cache_for_tests(&self, pc: usize) -> Option<IndexInlineCache> {
         self.indexes.get(pc).copied().flatten()
-    }
-
-    pub fn call(&self, pc: usize) -> Option<PerfCallFact> {
-        self.calls.get(pc).copied().flatten()
-    }
-
-    pub fn set_call(&mut self, pc: usize, fact: PerfCallFact) {
-        if self.calls.len() <= pc {
-            self.calls.resize(pc + 1, None);
-        }
-        self.calls[pc] = Some(fact);
     }
 }
 

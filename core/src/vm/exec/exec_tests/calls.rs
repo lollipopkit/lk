@@ -1,5 +1,5 @@
 use super::*;
-use crate::vm::analysis::{PerfCallFact, PerfCallTargetKind};
+use crate::vm::analysis::PerfCallFact;
 
 #[test]
 fn execute_module_calls_closure_function() {
@@ -144,15 +144,11 @@ fn execute_module_caches_call_shape_without_static_fact() {
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(module.functions[0].performance.call_site(3).is_none());
-    assert_eq!(
-        result.state.inline_caches.call(3),
-        Some(PerfCallFact {
-            call_base: 0,
-            positional_count: 2,
-            named_count: 0,
-            target_kind: PerfCallTargetKind::Closure,
-        })
-    );
+    // The shape came off the instruction, which is the point: this module has
+    // no call-site fact and the call still ran with the right window. It used
+    // to also be asserted that the *state* cached the shape by pc; that cache
+    // is gone — it was keyed by pc across every function in the module, and
+    // nothing ever read it.
 }
 
 #[test]
@@ -204,15 +200,7 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     assert_eq!(result.state.stack[1], RuntimeVal::Nil);
     assert_eq!(result.state.stack[2], RuntimeVal::Nil);
     assert_eq!(result.state.stack[3], RuntimeVal::Nil);
-    assert_eq!(
-        result.state.inline_caches.call(4),
-        Some(PerfCallFact {
-            call_base: 0,
-            positional_count: 1,
-            named_count: 1,
-            target_kind: PerfCallTargetKind::Closure,
-        })
-    );
+    // As above: no fact, and the named call still placed its arguments.
 }
 
 #[test]
