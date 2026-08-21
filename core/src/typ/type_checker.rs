@@ -886,6 +886,15 @@ impl TypeChecker {
     }
 
     /// Retrieve a function signature by name
+    /// Every function name the checker currently holds a signature for.
+    ///
+    /// For a caller checking a *sequence* of programs against one checker — see
+    /// `ReplVmSession::execute_program`, which uses it to keep a declaration at
+    /// the generality it was declared with.
+    pub fn declared_function_names(&self) -> Vec<String> {
+        self.function_sigs.keys().cloned().collect()
+    }
+
     pub fn get_function_sig(&self, name: &str) -> Option<&FunctionSig> {
         self.function_sigs.get(name)
     }
@@ -898,6 +907,14 @@ impl TypeChecker {
             ..
         } = self;
         inference_engine.solve_constraints(registry)
+    }
+
+    /// Forget what inference has learned, keeping every declaration.
+    ///
+    /// See [`TypeInferenceEngine::forget_inferences`] — this is for a caller
+    /// checking a sequence of independent programs against one checker.
+    pub fn forget_inferences(&mut self) {
+        self.inference_engine.forget_inferences();
     }
 
     /// Add a type constraint via the inference engine (for use by external type-checking passes).

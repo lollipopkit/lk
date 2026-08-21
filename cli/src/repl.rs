@@ -583,6 +583,45 @@ mod tests {
         assert_eq!(imported.display_first_return(), "3");
     }
 
+    /// An unannotated parameter is not pinned by the first call.
+    ///
+    /// The checker applies its solved substitutions to everything it has
+    /// recorded once the program is checked — right for one program, and the
+    /// REPL checks a sequence of them. `fn f(x) { return x; }` followed by
+    /// `f(1)` left `f` recorded as `(Int) -> Int`, so `f("a")` on the next input
+    /// answered "Cannot unify Int with String". The same three lines in a file
+    /// are fine.
+    #[cfg(feature = "stdlib")]
+    #[test]
+    fn an_open_parameter_is_not_pinned_by_the_first_call() {
+        let mut session = ReplSession::new().expect("repl session");
+
+        session
+            .execute_input("fn f(x) { return x; }")
+            .expect("the definition is accepted")
+            .expect("the definition runs");
+        for (input, expected) in [("f(1)", "1"), ("f(\"a\")", "a"), ("f([1, 2])", "[1,2]")] {
+            let result = session
+                .execute_input(input)
+                .expect("the call is accepted")
+                .unwrap_or_else(|error| panic!("`{input}` after an earlier call: {error}"));
+            assert_eq!(result.display_first_return(), expected);
+        }
+
+        // A parameter the source *did* annotate still holds its claim.
+        session
+            .execute_input("fn h(x: Int) -> Int { return x; }")
+            .expect("the definition is accepted")
+            .expect("the definition runs");
+        assert!(
+            session
+                .execute_input("h(\"a\")")
+                .expect("the call is accepted")
+                .is_err(),
+            "an annotated parameter must still reject a String"
+        );
+    }
+
     #[cfg(feature = "stdlib")]
     #[test]
     fn expression_fallback_echoes_values_but_not_nil_returns() {

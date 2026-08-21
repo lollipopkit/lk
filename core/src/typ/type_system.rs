@@ -508,6 +508,24 @@ impl TypeInferenceEngine {
     }
 
     /// Add a constraint that two types must be equal
+    /// Drop everything learned so far, keeping the variable counter.
+    ///
+    /// For a caller that checks a *sequence* of independent programs against one
+    /// checker — the REPL. Each input is its own program, and a name declared in
+    /// an earlier one is carried in `function_sigs` with the type variables it
+    /// was given then. Without clearing, a call in the second input binds those
+    /// variables for good: `fn f(x) { return x; }` then `f(1)` then `f("a")`
+    /// answered "Cannot unify Int with String", where the same three lines in a
+    /// file are fine, because there `f` is predeclared fresh for the one program
+    /// being checked.
+    ///
+    /// The counter is *not* reset, so a variable minted later never collides
+    /// with one still named in a carried signature.
+    pub fn forget_inferences(&mut self) {
+        self.substitutions.clear();
+        self.constraints.clear();
+    }
+
     pub fn add_constraint(&mut self, t1: Type, t2: Type) {
         self.constraints.push((t1, t2));
     }

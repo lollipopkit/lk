@@ -45,7 +45,9 @@ impl ReplVmSession {
 
     pub fn execute_program(&mut self, program: &Program) -> Result<ReplExecutionResult> {
         let mut next_type_checker = self.type_checker.clone();
+        let carried = self.carried_function_types(program);
         program.type_check(&mut next_type_checker)?;
+        restore_carried_function_types(&mut next_type_checker, carried);
 
         let (runtime_program, declared_names) = repl_runtime_program(program, &self.persistent_names)?;
         // The session's own bindings are user data, not module objects: without
@@ -60,9 +62,42 @@ impl ReplVmSession {
         )?;
         let result = crate::vm::execute_compiled_module_with_ctx(module, &mut self.ctx)?;
 
+        // Each input is its own program, so what inference learned about the
+        // last one must not bind the next: see `TypeChecker::forget_inferences`.
         self.type_checker = next_type_checker;
         self.persistent_names.extend(declared_names);
         self.sync_result_globals(result)
+    }
+
+    /// The recorded types of functions this program does *not* declare.
+    ///
+    /// After checking a program the checker applies the solved substitutions to
+    /// everything it has recorded — right for one program, and wrong for a
+    /// sequence of them. An unannotated parameter's type is a derivation from
+    /// the body rather than a claim by the source (see `FunctionSig::annotated`),
+    /// and this turned one input's derivation into a claim binding every later
+    /// input: `fn f(x) { return x; }` then `f(1)` left `f` as `(Int) -> Int`, so
+    /// `f("a")` on the next line answered "Cannot unify Int with String". The
+    /// same three lines in a file are fine, because there the substitution pass
+    /// runs once with every call site already contributing to it.
+    ///
+    /// A function the program *does* declare is left alone: its definition and
+    /// this input's uses were checked together, exactly as in a file.
+    fn carried_function_types(
+        &self,
+        program: &Program,
+    ) -> Vec<(String, crate::typ::FunctionSig, Option<crate::val::Type>)> {
+        let declared_here = declared_function_names(program);
+        self.type_checker
+            .declared_function_names()
+            .into_iter()
+            .filter(|name| !declared_here.contains(name.as_str()))
+            .filter_map(|name| {
+                let sig = self.type_checker.get_function_sig(&name)?.clone();
+                let local = self.type_checker.get_local_type(&name).cloned();
+                Some((name, sig, local))
+            })
+            .collect()
     }
 
     fn sync_result_globals(&mut self, result: crate::vm::ProgramResult) -> Result<ReplExecutionResult> {
@@ -105,6 +140,37 @@ impl ReplExecutionResult {
     pub fn display_first_return(&self) -> String {
         self.display_first_return.clone().unwrap_or_else(|| "nil".to_string())
     }
+}
+
+fn restore_carried_function_types(
+    checker: &mut TypeChecker,
+    carried: Vec<(String, crate::typ::FunctionSig, Option<crate::val::Type>)>,
+) {
+    for (name, sig, local) in carried {
+        checker.add_function_sig(name.clone(), sig);
+        if let Some(local) = local {
+            checker.add_local_type(name, local);
+        }
+    }
+}
+
+/// The names of functions a program declares at its top level, including the
+/// constructor a `struct` brings with it.
+fn declared_function_names(program: &Program) -> BTreeSet<String> {
+    fn item(stmt: &Stmt) -> &Stmt {
+        match stmt {
+            Stmt::Attributed { item, .. } => item,
+            other => other,
+        }
+    }
+    program
+        .statements
+        .iter()
+        .filter_map(|stmt| match item(stmt.as_ref()) {
+            Stmt::Function { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn repl_runtime_program(program: &Program, existing_names: &BTreeSet<String>) -> Result<(Program, BTreeSet<String>)> {
