@@ -682,6 +682,34 @@ pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
     }
 }
 
+/// Marks a map as an instance of the struct *named* `name`.
+///
+/// The hybrid bridge's need: a struct coming back from the embedded VM arrives
+/// as a name and a field map, and the type ids are assigned by the lowering, so
+/// only the runtime registry can turn one into the other. Returns 0 when the
+/// name is not a declared struct here — the caller then has a plain map, which
+/// is what it would have had anyway.
+///
+/// # Safety
+/// `handle` must be a live `Map<str, Dyn>` handle or null; `name` a
+/// NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_obj_mark_by_name(handle: *mut c_void, name: *const c_char) -> i64 {
+    if handle.is_null() || name.is_null() {
+        return 0;
+    }
+    // SAFETY: as documented.
+    let name = unsafe { core::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    let Some(type_id) = with_struct_types(|types| types.iter().find(|(_, desc)| desc.name == name).map(|(id, _)| *id))
+    else {
+        return 0;
+    };
+    lkrt_lkmap_obj_mark(handle, type_id);
+    type_id
+}
+
 /// [`lkrt_lkmap_obj_mark`], and then measures what is already in the map
 /// against the declaration.
 ///

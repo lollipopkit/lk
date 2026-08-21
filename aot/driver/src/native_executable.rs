@@ -155,18 +155,20 @@ fn hybrid_wrapper_c(module_artifact_json: &str) -> String {
                                            void (*list_dyn_push)(void *, LkDyn),\n\
                                            void *(*map_str_dyn_new)(void),\n\
                                            void (*map_str_dyn_set)(void *, const char *, LkDyn),\n\
+                                           long long (*obj_mark_by_name)(void *, const char *),\n\
                                            void (*raise_dyn)(LkDyn));\n\
          extern void *lkrt_lklist_dyn_new(void);\n\
          extern void lkrt_lklist_dyn_push(void *, LkDyn);\n\
          extern void *lkrt_lkmap_str_dyn_new(void);\n\
          extern void lkrt_lkmap_str_dyn_set(void *, const char *, LkDyn);\n\
+         extern long long lkrt_lkmap_obj_mark_by_name(void *, const char *);\n\
          extern void lkrt_rt_raise_dyn(LkDyn);\n\
          static const char *LK_HYBRID_ARTIFACT = \"{escaped}\";\n\
          __attribute__((constructor)) static void lk_hybrid_setup(void) {{\n\
              lk_hybrid_register(LK_HYBRID_ARTIFACT);\n\
              lk_hybrid_register_rt(lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,\n\
                                    lkrt_lkmap_str_dyn_new, lkrt_lkmap_str_dyn_set,\n\
-                                   lkrt_rt_raise_dyn);\n\
+                                   lkrt_lkmap_obj_mark_by_name, lkrt_rt_raise_dyn);\n\
          }}\n"
     )
 }

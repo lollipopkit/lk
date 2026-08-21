@@ -1137,12 +1137,16 @@ pub mod ffi {
     type ListDynPush = unsafe extern "C" fn(*mut c_void, LkHybridDyn);
     type MapStrDynNew = unsafe extern "C" fn() -> *mut c_void;
     type MapStrDynSet = unsafe extern "C" fn(*mut c_void, *const c_char, LkHybridDyn);
+    /// Marks a field map as an instance of the struct of this name. See
+    /// `marshal_object`.
+    type ObjMarkByName = unsafe extern "C" fn(*mut c_void, *const c_char) -> i64;
     type RaiseDyn = unsafe extern "C" fn(LkHybridDyn);
 
     static RT_LIST_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_LIST_DYN_PUSH: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_SET: AtomicUsize = AtomicUsize::new(0);
+    static RT_OBJ_MARK_BY_NAME: AtomicUsize = AtomicUsize::new(0);
     static RT_RAISE_DYN: AtomicUsize = AtomicUsize::new(0);
 
     /// Register the lkrt runtime table (hybrid wrapper C constructor):
@@ -1155,12 +1159,14 @@ pub mod ffi {
         list_dyn_push: ListDynPush,
         map_str_dyn_new: MapStrDynNew,
         map_str_dyn_set: MapStrDynSet,
+        obj_mark_by_name: ObjMarkByName,
         raise_dyn: RaiseDyn,
     ) {
         RT_LIST_DYN_NEW.store(list_dyn_new as usize, Ordering::Release);
         RT_LIST_DYN_PUSH.store(list_dyn_push as usize, Ordering::Release);
         RT_MAP_STR_DYN_NEW.store(map_str_dyn_new as usize, Ordering::Release);
         RT_MAP_STR_DYN_SET.store(map_str_dyn_set as usize, Ordering::Release);
+        RT_OBJ_MARK_BY_NAME.store(obj_mark_by_name as usize, Ordering::Release);
         RT_RAISE_DYN.store(raise_dyn as usize, Ordering::Release);
     }
 
@@ -1169,6 +1175,7 @@ pub mod ffi {
         list_dyn_push: ListDynPush,
         map_str_dyn_new: MapStrDynNew,
         map_str_dyn_set: MapStrDynSet,
+        obj_mark_by_name: ObjMarkByName,
     }
 
     fn hybrid_rt() -> HybridRt {
@@ -1176,7 +1183,13 @@ pub mod ffi {
         let list_dyn_push = RT_LIST_DYN_PUSH.load(Ordering::Acquire);
         let map_str_dyn_new = RT_MAP_STR_DYN_NEW.load(Ordering::Acquire);
         let map_str_dyn_set = RT_MAP_STR_DYN_SET.load(Ordering::Acquire);
-        if list_dyn_new == 0 || list_dyn_push == 0 || map_str_dyn_new == 0 || map_str_dyn_set == 0 {
+        let obj_mark_by_name = RT_OBJ_MARK_BY_NAME.load(Ordering::Acquire);
+        if list_dyn_new == 0
+            || list_dyn_push == 0
+            || map_str_dyn_new == 0
+            || map_str_dyn_set == 0
+            || obj_mark_by_name == 0
+        {
             hybrid_die(format_args!(
                 "container return needs the lkrt constructor table (lk_hybrid_register_rt)"
             ));
@@ -1189,6 +1202,7 @@ pub mod ffi {
                 list_dyn_push: core::mem::transmute::<usize, ListDynPush>(list_dyn_push),
                 map_str_dyn_new: core::mem::transmute::<usize, MapStrDynNew>(map_str_dyn_new),
                 map_str_dyn_set: core::mem::transmute::<usize, MapStrDynSet>(map_str_dyn_set),
+                obj_mark_by_name: core::mem::transmute::<usize, ObjMarkByName>(obj_mark_by_name),
             }
         }
     }
@@ -1256,6 +1270,7 @@ pub mod ffi {
                 Some(HeapValue::String(value)) => leaked_c_string(value.as_ref()),
                 Some(HeapValue::List(list)) => marshal_list(list, state, depth),
                 Some(HeapValue::Map(map)) => marshal_map(map, state, depth),
+                Some(HeapValue::Object(object)) => marshal_object(object, state, depth),
                 Some(other) => hybrid_die(format_args!(
                     "bridged return kind not yet marshalable: {}",
                     other.type_name()
@@ -1302,6 +1317,44 @@ pub mod ffi {
             }
             LkHybridDyn {
                 tag: LK_HYBRID_DYN_LIST,
+                payload: handle as i64,
+            }
+        }
+    }
+
+    /// A struct instance: its fields as a `str -> Dyn` map, marked with the
+    /// declared name so `typeof` and `println` answer `P` rather than `Map`.
+    ///
+    /// This arm did not exist, so a bridged function that *returned* a struct
+    /// aborted the program — `bridged return kind not yet marshalable: P`. The
+    /// hybrid test had one and discarded the result, which is why nothing saw
+    /// it: a value that is never used is never marshalled.
+    ///
+    /// A name the native side does not know (a struct declared only inside the
+    /// bridged module) leaves the map unmarked, which is the same answer the
+    /// native side gives for a struct whose declaration is out of reach.
+    fn marshal_object(
+        object: &lk_core::val::RuntimeObject,
+        state: &lk_core::vm::RuntimeModuleState,
+        depth: usize,
+    ) -> LkHybridDyn {
+        let rt = hybrid_rt();
+        // SAFETY: as in `marshal_map`.
+        unsafe {
+            let handle = (rt.map_str_dyn_new)();
+            for (key, value) in object.fields_iter() {
+                let Ok(key_c) = std::ffi::CString::new(key) else {
+                    hybrid_die(format_args!("bridged struct field name contains an embedded NUL"));
+                };
+                let element = marshal_value(value, state, depth + 1);
+                (rt.map_str_dyn_set)(handle, key_c.into_raw(), element);
+            }
+            let Ok(name) = std::ffi::CString::new(object.type_name().as_ref()) else {
+                hybrid_die(format_args!("bridged struct name contains an embedded NUL"));
+            };
+            (rt.obj_mark_by_name)(handle, name.as_ptr());
+            LkHybridDyn {
+                tag: LK_HYBRID_DYN_MAP,
                 payload: handle as i64,
             }
         }

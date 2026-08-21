@@ -2454,3 +2454,31 @@ Rust drop),以及失败的任务会漏掉一个装参数的小 `Vec`——上界
 
 `a_task_hands_its_raise_to_its_awaiter` 钉三条:await 捕获、无人 await 时静默、
 正常返回不受影响。
+
+## §68 桥回来的结构体过不去,而那正是默认配置(2026-08-21)
+
+Tier 1 桥把 VM 端算出的值 marshal 回原生端,`marshal_value` 有 Nil/Bool/Int/Float/
+Str/List/Map 七支——**没有 Object**。所以一个被桥接的函数只要**返回**结构体,程序
+就死:
+
+```
+lk hybrid bridge: bridged return kind not yet marshalable: P
+```
+
+而 `LK_AOT_HYBRID=1` 是默认。响亮失败,不是错答,但整整一类程序在默认配置下跑不了。
+
+已有的 hybrid 测试里其实有一个返回结构体的桥接函数(`mkp(7)`),但它**把结果丢掉了**
+——没人用的值不会被 marshal,所以这个洞一直看不见。给那行加上
+`println(typeof(p)); println(p);`,测试当场变红。
+
+补法:`marshal_object` 把字段建成 `str -> Dyn` map,再按**名字**打类型标记。id 是
+降低期分配的,只有运行时注册表能把名字换成 id,所以 lkrt 加一个
+`lkrt_lkmap_obj_mark_by_name`,并进桥的构造器表(lk-api 从不链接 lkrt,只通过
+wrapper 的 C 构造器拿函数指针——所以表和 wrapper 的签名要一起改)。名字在原生端
+不认识时不打标记,答案就是一张普通 map——和"声明够不到的结构体"在原生端本来的
+答案一致。
+
+顺带记一条门禁缺口:每一条 AOT 门禁都钉 `LK_AOT_HYBRID=0`(它们量的是纯原生),
+所以**用户实际拿到的那套配置从来没有被扫过**。`vm_native_sweep.sh --hybrid` 是
+那一趟:74 个一致、1 个允许分歧、0 个编译失败——比纯原生那趟还多一个
+(workspace 那个示例纯原生编不了,桥接编得了)。

@@ -432,6 +432,12 @@ impl RuntimeObject {
         (slot_key.as_ref() == key).then_some(*value)
     }
 
+    /// The fields in declaration order, for a reader that needs all of them —
+    /// the hybrid bridge marshalling a struct back to the native side.
+    pub fn fields_iter(&self) -> impl Iterator<Item = (&str, RuntimeVal)> {
+        self.fields.iter().map(|(key, value)| (key.as_ref(), *value))
+    }
+
     pub fn set_field(&mut self, key: Arc<str>, value: RuntimeVal) {
         // A new key lands at the end, an existing one keeps its slot — which is
         // `IndexMap::insert`'s own behaviour, and used to need a second write to
