@@ -229,7 +229,11 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
          fn user(name) { let f = \"u={}\".trim(); println(f, name); \
          return {\"name\": name, \"score\": 95, \"tags\": [1, 2]}; }\n\
          fn mkp(x: Int) { let f = \"p={}\".trim(); println(f, x); return P { tag: x }; }\n\
+         fn strs(n) { let f = \"s={}\".trim(); println(f, n); return [\"a\", \"b\"]; }\n\
          let p = mkp(7);\n\
+         let ss = strs(1);\n\
+         println(ss);\n\
+         println(ss[1]);\n\
          println(typeof(p));\n\
          println(p);\n\
          let r = rows(3);\n\

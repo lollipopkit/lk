@@ -1285,14 +1285,12 @@ pub mod ffi {
         state: &lk_core::vm::RuntimeModuleState,
         depth: usize,
     ) -> LkHybridDyn {
-        // A typed string list displays *quoted* in the VM while `ListDyn`
-        // displays bare (the Mixed-list quirk) — converting would silently
-        // change program output, so it stays unmarshalable for now.
-        if matches!(list, lk_core::val::TypedList::String(_)) {
-            hybrid_die(format_args!(
-                "bridged return kind not yet marshalable: List<Str> (quoted typed display)"
-            ));
-        }
+        // A typed string list used to be refused here, on the grounds that it
+        // displays *quoted* in the VM while a `ListDyn` displays bare, so
+        // converting would change the program's output. Both display quoted
+        // now — `println(["a", "b"])` and the same list typed `List<Any>` agree
+        // on either engine — and the branch below already knew how to convert
+        // one, which the refusal above it made dead code.
         let rt = hybrid_rt();
         // SAFETY: the constructor table points at lkrt's no-mangle builders
         // (registered by the wrapper); handles stay arena-owned.
