@@ -3591,7 +3591,15 @@ Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
 模块传值是结构化深拷贝,不是共享句柄。这条规则本身是对的,但 REPL 的一次会话
 在概念上是**一个程序**,不是一串模块,规则用错了地方。
 
-要修得让会话共用一个堆:每次输入的模块对着同一个 `RuntimeModuleState` 的堆执行,
-句柄才跨输入有效,`exports_from_state` 也就不必来回复制。难点是**谁来做 GC 根**
-——现在是每个模块自己的 globals 槽在做根,而两次输入的 globals 布局不同,不能
-整个共享 state。设计时要针对的约束是这一条,不是复制本身。
+要修得让会话共用一个堆:每次输入的模块对着同一个堆执行,句柄才跨输入有效,
+`seed_module_globals` 也就不必把每个 runtime global 复制进新堆
+(`execute_compiled_module_with_ctx_full` 里现在是 `HeapStore::new()`)。
+
+**真正的拦路石不是复制,是重入。** 直接共享一个 `RuntimeModuleState` 行不通:
+调用一个跨模块函数会把状态从它的 mutex 里**整个取走**并置
+`borrowed_for_call`(`take_runtime_callable_state`),所以第 3 次输入去调第 1 次
+输入定义的函数时,会撞上正在执行的同一个状态,得到
+`ReentrantModule::AlreadyExecuting`。要共享,得先把**堆**从
+`RuntimeModuleState` 里拆出去(堆是会话级的,globals 槽和 `borrowed_for_call`
+仍然按模块各一份)——这正是 CLAUDE.md 里 `val ↔ vm` 那条边界的问题。设计时要
+针对的约束是这一条。
