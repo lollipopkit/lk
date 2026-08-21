@@ -122,7 +122,11 @@ impl ReplSession {
             .with_resolver(resolver)
             .with_type_checker(Some(TypeChecker::new_strict()));
         startup.step("vm context created");
-        let vm = ReplVmSession::new(ctx, TypeChecker::new());
+        let mut vm = ReplVmSession::new(ctx, TypeChecker::new());
+        // An import path is relative to the working directory here, the same as
+        // for `lk FILE` — this is what lets `use { Pt } from "lib";` bring the
+        // *type* and not only the value.
+        vm.set_base_dir(cwd);
         startup.step("repl vm session created");
 
         Ok(Self {

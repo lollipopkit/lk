@@ -3601,7 +3601,15 @@ Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
 (`self.base()`),跨输入调用仍会撞上模块边界的派发限制(见
 `docs/vm-cross-module-dispatch.md`),那属于下面第三条。
 
-**三、跨输入的函数改不动传进去的值(未修)。**
+**三、导入只带来了值,没带来类型(已修)。** 其它每个入口都会用
+`typ::seed_imported_signatures` 把导入声明的签名和类型喂给检查器(文件由 CLI 喂、
+编译由原生编译器喂、被当作导入加载的模块由 `execute_with_ctx_from` 喂),会话这条
+路没有。于是 `use { Pt } from "lib";` 只绑定了构造器,类型仍然未知,`Pt { x: 1 }`
+被拒绝——而拒绝的消息恰好建议"按名导入它",也就是用户刚写过的那一行。
+`use * as m from "lib"; m.Pt { … }` 一直是好的,因为命名空间那条路不查这张表。
+现在会话按工作目录喂,和 `lk FILE` 一致。
+
+**四、跨输入的函数改不动传进去的值(未修)。**
 
 ```
 > fn push_it(xs) { xs.push(9); }

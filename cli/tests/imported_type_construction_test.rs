@@ -159,6 +159,45 @@ fn a_type_alias_is_refused_without_denying_it_exists() {
     );
 }
 
+/// The REPL brings the *type* an import names, not only its value.
+///
+/// Every other entry point seeds the checker with what an import declares
+/// (`typ::seed_imported_signatures`): the CLI for a file, the native compiler
+/// for a compile, `execute_with_ctx_from` for a module loaded as an import. The
+/// session did not, so `use { P } from "geo";` bound the constructor and left
+/// the type unknown — and `P { x: 1 }` was refused by a message suggesting the
+/// import that had just been written.
+#[test]
+fn the_repl_gets_the_type_an_import_names() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    with_geo(dir.path());
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .current_dir(dir.path())
+        .env("LK_FORCE_VM", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn repl");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"use { P } from \"geo\";\nP { x: 3 }\nP { x: 4 }.norm()\n")
+        .expect("write session");
+    let out = child.wait_with_output().expect("repl output");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(stdout.contains("P{x:3}"), "stdout: {stdout}\nstderr: {stderr}");
+    // The imported type's own method, on a value built by the bare literal on a
+    // later input.
+    assert!(stdout.contains("16"), "stdout: {stdout}\nstderr: {stderr}");
+}
+
 /// The two backends agree on a struct built in another file — through either
 /// spelling.
 ///

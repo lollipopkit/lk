@@ -30,6 +30,17 @@ pub struct ReplVmSession {
     /// Default method bodies from every `trait` the session has declared, so a
     /// later input's `impl` gets them — see `apply_carried_trait_defaults`.
     trait_defaults: crate::compat::collections::HashMap<String, Vec<Stmt>>,
+    /// Where an import path is relative to, for the *type* side of an import.
+    ///
+    /// Every other entry point seeds the checker with the signatures an import
+    /// brings (`typ::seed_imported_signatures` — the CLI does it for a file,
+    /// the native compiler for a compile, and `execute_with_ctx_from` for a
+    /// module loaded as an import). The session did not, so `use { Pt } from
+    /// "lib";` bound the value and left the *type* unknown: `Pt { x: 1, y: 2 }`
+    /// was refused with "no type named `Pt` is declared here", by a message
+    /// that then suggested writing the import that had just been written.
+    #[cfg(feature = "std")]
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl ReplVmSession {
@@ -40,7 +51,16 @@ impl ReplVmSession {
             persistent_names: BTreeSet::new(),
             struct_decls: Vec::new(),
             trait_defaults: crate::compat::collections::HashMap::new(),
+            #[cfg(feature = "std")]
+            base_dir: None,
         }
+    }
+
+    /// Where this session's import paths are relative to — the working
+    /// directory, for the REPL.
+    #[cfg(feature = "std")]
+    pub fn set_base_dir(&mut self, base_dir: std::path::PathBuf) {
+        self.base_dir = Some(base_dir);
     }
 
     pub fn ctx(&self) -> &VmContext {
@@ -66,6 +86,12 @@ impl ReplVmSession {
         };
         let mut next_type_checker = self.type_checker.clone();
         let carried = self.carried_function_types(program);
+        // The signatures and types this input's imports bring, before checking
+        // it — see `base_dir`.
+        #[cfg(feature = "std")]
+        if let Some(base_dir) = self.base_dir.as_deref() {
+            crate::typ::seed_imported_signatures(program, base_dir, &mut next_type_checker);
+        }
         program.type_check(&mut next_type_checker)?;
         restore_carried_function_types(&mut next_type_checker, carried);
 
