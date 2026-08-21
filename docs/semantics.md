@@ -3567,7 +3567,17 @@ Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
 写在同一行、写在文件里、或跨真正的 `use` 导入,同样的值都按声明顺序打印。现在
 会话把已声明的 struct 带进后续每次输入的模块(本次输入自己重新声明的优先)。
 
-**二、跨输入的函数改不动传进去的值(未修)。**
+**二、trait 的默认方法体(已修)。** 默认方法体是在**解析期**、针对一个程序的
+语句列表,复制进那些没写它的 `impl` 里的。`trait` 在一次输入、`impl` 在下一次
+输入时,后者根本没见过默认体,检查器报 "Method 'tripled' required by trait
+'Scaled' not implemented for type 'Rect'" —— 而这个方法本来就不必写。现在会话
+把已声明 trait 的默认体带进后续输入(`impl` 自己写了的方法仍然优先)。
+
+注意这只解开了「找不到默认体」这一层;默认体如果做**动态派发的调用**
+(`self.base()`),跨输入调用仍会撞上模块边界的派发限制(见
+`docs/vm-cross-module-dispatch.md`),那属于下面第三条。
+
+**三、跨输入的函数改不动传进去的值(未修)。**
 
 ```
 > fn push_it(xs) { xs.push(9); }

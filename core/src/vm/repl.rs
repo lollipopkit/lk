@@ -27,6 +27,9 @@ pub struct ReplVmSession {
     /// Every `struct` the session has declared, in the order first seen — see
     /// [`ReplVmSession::carry_struct_declarations`].
     struct_decls: Vec<crate::vm::StructDecl>,
+    /// Default method bodies from every `trait` the session has declared, so a
+    /// later input's `impl` gets them — see `apply_carried_trait_defaults`.
+    trait_defaults: crate::compat::collections::HashMap<String, Vec<Stmt>>,
 }
 
 impl ReplVmSession {
@@ -36,6 +39,7 @@ impl ReplVmSession {
             type_checker,
             persistent_names: BTreeSet::new(),
             struct_decls: Vec::new(),
+            trait_defaults: crate::compat::collections::HashMap::new(),
         }
     }
 
@@ -48,6 +52,18 @@ impl ReplVmSession {
     }
 
     pub fn execute_program(&mut self, program: &Program) -> Result<ReplExecutionResult> {
+        // A trait's default bodies are copied into the impls that leave them out
+        // during parsing, over one program's statements. An input that declares
+        // the `impl` without the `trait` beside it never saw them.
+        let carried_defaults;
+        let program = if self.trait_defaults.is_empty() {
+            program
+        } else {
+            let mut owned = program.clone();
+            crate::stmt::trait_defaults::apply_carried_trait_defaults(&mut owned.statements, &self.trait_defaults);
+            carried_defaults = owned;
+            &carried_defaults
+        };
         let mut next_type_checker = self.type_checker.clone();
         let carried = self.carried_function_types(program);
         program.type_check(&mut next_type_checker)?;
@@ -69,6 +85,8 @@ impl ReplVmSession {
 
         self.type_checker = next_type_checker;
         self.persistent_names.extend(declared_names);
+        self.trait_defaults
+            .extend(crate::stmt::trait_defaults::trait_defaults_of(&program.statements));
         self.record_struct_declarations(&result.module);
         self.sync_result_globals(result)
     }

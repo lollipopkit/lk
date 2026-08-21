@@ -663,6 +663,43 @@ mod tests {
         );
     }
 
+    /// A trait's default method reaches an `impl` written on a later input.
+    ///
+    /// The default bodies are copied into the impls that leave them out during
+    /// *parsing*, over one program's statements. An input carrying the `impl`
+    /// without the `trait` beside it never saw them, and the checker reported
+    /// "Method 'tripled' required by trait 'Scaled' not implemented for type
+    /// 'Rect'" — for a method the source never had to write.
+    #[cfg(feature = "stdlib")]
+    #[test]
+    fn a_trait_default_reaches_an_impl_on_a_later_input() {
+        let mut session = ReplSession::new().expect("repl session");
+
+        for input in [
+            "struct Rect { w: Int }",
+            "trait Scaled { fn base(self) -> Int; fn tripled(self) -> Int { return self.w * 3; } }",
+            "impl Scaled for Rect { fn base(self) -> Int { return self.w; } }",
+        ] {
+            session
+                .execute_input(input)
+                .expect("the declaration is accepted")
+                .unwrap_or_else(|error| panic!("`{input}`: {error}"));
+        }
+
+        let used = session
+            .execute_input("Rect { w: 4 }.tripled()")
+            .expect("the call is accepted")
+            .expect("the default body runs");
+        assert_eq!(used.display_first_return(), "12");
+
+        // The impl's own method still wins over the default.
+        let own = session
+            .execute_input("Rect { w: 4 }.base()")
+            .expect("the call is accepted")
+            .expect("the impl's method runs");
+        assert_eq!(own.display_first_return(), "4");
+    }
+
     #[cfg(feature = "stdlib")]
     #[test]
     fn expression_fallback_echoes_values_but_not_nil_returns() {

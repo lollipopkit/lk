@@ -39,6 +39,31 @@ pub fn apply_trait_defaults(statements: &mut [Box<Stmt>]) {
     }
 }
 
+/// Fill impls from defaults a *previous* program declared.
+///
+/// For a caller running a sequence of programs against one session — the REPL,
+/// where each input is its own program. `trait T { fn m(self) -> Int { … } }` on
+/// one line and `impl T for S { … }` on the next left the impl without the
+/// default body, and the checker reported "Method 'm' required by trait 'T' not
+/// implemented for type 'S'" — for a method the source never had to write.
+///
+/// Applying this after [`apply_trait_defaults`] is harmless: an impl that
+/// already has the method keeps its own.
+pub fn apply_carried_trait_defaults(statements: &mut [Box<Stmt>], carried: &HashMap<String, Vec<Stmt>>) {
+    if carried.is_empty() {
+        return;
+    }
+    for stmt in statements.iter_mut() {
+        fill_impl(stmt, carried);
+    }
+}
+
+/// The default method bodies each `trait` in `statements` declares, for a
+/// caller that has to carry them — see [`apply_carried_trait_defaults`].
+pub fn trait_defaults_of(statements: &[Box<Stmt>]) -> HashMap<String, Vec<Stmt>> {
+    collect_defaults(statements)
+}
+
 fn collect_defaults(statements: &[Box<Stmt>]) -> HashMap<String, Vec<Stmt>> {
     let mut out: HashMap<String, Vec<Stmt>> = HashMap::new();
     for stmt in statements {
