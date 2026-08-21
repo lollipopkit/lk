@@ -143,6 +143,16 @@ impl RuntimeModuleState {
         self.heap.collect(self.root_refs(extra_roots));
     }
 
+    /// The same, carrying the set of module heaps this cycle has walked.
+    pub fn collect_garbage_with_visited<'a>(
+        &mut self,
+        extra_roots: impl IntoIterator<Item = &'a RuntimeVal>,
+        visited: &mut crate::val::CollectedModules,
+    ) {
+        let roots = self.root_refs(extra_roots);
+        self.heap.collect_with_visited(roots, visited);
+    }
+
     pub fn heap(&self) -> &HeapStore {
         &self.heap
     }

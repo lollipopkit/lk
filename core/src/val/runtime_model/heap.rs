@@ -20,6 +20,22 @@ impl HeapRef {
     }
 }
 
+/// The imported callables a single collection cycle has already walked.
+///
+/// Empty for a collection that reaches no imported function, which is every
+/// collection in a single-module program.
+#[derive(Debug, Default)]
+pub struct CollectedModules {
+    seen: crate::compat::collections::HashSet<usize>,
+}
+
+impl CollectedModules {
+    /// Records `callable` and answers whether it is new to this cycle.
+    pub fn first_visit(&mut self, callable: usize) -> bool {
+        self.seen.insert(callable)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HeapStore {
     slots: Vec<Option<HeapValue>>,
@@ -183,6 +199,22 @@ impl HeapStore {
     /// The worklist also lets edges land straight in it, so marking no longer
     /// allocates a fresh `Vec` per object visited.
     pub fn collect(&mut self, roots: impl IntoIterator<Item = HeapRef>) {
+        self.collect_with_visited(roots, &mut CollectedModules::default());
+    }
+
+    /// The same, told which module heaps this collection cycle has already
+    /// walked.
+    ///
+    /// A heap holding an imported function reaches *another* module's heap
+    /// through it (see the deferred `runtime_callables` below), and that heap
+    /// reaches further ones the same way. The module graph is a DAG, and
+    /// without remembering where it has been the walk treats it as a tree: a
+    /// module reached by K paths is collected K times, each of those repeating
+    /// the walk beneath it. Measured, with N closures accumulated in a REPL
+    /// session (each input is its own module, and each holds a callable for
+    /// every earlier one), cross-module collections went 8 -> ~1_000,
+    /// 12 -> ~20_000, 16 -> ~327_000 — exponential in N.
+    pub fn collect_with_visited(&mut self, roots: impl IntoIterator<Item = HeapRef>, visited: &mut CollectedModules) {
         // No whitening pass. Every mark is already `WHITE` when a collection
         // starts, and the three places that could say otherwise all maintain
         // it: `sweep` turns each surviving `BLACK` back, a swept slot was never
@@ -209,7 +241,15 @@ impl HeapStore {
         // *different* heap (the callable's own module state), so the order
         // relative to this heap's marking cannot matter.
         for function in runtime_callables {
-            let _ = function.collect_garbage();
+            // Keyed on the *callable*, not on the module it belongs to. Two
+            // callables into one module carry different captures, and a
+            // callable's captures live in that module's heap — so skipping the
+            // second because the first had been there would leave its captures
+            // unrooted while the heap they live in is swept. Per callable, the
+            // work skipped is work already done with exactly these roots.
+            if visited.first_visit(Arc::as_ptr(&function) as *const () as usize) {
+                let _ = function.collect_garbage_with_visited(visited);
+            }
         }
         self.sweep();
         self.alloc_since_gc = 0;

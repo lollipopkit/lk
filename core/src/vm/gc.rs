@@ -108,10 +108,17 @@ impl RuntimeCallable {
     /// the conservative answer either way: the heap keeps its objects until the
     /// collection already in progress, or the next one, reaches them.
     pub fn collect_garbage(&self) -> Result<()> {
+        self.collect_garbage_with_visited(&mut crate::val::CollectedModules::default())
+    }
+
+    /// The same, carrying the set of callables this cycle has already walked so
+    /// the module graph is not re-walked through every path into it — see
+    /// [`HeapStore::collect_with_visited`](crate::val::HeapStore::collect_with_visited).
+    pub fn collect_garbage_with_visited(&self, visited: &mut crate::val::CollectedModules) -> Result<()> {
         let Some(mut state) = self.state.try_lock() else {
             return Ok(());
         };
-        state.collect_garbage(self.captures.iter());
+        state.collect_garbage_with_visited(self.captures.iter(), visited);
         Ok(())
     }
 }

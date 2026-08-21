@@ -35,7 +35,7 @@ pub use equality::{runtime_value_equals_str, runtime_values_equal};
 /// Generous for data — JSON nests single digits deep, a hand-written tree tens
 /// — and far below the number of Rust frames the real stack would take.
 pub const MAX_VALUE_DEPTH: u32 = 512;
-pub use heap::{HeapRef, HeapStore};
+pub use heap::{CollectedModules, HeapRef, HeapStore};
 
 /// A value, 16 bytes and `Copy`.
 ///
