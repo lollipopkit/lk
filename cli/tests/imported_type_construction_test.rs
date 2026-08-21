@@ -36,7 +36,8 @@ fn with_geo(dir: &std::path::Path) {
          impl P { fn norm(self) -> Int { return self.x * self.x; } }\n\
          trait Shape { fn area(self) -> Int; }\n\
          struct Sq { s: Int }\n\
-         impl Shape for Sq { fn area(self) -> Int { return self.s * self.s; } }\n",
+         impl Shape for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         type Pair = List<Int>;\n",
     )
     .expect("write geo");
 }
@@ -133,6 +134,29 @@ fn a_trait_cannot_be_imported_by_name() {
     assert!(!ok, "importing a trait by name is refused");
     assert!(stderr.contains("Shape"), "{stderr}");
     assert!(stderr.contains("no constructor to bind"), "{stderr}");
+}
+
+/// A `type` alias cannot be imported by name either, and the refusal does not
+/// claim the module declares no such thing.
+///
+/// The message used to end "and this module declares neither" — a fact it had
+/// not checked. `type Pair = List<Int>;` *is* declared, and got told it was
+/// not.
+#[test]
+fn a_type_alias_is_refused_without_denying_it_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    with_geo(dir.path());
+    let (_, stderr, ok) = run(dir.path(), "use { Pair } from \"geo\";\nprintln(1);\n");
+    assert!(!ok, "importing a type alias by name is refused");
+    assert!(stderr.contains("Pair"), "{stderr}");
+    assert!(
+        stderr.contains("compile-time only"),
+        "the refusal should say why a `type` cannot be a binding: {stderr}"
+    );
+    assert!(
+        !stderr.contains("declares neither"),
+        "the refusal must not claim the module declares no such thing: {stderr}"
+    );
 }
 
 /// The two backends agree on a struct built in another file — through either

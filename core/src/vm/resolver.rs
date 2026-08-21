@@ -403,10 +403,26 @@ fn runtime_export_field(module: &RuntimeExport, name: &str) -> Result<RuntimeExp
         return Ok(RuntimeExport::new(ctor, module.shared_state(), module.shared_module()));
     }
     if name.starts_with(char::is_uppercase) {
+        // Say which of the three it is, rather than asserting what the module
+        // holds. The old message ended "and this module declares neither",
+        // which it had not checked: `type Pair = List<Int>;` is declared, and
+        // got told it was not.
+        if module
+            .shared_module()
+            .type_info
+            .traits
+            .iter()
+            .any(|decl| decl.name == name)
+        {
+            return Err(anyhow!(
+                "'{name}' is a `trait`, and a trait has no constructor to bind, so it cannot be imported as \
+                 a name. Import the type that implements it instead — the `impl` travels with the type."
+            ));
+        }
         return Err(anyhow!(
-            "'{name}' is not an export of this module — no value and no type by that name. A \
-             `trait` has no constructor to bind, so it cannot be imported as a name; a `struct` \
-             can, and this module declares neither."
+            "'{name}' is not an export of this module — no value, and no `struct` by that name to bind a \
+             constructor for. A `trait` and a `type` alias are both compile-time only and neither can be \
+             imported as a name."
         ));
     }
     Err(anyhow!("'{}' is not an export of this module", name))
