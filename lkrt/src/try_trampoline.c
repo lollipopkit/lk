@@ -44,3 +44,23 @@ long long lkrt_rt_try_region(const void *body, const long long *argv) {
     /* The raise path's pop already happened inside lkrt's raise. */
     return 0;
 }
+
+/* Runs `thunk(state)` under a fresh try frame, for a caller that has a closure
+ * rather than a lowered body — a spawned task.
+ *
+ * A raise is thread-local: the handler stack a `try` pushes lives on the thread
+ * that pushed it, and a spawned task starts with an empty one. So a raise inside
+ * a task had no handler at all and took the uncaught path, which prints and
+ * exits the *process* — where the interpreter delivers it to `task.await`.
+ *
+ * Returns 1 when the thunk returned, 0 when it raised; the raised value is
+ * `lkrt_rt_current_error()` on this thread. */
+long long lkrt_rt_try_thunk(void (*thunk)(void *), void *state) {
+    void *buf = lkrt_rt_try_push();
+    if (_setjmp(buf) == 0) {
+        thunk(state);
+        lkrt_rt_try_pop();
+        return 1;
+    }
+    return 0;
+}

@@ -354,6 +354,43 @@ fn a_promoted_map_still_finds_its_short_keys() {
     );
 }
 
+/// A task's raise belongs to whoever awaits it, not to the process.
+///
+/// A raise is delivered to the nearest `try` frame, and that stack is
+/// thread-local: a spawned task starts with an empty one, so natively the raise
+/// took the uncaught path — print and exit — and one failing task killed the
+/// program where the interpreter handed the error to `task.await`. A task
+/// nobody awaits fails silently on both.
+#[test]
+fn a_task_hands_its_raise_to_its_awaiter() {
+    run_clif_differential(
+        "task_raise",
+        &[
+            new(
+                "caught_at_await",
+                "use task;\n\
+                 let t = spawn(|| { let z = 1 % 0; return 0; });\n\
+                 try { println(\"awaited \" + task.await(t)); } catch e { println(\"caught \" + e); }\n\
+                 println(\"still running\");\n",
+            ),
+            new(
+                "unawaited_is_silent",
+                "use task;\n\
+                 let t = spawn(|| { let z = 1 % 0; return 0; });\n\
+                 let done = chan(1);\n\
+                 go send(done, 1);\n\
+                 println(recv(done));\n",
+            ),
+            new(
+                "a_returning_task_is_unaffected",
+                "use task;\n\
+                 let t = spawn(|| { return 41 + 1; });\n\
+                 println(task.await(t));\n",
+            ),
+        ],
+    );
+}
+
 /// A struct's identity has to travel with the value, because the value crosses
 /// threads. Both halves of it used to be thread-local: the id → name/field
 /// registry (written once by the entry prologue, on the main thread) and a

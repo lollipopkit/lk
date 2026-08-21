@@ -2426,3 +2426,31 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 
 `examples/syntax/null_coalescing.lk` 补了五条断言(结构体字段、map 键、缺失键、
 nil 接收者、链式),覆盖率门禁从此看着它。
+
+## §67 任务里的 raise 杀掉整个进程,而解释器把它交给 await(2026-08-21)
+
+raise 交给的是最近的 `try` 帧,而那个帧栈是**线程局部**的。spawn 出来的任务从一个
+空栈开始,所以任务体里的 raise 找不到任何处理者,走了"未捕获"那条路——打印并
+`exit(1)`。解释器那边是把错误当成任务的**结果**,谁 await 谁收到:
+
+| 程序 | 解释器 | 原生(修复前) |
+| --- | --- | --- |
+| `try { task.await(t) } catch e { … }`,t 里除零 | `caught modulo by zero`,继续跑 | `Error: modulo by zero`,退出 1 |
+| 任务失败但没人 await | 静默,程序照常结束 | 同上,进程死 |
+
+修法:任务体在自己的 `try` 帧里跑。Cranelift 和 Rust 都不能发 `setjmp`,所以能活过
+跳转的那个帧必须是 C 的——`try_trampoline.c` 里加一个 `lkrt_rt_try_thunk(thunk,
+state)`,和已有的 `lkrt_rt_try_region` 同一套协议,只是接的是闭包而不是降低出来的
+函数体。任务槽从 `JoinHandle<OwnedVal>` 变成 `JoinHandle<TaskOutcome>`
+(`Returned` / `Raised`),`task.await` 拿到 `Raised` 就在**自己**这条线程上重抛
+(值先 materialize 进本线程的 arena——它是在任务那条线程的 arena 里建的)。
+
+两处纪律写在代码上:参数在进保护区**之前**就 materialize 好(raise 会跳过中间每一个
+Rust drop),以及失败的任务会漏掉一个装参数的小 `Vec`——上界是失败任务的个数,
+所以留着而不是为它绕一层 thread-local。
+
+计时器那条路不走保护区:它的注释早就写明它不 raise(关闭的 channel 不是计时器要报
+的错),直接给 `TaskOutcome::Returned`。
+
+`a_task_hands_its_raise_to_its_awaiter` 钉三条:await 捕获、无人 await 时静默、
+正常返回不受影响。

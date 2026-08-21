@@ -436,7 +436,9 @@ fn spawn_timer(duration_ms: i64, after: bool) -> i64 {
             }
         }
         drop(state);
-        own(crate::lkdyn::lkrt_dyn_from_nil())
+        // The timer body raises nothing — the comment above says why — so it
+        // reports the outcome directly rather than going through a try frame.
+        TaskOutcome::Returned(own(crate::lkdyn::lkrt_dyn_from_nil()))
     }));
     id
 }
@@ -726,8 +728,19 @@ pub unsafe extern "C" fn lkrt_chan_select(
 
 // ── Goroutine threads + task registry (H2) ─────────────────────────────
 
+/// How a task finished.
+///
+/// A raise inside a task is the task's *result*, not the process's: the
+/// interpreter hands it to whoever awaits, and a task nobody awaits fails
+/// silently. Natively the raise had no handler on that thread and took the
+/// uncaught path — print and exit — so one failing task killed the program.
+enum TaskOutcome {
+    Returned(OwnedVal),
+    Raised(OwnedVal),
+}
+
 struct TaskSlot {
-    handle: Option<std::thread::JoinHandle<OwnedVal>>,
+    handle: Option<std::thread::JoinHandle<TaskOutcome>>,
 }
 
 fn tasks() -> &'static Mutex<HashMap<i64, TaskSlot>> {
@@ -770,7 +783,7 @@ pub unsafe extern "C" fn lkrt_spawn_arg(block: *mut c_void, index: i64) -> LkDyn
     }
 }
 
-fn register_task(handle: std::thread::JoinHandle<OwnedVal>) -> i64 {
+fn register_task(handle: std::thread::JoinHandle<TaskOutcome>) -> i64 {
     let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
     tasks()
         .lock()
@@ -797,12 +810,61 @@ macro_rules! spawn_arity {
                 let block = block_addr as *mut c_void;
                 // SAFETY: ownership of the block moved into this thread.
                 let args = unsafe { Box::from_raw(block as *mut Vec<OwnedVal>) };
-                let result = f($(materialize(&args[$idx])),*);
-                own(result)
+                // Materialised before the protected call: a raise jumps past
+                // every drop in between, and `args` must not be one of them.
+                let ready: Vec<LkDyn> = alloc::vec![$(materialize(&args[$idx])),*];
+                drop(args);
+                // `ready` is the closure's; a raise jumps past its drop, so a
+                // failing task leaks one small `Vec`. Bounded by the number of
+                // tasks that fail, which is why it is left rather than worked
+                // around with a thread-local.
+                run_protected(move || store_task_result(own(f($(ready[$idx]),*))))
             }))
         }
     };
     (@ty $idx:literal) => { LkDyn };
+}
+
+unsafe extern "C" {
+    /// See `try_trampoline.c`. Cranelift and Rust both refuse `setjmp`, so the
+    /// frame that survives the jump has to be a C one.
+    fn lkrt_rt_try_thunk(thunk: extern "C" fn(*mut c_void), state: *mut c_void) -> i64;
+}
+
+extern "C" fn call_boxed_thunk(state: *mut c_void) {
+    // SAFETY: `state` is the `Box<dyn FnMut()>` `run_protected` handed over.
+    let body = unsafe { &mut *(state as *mut Box<dyn FnMut()>) };
+    body();
+}
+
+/// Runs a task body under its own `try` frame and reports how it finished.
+///
+/// The body must own nothing that needs dropping: a raise `longjmp`s past every
+/// Rust drop between here and the C frame. That is why the arguments are
+/// materialised *before* the call and only the plain call happens inside.
+fn run_protected(body: impl FnMut() + 'static) -> TaskOutcome {
+    let mut boxed: Box<dyn FnMut()> = Box::new(body);
+    let state = (&raw mut boxed).cast::<c_void>();
+    // SAFETY: `call_boxed_thunk` reads exactly the pointer passed here, and
+    // `boxed` outlives the call.
+    if unsafe { lkrt_rt_try_thunk(call_boxed_thunk, state) } == 0 {
+        return TaskOutcome::Raised(own(crate::panic::lkrt_rt_current_error()));
+    }
+    TaskOutcome::Returned(
+        TASK_RESULT
+            .with(|slot| slot.borrow_mut().take())
+            .unwrap_or(OwnedVal::Nil),
+    )
+}
+
+std::thread_local! {
+    /// Where a protected task body leaves its result. A value cannot be
+    /// returned *through* the C trampoline, which speaks only `long long`.
+    static TASK_RESULT: core::cell::RefCell<Option<OwnedVal>> = const { core::cell::RefCell::new(None) };
+}
+
+fn store_task_result(value: OwnedVal) {
+    TASK_RESULT.with(|slot| *slot.borrow_mut() = Some(value));
 }
 
 /// Zero-capture spawn (no argument block).
@@ -811,7 +873,9 @@ macro_rules! spawn_arity {
 /// `f` must be a compiled zero-argument function returning a boxed value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_spawn0(f: extern "C" fn() -> LkDyn) -> i64 {
-    register_task(std::thread::spawn(move || own(f())))
+    register_task(std::thread::spawn(move || {
+        run_protected(move || store_task_result(own(f())))
+    }))
 }
 
 spawn_arity!(lkrt_spawn1, 0);
@@ -830,7 +894,15 @@ pub extern "C" fn lkrt_task_await(id: i64) -> LkDyn {
     };
     match handle {
         Some(handle) => match handle.join() {
-            Ok(owned) => materialize(&owned),
+            Ok(TaskOutcome::Returned(owned)) => materialize(&owned),
+            // The task's raise, delivered here — the interpreter's rule, and
+            // the reason it is caught rather than fatal. Materialised into this
+            // thread's arena first: the value was built in the task's.
+            Ok(TaskOutcome::Raised(owned)) => {
+                let value = materialize(&owned);
+                crate::panic::lkrt_rt_raise_dyn(value);
+                unreachable!("a raise does not return")
+            }
             Err(_) => crate::panic::raise_str("task failed"),
         },
         // Same wording as the VM: awaiting takes the task, so a second
