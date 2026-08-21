@@ -42,12 +42,15 @@ impl ProgramResult {
             entries.insert(RuntimeMapKey::from_shared(slot.name.clone()), *value);
         }
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
+        let mut module_state = RuntimeModuleState::new(state.heap, state.globals);
+        // The map just allocated is this module's value, and it lives in this
+        // module's heap with nothing else pointing at it. Without saying so, a
+        // collection driven from anywhere but `collect_runtime_export` frees it
+        // — see `RuntimeModuleState::export_root`.
+        module_state.set_export_root(value);
         RuntimeExport::new(
             value,
-            Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
-                state.heap,
-                state.globals,
-            ))),
+            Arc::new(crate::compat::sync::Mutex::new(module_state)),
             self.module,
         )
     }

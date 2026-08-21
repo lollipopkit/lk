@@ -84,6 +84,9 @@ impl RuntimeModuleState {
         // Values host (native) functions hold across re-entrant VM calls —
         // e.g. an HOF's accumulated callback results (see `host_roots`).
         roots.extend_values(&self.host_roots);
+        // The module's own export map: it lives in this heap and nothing in
+        // this heap points at it (see `export_root`).
+        roots.extend_values(self.export_root.iter());
         roots
     }
 }
@@ -166,5 +169,33 @@ mod tests {
         assert!(state.heap.get(exported).is_some());
         assert!(state.heap.get(global).is_some());
         assert!(state.heap.get(dead).is_none());
+    }
+
+    /// The export survives a collection driven from anywhere else, too.
+    ///
+    /// The test above passes the export value in as an extra root, which is
+    /// what `collect_runtime_export` does — and that path was always right.
+    /// Every *other* path was not: `RuntimeCallable::collect_garbage` collects
+    /// an imported module's heap with only the callable's captures as extras,
+    /// and the export map is not reachable from the globals (they hold the
+    /// values, not the map that collects them). Importing one module
+    /// transitively and then directly, under `LK_GC_STRESS=1`, then read a
+    /// handle past the end of a heap that had shrunk: `heap object 82 out of
+    /// bounds`, from `runtime_export_field`.
+    #[test]
+    fn the_export_root_survives_a_collection_with_no_extra_roots() {
+        let mut heap = HeapStore::new();
+        let exported = heap.alloc(HeapValue::String(Arc::<str>::from("exported")));
+        let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
+        let mut state = RuntimeModuleState::new(heap, Vec::new());
+        state.set_export_root(RuntimeVal::Obj(exported));
+
+        state.collect_garbage([]);
+
+        assert!(
+            state.heap.get(exported).is_some(),
+            "the module's own export map must be a root of its own heap"
+        );
+        assert!(state.heap.get(dead).is_none(), "everything else is still collected");
     }
 }

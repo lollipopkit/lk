@@ -43,6 +43,17 @@ pub struct RuntimeModuleState {
     /// deterministically). Hosts push via `host_root_push`/`host_roots_extend`
     /// and restore their `host_roots_mark` on every exit path.
     pub(crate) host_roots: Vec<RuntimeVal>,
+    /// This module's own exported value — the map of its top-level names.
+    ///
+    /// It lives in *this* heap, and nothing else here points at it: the globals
+    /// hold the individual values, not the map that collects them. So a
+    /// collection of this heap driven from anywhere other than
+    /// [`collect_runtime_export`] freed it, and the next import read a handle
+    /// past the end of a heap that had shrunk under it —
+    /// `heap object 82 out of bounds` from `runtime_export_field`. Reproduced by
+    /// importing one module transitively and then directly, under
+    /// `LK_GC_STRESS=1`.
+    pub(crate) export_root: Option<RuntimeVal>,
     /// Live LK call depth. Lives in the shared state (not the executor) so it
     /// keeps accumulating across native→VM re-entries (pcall, stdlib HOFs, the
     /// Tier 1 bridge), which each construct a fresh executor: the runaway-
@@ -79,9 +90,15 @@ impl RuntimeModuleState {
             inline_caches: InlineCaches::default(),
             pending_raise_root: None,
             host_roots: Vec::new(),
+            export_root: None,
             call_depth: 0,
             borrowed_for_call: false,
         }
+    }
+
+    /// Record this state's own module export as a root of its heap.
+    pub(crate) fn set_export_root(&mut self, value: RuntimeVal) {
+        self.export_root = Some(value);
     }
 
     /// Pin (or clear) the first-class error value currently unwinding so it is

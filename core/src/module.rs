@@ -208,11 +208,11 @@ pub fn runtime_export_from_plain_native_entries(
         entries.insert(Arc::<str>::from(value.name), value.value);
     }
     let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
-    RuntimeExport::new(
-        value,
-        Arc::new(Mutex::new(RuntimeModuleState::new(heap, Vec::new()))),
-        Arc::new(Module::default()),
-    )
+    // Rooted in its own heap, same as a user module's export — see
+    // `RuntimeModuleState::export_root`.
+    let mut state = RuntimeModuleState::new(heap, Vec::new());
+    state.set_export_root(value);
+    RuntimeExport::new(value, Arc::new(Mutex::new(state)), Arc::new(Module::default()))
 }
 
 pub fn runtime_export_from_runtime_native(name: &str, function: NativeFunction, arity: u16) -> RuntimeExport {
