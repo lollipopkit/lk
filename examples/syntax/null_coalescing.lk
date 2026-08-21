@@ -207,4 +207,25 @@ assert(searches([7, 8], 2) == "2/3/1");
 assert(searches([7, 8], 4) == "2/3/101");
 assert(searches([], 2) == "0/0/100");
 
+// `?.` — the other half of the pair, and the half that had no native lowering
+// at all. It lowers to a nil test on the receiver, and the nil test had no case
+// for a *container*: `m?.k` on a plain map and `p?.field` on a struct both
+// dropped the whole program to the interpreter, including the receivers that
+// cannot be nil in the first place.
+
+struct Node {
+    value: Int,
+    next: Any,
+}
+
+let node = Node { value: 1, next: nil };
+let table = { "k": 5 };
+let nothing: Any = nil;
+
+assert((node?.value ?? -1) == 1);
+assert((table?.k ?? -1) == 5);
+assert((table?.missing ?? -1) == -1);
+assert((nothing?.value ?? -1) == -1);
+assert((node?.next?.value ?? -1) == -1);
+
 println("null_coalescing: all assertions passed");

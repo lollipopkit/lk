@@ -259,6 +259,9 @@ impl Unsupported {
             Unsupported::ParamCarrierContradicted { param } => {
                 format!("a push into parameter r{param} widens its carrier, which only the caller can build")
             }
+            // `want` and `got` are carried in the value and used to be dropped
+            // here, so every investigation of this refusal began by guessing
+            // which of its construction sites it came from.
             Unsupported::OperandType { pc, want, got } => {
                 format!("an operand at pc {pc} is a {got} where a {want} is required")
             }

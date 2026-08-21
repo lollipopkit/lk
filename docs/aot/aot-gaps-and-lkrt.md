@@ -2399,3 +2399,30 @@ trait 分派码。哪一处漏了都是沉默的错答,而这份清单是现成�
 以及**所有** stdlib 行的 `Map<str, Dyn>` 返回值。三条 `PureCranelift` 差分用例
 因此拒绝下降;覆盖率门禁和 VM/原生扫描都没看见(它们允许回退)。stdlib 那条写在
 通用行下降的收尾处,而不是逐行写,这样新加一行不会漏。
+
+## §66 `?.` 整个操作符没有原生下降,因为 `IsNil` 不认识容器(2026-08-21)
+
+`a?.f` 降低成:先把结果置 nil,`IsNil` 测接收者,不是 nil 才去取字段。原生这边
+`IsNil` 的"永远不是 nil"那一支只列了标量(`I64` / `F64` / `Bool` / `Str`),没列
+容器句柄——于是:
+
+| 写法 | 修复前 |
+| --- | --- |
+| `p?.field`(`p` 是结构体) | 整个程序掉回解释器 |
+| `m?.k`(`m` 是 map) | 同上 |
+| `m?.missing` | 同上 |
+| `z?.f`(`z` 是 nil) | 同上 |
+| `list?.len()` | 原生(方法调用走另一条路) |
+
+**接收者根本不可能是 nil 的那几种也一样掉**,因为拒绝发生在类型上,不在值上。
+补上列表 / map / set / bytes / slice 各种句柄即可,它们的结论和标量一样是常量
+`false`。
+
+找这个拒绝点花的时间比修它长,原因是 `Unsupported::OperandType` 的显示把它自己
+携带的 `want` / `got` 丢掉了,只印 pc。顺手改成印出来——
+"an operand at pc 9 is a str where a i64 is required" 比
+"has a type outside the natively lowerable subset" 少猜一轮。定位最终靠
+`lk coverage --disassemble` 数到第 6 条指令是 `IsNil r6 r0`。
+
+`examples/syntax/null_coalescing.lk` 补了五条断言(结构体字段、map 键、缺失键、
+nil 接收者、链式),覆盖率门禁从此看着它。

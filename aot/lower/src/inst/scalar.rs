@@ -105,7 +105,28 @@ pub(super) fn lower(
                     dst,
                     value: Const::Bool(true),
                 }),
-                Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => insts.push(Inst::Const {
+                // A container handle is never nil either, and leaving it out is
+                // what kept `?.` off the native path entirely: the operator
+                // lowers to `IsNil` on its receiver, so `m?.k` on a plain map
+                // and `p?.field` on a struct both refused — every field form of
+                // the operator, including the ones that cannot be nil at all.
+                Ty::I64
+                | Ty::F64
+                | Ty::Bool
+                | Ty::Str
+                | Ty::ListI64
+                | Ty::ListF64
+                | Ty::ListStr
+                | Ty::ListDyn
+                | Ty::MapStrI64
+                | Ty::MapStrF64
+                | Ty::MapStrBool
+                | Ty::MapStrDyn
+                | Ty::MapI64I64
+                | Ty::MapI64F64
+                | Ty::Set
+                | Ty::Bytes
+                | Ty::SliceI64 => insts.push(Inst::Const {
                     dst,
                     value: Const::Bool(false),
                 }),
