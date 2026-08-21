@@ -318,6 +318,8 @@ pub(super) fn lower(
                 // borrowed; anything else keeps the copying setter.
                 let (set_fn, k) = match (set_fn, const_key.as_deref()) {
                     ("str_dyn_set", Some(text)) => ("str_dyn_set_const", materialize_key(ssa, insts, globals, text)),
+                    ("str_i64_set", Some(text)) => ("str_i64_set_const", materialize_key(ssa, insts, globals, text)),
+                    ("str_f64_set", Some(text)) => ("str_f64_set_const", materialize_key(ssa, insts, globals, text)),
                     _ => (set_fn, k),
                 };
                 insts.push(Inst::Call {
@@ -597,7 +599,7 @@ pub(super) fn lower(
                     let handle = ssa.new_val();
                     // A literal knows how many entries it has, so the map is
                     // built at its final size instead of rehashing on the way.
-                    if new_fn == "str_dyn_new" {
+                    if matches!(new_fn, "str_dyn_new" | "str_i64_new" | "str_f64_new") {
                         let capacity = ssa.new_val();
                         insts.push(Inst::Const {
                             dst: capacity,
@@ -605,7 +607,14 @@ pub(super) fn lower(
                         });
                         insts.push(Inst::Call {
                             dst: Some(handle),
-                            callee: AbiRef::new("map_h", "str_dyn_new_sized"),
+                            callee: AbiRef::new(
+                                "map_h",
+                                match new_fn {
+                                    "str_i64_new" => "str_i64_new_sized",
+                                    "str_f64_new" => "str_f64_new_sized",
+                                    _ => "str_dyn_new_sized",
+                                },
+                            ),
                             args: vec![capacity],
                         });
                     } else {
@@ -638,10 +647,12 @@ pub(super) fn lower(
                         };
                         // A literal's string key is an interned global, so the
                         // map borrows it rather than copying it per instance.
-                        let set_fn = if set_fn == "str_dyn_set" && !matches!(k, RuntimeMapKeyData::Int(_)) {
-                            "str_dyn_set_const"
-                        } else {
-                            set_fn
+                        let set_fn = match set_fn {
+                            _ if matches!(k, RuntimeMapKeyData::Int(_)) => set_fn,
+                            "str_dyn_set" => "str_dyn_set_const",
+                            "str_i64_set" => "str_i64_set_const",
+                            "str_f64_set" => "str_f64_set_const",
+                            other => other,
                         };
                         insts.push(Inst::Call {
                             dst: None,

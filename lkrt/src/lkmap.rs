@@ -40,19 +40,35 @@ pub(crate) type FxMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher
 /// The set counterpart of [`FxMap`]. hashbrown rather than std so the same
 /// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
 pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
-type StrI64Map = FxMap<String, i64>;
+type StrI64Map = FxMap<StrKey, i64>;
 type I64I64Map = FxMap<crate::vm_mirror::IntKey, i64>;
-type StrF64Map = FxMap<String, f64>;
+type StrF64Map = FxMap<StrKey, f64>;
 type I64F64Map = FxMap<crate::vm_mirror::IntKey, f64>;
 
 /// Insert-or-update without allocating when the key is already present: the
 /// common map workload pattern is repeated updates of existing keys, and
 /// `insert(key.to_string(), ..)` would heap-allocate the key on every call.
-fn set_str_key<V>(map: &mut FxMap<String, V>, key: &str, value: V) {
+fn set_str_key<V>(map: &mut FxMap<StrKey, V>, key: &str, value: V) {
     match map.get_mut(key) {
         Some(slot) => *slot = value,
         None => {
-            map.insert(key.to_string(), value);
+            map.insert(StrKey::Owned(String::from(key)), value);
+        }
+    }
+}
+
+/// [`set_str_key`] for a key that is a **program constant** — see
+/// [`lkrt_lkmap_str_dyn_set_const`].
+///
+/// # Safety
+/// `key` must live as long as the process.
+unsafe fn set_static_str_key<V>(map: &mut FxMap<StrKey, V>, key: &str, value: V) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            // SAFETY: as documented.
+            let key: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(key) };
+            map.insert(StrKey::Static(key), value);
         }
     }
 }
@@ -353,15 +369,15 @@ fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(StrKey, crate::lkdyn:
         match kind {
             KIND_STR_I64 => (*(handle as *mut StrI64Map))
                 .iter()
-                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_i64(*v)))
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_i64(*v)))
                 .collect(),
             KIND_STR_F64 => (*(handle as *mut StrF64Map))
                 .iter()
-                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_f64(*v)))
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_f64(*v)))
                 .collect(),
             KIND_STR_BOOL => (*(handle as *mut StrI64Map))
                 .iter()
-                .map(|(k, v)| (StrKey::Owned(k.clone()), lkrt_dyn_from_bool(*v)))
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_bool(*v)))
                 .collect(),
             // An int-keyed overlay has no string keys to merge into a field map;
             // the VM refuses it before this can be reached.
@@ -924,14 +940,14 @@ macro_rules! map_display {
 map_display!(
     lkrt_lkmap_str_i64_display,
     StrI64Map,
-    |k: &String| format!("{k:?}"),
+    |k: &StrKey| format!("{:?}", k.as_str()),
     |v: &i64| v.to_string(),
     "`Map<str, i64>` display."
 );
 map_display!(
     lkrt_lkmap_str_f64_display,
     StrF64Map,
-    |k: &String| format!("{k:?}"),
+    |k: &StrKey| format!("{:?}", k.as_str()),
     |v: &f64| v.to_string(),
     "`Map<str, f64>` display."
 );
@@ -952,7 +968,7 @@ map_display!(
 map_display!(
     lkrt_lkmap_str_bool_display,
     StrI64Map,
-    |k: &String| format!("{k:?}"),
+    |k: &StrKey| format!("{:?}", k.as_str()),
     |v: &i64| if *v != 0 { "true" } else { "false" }.to_string(),
     "The bool map carrier's display."
 );
@@ -1283,6 +1299,53 @@ impl<'a> IntoIterator for &'a StrDynMap {
 
     fn into_iter(self) -> Self::IntoIter {
         (&self.entries).into_iter()
+    }
+}
+
+/// [`lkrt_lkmap_str_i64_new`] at a known size — a literal knows its own.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_i64_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrI64Map::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher))
+}
+
+/// [`lkrt_lkmap_str_f64_new`] at a known size.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_f64_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrF64Map::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher))
+}
+
+/// [`lkrt_lkmap_str_i64_set`] with a **program-constant** key, borrowed rather
+/// than copied. See [`lkrt_lkmap_str_dyn_set_const`].
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_i64_set`], and `key` must live as long as the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_i64_set_const(handle: *mut c_void, key: *const c_char, value: i64) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    unsafe {
+        let map = &mut *(handle as *mut StrI64Map);
+        set_static_str_key(map, key_str(key), value);
+    }
+}
+
+/// [`lkrt_lkmap_str_f64_set`] with a **program-constant** key.
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_i64_set_const`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_f64_set_const(handle: *mut c_void, key: *const c_char, value: f64) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    unsafe {
+        let map = &mut *(handle as *mut StrF64Map);
+        set_static_str_key(map, key_str(key), value);
     }
 }
 

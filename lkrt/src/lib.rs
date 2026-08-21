@@ -230,9 +230,10 @@ pub use lkmap::{
     lkrt_lkmap_str_dyn_get, lkrt_lkmap_str_dyn_get_at, lkrt_lkmap_str_dyn_has, lkrt_lkmap_str_dyn_len,
     lkrt_lkmap_str_dyn_merge, lkrt_lkmap_str_dyn_merge_typed, lkrt_lkmap_str_dyn_new, lkrt_lkmap_str_dyn_new_sized,
     lkrt_lkmap_str_dyn_rebuild, lkrt_lkmap_str_dyn_set, lkrt_lkmap_str_dyn_set_const, lkrt_lkmap_str_dyn_without,
-    lkrt_lkmap_str_f64_get_pair, lkrt_lkmap_str_f64_len, lkrt_lkmap_str_f64_new, lkrt_lkmap_str_f64_set,
-    lkrt_lkmap_str_f64_set_ik, lkrt_lkmap_str_f64_without, lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len,
-    lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_set, lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
+    lkrt_lkmap_str_f64_get_pair, lkrt_lkmap_str_f64_len, lkrt_lkmap_str_f64_new, lkrt_lkmap_str_f64_new_sized,
+    lkrt_lkmap_str_f64_set, lkrt_lkmap_str_f64_set_const, lkrt_lkmap_str_f64_set_ik, lkrt_lkmap_str_f64_without,
+    lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_new_sized,
+    lkrt_lkmap_str_i64_set, lkrt_lkmap_str_i64_set_const, lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_display, lkrt_lkmap_i64_f64_iter_pairs, lkrt_lkmap_i64_f64_keys, lkrt_lkmap_i64_f64_values,

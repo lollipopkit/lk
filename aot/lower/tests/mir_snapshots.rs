@@ -180,16 +180,17 @@ global g0 = "a"
 global g1 = "b"
 fn f0() -> maybe<i64> entry {
 bb0():
-  v0 = call map_h.str_i64_new()
-  v1 = const.str g0
-  v2 = const.i64 1
-  call map_h.str_i64_set(v0, v1, v2)
-  v3 = const.str g1
-  v4 = const.i64 2
-  call map_h.str_i64_set(v0, v3, v4)
-  v5 = const.str g1
-  v6 = map.str_i64.get_maybe v0, v5
-  ret v6
+  v1 = const.i64 2
+  v0 = call map_h.str_i64_new_sized(v1)
+  v2 = const.str g0
+  v3 = const.i64 1
+  call map_h.str_i64_set_const(v0, v2, v3)
+  v4 = const.str g1
+  v5 = const.i64 2
+  call map_h.str_i64_set_const(v0, v4, v5)
+  v6 = const.str g1
+  v7 = map.str_i64.get_maybe v0, v6
+  ret v7
 }
 "#,
     );

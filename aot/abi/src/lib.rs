@@ -632,7 +632,9 @@ macro_rules! for_each_abi_fn {
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_i64_new_sized", lkrt_lkmap_str_i64_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil, Borrowed);
+            ("map_h", "str_i64_set_const", lkrt_lkmap_str_i64_set_const, WritesHost, [Ptr, StrPtr, I64], Nil, Borrowed);
             ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64, Borrowed);
             // Typed-map display. The order is the carrier's own iteration order,
             // which `vm_mirror` pins to the VM's.
@@ -661,7 +663,9 @@ macro_rules! for_each_abi_fn {
             ("map_h", "i64_i64_delete", lkrt_lkmap_i64_i64_delete, WritesHost, [Ptr, I64], DynVal, Borrowed);
             // String-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_f64_new_sized", lkrt_lkmap_str_f64_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
+            ("map_h", "str_f64_set_const", lkrt_lkmap_str_f64_set_const, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
             ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             // Int-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             // Composite string-int key store (`m["n${i}"] = v`): the key is built
