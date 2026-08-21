@@ -1,0 +1,61 @@
+// A named parameter's default is read in the scope that *declared* it.
+//
+// A default is lowered at the call site, because it may refer to the call's own
+// earlier arguments — `fn f(x: Int, {y: Int = x + 1})` needs `x`, and only the
+// caller has it. The parameters are bound for that, and everything else used to
+// fall through to whatever the *caller* had in scope. So a caller that happened
+// to have a binding of the same name captured it:
+//
+//     const LIMIT: Int = 7;
+//     fn f({n: Int = LIMIT}) -> Int { return n; }
+//     fn g() -> Int { let LIMIT = 99; return f(); }   // answered 99
+//
+// A silent wrong answer, in one module, with no import and no concurrency
+// involved. `lk check` had nothing to say about it either, because the default
+// is written in one function and read in another.
+//
+// Run from project root: lk examples/syntax/named_default_scope.lk
+
+const LIMIT: Int = 7;
+
+fn describe(x: Int, {y: Int = x + 1, z: Int = LIMIT}) -> String {
+    return "${x} ${y} ${z}";
+}
+
+// A caller that shadows *both* names a default mentions: the parameter `x` and
+// the module-level `LIMIT`. Neither may be visible to the default.
+fn from_a_shadowing_scope() -> String {
+    let x = 900;
+    let LIMIT = 99;
+    return describe(1);
+}
+
+// The same call from a scope that shadows nothing, so the two answers can be
+// compared rather than only asserted.
+fn from_a_plain_scope() -> String {
+    return describe(1);
+}
+
+assert(describe(1) == "1 2 7");
+assert(from_a_shadowing_scope() == "1 2 7");
+assert(from_a_plain_scope() == "1 2 7");
+
+// Supplying a named argument still wins over the default.
+assert(describe(1, y: 50) == "1 50 7");
+
+// A default reading an earlier parameter reads the *argument*, not a leftover:
+// two calls in the same shadowing scope must not see each other.
+fn twice() -> String {
+    let x = 900;
+    return "${describe(1)} ${describe(10)}";
+}
+assert(twice() == "1 2 7 10 11 7");
+
+// A nested call: the inner one's default must not see the outer one's binding
+// of the same parameter name.
+fn nested() -> String {
+    return describe(describe(2).len());
+}
+assert(nested() == "5 6 7");
+
+println("named default scope: ok");

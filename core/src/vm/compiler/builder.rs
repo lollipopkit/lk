@@ -10,6 +10,28 @@ use crate::vm::analysis::{
 
 use super::{Compiler, ConstHeapValue, Function, Instr, Opcode, support::*};
 
+/// Everything the compiler knows *by name* about the code it is inside.
+///
+/// Set aside as a unit by [`Compiler::take_name_environment`] so an expression
+/// can be lowered in a scope that is not the surrounding one. The module-level
+/// tables are deliberately absent: they are shared by every scope in the
+/// module, and an expression lowered elsewhere should still see them.
+#[derive(Debug, Default)]
+pub(super) struct NameEnvironment {
+    locals: crate::compat::collections::HashMap<String, u16>,
+    local_scopes: crate::compat::collections::HashMap<String, u32>,
+    cell_locals: crate::compat::collections::HashSet<String>,
+    capture_names: crate::compat::collections::HashMap<String, u16>,
+    capture_cells: crate::compat::collections::HashSet<String>,
+    capture_machine_widths: crate::compat::collections::HashMap<String, crate::val::IntKind>,
+    single_char_string_locals: crate::compat::collections::HashMap<String, u16>,
+    const_map_locals: crate::compat::collections::HashMap<
+        String,
+        crate::util::value_map::ValueMap<crate::val::RuntimeMapKey, super::ConstRuntimeValue>,
+    >,
+    local_struct_types: crate::compat::collections::HashMap<String, String>,
+}
+
 /// How many registers the top level may spend caching its global-backed
 /// bindings before it stops.
 ///
@@ -206,6 +228,37 @@ impl Compiler {
             Some(name) if self.cell_locals.contains(&name) => self.lower_readonly_operand(target),
             _ => Ok(receiver),
         }
+    }
+
+    /// Take every name the surrounding code has bound, leaving none.
+    ///
+    /// Pairs with [`Self::restore_name_environment`]. Only names go: registers,
+    /// the function being built and the module's own tables stay, because the
+    /// expression to be lowered still belongs to this function's code.
+    pub(super) fn take_name_environment(&mut self) -> NameEnvironment {
+        NameEnvironment {
+            locals: core::mem::take(&mut self.locals),
+            local_scopes: core::mem::take(&mut self.local_scopes),
+            cell_locals: core::mem::take(&mut self.cell_locals),
+            capture_names: core::mem::take(&mut self.capture_names),
+            capture_cells: core::mem::take(&mut self.capture_cells),
+            capture_machine_widths: core::mem::take(&mut self.capture_machine_widths),
+            single_char_string_locals: core::mem::take(&mut self.single_char_string_locals),
+            const_map_locals: core::mem::take(&mut self.const_map_locals),
+            local_struct_types: core::mem::take(&mut self.local_struct_types),
+        }
+    }
+
+    pub(super) fn restore_name_environment(&mut self, saved: NameEnvironment) {
+        self.locals = saved.locals;
+        self.local_scopes = saved.local_scopes;
+        self.cell_locals = saved.cell_locals;
+        self.capture_names = saved.capture_names;
+        self.capture_cells = saved.capture_cells;
+        self.capture_machine_widths = saved.capture_machine_widths;
+        self.single_char_string_locals = saved.single_char_string_locals;
+        self.const_map_locals = saved.const_map_locals;
+        self.local_struct_types = saved.local_struct_types;
     }
 
     pub(super) fn insert_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {

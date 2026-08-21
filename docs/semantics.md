@@ -3509,3 +3509,42 @@ return x * 2.5; }` 可能把 `x` 定成 `Int`,而据此拒绝 `scale(4.0)` 等�
 说过的话去拒绝)。REPL 这里更严。原因未查明:调用点对未标注参数照样加约束,而
 文件里同样的两条约束(`T = Int` 来自函数体、`T = String` 来自调用)并没有报错,
 求解器这处的不对称还没查清。
+
+## 命名参数的默认值在**声明它的**作用域里读(2026-08-21)
+
+默认值是在**调用点**降级的,因为它可以引用这次调用前面的参数——
+`fn f(x: Int, {y: Int = x + 1})` 要用 `x`,而只有调用方手里有。为此调用点会
+临时把被调方的参数名绑好,但其余的名字此前会落到**调用方**当时的作用域里,
+于是调用方碰巧有同名绑定就会被捕获:
+
+```lk
+const LIMIT: Int = 7;
+fn f({n: Int = LIMIT}) -> Int { return n; }
+fn g() -> Int { let LIMIT = 99; return f(); }   // 答 99
+```
+
+顶层调 `f()` 得 7,从 `g` 里调得 99。单模块内、不涉及导入和并发的静默错答,
+`lk check` 也不报。默认值属于**声明**,它能看见的只有被调方自己的参数(按声明
+顺序绑好的那些)和模块作用域。现在降级默认值时会把调用方的名字整体让开
+(`Compiler::take_name_environment`),模块级的表保持可见——那正是它该看见的。
+
+门禁:`examples/syntax/named_default_scope.lk`,包含调用方同时遮蔽参数名 `x`
+和模块级 `LIMIT` 的情形、同一作用域内的两次调用、以及嵌套调用。
+
+**同一处仍未修**:跨模块调用根本用不上默认值。
+
+```lk
+// conf.lk
+fn configure({host: String, timeout_ms: Int? = 1000}) -> String { … }
+// 调用方
+use { configure } from "conf";
+configure(host: "a")   // Error: missing required named argument `timeout_ms`
+```
+
+编译器的签名表(`collect_function_signatures`)只收当前程序的 AST,导入的函数
+没有签名,于是走通用的具名调用路径;而运行期那条路径
+(`write_named_args_to_frame*`)只有「哪些具名参数被传了」这一个信息,根本没有
+默认值的概念——`Function` 元数据里也不存默认值。要修就得给编译器一条从
+resolver 来的导入签名通道(resolver 加载模块时本来就解析了它的 AST),或者把
+默认值改成被调方序言(那要改调用约定:调用方得告诉被调方哪些具名参数没传)。
+两条路都比这次的作用域修复大,尚未选定。

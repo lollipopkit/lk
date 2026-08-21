@@ -882,7 +882,7 @@ impl Compiler {
             let reg = if index < supplied_named {
                 self.lower_readonly_operand(&args[signature.positional_count + index])?
             } else if let Some(default) = param.default.as_ref() {
-                self.lower_readonly_operand(default)?
+                self.lower_named_default(default, &previous)?
             } else {
                 self.restore_call_params(previous);
                 bail!(
@@ -935,7 +935,7 @@ impl Compiler {
             let reg = if let Some(expr) = provided.get(param.name.as_str()) {
                 self.lower_readonly_operand(expr)?
             } else if let Some(default) = param.default.as_ref() {
-                self.lower_readonly_operand(default)?
+                self.lower_named_default(default, &previous)?
             } else {
                 self.restore_call_params(previous);
                 bail!(
@@ -989,7 +989,7 @@ impl Compiler {
                         "direct signature positional named arg",
                     )?;
                 } else if let Some(default) = param.default.as_ref() {
-                    self.lower_expr_to_register(dst, default, "direct signature default arg")?;
+                    self.lower_named_default_to_register(dst, default, &previous, "direct signature default arg")?;
                 } else {
                     bail!(
                         "Compiler missing required named argument `{}` in call to `{function_name}`",
@@ -1033,7 +1033,12 @@ impl Compiler {
                 if let Some(expr) = provided.get(param.name.as_str()) {
                     self.lower_expr_to_register(dst, expr, "direct signature named arg")?;
                 } else if let Some(default) = param.default.as_ref() {
-                    self.lower_expr_to_register(dst, default, "direct signature named default arg")?;
+                    self.lower_named_default_to_register(
+                        dst,
+                        default,
+                        &previous,
+                        "direct signature named default arg",
+                    )?;
                 } else {
                     bail!(
                         "Compiler missing required named argument `{}` in call to `{function_name}`",
@@ -1048,6 +1053,62 @@ impl Compiler {
         result?;
 
         self.emit_direct_call_at_window(function_index, call_base, total_count)
+    }
+
+    /// Lowers a named parameter's default, in the callee's scope rather than
+    /// the caller's.
+    ///
+    /// A default belongs to the *declaration*. The names it may read are the
+    /// callee's own parameters — bound above, in declaration order, which is
+    /// what makes `fn f(x: Int, {y: Int = x + 1})` work — and then module
+    /// scope. It used to be lowered with the caller's locals still in view, so
+    /// a caller that happened to have a binding of the same name captured it:
+    ///
+    /// ```lk
+    /// const LIMIT: Int = 7;
+    /// fn f({n: Int = LIMIT}) -> Int { return n; }
+    /// fn g() -> Int { let LIMIT = 99; return f(); }
+    /// ```
+    ///
+    /// `f()` answered 7 from the top level and 99 from `g` — a silent wrong
+    /// answer that neither `lk check` nor any gate saw, because the default is
+    /// written in one function and read in another.
+    fn lower_named_default(&mut self, default: &Expr, bound: &[(String, Option<u16>)]) -> Result<u16> {
+        let params = self.bound_parameter_registers(bound);
+        let saved = self.take_name_environment();
+        for (name, reg) in params {
+            self.insert_local(name, reg);
+        }
+        let lowered = self.lower_readonly_operand(default);
+        self.restore_name_environment(saved);
+        lowered
+    }
+
+    /// The same, writing into a fixed destination register (the direct-call
+    /// path, which places each argument itself).
+    fn lower_named_default_to_register(
+        &mut self,
+        dst: u16,
+        default: &Expr,
+        bound: &[(String, Option<u16>)],
+        context: &str,
+    ) -> Result<()> {
+        let params = self.bound_parameter_registers(bound);
+        let saved = self.take_name_environment();
+        for (name, reg) in params {
+            self.insert_local(name, reg);
+        }
+        let lowered = self.lower_expr_to_register(dst, default, context);
+        self.restore_name_environment(saved);
+        lowered
+    }
+
+    /// The callee parameters bound so far, by the name each was bound under.
+    fn bound_parameter_registers(&self, bound: &[(String, Option<u16>)]) -> Vec<(String, u16)> {
+        bound
+            .iter()
+            .filter_map(|(name, _)| self.locals.get(name).map(|reg| (name.clone(), *reg)))
+            .collect()
     }
 
     fn bind_call_param(&mut self, name: &str, reg: u16, previous: &mut Vec<(String, Option<u16>)>) {
