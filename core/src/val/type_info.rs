@@ -69,10 +69,12 @@ impl TypeScope {
     /// impls per-module would be wrong in the other direction: the receiver is
     /// a bare `5` with no module attached, so the lookup could never find them.
     ///
-    /// TODO(coherence): two modules that both `impl Doubler for Int` still
-    /// collide here, last registration winning, because a global type genuinely
-    /// admits only one impl. Rejecting the overlap needs an orphan rule, which
-    /// is a language decision rather than a dispatch fix.
+    /// A builtin type has no declaring module, so one trait can be implemented
+    /// for it exactly once in a program. Two modules that both
+    /// `impl Doubler for Int` are **refused**, naming both files — see
+    /// `VmContext::note_builtin_impl_owner`. This used to say the second
+    /// registration silently won, which is what made the answer depend on
+    /// import order.
     pub fn builtin() -> Self {
         Self(Arc::<str>::from("<builtin>"))
     }
