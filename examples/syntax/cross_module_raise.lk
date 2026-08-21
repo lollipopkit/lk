@@ -1,0 +1,60 @@
+// A raise crossing a module boundary keeps its payload.
+//
+// error_model_edges.lk covers first-class heap error values within one module.
+// This is the same question across two, which is a different mechanism: each
+// module has its own heap, and a heap value is a *handle* into one of them. The
+// call's return path copies the value between the two heaps; the raise path did
+// not, so `error([7, 8, 9])` arrived as a handle the catch could not read and
+// the VM reported `heap object 88 out of bounds` — an internal invariant,
+// printed at the user. The native build printed the list, so this is also a
+// VM/AOT divergence, which is why it is an example: the sweep compares them.
+//
+// Int and short-string payloads were unaffected (stored inline, no handle),
+// which is why the gap survived — the obvious probe passes.
+//
+// Run from project root: lk examples/syntax/cross_module_raise.lk
+
+use { raise_text, raise_list, raise_map, raise_struct, raise_nested, raise_rethrown } from "../general/raising";
+
+// --- a heap string ---
+try { raise_text(); } catch texted {
+    assert(texted == "a sufficiently long heap-allocated error payload");
+}
+
+// --- a list, read by index on the far side ---
+try { raise_list(); } catch listed {
+    assert(listed[0] == 7);
+    assert(listed[2] == 9);
+}
+
+// --- a map, including a nested list inside it ---
+try { raise_map(); } catch mapped {
+    assert(mapped["code"] == 42);
+    assert(mapped["rows"][0][1] == 2);
+}
+
+// --- a struct, whose field is itself a heap value ---
+try { raise_struct(); } catch failure {
+    assert(failure.code == 7);
+    assert(failure.detail == ["a", "b"]);
+}
+
+// --- raised a frame deeper than the imported function ---
+try { raise_nested(); } catch nested {
+    assert(nested == [7, 8, 9]);
+}
+
+// --- caught and re-raised inside the other module ---
+try { raise_rethrown(); } catch again {
+    assert(again == [1, 2]);
+}
+
+// --- an Int payload, the case that always worked; kept so a regression that
+//     breaks the inline path is told apart from one that breaks the heap path ---
+try { raise_list(); } catch _ {
+    let scalar = 0;
+    try { error(11); } catch small { scalar = small; }
+    assert(scalar == 11);
+}
+
+println("cross-module raise: ok");

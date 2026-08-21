@@ -54,6 +54,8 @@ pub(crate) fn call_runtime_callable_test(
         },
     ) {
         Ok(result) => result,
+        // No crossing here, and so no copy: this helper hands the callee's own
+        // values straight to a test, which reads them against the callee's heap.
         Err(failure) => {
             let ExecFailure { error, state } = failure;
             commit_runtime_callable_state(function, state)?;
@@ -120,6 +122,8 @@ pub fn call_runtime_callable_runtime_named_stack(
         Ok(result) => result,
         Err(failure) => {
             let ExecFailure { error, state } = failure;
+            // Same crossing as the return below, for the same reason.
+            let error = raised_value_into_caller_heap(error, &state.heap, caller_heap, &function.module);
             commit_runtime_callable_state(function, state)?;
             return Err(error);
         }
@@ -779,6 +783,8 @@ fn call_runtime_callable_runtime_positional(
         Ok(result) => result,
         Err(failure) => {
             let ExecFailure { error, state } = failure;
+            // Same crossing as the return below, for the same reason.
+            let error = raised_value_into_caller_heap(error, &state.heap, caller_heap, &function.module);
             commit_runtime_callable_state(function, state)?;
             return Err(error);
         }
@@ -854,6 +860,8 @@ fn call_runtime_callable_runtime_named_map_positional(
         Ok(result) => result,
         Err(failure) => {
             let ExecFailure { error, state } = failure;
+            // Same crossing as the return below, for the same reason.
+            let error = raised_value_into_caller_heap(error, &state.heap, caller_heap, &function.module);
             commit_runtime_callable_state(function, state)?;
             return Err(error);
         }
@@ -1428,6 +1436,44 @@ pub enum ClosureCopy {
     /// is refused for a function whose reachable subtree touches its module's
     /// globals — see [`promote_crossing_closure`] for why that is the line.
     Promote(Arc<Module>),
+}
+
+/// Bring a raised value into the caller's heap.
+///
+/// The success path copies the *returned* value across the two heaps, because a
+/// heap value is a handle and the callee's handles mean nothing on this side. A
+/// raise carries a value the same way and was handed back untouched, so
+/// `error([7, 8, 9])` crossing a module boundary arrived as a handle into a heap
+/// the catch cannot read. The VM answered `heap object 88 out of bounds` — an
+/// internal invariant, printed at the user — where the native build printed the
+/// list. Int and short-string payloads were fine, which is why it survived: they
+/// are stored inline and carry no handle at all.
+///
+/// A payload that cannot cross (a bare closure) degrades to the message the
+/// raise already rendered, rather than passing on a handle that will fault
+/// later.
+fn raised_value_into_caller_heap(
+    error: anyhow::Error,
+    callee_heap: &HeapStore,
+    caller_heap: &mut HeapStore,
+    module: &Arc<Module>,
+) -> anyhow::Error {
+    let Some(raised) = error.root_cause().downcast_ref::<crate::vm::LkRaisedValue>() else {
+        return error;
+    };
+    if !matches!(raised.value, RuntimeVal::Obj(_)) {
+        return error;
+    }
+    let rendered = Arc::clone(&raised.rendered);
+    match copy_runtime_value_with(
+        &raised.value,
+        callee_heap,
+        caller_heap,
+        &ClosureCopy::Promote(Arc::clone(module)),
+    ) {
+        Ok(value) => anyhow!(crate::vm::LkRaisedValue { value, rendered }),
+        Err(_) => anyhow!("{rendered}"),
+    }
 }
 
 pub fn copy_runtime_value(

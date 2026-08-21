@@ -1,0 +1,28 @@
+// A module whose functions raise, for the cross-module half of the error model
+// (see examples/syntax/cross_module_raise.lk). Definitions only, like fib.lk.
+//
+// The payloads here are deliberately the *heap* ones — a long string, a list, a
+// map, a struct. An Int or a short string is stored inline in the value, so a
+// raise carrying one crosses a module boundary whatever the runtime does with
+// handles; those cases stayed correct while these did not.
+
+struct Failure { code: Int, detail: List<String> }
+
+fn raise_text() { error("a sufficiently long heap-allocated error payload"); return 0; }
+
+fn raise_list() { error([7, 8, 9]); return 0; }
+
+fn raise_map() { error({"code": 42, "rows": [[1, 2], [3]]}); return 0; }
+
+fn raise_struct() { error(Failure { code: 7, detail: ["a", "b"] }); return 0; }
+
+// Raised two frames down, so the value crosses the module boundary after it has
+// already crossed a call inside this module.
+fn raise_nested() { return raise_list(); }
+
+// Caught here and raised again: the payload leaves on a second raise, from a
+// handler rather than from the code that built it.
+fn raise_rethrown() {
+    try { error([1, 2]); } catch caught { error(caught); }
+    return 0;
+}
