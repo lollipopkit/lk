@@ -2,6 +2,7 @@
 use crate::compat::prelude::*;
 use core::ops::Range;
 
+use alloc::borrow::Cow;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
@@ -151,7 +152,7 @@ impl Executor {
                     );
                 }
                 let native = NativeEntry {
-                    name: "<runtime-native>".to_string(),
+                    name: Cow::Borrowed("<runtime-native>"),
                     arity,
                     function,
                 };

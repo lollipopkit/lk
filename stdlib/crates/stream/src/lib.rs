@@ -890,11 +890,13 @@ fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime<'_>, cont
     }
 }
 
+/// `context` is `&'static str` because it becomes the entry's name, which is
+/// borrowed rather than allocated; every caller passes a literal.
 fn call_runtime_callable_value(
     callable: &RuntimeVal,
     args: &[RuntimeVal],
     runtime: &mut NativeRuntime<'_>,
-    context: &str,
+    context: &'static str,
 ) -> Result<RuntimeVal> {
     let RuntimeVal::Obj(handle) = callable else {
         bail!("{context} must be a runtime callable");
@@ -937,7 +939,7 @@ fn call_runtime_callable_value(
         }
         StreamCallableTarget::RuntimeNative { arity, function } => {
             let entry = NativeEntry {
-                name: context.to_string(),
+                name: std::borrow::Cow::Borrowed(context),
                 arity,
                 function,
             };

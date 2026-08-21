@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::sync::{Mutex, MutexGuard};
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -677,7 +678,15 @@ impl NativeFunction {
 
 #[derive(Clone, Debug)]
 pub struct NativeEntry {
-    pub name: String,
+    /// Borrowed for the names that are compile-time constants.
+    ///
+    /// This field is read only by `bail!` — it names the native in an arity or
+    /// window error. It was a `String`, and calling a native *through a value*
+    /// (`let f = typeof; f(x)`, or any bare stdlib global) builds an entry per
+    /// call to carry the function and arity to the helper that runs it, so a
+    /// two-million-iteration loop allocated and freed the literal
+    /// `"<runtime-native>"` two million times for a message it never printed.
+    pub name: Cow<'static, str>,
     pub arity: u16,
     pub function: NativeFunction,
 }

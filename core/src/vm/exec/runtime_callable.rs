@@ -2,6 +2,7 @@
 use crate::compat::prelude::*;
 use crate::compat::sync::Mutex;
 use crate::util::value_map::{ValueMap, value_map_new};
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -479,7 +480,7 @@ fn call_runtime_value_with_map_args(
                     bail!("Native expects {} positional arguments, got {}", arity, pos_len);
                 }
                 let native = NativeEntry {
-                    name: "<runtime-native>".to_string(),
+                    name: Cow::Borrowed("<runtime-native>"),
                     arity,
                     function,
                 };
@@ -509,7 +510,7 @@ fn call_runtime_value_with_map_args(
                 bail!("Native expects {} positional arguments, got {}", arity, pos_len);
             }
             let native = NativeEntry {
-                name: "<runtime-native>".to_string(),
+                name: Cow::Borrowed("<runtime-native>"),
                 arity,
                 function,
             };

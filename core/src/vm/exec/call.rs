@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -185,7 +186,7 @@ impl Executor {
                     );
                 }
                 let native = NativeEntry {
-                    name: "<runtime-native>".to_string(),
+                    name: Cow::Borrowed("<runtime-native>"),
                     arity,
                     function,
                 };

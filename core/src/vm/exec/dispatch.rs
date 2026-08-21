@@ -780,7 +780,8 @@ impl Executor {
                     }
                 }
                 RuntimeVal::Int(n) => {
-                    let n_str = n.to_string();
+                    let mut digits = [0u8; MAX_I64_DIGITS];
+                    let n_str = int_decimal(*n, &mut digits);
                     if short_len + n_str.len() <= 7 {
                         short_buf[short_len..short_len + n_str.len()].copy_from_slice(n_str.as_bytes());
                         short_len += n_str.len();
@@ -929,5 +930,55 @@ fn truncate_to_width(value: i64, kind: crate::val::IntKind) -> i64 {
         ((masked << (64 - bits)) as i64) >> (64 - bits)
     } else {
         masked as i64
+    }
+}
+
+/// Widest decimal `i64` — `i64::MIN` is 20 characters including the sign.
+const MAX_I64_DIGITS: usize = 20;
+
+/// `value` in decimal, written into a caller-owned buffer.
+///
+/// The interpolation fast path above builds a `ShortStr` in a stack array
+/// precisely so that a short result costs no heap allocation. It reached the
+/// integer arm through `to_string()`, which allocates a `String` and frees it
+/// two lines later — the fast path was paying the allocation it exists to
+/// avoid, on every interpolation with an integer in it.
+fn int_decimal(value: i64, buf: &mut [u8; MAX_I64_DIGITS]) -> &str {
+    let mut magnitude = value.unsigned_abs();
+    let mut index = buf.len();
+    loop {
+        index -= 1;
+        buf[index] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        index -= 1;
+        buf[index] = b'-';
+    }
+    // Only ASCII digits and `-` were written, so this cannot fail.
+    core::str::from_utf8(&buf[index..]).unwrap_or("")
+}
+
+#[cfg(test)]
+mod int_decimal_tests {
+    use super::{MAX_I64_DIGITS, int_decimal};
+
+    /// Against `to_string`, which is what this replaced — including the two
+    /// values a hand-rolled formatter gets wrong: zero (the loop must run once)
+    /// and `i64::MIN` (whose magnitude does not fit in `i64`).
+    #[test]
+    fn matches_to_string_including_the_edges() {
+        let cases = [0, 1, -1, 9, 10, -10, 99, 1234567, -1234567, i64::MAX, i64::MIN];
+        for value in cases {
+            let mut buf = [0u8; MAX_I64_DIGITS];
+            assert_eq!(int_decimal(value, &mut buf), value.to_string(), "for {value}");
+        }
+        for value in -1000..1000i64 {
+            let mut buf = [0u8; MAX_I64_DIGITS];
+            assert_eq!(int_decimal(value, &mut buf), value.to_string(), "for {value}");
+        }
     }
 }
