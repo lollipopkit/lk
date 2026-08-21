@@ -3548,3 +3548,40 @@ configure(host: "a")   // Error: missing required named argument `timeout_ms`
 resolver 来的导入签名通道(resolver 加载模块时本来就解析了它的 AST),或者把
 默认值改成被调方序言(那要改调用约定:调用方得告诉被调方哪些具名参数没传)。
 两条路都比这次的作用域修复大,尚未选定。
+
+## REPL 每次输入是一个模块,由此来的两条差异(2026-08-21)
+
+REPL 把每次输入编译成**自己的模块**并执行。这带来两条与文件不同的行为。
+
+**一、结构体字段顺序(已修)。** 字段的声明顺序跟着类型走,而两条构造路径
+(`exec::container::declared_type` 和 `__lk_make_struct`)都从**正在执行的模块**
+里读它。声明在一行、构造在下一行时,后者的模块里没有这个声明,于是退回字段
+映射自己的迭代顺序:
+
+```
+> struct Reading { zebra: Int, apple: Int, mango: Int, kiwi: Int, pear: Int, fig: Int }
+> Reading { zebra: 1, apple: 2, mango: 3, kiwi: 4, pear: 5, fig: 6 }
+Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
+```
+
+写在同一行、写在文件里、或跨真正的 `use` 导入,同样的值都按声明顺序打印。现在
+会话把已声明的 struct 带进后续每次输入的模块(本次输入自己重新声明的优先)。
+
+**二、跨输入的函数改不动传进去的值(未修)。**
+
+```
+> fn push_it(xs) { xs.push(9); }
+> let xs = [1];
+> push_it(xs);
+> xs
+[1]          // 文件里是 [1,9]
+```
+
+列表、映射、结构体都一样,而且不报错。原因是**模块之间是 isolate 语义**:跨
+模块传值是结构化深拷贝,不是共享句柄。这条规则本身是对的,但 REPL 的一次会话
+在概念上是**一个程序**,不是一串模块,规则用错了地方。
+
+要修得让会话共用一个堆:每次输入的模块对着同一个 `RuntimeModuleState` 的堆执行,
+句柄才跨输入有效,`exports_from_state` 也就不必来回复制。难点是**谁来做 GC 根**
+——现在是每个模块自己的 globals 槽在做根,而两次输入的 globals 布局不同,不能
+整个共享 state。设计时要针对的约束是这一条,不是复制本身。

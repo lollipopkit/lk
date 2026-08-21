@@ -622,6 +622,47 @@ mod tests {
         );
     }
 
+    /// A struct declared on one input keeps its field order on the next.
+    ///
+    /// Declaration order travels with the type, and the two paths that build an
+    /// instance read it from the module being executed. Every REPL input is its
+    /// own module, so a struct built after the line that declared it had no
+    /// declaration to order by and printed the field map's own iteration.
+    /// Six fields, deliberately: with fewer the two orders can coincide.
+    #[cfg(feature = "stdlib")]
+    #[test]
+    fn a_struct_keeps_its_field_order_on_a_later_input() {
+        let mut session = ReplSession::new().expect("repl session");
+
+        session
+            .execute_input("struct Reading { zebra: Int, apple: Int, mango: Int, kiwi: Int, pear: Int, fig: Int }")
+            .expect("the declaration is accepted")
+            .expect("the declaration runs");
+        let built = session
+            .execute_input("\"{}\".format(Reading { zebra: 1, apple: 2, mango: 3, kiwi: 4, pear: 5, fig: 6 })")
+            .expect("the construction is accepted")
+            .expect("the construction runs");
+        assert_eq!(
+            built.display_first_return(),
+            "Reading{zebra:1,apple:2,mango:3,kiwi:4,pear:5,fig:6}"
+        );
+
+        // A spread rebuild goes through the other construction path, which reads
+        // the same declaration.
+        session
+            .execute_input("let base = Reading { zebra: 1, apple: 2, mango: 3, kiwi: 4, pear: 5, fig: 6 };")
+            .expect("the binding is accepted")
+            .expect("the binding runs");
+        let bumped = session
+            .execute_input("\"{}\".format(Reading { ..base, apple: 99 })")
+            .expect("the rebuild is accepted")
+            .expect("the rebuild runs");
+        assert_eq!(
+            bumped.display_first_return(),
+            "Reading{zebra:1,apple:99,mango:3,kiwi:4,pear:5,fig:6}"
+        );
+    }
+
     #[cfg(feature = "stdlib")]
     #[test]
     fn expression_fallback_echoes_values_but_not_nil_returns() {

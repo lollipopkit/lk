@@ -24,6 +24,9 @@ pub struct ReplVmSession {
     ctx: VmContext,
     type_checker: TypeChecker,
     persistent_names: BTreeSet<String>,
+    /// Every `struct` the session has declared, in the order first seen — see
+    /// [`ReplVmSession::carry_struct_declarations`].
+    struct_decls: Vec<crate::vm::StructDecl>,
 }
 
 impl ReplVmSession {
@@ -32,6 +35,7 @@ impl ReplVmSession {
             ctx,
             type_checker,
             persistent_names: BTreeSet::new(),
+            struct_decls: Vec::new(),
         }
     }
 
@@ -60,13 +64,58 @@ impl ReplVmSession {
             &mut self.ctx,
             &data_globals,
         )?;
+        let module = self.carry_struct_declarations(module);
         let result = crate::vm::execute_compiled_module_with_ctx(module, &mut self.ctx)?;
 
-        // Each input is its own program, so what inference learned about the
-        // last one must not bind the next: see `TypeChecker::forget_inferences`.
         self.type_checker = next_type_checker;
         self.persistent_names.extend(declared_names);
+        self.record_struct_declarations(&result.module);
         self.sync_result_globals(result)
+    }
+
+    /// Give this input's module the `struct` declarations earlier inputs made.
+    ///
+    /// A field's *declaration order* travels with the type, and both paths that
+    /// build an instance read it from the module being executed
+    /// (`exec::container::declared_type` and `__lk_make_struct`). Every REPL
+    /// input is its own module, so a struct declared on one line and built on
+    /// the next had no declaration to order by and fell back to the field map's
+    /// own iteration:
+    ///
+    /// ```text
+    /// > struct Reading { zebra: Int, apple: Int, mango: Int, … }
+    /// > Reading { zebra: 1, apple: 2, mango: 3, … }
+    /// Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
+    /// ```
+    ///
+    /// Written on one line, or in a file, or across a real `use`, the same
+    /// value prints in declaration order. This makes the session behave like
+    /// the file: a declaration stays visible to the inputs after it.
+    fn carry_struct_declarations(&self, module: Arc<crate::vm::Module>) -> Arc<crate::vm::Module> {
+        // A redeclaration in *this* input wins — it is what the source being run
+        // says, exactly as a later `struct` in a file would.
+        let missing: Vec<crate::vm::StructDecl> = self
+            .struct_decls
+            .iter()
+            .filter(|decl| !module.type_info.structs.iter().any(|own| own.name == decl.name))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return module;
+        }
+        let mut module = module;
+        Arc::make_mut(&mut module).type_info.structs.extend(missing);
+        module
+    }
+
+    /// Keep what this input declared, for the inputs after it.
+    fn record_struct_declarations(&mut self, module: &crate::vm::Module) {
+        for decl in &module.type_info.structs {
+            match self.struct_decls.iter_mut().find(|held| held.name == decl.name) {
+                Some(held) => *held = decl.clone(),
+                None => self.struct_decls.push(decl.clone()),
+            }
+        }
     }
 
     /// The recorded types of functions this program does *not* declare.
