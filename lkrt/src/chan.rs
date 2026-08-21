@@ -19,7 +19,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, is_list_tag};
+use crate::lkdyn::{
+    DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, is_list_tag, is_map_tag, map_entries,
+};
 use crate::lkmap::StrDynMap;
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
@@ -72,18 +74,24 @@ pub(crate) fn own(v: LkDyn) -> OwnedVal {
         tag if is_list_tag(tag) => {
             OwnedVal::List(crate::lkdyn::dyn_list_values(v).iter().map(|&item| own(item)).collect())
         }
-        DYN_MAP => {
-            let handle = v.payload as *mut c_void;
-            if handle.is_null() {
+        // Every map representation, for the same reason the list arm covers
+        // every list one: a map whose values are all Int is a `MapStrI64`
+        // carrier, not a boxed `DYN_MAP`, and it used to fall through to the
+        // unsupported arm below. `send(c, {"code": 7})` answered "value cannot
+        // cross a channel" natively while the interpreter sent it — and a raise
+        // out of a task travels this same path, so `error({"code": 7})` inside
+        // `spawn` reported the same thing.
+        tag if is_map_tag(tag) => {
+            if v.payload == 0 {
                 return OwnedVal::Map(Vec::new(), 0);
             }
-            // SAFETY: DYN_MAP payloads are live `StrDynMap` handles.
-            let map = unsafe { &*(handle as *mut StrDynMap) };
+            let type_id = crate::lkdyn::lkrt_dyn_obj_type_id(v);
             OwnedVal::Map(
-                map.iter()
-                    .map(|(k, &val)| (String::from(k.as_str()), own(val)))
+                map_entries(v)
+                    .into_iter()
+                    .map(|(key, val)| (String::from(crate::vm_mirror::key_str(&key)), own(val)))
                     .collect(),
-                map.type_id,
+                type_id,
             )
         }
         // A closure copies its captures the same way and shares its code.

@@ -329,6 +329,25 @@ example、差分用例或 fuzz 种子碰到过它。AOT 覆盖门禁也看不见
   无用户级 `pcall`、无 `[ok, value]` 状态对。`error(v)` 抛一等错误值;
   并发原语失败即抛(`recv`/`send` on closed),非错误的"暂无"用 nil 表达
   (`chan.try_recv` 空、`task.try_await` 未完成),配合 `!` 断言。
+- **raise 跨边界要复制载荷**(2026-08-21):一等错误值可以是堆值(列表、
+  映射、结构体、长字符串),而堆值是**句柄**,只在自己那个堆里有意义。
+  返回路径一直在两个堆之间复制,raise 路径没有,于是:
+  - **跨模块**:`error([7, 8, 9])` 到达 catch 时是一个指向被调方堆的句柄,
+    VM 报 `heap object 88 out of bounds`——内部不变量直接打给用户,而原生
+    构建打印 `7`。即 VM 与 AOT 分歧,且错的是解释器。
+  - **跨 task**:task 有自己的堆,结果以「值 + 所在堆」的形式回来,raise 则
+    只带句柄,而 task 的堆在错误传出时已经析构。`spawn` 里 `error([1,2,3])`
+    捕获到的是那个索引上现在的对象(`<native fn println(...)>`),不报错。
+  - **原生 channel**:值全为 Int 的映射走类型化载体而非装箱映射,复制只认
+    装箱的那种,`send(c, {"code": 7})` 报 "value cannot cross a channel"。
+
+  Int 和短字符串载荷一直是对的——它们内联存在值里,没有句柄,所以最直接的
+  探针会通过,这是三处都长期没被发现的原因。现在跨 task 的 raise 由
+  `rt::RaisedPayload` 承载(在 task 那侧 detach、await 那侧 reattach),
+  与结果的载体对称;完全无法复制的载荷(裸闭包)退化为已渲染的消息,而不是
+  继续传一个会出错的句柄。门禁:`examples/syntax/cross_module_raise.lk`、
+  `cross_task_raise.lk`,两者同时进入 VM/native sweep、AOT 覆盖率和
+  VM/bytecode 差分。
 
 ## 块就是作用域(2026-07-30 裁决)
 

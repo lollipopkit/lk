@@ -557,7 +557,12 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<RuntimePayload>> + Send>> =
         Box::pin(async move {
             let mut heap = HeapStore::new();
-            let result = call_runtime_callable_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))?;
+            // The raise leaves with its payload, while this heap is still here
+            // to copy it out of — `heap` is dropped the moment this block
+            // returns, and a first-class raise carries a handle into it. See
+            // `RaisedPayload`.
+            let result = call_runtime_callable_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))
+                .map_err(|error| lk_core::rt::RaisedPayload::detach(error, &heap))?;
             Ok(RuntimePayload::new(result, heap))
         });
 

@@ -32,7 +32,9 @@ impl TaskModule {
             // say that and not `Failed to await task: modulo by zero`, or the
             // same failure reads differently depending on whether it crossed a
             // task boundary. See the error-text ruling in `docs/semantics.md`.
-            ?;
+            // A raise that crossed the task boundary arrives detached from the
+            // heap it was built in; this is where it comes back into one.
+            .map_err(|error| lk_core::rt::RaisedPayload::reattach(error, runtime.heap_mut()))?;
         value.into_value(runtime.heap_mut())
     }
 
@@ -63,7 +65,10 @@ impl TaskModule {
         let mut values = Vec::with_capacity(tasks.len());
         for arg in &tasks {
             let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
-            let value = runtime.async_runtime().with(|rt| rt.block_on(rt.join_task(task.id)))?;
+            let value = runtime
+                .async_runtime()
+                .with(|rt| rt.block_on(rt.join_task(task.id)))
+                .map_err(|error| lk_core::rt::RaisedPayload::reattach(error, runtime.heap_mut()))?;
             values.push(value.into_value(runtime.heap_mut())?);
         }
         let list = crate::typed_list_from_values(values, runtime.heap());
