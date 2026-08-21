@@ -3,7 +3,7 @@ use crate::compat::prelude::*;
 use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
 use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap};
 
@@ -128,8 +128,32 @@ fn import_heap_value(
         }
         HeapValue::Task(value) => HeapValue::Task(Arc::clone(value)),
         HeapValue::Channel(value) => HeapValue::Channel(Arc::clone(value)),
-        HeapValue::Stream(value) => HeapValue::Stream(Arc::clone(value)),
-        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(Arc::clone(value)),
+        // Same reason as the copy in `runtime_callable::copy_runtime_value_with`
+        // — a stream's callbacks and buffered values are handles into the heap
+        // that built it, and an id shared across heaps does not carry them.
+        // This is the path an *import* takes, and the REPL's, where each input
+        // is its own module: the pipeline came back with its filter silently
+        // skipped.
+        HeapValue::Stream(value) => {
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cannot be imported from another module: this one's pipeline holds a \
+                     callback or a value that lives in the heap of the module that built it. Collect \
+                     it first (`stream.collect`) and pass the list, or build the stream on this side"
+                );
+            }
+            HeapValue::Stream(Arc::clone(value))
+        }
+        HeapValue::StreamCursor(value) => {
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cursor cannot be imported from another module: this one reads from a \
+                     pipeline that lives in the heap of the module that built it. Drain it first and \
+                     pass the values"
+                );
+            }
+            HeapValue::StreamCursor(Arc::clone(value))
+        }
         HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
             source: import_runtime_value(
                 &value.source,

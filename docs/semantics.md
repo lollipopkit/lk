@@ -3627,3 +3627,27 @@ Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
 `RuntimeModuleState` 里拆出去(堆是会话级的,globals 槽和 `borrowed_for_call`
 仍然按模块各一份)——这正是 CLAUDE.md 里 `val ↔ vm` 那条边界的问题。设计时要
 针对的约束是这一条。
+
+
+## 流(stream)不能跨模块边界,除非它不带堆值(2026-08-21)
+
+一个 stream 是**进程级注册表里的一个 id + 若干句柄**:`StreamValue.roots` 是堆
+引用,注册表为那个 id 保存的流水线里,`map`/`filter` 的回调也是堆引用。两者都属
+于**建它的那个堆**,而堆间复制两个都不改写——于是对面拿到一个 id,它的回调指向
+一个它读不了的堆。
+
+结果取决于收集器什么时候跑:回调句柄越界时程序直接死在
+`heap object 102 out of bounds`;若中间发生过一次收集、那个槽被别的对象占了,
+过滤器就被**静默跳过**——该给 `[16,25,36]` 的地方回了 `[1,2,3,4,5,6]`。REPL 里
+每次输入自己是一个模块,所以这条在 REPL 中是常态。
+
+现在**拒绝**这种跨越,并且只拒绝真正不安全的那些:`roots` 里含有堆句柄
+(`RuntimeVal::Obj`)才拒绝。`stream.range(0, 5)` 和纯标量列表建的流没有堆
+roots,只是一个 id,照常跨。两条复制路径都要改——
+`runtime_callable::copy_runtime_value_with`(任务/跨模块传值)和
+`exec::imports`(导入,也是 REPL 走的那条)。
+
+**没有修的是什么**:让它真正能跨,得把注册表里那条流水线**改写**到目标模块去
+(回调提升成携带模块的 callable,roots 复制进目标堆)。注册表在 stdlib 里,而
+`core` 不能反向依赖 stdlib,所以这需要一个由 stream 模块向 core 注册的
+"把这个流复制到另一个堆"的钩子。是个设计,不是一行。

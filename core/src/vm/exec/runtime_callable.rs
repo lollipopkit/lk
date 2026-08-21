@@ -1587,8 +1587,44 @@ fn copy_heap_value(
         },
         HeapValue::Task(value) => HeapValue::Task(value.clone()),
         HeapValue::Channel(value) => HeapValue::Channel(value.clone()),
-        HeapValue::Stream(value) => HeapValue::Stream(value.clone()),
-        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value.clone()),
+        // A stream is an id into a process-global registry *plus* handles: its
+        // `roots` are heap references, and the pipeline the registry holds for
+        // that id keeps its `map`/`filter` callbacks as heap references too.
+        // Both belong to the heap that built them, and neither is rewritten by
+        // a copy — cloning the value handed the other side an id whose
+        // callbacks point into a heap it cannot read. What that produced
+        // depended on timing: plainly, `heap object 102 out of bounds`; with
+        // collection in between, the filter was silently skipped and
+        // `[1,2,3,4,5,6]` came back where `[16,25,36]` was asked for.
+        //
+        // Refused rather than repaired here, because repairing it means
+        // rewriting the *registry's* pipeline, which lives in the stdlib and
+        // which `core` must not reach into. See docs/semantics.md for the shape
+        // that would fix it.
+        HeapValue::Stream(value) => {
+            // `roots` is exactly the set of heap values the pipeline depends on
+            // — a `map`/`filter` callback, or elements of the list it was built
+            // from. A stream with none of them (`stream.range`, or a list of
+            // scalars) is just an id and crosses safely.
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cannot be handed to another module or a task: this one's pipeline holds \
+                     a callback or a value that lives in the heap of the module that built it. Collect \
+                     it first (`stream.collect`) and pass the list, or build the stream on the other side"
+                );
+            }
+            HeapValue::Stream(value.clone())
+        }
+        HeapValue::StreamCursor(value) => {
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cursor cannot be handed to another module or a task: this one reads from \
+                     a pipeline that lives in the heap of the module that built it. Drain it first and \
+                     pass the values"
+                );
+            }
+            HeapValue::StreamCursor(value.clone())
+        }
         HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
             source: copy_runtime_value_with(&value.source, source_heap, dest_heap, mode)?,
             start: value.start,
