@@ -79,6 +79,12 @@ pub struct MacroExpandOptions {
     pub proc_macro_providers: ProcMacroProviders,
     pub proc_macro_features: Vec<String>,
     pub proc_macro_dependency_recorder: ProcMacroDependencyRecorder,
+    /// Definitions from an earlier expansion to treat as already in scope.
+    ///
+    /// A carried definition loses to one this source declares, so re-entering
+    /// `macro_rules! m` in a REPL replaces it rather than colliding with it —
+    /// the same rule `let` and `fn` follow there.
+    pub carried_definitions: MacroDefinitions,
 }
 
 impl Default for MacroExpandOptions {
@@ -91,6 +97,7 @@ impl Default for MacroExpandOptions {
             proc_macro_providers: ProcMacroProviders::default(),
             proc_macro_features: Vec::new(),
             proc_macro_dependency_recorder: ProcMacroDependencyRecorder::default(),
+            carried_definitions: MacroDefinitions::default(),
         }
     }
 }
@@ -134,6 +141,44 @@ pub struct MacroExpandResult {
     pub origins: Vec<MacroTokenOrigin>,
     pub trace: Vec<MacroTrace>,
     pub proc_macro_dependencies: Vec<ProcMacroDependency>,
+    /// The `macro_rules!` definitions this expansion collected.
+    ///
+    /// A caller that compiles one source text has no use for these — the
+    /// definitions are consumed by the same expansion that found them. A REPL
+    /// does: each input is its own source text, so without carrying them a
+    /// macro defined on one line is gone by the next, and the definition is
+    /// dropped in silence. Feed this back through
+    /// [`MacroExpandOptions::carried_definitions`].
+    pub definitions: MacroDefinitions,
+}
+
+/// `macro_rules!` definitions collected by one expansion, to be carried into
+/// the next. Opaque: what a definition *is* stays inside this module.
+#[derive(Debug, Clone, Default)]
+pub struct MacroDefinitions {
+    registry: MacroRegistry,
+}
+
+impl MacroDefinitions {
+    /// Whether anything is carried — an empty set is the ordinary case for a
+    /// single-shot compile.
+    pub fn is_empty(&self) -> bool {
+        self.registry.macros.is_empty() && self.registry.runtime_anchors.is_empty()
+    }
+
+    /// The names carried, for a REPL that wants to complete or list them.
+    ///
+    /// A macro is registered twice — once under what the source wrote and once
+    /// under a `__lk_macro_crate_<hash>::` anchored alias that makes hygiene
+    /// work across files. Only the first is a name anyone typed, so the alias
+    /// is not offered.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.registry
+            .macros
+            .keys()
+            .map(String::as_str)
+            .filter(|name| !name.starts_with("__lk_macro_crate_"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +279,7 @@ struct ExpandedToken {
     origin_kind: MacroOriginKind,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 struct MacroRegistry {
     macros: HashMap<String, MacroDef>,
     pub(in crate::macro_system) runtime_anchors: HashMap<String, imports::MacroRuntimeAnchorSource>,
@@ -316,11 +361,25 @@ pub fn expand_macros(
     let mut current = source_tokens;
     let mut expanded;
     let mut rounds = 0usize;
+    // Assigned every round before any exit; the definitions handed back are the
+    // last round's, which is the set that was actually in scope.
+    let mut collected;
     loop {
-        let (without_defs, registry) =
+        let (without_defs, mut registry) =
             collect_macro_defs(&current, options.base_dir.as_deref(), options.package_macro_resolver)?;
+        // Carried definitions fill in behind this source's own, so a redefinition
+        // wins instead of raising "already defined in this macro scope" — which
+        // is the collision a REPL would otherwise hit on its second `macro_rules!
+        // m`, having been told the first one did not exist.
+        for (name, definition) in options.carried_definitions.registry.macros.clone() {
+            registry.insert_macro_if_absent(name, definition);
+        }
+        for (anchor, source) in options.carried_definitions.registry.runtime_anchors.clone() {
+            registry.insert_runtime_anchor(anchor, source);
+        }
         expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
         expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
+        collected = registry;
         // Another round only when this one *both* took definitions out and put
         // new ones back: otherwise there is nothing left to collect.
         let produced_definitions = (0..expanded.len()).any(|index| macro_rules_start_at(&expanded, index).is_some());
@@ -343,6 +402,7 @@ pub fn expand_macros(
         origins,
         trace,
         proc_macro_dependencies: options.proc_macro_dependency_recorder.dependencies(),
+        definitions: MacroDefinitions { registry: collected },
     })
 }
 
@@ -1130,6 +1190,48 @@ mod tests {
         syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
         vm::execute_source,
     };
+
+    /// A definition survives into a *later* source text when carried.
+    ///
+    /// This is what a REPL needs and what it did not have: macros are expanded
+    /// during parsing, so a `macro_rules!` entered on one line was gone by the
+    /// next — accepted in silence, then reported as "no macro named `m` is
+    /// defined". `fn`, `struct`, `impl` and `let` all persisted.
+    #[test]
+    fn carried_definitions_outlive_the_source_that_declared_them() {
+        let first = expand_source("macro_rules! two { () => { 2 }; }", ParseOptions::default())
+            .expect("the definition expands");
+        assert_eq!(first.macro_definitions.names().collect::<Vec<_>>(), ["two"]);
+
+        // Without carrying, the second source does not know the name.
+        assert!(parse_program_source("return two!();", ParseOptions::default()).is_err());
+
+        let carried = ParseOptions {
+            carried_macro_definitions: first.macro_definitions.clone(),
+            ..ParseOptions::default()
+        };
+        let second = expand_source("return two!();", carried).expect("the carried macro resolves");
+        assert!(render_tokens(&second.tokens).contains('2'));
+    }
+
+    /// A source's own definition beats a carried one, so re-entering
+    /// `macro_rules! m` replaces it. Inserting the carried set first would
+    /// instead raise "already defined in this macro scope" — a collision on a
+    /// name the session had just been told did not exist.
+    #[test]
+    fn a_redefinition_beats_the_carried_definition() {
+        let first =
+            expand_source("macro_rules! v { () => { 1 }; }", ParseOptions::default()).expect("the first definition");
+        let carried = ParseOptions {
+            carried_macro_definitions: first.macro_definitions,
+            ..ParseOptions::default()
+        };
+        let second = expand_source("macro_rules! v { () => { 9 }; } return v!();", carried)
+            .expect("the redefinition replaces rather than collides");
+        let rendered = render_tokens(&second.tokens);
+        assert!(rendered.contains('9'), "expected the new body, got {rendered}");
+        assert!(!rendered.contains('1'), "expected the old body gone, got {rendered}");
+    }
 
     #[test]
     fn expands_vec_like_repetition() {

@@ -165,6 +165,20 @@ use * as m from macros;                          // 命名空间导入:m::vec![1
   `BUILTIN_MACRO_SOURCE`)提供 8 个宏:`vec!`、`assert!`、`assert_eq!`、
   `assert_ne!`、`matches!`、`panic!`、`todo!`、`unreachable!`。
 
+## REPL 里的宏(2026-08-21)
+
+宏在**解析期**展开,而 REPL 把每次输入当作独立源文本解析。因此定义和导入
+都只在当前这一次输入内有效——`macro_rules! m { … }` 被静默接受,下一行的
+`m!()` 报 "no macro named `m` is defined";`use { vec } from macros;` 单独
+成行时,内建模块在 REPL 中完全不可用。同一次输入内(写在一行)则正常。
+`fn`、`struct`、`impl`、`let` 都是跨输入保留的,只有宏不是。
+
+现在 `ParseOptions::carried_macro_definitions` 把上一次展开收集到的定义带入
+下一次解析,REPL 在每次输入**执行成功后**记录(失败则不记录,与其他会话状态
+的"要么整体生效、要么完全不生效"一致)。重复定义同名宏时,本次输入的定义
+胜出——否则会撞上 "already defined in this macro scope",而这个名字正是上一
+行刚被告知不存在的那个。
+
 ## 属性与条件编译
 
 - `#[cfg(true)]` / `#[cfg(false)]` / `#[cfg(feature = "...")]` 在宏展开阶段

@@ -7,8 +7,9 @@ use std::{
 use lk_core::token::{Token, Tokenizer};
 use lk_core::vm::ModuleResolver;
 use lk_core::{
+    macro_system::MacroDefinitions,
     module::ModuleRegistry,
-    syntax::{ParseOptions, parse_program_source},
+    syntax::{ParseOptions, ProgramExpansion, expand_program_source, parse_program_source},
     typ::TypeChecker,
     vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
@@ -37,7 +38,7 @@ enum InputDeclares {
     ABody,
 }
 
-fn input_declares(source: &str) -> InputDeclares {
+fn input_declares(source: &str, options: ParseOptions) -> InputDeclares {
     use lk_core::stmt::Stmt;
     fn unwrap_attributes(stmt: &Stmt) -> &Stmt {
         match stmt {
@@ -45,7 +46,10 @@ fn input_declares(source: &str) -> InputDeclares {
             other => other,
         }
     }
-    let Ok(program) = parse_program_source(source, ParseOptions::default()) else {
+    // The session's options, not the defaults: an input that uses a macro the
+    // session defined does not parse without them, and would be reported as
+    // declaring nothing.
+    let Ok(program) = parse_program_source(source, options) else {
         return InputDeclares::Nothing;
     };
     let mut declares = InputDeclares::Nothing;
@@ -88,6 +92,15 @@ enum ReplStep {
 struct ReplSession {
     vm: ReplVmSession,
     completion_state: ReplCompletionState,
+    /// `macro_rules!` definitions entered so far.
+    ///
+    /// Macros are expanded during *parsing*, and the REPL parses each input as
+    /// its own source text — so a definition used to last exactly as long as
+    /// the line that made it. `macro_rules! m { … }` was accepted in silence
+    /// and `m!()` on the next line answered "no macro named `m` is defined",
+    /// while `fn`, `struct`, `impl` and `let` all persisted. Carried into the
+    /// next parse, they behave like every other definition the session holds.
+    macro_definitions: MacroDefinitions,
 }
 
 impl ReplSession {
@@ -115,7 +128,16 @@ impl ReplSession {
         Ok(Self {
             vm,
             completion_state: ReplCompletionState::new(),
+            macro_definitions: MacroDefinitions::default(),
         })
+    }
+
+    /// Parse options carrying what the session has defined so far.
+    fn parse_options(&self) -> ParseOptions {
+        ParseOptions {
+            carried_macro_definitions: self.macro_definitions.clone(),
+            ..ParseOptions::default()
+        }
     }
 
     fn completion_state(&self) -> ReplCompletionState {
@@ -165,7 +187,7 @@ impl ReplSession {
             }
             Err(e) => {
                 diagnostic::error(&e);
-                let declares = input_declares(final_src);
+                let declares = input_declares(final_src, self.parse_options());
                 if declares != InputDeclares::Nothing {
                     // The input takes effect whole or not at all: the session's
                     // state is only updated after `execute_program` returns.
@@ -217,11 +239,11 @@ impl ReplSession {
     /// One expression, else a program; `None` once the parse error is reported.
     fn execute_input(&mut self, source: &str) -> Option<anyhow::Result<ReplExecutionResult>> {
         let wrapped = expression_program_source(source);
-        if let Ok(program) = parse_program_source(&wrapped, ParseOptions::default()) {
-            return Some(self.vm.execute_program(&program));
+        if let Ok(expansion) = expand_program_source(&wrapped, self.parse_options()) {
+            return Some(self.run_expansion(expansion));
         }
-        match parse_program_source(source, ParseOptions::default()) {
-            Ok(program) => Some(self.vm.execute_program(&program)),
+        match expand_program_source(source, self.parse_options()) {
+            Ok(expansion) => Some(self.run_expansion(expansion)),
             // The program error, not the wrapper's: the wrapper's complains
             // about a `return (…)` the reader never typed.
             Err(program_err) => {
@@ -229,6 +251,14 @@ impl ReplSession {
                 None
             }
         }
+    }
+
+    /// Runs an expansion, keeping its macro definitions only if it succeeded —
+    /// the same "whole or not at all" rule the session's other state follows.
+    fn run_expansion(&mut self, expansion: ProgramExpansion) -> anyhow::Result<ReplExecutionResult> {
+        let result = self.vm.execute_program(&expansion.program)?;
+        self.macro_definitions = expansion.source.macro_definitions;
+        Ok(result)
     }
 }
 
@@ -430,24 +460,36 @@ mod tests {
     /// fails with "undefined function `g`" — because the definition never took.
     #[test]
     fn only_a_declaring_input_reports_that_nothing_was_defined() {
-        assert_eq!(input_declares("g()"), InputDeclares::Nothing);
-        assert_eq!(input_declares("1 + 1"), InputDeclares::Nothing);
-        assert_eq!(input_declares("let q = 1;"), InputDeclares::AName);
-        assert_eq!(input_declares("struct Q { a: Int }"), InputDeclares::AName);
-        assert_eq!(input_declares("type N = Int;"), InputDeclares::AName);
-        assert_eq!(input_declares("fn g() -> Int { return 1; }"), InputDeclares::ABody);
+        assert_eq!(input_declares("g()", ParseOptions::default()), InputDeclares::Nothing);
+        assert_eq!(input_declares("1 + 1", ParseOptions::default()), InputDeclares::Nothing);
         assert_eq!(
-            input_declares("impl Q { fn m(self) -> Int { return 1; } }"),
+            input_declares("let q = 1;", ParseOptions::default()),
+            InputDeclares::AName
+        );
+        assert_eq!(
+            input_declares("struct Q { a: Int }", ParseOptions::default()),
+            InputDeclares::AName
+        );
+        assert_eq!(
+            input_declares("type N = Int;", ParseOptions::default()),
+            InputDeclares::AName
+        );
+        assert_eq!(
+            input_declares("fn g() -> Int { return 1; }", ParseOptions::default()),
+            InputDeclares::ABody
+        );
+        assert_eq!(
+            input_declares("impl Q { fn m(self) -> Int { return 1; } }", ParseOptions::default()),
             InputDeclares::ABody
         );
         // A body anywhere in the input wins: that is the one that can fail for
         // a reason the reader cannot see.
         assert_eq!(
-            input_declares("let a = 1;\nfn g() -> Int { return a; }"),
+            input_declares("let a = 1;\nfn g() -> Int { return a; }", ParseOptions::default()),
             InputDeclares::ABody
         );
         // Unparseable input is reported by the parser, not here.
-        assert_eq!(input_declares("fn ("), InputDeclares::Nothing);
+        assert_eq!(input_declares("fn (", ParseOptions::default()), InputDeclares::Nothing);
     }
 
     #[test]
@@ -493,6 +535,52 @@ mod tests {
         // inputs (`a-1`, `a--1`, `-a`, `[1,2][0]-1`, `"a-1 ${a-1}"`, …) was
         // identical — it was patching a lexer behaviour that is not there.
         assert_eq!(expression_program_source("1+1"), "return (1+1);");
+    }
+
+    /// A macro defined on one input is usable on the next.
+    ///
+    /// Driven through `execute_input`, which is the path that carries the
+    /// definitions — parsing an input on its own does not, and that was the
+    /// defect: the session kept `fn`, `struct`, `impl` and `let`, and dropped
+    /// `macro_rules!` without saying so.
+    #[cfg(feature = "stdlib")]
+    #[test]
+    fn a_macro_defined_in_one_input_survives_into_the_next() {
+        let mut session = ReplSession::new().expect("repl session");
+
+        session
+            .execute_input("macro_rules! twice { ($x:expr) => { ($x) * 2 }; }")
+            .expect("the definition is accepted")
+            .expect("the definition runs");
+        let used = session
+            .execute_input("twice!(21)")
+            .expect("the macro resolves on a later input")
+            .expect("the expansion runs");
+        assert_eq!(used.display_first_return(), "42");
+
+        // Re-entering the name replaces it, the way `let` and `fn` do here.
+        session
+            .execute_input("macro_rules! twice { ($x:expr) => { ($x) * 3 }; }")
+            .expect("the redefinition is accepted")
+            .expect("the redefinition runs");
+        let again = session
+            .execute_input("twice!(21)")
+            .expect("the redefined macro resolves")
+            .expect("the expansion runs");
+        assert_eq!(again.display_first_return(), "63");
+
+        // An *import* is collected into the same set, so it was equally lost:
+        // `use { vec } from macros;` on its own line left `vec!` undefined, and
+        // the builtin macro module was unusable from the REPL entirely.
+        session
+            .execute_input("use { vec } from macros;")
+            .expect("the import is accepted")
+            .expect("the import runs");
+        let imported = session
+            .execute_input("vec![1, 2, 3].len()")
+            .expect("the imported macro resolves on a later input")
+            .expect("the expansion runs");
+        assert_eq!(imported.display_first_return(), "3");
     }
 
     #[cfg(feature = "stdlib")]

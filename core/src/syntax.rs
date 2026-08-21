@@ -6,7 +6,7 @@ use crate::{
     ast::Parser as ExprParser,
     expr::Expr,
     macro_system::{
-        AstMacroOrigin, MacroExpandOptions, MacroTokenOrigin, MacroTrace, PackageMacroModuleResolver,
+        AstMacroOrigin, MacroDefinitions, MacroExpandOptions, MacroTokenOrigin, MacroTrace, PackageMacroModuleResolver,
         ProcMacroDependency, ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders,
         expand_ast_macros_with_metadata, expand_macros,
     },
@@ -28,6 +28,12 @@ pub struct ParseOptions {
     /// [`PackageMacroModuleResolver`]. Defaulted to the package manager's own
     /// lookup, which is what makes this the *only* place the two meet.
     pub package_macro_resolver: Option<PackageMacroModuleResolver>,
+    /// `macro_rules!` definitions from an earlier parse to keep in scope.
+    ///
+    /// Empty for a single-shot compile, where a source text carries its own
+    /// definitions. A REPL parses each input separately and so must carry them
+    /// itself, or a macro stops existing at the end of the line that defined it.
+    pub carried_macro_definitions: MacroDefinitions,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +43,9 @@ pub struct SourceExpansion {
     pub origins: Vec<MacroTokenOrigin>,
     pub trace: Vec<MacroTrace>,
     pub proc_macro_dependencies: Vec<ProcMacroDependency>,
+    /// What this source defined, for a caller that parses again and wants the
+    /// definitions still in scope — see [`ParseOptions::carried_macro_definitions`].
+    pub macro_definitions: MacroDefinitions,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +70,7 @@ impl Default for ParseOptions {
             package_macro_resolver: Some(crate::package::macro_module_root),
             #[cfg(not(feature = "std"))]
             package_macro_resolver: None,
+            carried_macro_definitions: MacroDefinitions::default(),
         }
     }
 }
@@ -137,6 +147,7 @@ fn expand_source_with_recorder(
             origins: Vec::new(),
             trace: Vec::new(),
             proc_macro_dependencies: Vec::new(),
+            macro_definitions: MacroDefinitions::default(),
         });
     }
     let expanded = expand_macros(
@@ -150,6 +161,7 @@ fn expand_source_with_recorder(
             proc_macro_providers: options.proc_macro_providers,
             proc_macro_features: options.macro_features,
             proc_macro_dependency_recorder: dependency_recorder.clone(),
+            carried_definitions: options.carried_macro_definitions,
         },
     )?;
     Ok(SourceExpansion {
@@ -158,6 +170,7 @@ fn expand_source_with_recorder(
         origins: expanded.origins,
         trace: expanded.trace,
         proc_macro_dependencies: expanded.proc_macro_dependencies,
+        macro_definitions: expanded.definitions,
     })
 }
 
