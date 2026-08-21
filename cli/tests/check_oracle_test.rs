@@ -38,6 +38,20 @@ fn check(label: &str, source: &str) -> (bool, String) {
 
 /// Mistakes the checker has to name, with the shape that produces each.
 const MUST_REFUSE: &[(&str, &str)] = &[
+    // A channel's and a task's operations are *module functions* (`send`,
+    // `recv`, `task.await`), so neither type has a method surface at all and
+    // neither has fields a name could fall back to. Every other receiver was
+    // already checked — container, scalar, struct — and these two were the
+    // remaining pair: `c.close()`, the spelling another language would have,
+    // type-checked and raised when the program ran.
+    (
+        "an unknown method on a channel",
+        "let c = chan(1);\nprintln(c.close());\n",
+    ),
+    (
+        "an unknown method on a task",
+        "use task;\nlet t = spawn(|| 1);\nprintln(t.cancel());\n",
+    ),
     // A `let` pattern is a requirement, not a question — unlike a `match` arm.
     // These reached the run time and raised `Pattern does not match value`
     // while `lk check` said nothing, which is the one thing it is not allowed
@@ -172,6 +186,12 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
+    // The way a channel and a task are actually operated: module functions,
+    // which the refusals above must not touch.
+    (
+        "channel and task operations are module functions",
+        "use task;\nlet c = chan(2);\nsend(c, 1);\nprintln(recv(c));\nlet t = spawn(|| 7);\nprintln(task.await(t));\n",
+    ),
     // The `let`-pattern refusals above are deliberately narrow: a destructure
     // whose *shape* is only known at run time is ordinary LK, and raises there
     // if it disagrees. These are the neighbours of the four refused cases, and

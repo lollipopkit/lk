@@ -585,7 +585,17 @@ impl TypeChecker {
             // `let v = 1; v.nope();` and the VM said "Int has no method
             // 'nope'" — the same mistake, caught at check time on a String and
             // at run time on an Int.
-            if matches!(resolved_receiver, Type::Int | Type::Float | Type::Bool | Type::Nil) {
+            //
+            // A channel and a task are the same case, and were the two left
+            // out: their operations are *module functions* (`send`, `recv`,
+            // `task.await`), so neither has a method surface at all, and
+            // neither has fields a name could resolve to instead. `c.close()`
+            // — the spelling another language would have — type-checked and
+            // then raised `Channel has no method 'close'` when the program ran.
+            if matches!(
+                resolved_receiver,
+                Type::Int | Type::Float | Type::Bool | Type::Nil | Type::Channel(_) | Type::Task(_)
+            ) {
                 return Err(Self::type_err(
                     &format!("{} has no method '{method}'", resolved_receiver.display()),
                     None,

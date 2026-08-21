@@ -2097,45 +2097,39 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
     match receiver {
         RuntimeVal::ShortStr(value) => Ok(runtime_string_access(value.as_str(), field)),
         RuntimeVal::Obj(handle) => {
-            enum RuntimeAccess {
-                Ready(Option<RuntimeVal>),
-                CopyPayload(crate::rt::RuntimePayload),
-                String(String),
-            }
-            let access = match heap
-                .get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            {
-                HeapValue::String(value) => RuntimeAccess::Ready(runtime_string_access(value.as_ref(), field)),
-                HeapValue::Bytes(value) => match field {
-                    "len" => RuntimeAccess::Ready(Some(RuntimeVal::Int(value.len() as i64))),
-                    _ => RuntimeAccess::Ready(None),
+            // A channel's `capacity`/`type` and a task's `value` used to be
+            // readable here as *properties*, and nothing could reach them: the
+            // checker refuses a field access on either type, and the dynamic
+            // route refuses them as not indexable (`index target object is not
+            // indexable: "Channel"`). Instrumented, both arms were dead in every
+            // example, every test and every probe. The spelling the language has
+            // is the module function — `chans.capacity(ch)`, which
+            // `concurrency_demo.lk` uses and docs/semantics.md documents.
+            //
+            // They were also the only reason this read a `RuntimeAccess` enum
+            // rather than an `Option<RuntimeVal>`: one arm needed a payload
+            // copied out of another heap and one needed a string allocated,
+            // both while the heap was still borrowed. Neither remains.
+            Ok(
+                match heap
+                    .get(*handle)
+                    .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                {
+                    HeapValue::String(value) => runtime_string_access(value.as_ref(), field),
+                    HeapValue::Bytes(value) => match field {
+                        "len" => Some(RuntimeVal::Int(value.len() as i64)),
+                        _ => None,
+                    },
+                    HeapValue::List(values) => runtime_list_access(values, field),
+                    HeapValue::Map(values) => values.get_str(field),
+                    HeapValue::Slice(slice) => match field {
+                        "len" => Some(RuntimeVal::Int(slice.len as i64)),
+                        _ => None,
+                    },
+                    HeapValue::Object(object) => object.get_field(field),
+                    _ => None,
                 },
-                HeapValue::List(values) => RuntimeAccess::Ready(runtime_list_access(values, field)),
-                HeapValue::Map(values) => RuntimeAccess::Ready(values.get_str(field)),
-                HeapValue::Slice(slice) => match field {
-                    "len" => RuntimeAccess::Ready(Some(RuntimeVal::Int(slice.len as i64))),
-                    _ => RuntimeAccess::Ready(None),
-                },
-                HeapValue::Object(object) => RuntimeAccess::Ready(object.get_field(field)),
-                HeapValue::Task(task) if field == "value" => match &task.value {
-                    Some(value) => RuntimeAccess::CopyPayload(value.clone()),
-                    None => RuntimeAccess::Ready(Some(RuntimeVal::Nil)),
-                },
-                HeapValue::Channel(channel) => match field {
-                    "capacity" => RuntimeAccess::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0)))),
-                    "type" => RuntimeAccess::String(format!("{:?}", channel.inner_type)),
-                    _ => RuntimeAccess::Ready(None),
-                },
-                _ => RuntimeAccess::Ready(None),
-            };
-            match access {
-                RuntimeAccess::Ready(value) => Ok(value),
-                RuntimeAccess::CopyPayload(value) => {
-                    Ok(Some(crate::vm::copy_runtime_value(&value.value, &value.heap, heap)?))
-                }
-                RuntimeAccess::String(value) => Ok(Some(runtime_string_value(value, heap))),
-            }
+            )
         }
         _ => Ok(None),
     }
@@ -2303,14 +2297,6 @@ fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> 
         bail!("{helper} expects named arguments as map, got {}", heap_val.type_name());
     };
     Ok(Some(handle))
-}
-
-fn runtime_string_value(value: String, heap: &mut HeapStore) -> RuntimeVal {
-    if let Some(short) = ShortStr::new(&value) {
-        RuntimeVal::ShortStr(short)
-    } else {
-        RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::<str>::from(value))))
-    }
 }
 
 fn runtime_is_callable(value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<bool> {
