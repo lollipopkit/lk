@@ -239,7 +239,14 @@ fn restore_carried_function_types(
     checker: &mut TypeChecker,
     carried: Vec<(String, crate::typ::FunctionSig, Option<crate::val::Type>)>,
 ) {
-    for (name, sig, local) in carried {
+    for (name, mut sig, local) in carried {
+        // A function from an earlier input is, quite literally, in another
+        // module: every input is compiled as one. So it carries the same rule a
+        // real import does — a named parameter's default cannot be filled from
+        // here — and saying that at check time is better than the run time's
+        // `missing required named argument`, about a parameter that is not
+        // required.
+        sig.origin = crate::typ::SigOrigin::Imported;
         checker.add_function_sig(name.clone(), sig);
         if let Some(local) = local {
             checker.add_local_type(name, local);

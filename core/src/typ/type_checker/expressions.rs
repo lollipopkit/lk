@@ -965,6 +965,38 @@ impl TypeChecker {
                                 None,
                             ));
                         }
+                        // A default is filled by the *compiler*, at the call
+                        // site, out of the callee's own declaration — which is
+                        // what lets it read an earlier argument
+                        // (`fn f(x: Int, {y: Int = x + 1})`). A caller in
+                        // another module does not have that declaration, and
+                        // the runtime path that places named arguments has no
+                        // notion of a default at all. So this worked within a
+                        // module and failed across one, at run time, saying
+                        // `missing required named argument` about a parameter
+                        // that is not required.
+                        //
+                        // Said here instead, where it can name the way out.
+                        // docs/semantics.md has the design that would remove
+                        // the limitation (a callee-side prologue plus a mask of
+                        // which named arguments were supplied) and the three
+                        // that were ruled out.
+                        if decl.has_default
+                            && sig.origin == crate::typ::SigOrigin::Imported
+                            && !seen.contains(decl.name.as_str())
+                        {
+                            return Err(Self::type_err(
+                                &format!(
+                                    "`{}` has a default, and a default cannot be filled across a module \
+                                     boundary yet — it is materialized where the call is written, from a \
+                                     declaration this module does not have. Pass `{}:` explicitly here",
+                                    decl.name, decl.name
+                                ),
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
                     }
                     // Type constraints for provided named
                     let mut name_to_ty: Map<&str, Type> = Map::with_capacity(sig.named.len());

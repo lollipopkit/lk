@@ -54,7 +54,12 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                     if checker.registry().get_struct(&item.name).is_some() {
                         checker.registry_mut().mark_constructible_import(&bound, &item.name);
                     }
-                    if let Some((signature, function_type)) = signature_of(&dep, &item.name) {
+                    if let Some((mut signature, function_type)) = signature_of(&dep, &item.name) {
+                        // Where it came from, for the one rule that turns on it:
+                        // a named parameter's default is filled by the compiler
+                        // from the callee's declaration, which a caller in
+                        // another module does not have.
+                        signature.origin = crate::typ::SigOrigin::Imported;
                         checker.add_function_sig(bound.clone(), signature);
                         checker.add_local_type(bound, function_type);
                     }

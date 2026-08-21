@@ -617,6 +617,7 @@ impl Stmt {
                 type_checker.add_function_sig(
                     name.clone(),
                     FunctionSig {
+                        origin: Default::default(),
                         positional: positional_tys.clone(),
                         named: named_sigs.clone(),
                         return_type: Some(return_placeholder.clone()),
@@ -745,6 +746,7 @@ impl Stmt {
                     type_checker.add_function_sig(
                         name.clone(),
                         FunctionSig {
+                            origin: Default::default(),
                             positional: positional_tys,
                             named: named_sigs,
                             return_type: Some(inferred_return.clone()),
@@ -831,6 +833,7 @@ impl Stmt {
                 type_checker.add_function_sig(
                     name.clone(),
                     FunctionSig {
+                        origin: Default::default(),
                         positional: resolved_positional,
                         named: resolved_named_sigs,
                         return_type: Some(resolved_return),
@@ -1239,6 +1242,7 @@ impl Program {
             type_checker.add_function_sig(
                 name.clone(),
                 FunctionSig {
+                    origin: Default::default(),
                     positional,
                     named,
                     return_type: Some(returns),

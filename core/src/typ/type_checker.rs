@@ -1162,6 +1162,8 @@ impl TypeChecker {
 pub struct FunctionSig {
     pub positional: Vec<Type>,
     pub named: Vec<NamedParamSig>,
+    /// See [`SigOrigin`] — read only for the named-default rule.
+    pub origin: SigOrigin,
     pub return_type: Option<Type>,
     /// Which positional parameters the source *annotated*, in order.
     ///
@@ -1192,6 +1194,23 @@ pub struct NamedParamSig {
     pub name: String,
     pub ty: Type,
     pub has_default: bool,
+}
+
+/// Where a signature came from.
+///
+/// Only one thing turns on it, and it is not a type rule: a named parameter's
+/// *default* is materialized by the compiler at the call site, from the
+/// callee's own declaration, and a caller in another module does not have that
+/// declaration. So omitting a defaulted named argument works within a module
+/// and fails across one — at run time, with `missing required named argument`,
+/// about a parameter that is not required. See `docs/semantics.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SigOrigin {
+    /// Declared in the program being checked.
+    #[default]
+    ThisModule,
+    /// Brought in by `use { … } from "…";`.
+    Imported,
 }
 
 #[derive(Debug, Clone, PartialEq)]

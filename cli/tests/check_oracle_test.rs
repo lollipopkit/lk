@@ -25,7 +25,21 @@ fn check(label: &str, source: &str) -> (bool, String) {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     let file = dir.join(format!("{slug}.lk"));
-    std::fs::write(&file, source).expect("write case");
+    // A case that needs a *second* module writes it beside the first and says
+    // so with this marker, which stands in for the import line. Only the
+    // named-default rule needs one: it is about a callee whose declaration the
+    // caller does not have, which cannot be written in a single file.
+    let source = if let Some(rest) = source.strip_prefix("IMPORTS_CONF\n") {
+        std::fs::write(
+            dir.join("conf.lk"),
+            "fn configure({host: String, timeout_ms: Int? = 1000}) -> String { return \"${host} ${timeout_ms}\"; }\n",
+        )
+        .expect("write conf");
+        format!("use {{ configure }} from \"conf\";\n{rest}")
+    } else {
+        source.to_string()
+    };
+    std::fs::write(&file, &source).expect("write case");
     let out = Command::new(env!("CARGO_BIN_EXE_lk"))
         .arg("check")
         .arg(&file)
@@ -38,6 +52,18 @@ fn check(label: &str, source: &str) -> (bool, String) {
 
 /// Mistakes the checker has to name, with the shape that produces each.
 const MUST_REFUSE: &[(&str, &str)] = &[
+    // A named parameter's default is materialized by the compiler at the call
+    // site, out of the callee's declaration — which is what lets it read an
+    // earlier argument. A caller in another module does not have that
+    // declaration, and the runtime path that places named arguments has no
+    // notion of a default at all, so this worked within a module and failed
+    // across one *at run time*, reporting `missing required named argument`
+    // about a parameter that is not required. Said at check time now, where it
+    // can name the way out.
+    (
+        "an omitted defaulted named argument across a module boundary",
+        "IMPORTS_CONF\nprintln(configure(host: \"a\"));\n",
+    ),
     // A channel's and a task's operations are *module functions* (`send`,
     // `recv`, `task.await`), so neither type has a method surface at all and
     // neither has fields a name could fall back to. Every other receiver was
@@ -186,6 +212,17 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
+    // Supplying it explicitly is the way out the refusal names, and it must
+    // keep working — as must the same call inside one module, where the
+    // compiler does have the declaration.
+    (
+        "a defaulted named argument supplied across a module boundary",
+        "IMPORTS_CONF\nprintln(configure(host: \"a\", timeout_ms: 5));\n",
+    ),
+    (
+        "a defaulted named argument omitted within one module",
+        "fn configure({host: String, timeout_ms: Int? = 1000}) -> String { return \"${host} ${timeout_ms}\"; }\nprintln(configure(host: \"a\"));\n",
+    ),
     // The way a channel and a task are actually operated: module functions,
     // which the refusals above must not touch.
     (

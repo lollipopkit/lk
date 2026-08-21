@@ -64,6 +64,7 @@ pub(crate) fn signature_of_stmt(stmt: &Stmt) -> Option<(FunctionSig, Type)> {
     };
     Some((
         FunctionSig {
+            origin: Default::default(),
             positional,
             named,
             return_type: Some(returns),
