@@ -1146,16 +1146,23 @@ impl LkAnalyzer {
                         }
                     }
                 }
-                let mut diagnostic = Diagnostic::new(
-                    range,
-                    Some(DiagnosticSeverity::ERROR),
-                    None,
-                    Some("lk".to_string()),
-                    message,
-                    None,
-                    None,
-                );
-                diagnostic.code = Some(NumberOrString::String("lk_type_error".to_string()));
+                // A lint is advice, not a rejection: `lk check` only reports
+                // the implicit-`Any` finding under `--strict`, and a program
+                // carrying it compiles and runs. Rendering it as `ERROR` made
+                // three of this repository's own examples red in the editor
+                // while the compiler accepted them — the editor saying the
+                // program is broken when it is not.
+                let is_lint = recorded.typed.as_ref().is_some_and(|type_error| type_error.lint);
+                let severity = if is_lint {
+                    DiagnosticSeverity::WARNING
+                } else {
+                    DiagnosticSeverity::ERROR
+                };
+                let mut diagnostic =
+                    Diagnostic::new(range, Some(severity), None, Some("lk".to_string()), message, None, None);
+                diagnostic.code = Some(NumberOrString::String(
+                    if is_lint { "lk_type_lint" } else { "lk_type_error" }.to_string(),
+                ));
                 diagnostic
             })
             .collect()

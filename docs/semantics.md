@@ -3388,3 +3388,19 @@ function"——那句话既没提模块也没提成员。这条规则本来就�
 两处都改成注册别名(机制早就有:`add_imported_stdlib_module` + `resolve_stdlib_alias`),
 报错时说的是**真实路径**:`` `encoding.json` has no member `nope` ``。
 `every_import_spelling_checks_its_members` 把五种写法的拒绝和三种写法的接受都钉住。
+
+## 编辑器说程序坏了,而编译器说没有(2026-08-21)
+
+`lk check` 默认不报隐式 `Any`——那条检查要 `--strict` 才开,带着它的程序编译、
+运行都正常。而 LSP 无条件用 `TypeChecker::new_strict()`,并把它说的每一句都渲染成
+`DiagnosticSeverity::ERROR`。结果:**本仓库自己的三个示例**
+(`general/recursive.lk`、`syntax/closure.lk`、`general/word_count.lk`)在任何
+LSP 客户端里都标红,而 `lk check` 接受它们。
+
+编辑器和编译器对"什么是错误"的判断必须一致,否则红波浪线不再是信号。
+
+修法不是把这条检查关掉——它在编辑器里是有用的建议——而是让**产出方**说清楚这是
+哪一类发现:`TypeError` 加一个 `lint: bool`,只有 `implicit_any_type_err` 置真。
+LSP 据此给 `WARNING` 和单独的 code `lk_type_lint`,真正的类型错误仍然是 `ERROR`。
+
+标记放在产出方而不是消费方,是因为另一条路只有"按消息文本匹配"。

@@ -361,6 +361,7 @@ fn every_language_construct_lowers_natively() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut refused = Vec::new();
     let mut stale = Vec::new();
+    let mut diverged = Vec::new();
 
     for (name, source) in CONSTRUCTS {
         let path = dir.path().join(format!("{name}.lk"));
@@ -398,6 +399,28 @@ fn every_language_construct_lowers_natively() {
                 refused.push(format!("{name}: {message}"));
             }
             (true, Some((_, reason))) => stale.push(format!("{name} (listed as: {reason})")),
+        }
+
+        // Lowering is half the question; the other half is whether it lowers to
+        // the *same answer*. Running both is nearly free here — the programs are
+        // one line each — and it makes this table a differential corpus of the
+        // language's forms rather than only a coverage list.
+        if compiled.status.success() {
+            let interpreted = Command::new(env!("CARGO_BIN_EXE_lk"))
+                .arg(path.to_str().expect("utf-8 path"))
+                .env("LK_FORCE_VM", "1")
+                .output()
+                .expect("run on the VM");
+            let native = Command::new(dir.path().join(name))
+                .output()
+                .expect("run the native build");
+            if interpreted.stdout != native.stdout {
+                diverged.push(format!(
+                    "{name}: vm={:?} native={:?}",
+                    String::from_utf8_lossy(&interpreted.stdout),
+                    String::from_utf8_lossy(&native.stdout)
+                ));
+            }
         }
     }
 

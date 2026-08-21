@@ -62,6 +62,17 @@ pub struct TypeError {
     pub span: Option<Span>,
     pub function_name: Option<String>,
     pub parameter_name: Option<String>,
+    /// Whether this is a **lint** rather than a rejection.
+    ///
+    /// The implicit-`Any` finding is advice — `lk check` only reports it under
+    /// `--strict`, and a program carrying it compiles and runs. The editor
+    /// ran the strict checker unconditionally and rendered everything it said
+    /// as `ERROR`, so three of this repository's own examples showed a red
+    /// error in any LSP client while `lk check` accepted them.
+    ///
+    /// Carried by the producer rather than recovered by the consumer: the only
+    /// other way to tell is to match on the message text.
+    pub lint: bool,
 }
 
 impl TypeError {
@@ -230,6 +241,7 @@ impl TypeChecker {
             span: None,
             function_name: None,
             parameter_name: None,
+            lint: false,
         };
         anyhow::Error::new(te)
     }
@@ -252,6 +264,7 @@ impl TypeChecker {
             span: None,
             function_name: Some(function_name.to_string()),
             parameter_name: parameter_name.map(str::to_string),
+            lint: true,
         })
     }
     /// Create a new type checker with default (non-strict) behaviour

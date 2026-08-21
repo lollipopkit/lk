@@ -834,8 +834,10 @@ fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
 
     assert_eq!(result.diagnostics.len(), 1);
     let diag = &result.diagnostics[0];
-    assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
+    // A warning, not an error: the compiler accepts this program and runs it,
+    // and only `lk check --strict` reports the finding at all.
+    assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_lint".to_string())));
     assert_eq!(
         diag.message,
         "Function 'should_run' infers implicit Any for parameter 'name'; add explicit annotations"
@@ -1342,5 +1344,43 @@ fn the_outline_lists_only_the_writers_variables() {
     assert!(
         !names.iter().any(|name| name.contains('$')),
         "a desugar's temporary is not the writer's variable: {names:?}"
+    );
+}
+
+/// The editor and the compiler agree about what is an error.
+///
+/// The analyzer type-checks with the *strict* checker, which adds the
+/// implicit-`Any` lint that `lk check` only reports under `--strict`. Rendering
+/// everything it says as `ERROR` meant a program the compiler accepts, and that
+/// runs, showed a red error in every LSP client — three of this repository's own
+/// examples among them. A lint is advice: it stays, as a warning, under its own
+/// code.
+#[test]
+fn an_implicit_any_lint_is_a_warning_and_a_real_error_is_not() {
+    let mut analyzer = LkAnalyzer::new();
+
+    let lint = analyzer.analyze("fn take(xs) {\n    return xs;\n}\n");
+    let lints: Vec<_> = lint
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("implicit Any"))
+        .collect();
+    assert_eq!(lints.len(), 1, "expected the lint: {:?}", lint.diagnostics);
+    assert_eq!(lints[0].severity, Some(DiagnosticSeverity::WARNING));
+    assert_eq!(
+        lints[0].code,
+        Some(tower_lsp::lsp_types::NumberOrString::String("lk_type_lint".to_string()))
+    );
+
+    // A genuine type error keeps its severity — the point is the distinction,
+    // not silencing the checker.
+    let broken = analyzer.analyze("let a: Int = \"text\";\n");
+    assert!(
+        broken
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+        "a real type error must stay an error: {:?}",
+        broken.diagnostics
     );
 }
