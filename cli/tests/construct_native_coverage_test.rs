@@ -448,4 +448,70 @@ fn every_language_construct_lowers_natively() {
         "listed as unable to lower, but they do — drop them from EXPECTED_FALLBACK:\n{}",
         stale.join("\n")
     );
+    assert!(
+        diverged.is_empty(),
+        "constructs whose native build answers differently from the VM:\n{}",
+        diverged.join("\n")
+    );
+}
+
+/// The same table, through the *serialization* boundary.
+///
+/// `ModuleArtifact` encode/decode is a second implementation of the module: a
+/// construct whose encoding drops something runs correctly from source and
+/// wrongly from a `.lkm`. `vm_bytecode_differential_test` is the oracle for
+/// that, and like the AOT coverage gate it walks `examples/` — so it measures
+/// the programs the repository happens to contain, which is what the table
+/// above exists because of. Running the table through it too costs one
+/// `lk compile bytecode` per construct and no link.
+#[test]
+fn every_language_construct_survives_a_bytecode_round_trip() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut rejected = Vec::new();
+    let mut diverged = Vec::new();
+
+    for (name, source) in CONSTRUCTS {
+        let path = dir.path().join(format!("{name}.lk"));
+        std::fs::write(&path, source).expect("write construct");
+        let source_arg = path.to_str().expect("utf-8 path");
+
+        let compiled = Command::new(env!("CARGO_BIN_EXE_lk"))
+            .args(["compile", "bytecode", source_arg])
+            .output()
+            .expect("run lk compile bytecode");
+        if !compiled.status.success() {
+            rejected.push(format!("{name}: {}", String::from_utf8_lossy(&compiled.stderr).trim()));
+            continue;
+        }
+
+        let from_source = Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg(source_arg)
+            .env("LK_FORCE_VM", "1")
+            .output()
+            .expect("run from source");
+        let module = dir.path().join(format!("{name}.lkm"));
+        let from_bytecode = Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg(module.to_str().expect("utf-8 path"))
+            .env("LK_FORCE_VM", "1")
+            .output()
+            .expect("run the serialized module");
+        if from_source.stdout != from_bytecode.stdout {
+            diverged.push(format!(
+                "{name}: source={:?} bytecode={:?}",
+                String::from_utf8_lossy(&from_source.stdout),
+                String::from_utf8_lossy(&from_bytecode.stdout)
+            ));
+        }
+    }
+
+    assert!(
+        rejected.is_empty(),
+        "constructs the bytecode compiler will not serialize:\n{}",
+        rejected.join("\n")
+    );
+    assert!(
+        diverged.is_empty(),
+        "constructs whose serialized module answers differently from its source:\n{}",
+        diverged.join("\n")
+    );
 }
