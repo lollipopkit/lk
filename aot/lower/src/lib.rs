@@ -911,7 +911,6 @@ fn err_pc(err: &Unsupported) -> Option<usize> {
         | Unsupported::ReferenceAsValue { pc, .. }
         | Unsupported::TypeMismatch { pc }
         | Unsupported::OperandType { pc, .. }
-        | Unsupported::NonBoolCondition { pc }
         | Unsupported::BadTarget { pc } => Some(*pc),
         _ => None,
     }

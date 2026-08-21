@@ -1,6 +1,15 @@
 use super::*;
 
 /// Why a bytecode artifact cannot (yet) be lowered to MIR.
+///
+/// Every variant here is a public claim about what the language cannot compile
+/// natively, and `reason()` prints it to the user. A variant nothing constructs
+/// therefore states a limitation that does not exist — and rustc does not catch
+/// it, because a `pub` enum's variants count as reachable. Two were found this
+/// way (2026-08-21): `NoReturn` ("the entry function never returns") and
+/// `NonBoolCondition`, whose doc read "int-truthiness not yet lowered" while
+/// `if 0`, `if "s"`, `if []` and `n ? a : b` all lower and agree with the VM.
+/// When a lowering path is removed, remove its variant with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsupported {
     NoEntry,
@@ -129,9 +138,6 @@ pub enum Unsupported {
         /// number does not survive the return out of `Ssa`.
         lambda: Option<u32>,
     },
-    /// An empty `[]` literal's guessed element type was contradicted by a
-    /// later consumer: retriable — the fixpoint re-lowers with the literal
-    /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
     /// A loop-header phi's optimistically seeded *provenance* (which struct a
     /// value is, which literal a container came from) is contradicted by an
     /// edge that arrived later. Retriable: the next pass lowers the slot with
@@ -140,6 +146,9 @@ pub enum Unsupported {
         block: usize,
         slot: usize,
     },
+    /// An empty `[]` literal's guessed element type was contradicted by a
+    /// later consumer: retriable — the fixpoint re-lowers with the literals
+    /// materialized as Dyn lists (`pcs` identify the `LoadHeapConst`s).
     LiteralElemTypeContradicted {
         pcs: Vec<usize>,
     },
@@ -180,11 +189,6 @@ pub enum Unsupported {
         want: &'static str,
         got: &'static str,
     },
-    NoReturn,
-    /// A branch condition register was not a `Bool` (int-truthiness not yet lowered).
-    NonBoolCondition {
-        pc: usize,
-    },
     /// Two returns disagree on the value type.
     ReturnTypeConflict,
     /// A branch/jump target fell outside the code.
@@ -196,10 +200,11 @@ pub enum Unsupported {
     /// now-bridged callee) produced structurally-invalid MIR. Rather than emit
     /// it (codegen would reject it as an internal error), the module is treated
     /// as not-natively-lowerable so the caller falls back to the VM.
-    /// The lowered module failed MIR validation. The error is carried along:
-    /// this is a whole-module fallback, so without naming the cause the only
-    /// way to see it was an env var nobody sets — which is how an arm that
-    /// named a nonexistent ABI function went unnoticed (see §45).
+    ///
+    /// The validator's error is carried along: this is a whole-module fallback,
+    /// so without naming the cause the only way to see it was an env var nobody
+    /// sets — which is how an arm that named a nonexistent ABI function went
+    /// unnoticed (see §45).
     InvalidMir(String),
 }
 
@@ -278,10 +283,6 @@ impl Unsupported {
             }
             Unsupported::DynLoopPhi { block, slot } => {
                 format!("a loop-header phi (block {block}, slot {slot}) merges heterogeneous types")
-            }
-            Unsupported::NoReturn => "the entry function never returns".to_string(),
-            Unsupported::NonBoolCondition { pc } => {
-                format!("the branch condition at pc {pc} is not a bool")
             }
             Unsupported::ReturnTypeConflict => "returns disagree on the value type".to_string(),
             Unsupported::BadTarget { pc } => format!("a branch at pc {pc} targets an out-of-range pc"),

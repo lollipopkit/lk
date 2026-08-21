@@ -338,6 +338,20 @@ const CONSTRUCTS: &[(&str, &str)] = &[
                  println(render(P { p: 7 }));\n",
     ),
     ("try_catch", "println(try { 1 % 0 } catch e { -1 });\n"),
+    // A condition is truthiness, not `Bool` (docs/semantics.md): only nil and
+    // false are falsy, so `0`, `""` and `[]` all take the branch. Nothing
+    // exercised the non-Bool carriers natively, and the lowering carried a
+    // refusal variant saying it could not do them.
+    (
+        "truthiness",
+        "fn pick(x) { if x { return 1; } return 0; }\n\
+                 println(pick(0));\n\
+                 println(pick(nil));\n\
+                 println(pick(\"\"));\n\
+                 println(pick([]));\n\
+                 let n = 3;\n\
+                 println(n ? \"y\" : \"n\");\n",
+    ),
     (
         "unsafe_block",
         "let a = 1;\n\
