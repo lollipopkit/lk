@@ -38,6 +38,20 @@ fn check(label: &str, source: &str) -> (bool, String) {
 
 /// Mistakes the checker has to name, with the shape that produces each.
 const MUST_REFUSE: &[(&str, &str)] = &[
+    // A `let` pattern is a requirement, not a question — unlike a `match` arm.
+    // These reached the run time and raised `Pattern does not match value`
+    // while `lk check` said nothing, which is the one thing it is not allowed
+    // to do: it is documented as the same check the executors run.
+    (
+        "a literal `let` pattern binds nothing",
+        "let 1 = 2;\nprintln(\"ran\");\n",
+    ),
+    (
+        "a literal `let` pattern that would match still binds nothing",
+        "let 1 = 1;\nprintln(\"ran\");\n",
+    ),
+    ("a list pattern over a scalar", "let [a] = 5;\nprintln(a);\n"),
+    ("a map pattern over a scalar", "let { x: v } = 5;\nprintln(v);\n"),
     (
         "too few arguments",
         "fn f(a: Int, b: Int) -> Int { return a + b; }\nprintln(f(1));\n",
@@ -158,6 +172,22 @@ const MUST_REFUSE: &[(&str, &str)] = &[
 
 /// Valid programs, including the ones a stricter reading would reject.
 const MUST_ACCEPT: &[(&str, &str)] = &[
+    // The `let`-pattern refusals above are deliberately narrow: a destructure
+    // whose *shape* is only known at run time is ordinary LK, and raises there
+    // if it disagrees. These are the neighbours of the four refused cases, and
+    // a broader rule would take them with it.
+    (
+        "a list pattern whose arity the value may not have",
+        "fn f() -> List<Int> { return [1]; }\nlet [a, b] = f();\nprintln(a + b);\n",
+    ),
+    (
+        "a list pattern over a string destructures its characters",
+        "let s = \"ab\";\nlet [c, d] = s;\nprintln(c + d);\n",
+    ),
+    (
+        "a literal nested inside a `let` pattern is an assertion on one position",
+        "let xs = [1, 2];\nlet [1, b] = xs;\nprintln(b);\n",
+    ),
     ("empty list annotation", "let xs: List<Int> = [];\nprintln(xs);\n"),
     // A map pattern destructures a *map*. A struct is not one — the two are
     // different heap values, and the interpreter's `is_map` says so — even

@@ -310,6 +310,19 @@ impl Stmt {
                     };
                 }
 
+                // A `let` pattern is a *requirement*, unlike a `match` arm,
+                // which asks a question. Two of its ways to be impossible are
+                // decidable here, and both used to reach the runtime and raise
+                // `Pattern does not match value` — with `lk check` clean, though
+                // it is documented as the same check the executors run.
+                if let Some(reason) = impossible_let_pattern(pattern, &expr_type, type_checker) {
+                    return if let Some(span) = span {
+                        Err(anyhow!(ParseError::with_span(reason, span.clone())))
+                    } else {
+                        Err(anyhow!(reason))
+                    };
+                }
+
                 // The pattern is distributed over the value's type, so each name
                 // gets *its own* element type. Binding the whole right-hand side
                 // to every name (what this used to do) types `v` in
@@ -1606,6 +1619,51 @@ fn item_of(stmt: &Stmt) -> &Stmt {
 /// cannot see through (a type variable, `Any`, a mismatched shape) yields `Any`
 /// — permissive on purpose, so an unknown shape never rejects on an invented
 /// type.
+/// Why this `let` pattern can never bind, when that is decidable from the
+/// value's type alone.
+///
+/// Deliberately narrow. A `let` that destructures a value whose shape is only
+/// known at run time (`let [a, b] = f();`) is ordinary LK and raises if the
+/// shape disagrees — that is the design, and nothing here touches it. What is
+/// caught is the two cases where no value of that type could ever match:
+///
+/// - a literal pattern, which binds nothing at all. `let 1 = 2;` raised
+///   `Pattern does not match value`, and `let 1 = 1;` ran and bound nothing —
+///   the only two outcomes it has.
+/// - a destructuring pattern against a definite scalar. `let [a] = 5;` is a
+///   list pattern over an `Int`, and no `Int` is a list. A `String` is excluded
+///   because a list pattern over one destructures its characters, which the
+///   pattern checker already models.
+fn impossible_let_pattern(pattern: &Pattern, value_type: &Type, tc: &TypeChecker) -> Option<String> {
+    match pattern {
+        Pattern::Literal(value) => Some(format!(
+            "a `let` binds names, and the pattern `{}` binds none — it can only match or fail. Write \
+             `assert(… == {})` if the check is what you meant, or a name if the binding is",
+            value, value
+        )),
+        Pattern::List { .. } | Pattern::Map { .. } => {
+            let shape = if matches!(pattern, Pattern::List { .. }) {
+                "list"
+            } else {
+                "map"
+            };
+            let resolved = tc.resolve_aliases(value_type);
+            matches!(
+                resolved,
+                Type::Int | Type::Float | Type::Bool | Type::Nil | Type::MachineInt(_)
+            )
+            .then(|| {
+                format!(
+                    "this `let` destructures a {shape}, and the value has type `{}` — a value of that type \
+                     has no parts to bind",
+                    resolved.display()
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
 fn bind_pattern_types(pattern: &Pattern, value_ty: &Type, is_const: bool, tc: &mut TypeChecker) {
     match pattern {
         Pattern::Variable(name) => tc.add_local_binding(name.clone(), value_ty.clone(), is_const),
