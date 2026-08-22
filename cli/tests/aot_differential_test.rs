@@ -37,13 +37,32 @@ where
     cmd
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum NativePath {
+    PureNative,
+    /// A documented lowering gap whose required behavior is a Tier 0 fallback.
+    MayDegrade,
+}
+
 struct Case {
     name: &'static str,
     source: &'static str,
+    native_path: NativePath,
 }
 
 const fn new(name: &'static str, source: &'static str) -> Case {
-    Case { name, source }
+    Case {
+        name,
+        source,
+        native_path: NativePath::PureNative,
+    }
+}
+
+const fn may_degrade(name: &'static str, source: &'static str) -> Case {
+    Case {
+        native_path: NativePath::MayDegrade,
+        ..new(name, source)
+    }
 }
 
 /// Compile `case` natively with the MIR gate enabled, run it, run the same
@@ -64,10 +83,20 @@ fn run_differential(area: &str, cases: &[Case]) {
         let vm = run_cli(&dir, [file.as_str()]).output().expect("spawn vm run");
         let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
-        // Native build + run.
-        let exe = run_cli(&dir, ["compile", &file])
-            .output()
-            .expect("spawn native compile");
+        // Native build + run. Most cases are pure-native even when the caller
+        // exported `LK_AOT_NO_FALLBACK`; the explicit degradation case clears it
+        // because the test documents that Tier 0 is the required safe outcome.
+        let mut compile = run_cli(&dir, ["compile", &file]);
+        match case.native_path {
+            NativePath::PureNative => {
+                compile.env("LK_AOT_NO_FALLBACK", "1");
+            }
+            NativePath::MayDegrade => {
+                compile.env("LK_AOT_HYBRID", "0");
+                compile.env_remove("LK_AOT_NO_FALLBACK");
+            }
+        }
+        let exe = compile.output().expect("spawn native compile");
         assert!(
             exe.status.success(),
             "[{area}/{}] native compile failed: {}",
@@ -750,7 +779,7 @@ fn differential_strings() {
             // the interpreter's, and until a boxed map is generally keyed
             // (`docs/aot/aot-gaps-and-lkrt.md` §62) the only way to have it is
             // to decline. What this pins is that declining is what happens.
-            new(
+            may_degrade(
                 "a_map_key_of_any_kind_answers_or_declines",
                 "fn put(m: Any, k: Any) -> Any {\n  m[k] = 1;\n  return m;\n}\nprintln(put({\"a\": 1}, \"b\"));\nprintln(put({\"a\": 1}, 7));\nprintln(put({\"a\": 1}, nil));\nprintln(put({\"a\": 1}, true));\nprintln(put({1: 2}, 7));\nprintln(put({1: 2}, \"k\"));\nfn build(k: Any) -> Any {\n  let m = {};\n  m[k] = 1;\n  return m;\n}\nprintln(build(\"kk\"));\nprintln(build(7));\nreturn 0;\n",
             ),
@@ -762,7 +791,7 @@ fn differential_strings() {
                 "membership_answers_for_a_needle_that_cannot_be_a_key",
                 "fn i(c: Any, v: Any) -> String { try { let r: Any = v in c; return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn h(c: Any, v: Any) -> String { try { let r: Any = c.has(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn c2(c: Any, v: Any) -> String { try { let r: Any = c.contains(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nprintln(i({\"a\": 1}, \"a\"));\nprintln(i({\"a\": 1}, 1.5));\nprintln(i({\"a\": 1}, [1]));\nprintln(i([1, 2], 1.5));\nprintln(i(\"abc\", \"b\"));\nprintln(h({\"a\": 1}, \"a\"));\nprintln(h({\"a\": 1}, 1.5));\nprintln(c2([1, 2], 1.5));\nprintln(c2(\"abc\", \"b\"));\nreturn 0;\n",
             ),
-            new(
+            may_degrade(
                 "building_a_key_still_refuses",
                 "fn t(f: Int, bad: Any) -> String {\n  let s = Set([1]);\n  let m = {\"a\": 1};\n  try {\n    if f == 0 { s.add(bad); }\n    if f == 1 { m.delete(bad); }\n    if f == 2 { m.set(bad, 1); }\n    if f == 3 { let v: Any = m[bad]; let _ = v; }\n    if f == 4 { let d: Any = m.set(bad, 1); let _ = d; }\n    return \"ok\";\n  } catch e { return \"E: \" + e; }\n}\nprintln(t(0, [1]));\nprintln(t(1, 1.5));\nprintln(t(2, 1.5));\nprintln(t(3, 1.5));\nprintln(t(4, 1.5));\nreturn 0;\n",
             ),

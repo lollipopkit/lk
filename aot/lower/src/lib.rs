@@ -808,16 +808,25 @@ pub fn lower_bundled(
         loop {
             let mut marked_any = false;
             for (fi, _) in &current_failures {
-                let eligible = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written);
+                // An outlined try body has no entry in the embedded artifact;
+                // only its nearest real ancestor can execute on the bridge VM.
+                // Nested bodies climb through their synthetic parents. Other
+                // synthetic functions are not bridgeable either.
+                let owner = bridge_artifact_owner(*fi, n, &sig.try_bodies);
+                let eligible = owner
+                    .filter(|owner| !sig.vm_functions.contains_key(&(*owner as u32)))
+                    .and_then(|owner| bridge_eligibility(owner, &funcs, module.entry, &sig, &written));
                 if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
                     // "why was this not bridged" is the usual question when a
                     // program unexpectedly falls back to Tier 0.
-                    eprintln!("lk-aot-lower: fn{fi} failed to lower; bridge-eligible: {eligible:?}");
+                    eprintln!(
+                        "lk-aot-lower: fn{fi} failed to lower; bridge owner: {owner:?}; bridge-eligible: {eligible:?}"
+                    );
                 }
-                if !sig.vm_functions.contains_key(&(*fi as u32))
-                    && let Some(param_count) = eligible
+                if let (Some(owner), Some(param_count)) = (owner, eligible)
+                    && !sig.vm_functions.contains_key(&(owner as u32))
                 {
-                    sig.vm_functions.insert(*fi as u32, param_count);
+                    sig.vm_functions.insert(owner as u32, param_count);
                     marked_any = true;
                 }
             }
@@ -827,7 +836,7 @@ pub fn lower_bundled(
                     .map(|failure| name_failure(failure, &funcs))
                     .unwrap_or(first_error));
             }
-            let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
+            let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions, &sig.try_bodies);
             // Drop VM marks without any native-reachable call site (a callee
             // only ever called from inside the VM needs no bridge signature).
             sig.vm_functions
@@ -927,13 +936,33 @@ fn name_failure(failure: &(usize, Unsupported), funcs: &[FunctionData]) -> Unsup
     }
 }
 
+/// Maps an AOT-only outlined try body to the original artifact function that
+/// owns it. Other synthetic functions have no VM counterpart and return None.
+fn bridge_artifact_owner(
+    mut fi: usize,
+    artifact_functions: usize,
+    try_bodies: &std::collections::HashMap<(u32, usize), u32>,
+) -> Option<usize> {
+    let parent_of: std::collections::HashMap<u32, u32> =
+        try_bodies.iter().map(|(&(parent, _), &body)| (body, parent)).collect();
+    let mut steps = 0usize;
+    while fi >= artifact_functions {
+        fi = *parent_of.get(&(fi as u32))? as usize;
+        steps += 1;
+        if steps > try_bodies.len() {
+            return None;
+        }
+    }
+    Some(fi)
+}
+
 fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<FuncId> {
     let mut referenced = std::collections::HashSet::new();
     for function in functions {
         for block in &function.blocks {
             for inst in &block.insts {
                 match inst {
-                    Inst::CallFn { func, .. } => {
+                    Inst::CallFn { func, .. } | Inst::TryRegionCall { func, .. } => {
                         referenced.insert(*func);
                     }
                     Inst::Const {

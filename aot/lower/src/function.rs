@@ -2609,16 +2609,8 @@ pub(crate) fn lower_function(
         sig.dyn_rets.insert(func_index);
         return Err(Unsupported::ReturnTypeConflict);
     }
-    // The entry can return scalars (printed), but not a container handle (printing
-    // a list is not modelled yet) — reject so it falls back rather than print wrong.
-    if is_entry
-        && matches!(
-            ret,
-            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64
-        )
-    {
-        return Err(Unsupported::ReturnTypeConflict);
-    }
+    // Entry container values are rendered by codegen through the same display
+    // ABI as `println`, so they are valid top-level return values.
     if is_try_body {
         sig.try_body_rebound.insert(func_index, rebound);
     }

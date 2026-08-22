@@ -286,13 +286,9 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
 /// first-class value — string and container payloads, consumed-result position
 /// included — byte-identical to the VM.
 ///
-/// It no longer checks that the enclosing `try` is a *native* frame reached by
-/// longjmp across the bridge. `try`/`catch` became a real statement lowering to
-/// `TryBegin`/`TryEnd`, the MIR lowering has no handler region yet, and a
-/// top-level `try` makes the entry function unlowerable — so the whole module
-/// degrades to the Tier 0 bundle and there is no native try frame to reach.
-/// Restore the `Tier 1 hybrid` / no-fallback assertions below when the region
-/// outlining lands (todos.md).
+/// The enclosing `try` stays native while each `boom` helper runs on the bridge;
+/// pinning fallback off proves the raise crosses that boundary rather than being
+/// handled inside a Tier 0 VM bundle.
 #[test]
 fn raises_reach_the_enclosing_try_like_the_vm() {
     let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_raise_{}", std::process::id()));
@@ -323,10 +319,15 @@ fn raises_reach_the_enclosing_try_like_the_vm() {
         .current_dir(&dir)
         .args(["compile", "raise.lk"])
         .env("LK_AOT_HYBRID", "1")
+        .env("LK_AOT_NO_FALLBACK", "1")
         .output()
         .expect("hybrid compile");
     let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
     assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
 
     let native = native_run(&dir, "raise");
     assert_eq!(

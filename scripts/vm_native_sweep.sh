@@ -13,9 +13,9 @@
 # a commit message. It is a gate; it belongs in the repo.
 #
 #   bash scripts/vm_native_sweep.sh              # compare, print a summary
-#   SWEEP_REQUIRE="identical=62 diverged=1" …    # fail unless the counts match
+#   SWEEP_REQUIRE="identical=78 diverged=1" …    # fail unless the counts match
 #
-# Today: identical=62 diverged=1 fallback=0 over 63 programs, ~35s.
+# Today: identical=78 diverged=1 fallback=0 over 79 programs.
 #
 # One divergence is expected today: `bench/workloads_business_algorithms.lk` is
 # nondeterministic (it prints timings), so it differs run to run under either

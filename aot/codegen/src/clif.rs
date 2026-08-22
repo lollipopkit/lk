@@ -1706,9 +1706,52 @@ impl Lower {
                     self.entry_write(b, mctx, sp)?;
                     b.ins().jump(exit, &[]);
                 }
+                // Container returns use the same VM-exact formatters as
+                // interpolation/println. Entry values are observable output too;
+                // rejecting them here made otherwise fully native programs fall
+                // back only because their final expression was a container.
+                Ty::ListI64
+                | Ty::ListF64
+                | Ty::ListStr
+                | Ty::ListDyn
+                | Ty::SliceI64
+                | Ty::MapStrI64
+                | Ty::MapStrF64
+                | Ty::MapStrBool
+                | Ty::MapI64I64
+                | Ty::MapI64F64
+                | Ty::Set
+                | Ty::Bytes => {
+                    let (module, display_fn) = match self.ret_ty {
+                        Ty::ListI64 => ("list_h", "i64_display"),
+                        Ty::ListF64 => ("list_h", "f64_display"),
+                        Ty::ListStr => ("list_h", "str_display"),
+                        Ty::ListDyn => ("list_h", "dyn_display"),
+                        Ty::SliceI64 => ("slice_h", "i64_display"),
+                        Ty::MapStrI64 => ("map_h", "str_i64_display"),
+                        Ty::MapStrF64 => ("map_h", "str_f64_display"),
+                        Ty::MapStrBool => ("map_h", "str_bool_display"),
+                        Ty::MapI64I64 => ("map_h", "i64_i64_display"),
+                        Ty::MapI64F64 => ("map_h", "i64_f64_display"),
+                        Ty::Set => ("set", "display"),
+                        Ty::Bytes => ("bytes_h", "to_str"),
+                        _ => unreachable!("guarded by the outer match"),
+                    };
+                    let handle = self.v(v)?;
+                    let rendered = self.abi_call(b, mctx, module, display_fn, &[handle])?;
+                    self.entry_write(b, mctx, rendered)?;
+                    b.ins().jump(exit, &[]);
+                }
                 // A boxed `Dyn`: print its display unless nil-tagged (tag == 0).
-                Ty::Dyn => {
-                    let (tag, payload) = self.two(v)?;
+                // `MapStrDyn` is the same runtime map handle tagged for the
+                // renderer; the marker also preserves struct display.
+                Ty::Dyn | Ty::MapStrDyn => {
+                    let (tag, payload) = if self.ret_ty == Ty::Dyn {
+                        self.two(v)?
+                    } else {
+                        let handle = self.v(v)?;
+                        self.abi_call_pair(b, mctx, "dyn", "from_map", &[handle])?
+                    };
                     let present = b.ins().icmp_imm(IntCC::NotEqual, tag, 0);
                     let some = b.create_block();
                     b.ins().brif(present, some, &[], exit, &[]);
@@ -1771,6 +1814,24 @@ impl Lower {
             .first()
             .copied()
             .ok_or(ClifError::Unsupported("ABI call produced no result"))
+    }
+
+    /// Call an ABI fn whose flattened result occupies two machine values.
+    fn abi_call_pair(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        module: &str,
+        name: &str,
+        args: &[Value],
+    ) -> Result<(Value, Value), ClifError> {
+        let id = mctx.abi_func(resolve_abi(module, name)?)?;
+        let func_ref = mctx.module.declare_func_in_func(id, b.func);
+        let call = b.ins().call(func_ref, args);
+        let [first, second] = b.inst_results(call) else {
+            return Err(ClifError::Unsupported("ABI call did not produce two results"));
+        };
+        Ok((*first, *second))
     }
 }
 
@@ -2250,6 +2311,39 @@ mod tests {
             functions: vec![ret42],
         };
         compile_module(&mir, host_isa()).expect("entry scalar return must compile");
+    }
+
+    // Container return values are top-level expressions too. Their handles go
+    // through the same display ABI that println uses; lowering may not reject a
+    // program merely because its final expression is a list.
+    #[test]
+    fn lowers_entry_container_return() {
+        let list = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![Inst::Call {
+                    dst: Some(vid(0)),
+                    callee: lk_aot_mir::AbiRef::new("list_h", "f64_new"),
+                    args: vec![],
+                }],
+                term: Term::Ret(Some(vid(0))),
+            }],
+            entry: BlockId(0),
+            ret: Ty::ListF64,
+            export_name: None,
+        };
+        let mir = MirModule {
+            abi_version: 1,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![list],
+        };
+        compile_module(&mir, host_isa()).expect("entry container return must compile");
     }
 
     // The `inst` match is exhaustive, so the capability boundary lives *inside*

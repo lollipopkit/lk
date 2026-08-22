@@ -636,11 +636,15 @@ pub enum MirError {
     UnknownAbi { module: &'static str, name: &'static str },
     /// A `GlobalGet`/`GlobalSet` names a mutable global outside the module table.
     UnknownGlobal { func: FuncId, gvar: u32 },
-    /// The module/function references a missing entry block/function.
+    /// The module references no entry, or a function has no entry block.
     MissingEntry,
+    /// An instruction references a function absent from the MIR module.
+    UnknownFunction { func: FuncId, callee: FuncId },
     /// A call or branch passes a different number of arguments than the
     /// callee's parameters / the target block's params expect.
     ArityMismatch { func: FuncId },
+    /// The entry function returns a type its top-level printer cannot consume.
+    UnsupportedEntryReturn { ty: Ty },
 }
 
 /// Validates structural well-formedness: single-assignment, define-before-use
@@ -650,8 +654,11 @@ pub enum MirError {
 /// topological-ish order for the simple straightline/if shapes we lower first);
 /// it is a cheap guard that catches lowering bugs long before LLVM would.
 pub fn validate(module: &MirModule) -> Result<(), MirError> {
-    if module.function(module.entry).is_none() {
+    let Some(entry) = module.function(module.entry) else {
         return Err(MirError::MissingEntry);
+    };
+    if matches!(entry.ret, Ty::Cell) {
+        return Err(MirError::UnsupportedEntryReturn { ty: entry.ret });
     }
     for func in &module.functions {
         if func.block(func.entry).is_none() {
@@ -705,9 +712,12 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         gvar: *gvar,
                     });
                 }
-                if let Inst::CallFn { func: callee, args, .. } = inst {
+                if let Inst::CallFn { func: callee, args, .. } | Inst::TryRegionCall { func: callee, args, .. } = inst {
                     let Some(target) = module.function(*callee) else {
-                        return Err(MirError::MissingEntry);
+                        return Err(MirError::UnknownFunction {
+                            func: func.id,
+                            callee: *callee,
+                        });
                     };
                     if args.len() != target.params.len() {
                         return Err(MirError::ArityMismatch { func: func.id });
@@ -1314,6 +1324,30 @@ mod tests {
             Err(MirError::UnknownBlock {
                 func: FuncId(0),
                 block: BlockId(7)
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_entry_return_is_rejected_before_codegen() {
+        let mut m = div_module();
+        m.functions[0].ret = Ty::Cell;
+        assert_eq!(validate(&m), Err(MirError::UnsupportedEntryReturn { ty: Ty::Cell }));
+    }
+
+    #[test]
+    fn unknown_try_region_body_is_rejected() {
+        let mut m = div_module();
+        m.functions[0].blocks[0].insts.push(Inst::TryRegionCall {
+            dst: ValueId(3),
+            func: FuncId(7),
+            args: vec![],
+        });
+        assert_eq!(
+            validate(&m),
+            Err(MirError::UnknownFunction {
+                func: FuncId(0),
+                callee: FuncId(7),
             })
         );
     }

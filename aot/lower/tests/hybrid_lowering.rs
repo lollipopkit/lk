@@ -109,6 +109,26 @@ fn hybrid_degrades_a_discarded_bridge_result_to_the_void_call() {
 }
 
 #[test]
+fn hybrid_bridges_the_real_owner_of_an_unlowerable_try_body() {
+    let artifact = artifact(
+        "fn guarded() -> String {\n\
+           try { let f = \"v={}\".trim(); println(f, 1); return \"ok\"; }\n\
+           catch e { return \"caught\"; }\n\
+         }\n\
+         println(guarded());\n\
+         return 0;\n",
+    );
+    let artifact_function_count = artifact.module.functions.len() as u32;
+    let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("the try owner bridges");
+    lk_aot_mir::validate(&mir).expect("hybrid module validates");
+    assert_eq!(mir.vm_functions.len(), 1, "only the real `guarded` function bridges");
+    assert!(
+        mir.vm_functions[0].id.0 < artifact_function_count,
+        "an outlined try body has no function in the embedded VM artifact"
+    );
+}
+
+#[test]
 fn hybrid_rejects_a_global_touching_callee() {
     // The callee's VM-side subtree writes a module global: the bridge VM's
     // copy would diverge from native storage, so it must reject.

@@ -1,5 +1,3 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use alloc::sync::Arc;
 
 use crate::val::HeapStore;

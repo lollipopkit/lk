@@ -2062,6 +2062,7 @@ fn builtin_only_reads(name: &str) -> bool {
     )
 }
 
+#[cfg(feature = "aot")]
 fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
     use lk_core::vm::{Instr, Opcode};
 

@@ -964,6 +964,8 @@ fn int_decimal(value: i64, buf: &mut [u8; MAX_I64_DIGITS]) -> &str {
 
 #[cfg(test)]
 mod int_decimal_tests {
+    use alloc::string::ToString;
+
     use super::{MAX_I64_DIGITS, int_decimal};
 
     /// Against `to_string`, which is what this replaced — including the two

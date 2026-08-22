@@ -105,7 +105,7 @@ jobs:
         # commit message.
         run: |
           cargo build -p lk-cli --features aot
-          SWEEP_REQUIRE="identical=61 diverged=1" bash scripts/vm_native_sweep.sh
+          SWEEP_REQUIRE="identical=78 diverged=1" bash scripts/vm_native_sweep.sh
       - name: every LK source is `lk fmt` shape
         # `lk fmt --check` shipped as a CI feature and no workflow ran it, so
         # 36 of the repo's 97 `.lk` files were not in the shape the tool
@@ -385,7 +385,7 @@ jobs:
           # report full coverage for code it does not contain, and unlike a
           # missing one that failure is silent.
           #
-          # 60/60, and no allow list. The try/catch corpus was the last thing
+          # 76/76, and no allow list. The try/catch corpus was the last thing
           # on it; each of the three came off by a different fix, and each was
           # checked by *running* it against the VM rather than by the fact that
           # it compiled — see `aot/lower/src/try_region.rs`, where the two

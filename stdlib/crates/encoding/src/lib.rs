@@ -23,6 +23,7 @@ use alloc::sync::Arc;
 use anyhow::bail;
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
+#[cfg(feature = "std")]
 use lk_core::util::value_map::value_map_new;
 #[cfg(feature = "std")]
 use lk_core::val::{HeapValue, TypedMap};

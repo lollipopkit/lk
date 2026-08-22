@@ -66,6 +66,7 @@ pub(crate) fn native_reachable_functions(
     funcs: &[FunctionData],
     entry: u32,
     vm_functions: &std::collections::HashMap<u32, usize>,
+    try_bodies: &std::collections::HashMap<(u32, usize), u32>,
 ) -> Vec<bool> {
     let n = funcs.len();
     let mut reachable = vec![false; n];
@@ -90,6 +91,17 @@ pub(crate) fn native_reachable_functions(
             if callee < n && !reachable[callee] {
                 reachable[callee] = true;
                 stack.push(callee);
+            }
+        }
+        // Outlined try bodies are AOT-only functions, so no CallDirect names
+        // them in the original artifact. A native parent reaches every body it
+        // owns; omitting these edges let a hybrid rerun remove a body while the
+        // parent's `TryRegionCall` still named it.
+        for (&(parent, _), &body) in try_bodies {
+            let body = body as usize;
+            if parent as usize == fi && body < n && !reachable[body] {
+                reachable[body] = true;
+                stack.push(body);
             }
         }
     }

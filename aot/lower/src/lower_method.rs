@@ -1046,6 +1046,11 @@ pub(crate) fn lower_method_dispatch(
     {
         return Err(Unsupported::TypeMismatch { pc });
     }
+    let receiver_is_map = matches!(
+        receiver_ty,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+    );
+    let map_missing_method = receiver_is_map && matches!(name, "contains" | "index_of" | "count");
     let result: Reg = match (receiver_ty, name, args) {
         // Boxed-element list long tail (runtime-polymorphic receivers).
         // `take` / `skip` over every carrier and both directions. Neither looks
@@ -3401,6 +3406,35 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![property, block_v, key],
             });
             (dst, Ty::Dyn)
+        }
+        _ if map_missing_method => {
+            // This shape reaches lowering only when the static checker cannot
+            // prove the empty/mixed map's method surface. The interpreter raises
+            // before inspecting the argument, so native code must do the same.
+            // Emitting a raise also lets an enclosing native `try` catch it;
+            // refusing the region body here made codegen see a dangling
+            // `TryRegionCall` target.
+            let text = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: text,
+                value: Const::Str(GlobalId(crate::prescan::intern_global(
+                    globals,
+                    &format!(
+                        "a Map has no method `{name}`, and this map has no key `{name}` holding a function either"
+                    ),
+                ))),
+            });
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "raise_msg"),
+                args: vec![text],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
         }
         _ => {
             return Err(Unsupported::UnsupportedMethod {
