@@ -30,47 +30,49 @@ extern crate alloc;
 mod boot;
 mod interrupts;
 mod tasks;
+mod user;
+mod user_programs;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// The machine's memory, decided here and nowhere else.
+// The machine's memory, decided in `link.ld` and read from here.
+//
+// Not a table in this comment any more. Three things want RAM and none of them
+// can ask — the kernel image, the Rust heap the interpreter allocates from,
+// and the page allocator the LK program hands out — so the map has to be
+// written down somewhere, and the somewhere has to be a place *both* languages
+// can read. A linker script is that place: Rust takes the address of an
+// `extern static`, LK asks `symbol_address`, and there is one answer.
+//
+// It used to be a doc table here plus a literal in each language. `0x00380000`
+// in particular was written twice and cross-checked at run time by
+// `kernel_run` refusing any other address — which notices the drift rather
+// than preventing it.
+unsafe extern "C" {
+    static __heap_base: u8;
+    static __heap_size: u8;
+    static __run_heap_base: u8;
+    static __run_heap_size: u8;
+    static __source_base: u8;
+    static __source_max: u8;
+}
+
+/// A linker symbol's value. It is an address, and an address is a number — the
+/// size symbols are ones whose number happens to be a length.
 ///
-/// Written down because three things now want RAM and none of them can ask: the
-/// kernel image, the Rust heap the interpreter allocates from, and the page
-/// allocator the LK program hands out. A heap in `.bss` would have been simpler
-/// until it grew — `.bss` follows the image, and at a few megabytes it reaches
-/// up over the shared page at 0x300000, which is a fixed address the program
-/// and the interrupt handlers agree on. Fixed regions cannot creep.
+/// # Safety
 ///
-/// | region | what |
-/// | --- | --- |
-/// | `0x00100000`.. | this image, and its `.bss` |
-/// | `0x00300000`.. | the shared page (`SHARED_BASE` in `program.lk`) |
-/// | `0x00380000`.. | 64 KiB staging for a source file read off the disk |
-/// | `0x00400000`.. | the interpreter's heap, 28 MiB |
-/// | `0x02000000`.. | the LK page allocator's arena |
-/// The kernel's own arena, and the interpreter's.
-///
-/// Two regions rather than one, because they have different lifetimes and a
-/// bump allocator cannot tell them apart otherwise. The kernel's LK code
-/// allocates a little per command (a list of bytes to print) and keeps some of
-/// it; a hosted program allocates an AST, a module registry and a whole VM
-/// heap, and keeps *none* of it — the only thing that crosses back is an
-/// `i64`. With one region, `run` would be a leak with a bound: about a dozen
-/// invocations before 28 MiB was gone, and nothing to say why.
-///
-/// So a run allocates from the second region, which is reset at the start of
-/// each run. That is sound only because nothing allocated during a run
-/// outlives it: output leaves through `lk_console_byte` as it is produced, and
-/// the tasks that can preempt a run — the timer's scheduler and the spinner —
-/// are the ones already forbidden to allocate.
-const HEAP_BASE: usize = 0x0040_0000;
-const HEAP_SIZE: usize = 4 * 1024 * 1024;
-const RUN_HEAP_BASE: usize = HEAP_BASE + HEAP_SIZE;
-const RUN_HEAP_SIZE: usize = 24 * 1024 * 1024;
+/// Taking a symbol's address reads nothing, so this is safe for any of them.
+macro_rules! linker_value {
+    ($name:ident) => {
+        // SAFETY: taking the address of a linker-placed symbol reads no memory.
+        unsafe { (&raw const $name) as usize }
+    };
+}
+
 static OFFSET: AtomicUsize = AtomicUsize::new(0);
 static RUN_OFFSET: AtomicUsize = AtomicUsize::new(0);
 /// Set for the duration of a hosted run, so allocation goes to the run's arena.
@@ -82,9 +84,9 @@ unsafe impl GlobalAlloc for Bump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let running = RUNNING.load(Ordering::Relaxed) != 0;
         let (base, size, offset) = if running {
-            (RUN_HEAP_BASE, RUN_HEAP_SIZE, &RUN_OFFSET)
+            (linker_value!(__run_heap_base), linker_value!(__run_heap_size), &RUN_OFFSET)
         } else {
-            (HEAP_BASE, HEAP_SIZE, &OFFSET)
+            (linker_value!(__heap_base), linker_value!(__heap_size), &OFFSET)
         };
         let mut cur = offset.load(Ordering::Relaxed);
         loop {
@@ -131,6 +133,14 @@ const COM1: u16 = 0x3f8;
 /// `program.lk` has its own copy of this — that one is the demo. This exists
 /// because `lkrt` needs a sink for the value a script evaluates to, and it
 /// cannot call back into LK.
+///
+/// It does *not* configure the device, and no longer needs to. The board used
+/// to bring COM1 up before `main()` because it enabled interrupts itself, and a
+/// tick landing before the program's `uart_init()` would have transmitted
+/// through an unconfigured UART. The program owns interrupts now and turns them
+/// on long after its own first statement, which is `uart_init()`. A fault
+/// earlier than that has no gate to land in either, so there is nothing left
+/// for a second initialisation to protect.
 pub(crate) fn serial_write(text: &str) {
     for byte in text.bytes() {
         // SAFETY: COM1 is a fixed ISA port; `in`/`out` on it cannot touch
@@ -140,24 +150,6 @@ pub(crate) fn serial_write(text: &str) {
             while port_in_u8(COM1 + 5) & 0x20 == 0 {}
             port_out_u8(COM1, byte);
         }
-    }
-}
-
-/// Bring COM1 up before interrupts are enabled.
-///
-/// `program.lk`'s driver configures it too, with the same values — this is not
-/// a substitute for it. It is here because the timer handler transmits, and a
-/// tick landing before `uart_init()` would write to an unconfigured device.
-fn serial_init() {
-    // SAFETY: fixed ISA ports. The sequence matches `program.lk`'s.
-    unsafe {
-        port_out_u8(COM1 + 1, 0x00); // interrupts off; this driver polls
-        port_out_u8(COM1 + 3, 0x80); // DLAB: the divisor latch
-        port_out_u8(COM1, 0x03); //     divisor 3 = 38400 baud
-        port_out_u8(COM1 + 1, 0x00);
-        port_out_u8(COM1 + 3, 0x03); // 8N1
-        port_out_u8(COM1 + 2, 0xc7); // FIFOs on and cleared
-        port_out_u8(COM1 + 4, 0x0b); // DTR + RTS + OUT2
     }
 }
 
@@ -193,6 +185,32 @@ pub(crate) fn write_hex(value: u64) {
     serial_write(unsafe { core::str::from_utf8_unchecked(&buf) });
 }
 
+/// A deliberate fault, so the exception path is exercised rather than merely
+/// present. Without a build that takes it, a broken reporter looks exactly like
+/// a working one — right up until the day something faults.
+///
+/// Called from `program.lk`, immediately after it installs its interrupt table,
+/// and that is not a detail: the table is the program's now, so before `main()`
+/// there is no gate for anything. Faulting here used to be a report; faulting
+/// there is a triple fault, which on this machine is a silent reset — the exact
+/// failure this probe exists to make impossible. Moving the probe to the other
+/// side of the install also makes it a stronger claim, because the table it
+/// lands in is the one the program actually built.
+///
+/// Empty without the feature, rather than absent: `program.lk` calls it either
+/// way, and a call that does nothing costs less than two versions of the
+/// program's boot sequence.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_fault_probe() {
+    #[cfg(feature = "fault-probe")]
+    // SAFETY: nothing about this is safe — that is the point. The address is
+    // 36 bits wide, far past the identity map, so the access cannot land on
+    // anything real.
+    unsafe {
+        core::ptr::write_volatile(0x9_0000_0000u64 as *mut u64, 1)
+    };
+}
+
 /// Where the compiled code's result is left, so it cannot be optimised away and
 /// a debugger or test harness can read it.
 #[unsafe(no_mangle)]
@@ -206,26 +224,34 @@ pub extern "C" fn kernel_main() -> ! {
     // calls into is simply absent.
     let _ = lkrt::link_anchor();
     lkrt::set_output(serial_write);
-    serial_init();
     // No task table to prepare any more: the program spawns what it wants by
     // address (`lk_spawn`), and until it does there is one task — this one.
-    // The handler transmits, and it can fire from here on — which is why the
-    // UART is already up.
-    interrupts::init();
+    // The TSS before the IDT: a gate that can be raised from ring 3 needs a
+    // ring-0 stack to switch to, and the CPU reads that from the TSS.
+    // No `user::init()` either: the descriptor table and the task state
+    // segment are the program's now, built in `install_descriptor_table()`
+    // right after the interrupt table. The board's share of them is one static
+    // (`lk_boot_kernel_stack`), because a ring-0 stack has to exist before
+    // there is an allocator to ask for one.
+    // No `interrupts::init()` here any more. The interrupt table is the
+    // program's — `program.lk` builds its own gates and loads them — so the
+    // board cannot enable interrupts before it, and does not try. What the
+    // board still owns is `interrupts::stop()` below, because it runs after
+    // the program has returned and there is no program left to ask.
+    //
+    // The window this opens is real and was already there: between here and
+    // the program's `idt_install()` a fault has no gate, and a fault with no
+    // gate is a triple fault, which on this machine is a silent reset. It is
+    // the first thing `program.lk` does for exactly that reason.
 
-    // A deliberate fault, so the exception path is exercised rather than
-    // merely present. Without a build that takes it, a broken reporter looks
-    // exactly like a working one — right up to the day something faults.
-    #[cfg(feature = "fault-probe")]
-    unsafe {
-        core::ptr::write_volatile(0x9_0000_0000u64 as *mut u64, 1)
-    };
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };
-    // Stop the clock before reporting: a tick landing mid-line would splice a
-    // '.' into it.
-    interrupts::stop();
+    // The clock is already stopped, and by the program: masking the flag and
+    // then the chip is the last thing `program.lk` does. That is where it
+    // belongs now that the chip is the program's — and the board could not do
+    // it here without naming the PIC's ports a second time, for the sake of a
+    // line the program has already handled.
     unsafe {
         core::ptr::write_volatile(addr_of_mut!(LK_RESULT), result);
     }
@@ -240,11 +266,6 @@ pub extern "C" fn kernel_main() -> ! {
 }
 
 // ------------------------------------------------------------ the interpreter
-
-/// Where a source file read off the disk is staged, and how much of one this
-/// kernel will take. See the memory map above.
-const SOURCE_BASE: usize = 0x0038_0000;
-const SOURCE_MAX: usize = 64 * 1024;
 
 unsafe extern "C" {
     /// The console, which belongs to the LK program: it owns the cursor, the
@@ -274,7 +295,10 @@ fn console_write(text: &str) {
 /// failure and a runtime failure want different next steps.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_run(address: i64, length: i64) -> i64 {
-    if address as usize != SOURCE_BASE || length < 0 || length as usize > SOURCE_MAX {
+    // The address is checked rather than trusted, and it is checked against the
+    // *same symbol* the program staged into — one answer, not two that agree.
+    if address as usize != linker_value!(__source_base) || length < 0 || length as usize > linker_value!(__source_max)
+    {
         return -1;
     }
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length as usize) };
@@ -317,6 +341,25 @@ fn run_program(source: &str) -> i64 {
     let mut ctx = VmContext::new().with_resolver(Arc::new(ModuleResolver::with_registry(registry)));
     match execute_program_with_ctx(&program, &mut ctx) {
         Ok(_) => 0,
-        Err(_) => -5,
+        Err(error) => {
+            // What it said, not just that it said no.
+            //
+            // The stage code alone is `-5`, which means "it ran and raised" and
+            // nothing more. That is enough to know the parser and the type
+            // checker were happy and useless for anything after: a program that
+            // used `try`/`catch` failed here for a whole round before anyone
+            // found out the bare host had no `error` global, because "it
+            // raised" reads the same whether the cause is the program or the
+            // host.
+            //
+            // Printed through the same console the program prints through, so
+            // the report lands where the output the reader was watching for
+            // would have. `{:#}` rather than `{}`: `anyhow` puts the cause
+            // chain behind the alternate flag, and the cause is the useful end.
+            console_write("run: ");
+            console_write(&alloc::format!("{error:#}"));
+            console_write("\n");
+            -5
+        }
     }
 }

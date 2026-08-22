@@ -89,6 +89,14 @@ pub(super) fn bin_op_result_kind(op: &BinOp, flavor: NumericFlavor) -> PerfValue
     if op.is_cmp() || matches!(op, BinOp::In) {
         return PerfValueKind::Bool;
     }
+    // `/` yields a `Float` however it is spelled, so two `Int` operands do not
+    // make an `Int` result. Saying they did is what let the compiler emit a
+    // typed fused opcode on the quotient — `let mid = (lo + hi) / 2; mid * 2`
+    // lowered `mid * 2` to `MulIntI`, which then failed at runtime with
+    // "MulIntI expected Int lhs, got Float".
+    if matches!(op, BinOp::Div) && matches!(flavor, NumericFlavor::Int | NumericFlavor::Float) {
+        return PerfValueKind::Float;
+    }
     match flavor {
         NumericFlavor::Int if op.is_arith() => PerfValueKind::Int,
         NumericFlavor::Float if op.is_arith() => PerfValueKind::Float,
@@ -123,6 +131,10 @@ pub(super) fn expr_static_value_kind(expr: &Expr) -> PerfValueKind {
 fn bin_op_static_value_kind(lhs: &Expr, op: &BinOp, rhs: &Expr) -> PerfValueKind {
     if op.is_cmp() || matches!(op, BinOp::In) {
         return PerfValueKind::Bool;
+    }
+    // As `bin_op_result_kind`: a quotient is a `Float`, never an `Int`.
+    if matches!(op, BinOp::Div) && matches!(numeric_flavor(lhs, op, rhs), NumericFlavor::Int | NumericFlavor::Float) {
+        return PerfValueKind::Float;
     }
     match numeric_flavor(lhs, op, rhs) {
         NumericFlavor::Int if op.is_arith() => PerfValueKind::Int,

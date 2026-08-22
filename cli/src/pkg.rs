@@ -35,6 +35,44 @@ fn load_project_manifest() -> anyhow::Result<(PathBuf, Manifest)> {
     Ok((manifest_path, manifest))
 }
 
+/// What a `<SOURCE>` argument names.
+///
+/// Decided by shape, and an unrecognised shape is **refused**. It used to be
+/// written into the manifest verbatim as a GitHub repo, so
+/// `lk pkg add dep ../dep` produced `dep = "../dep"` and the failure arrived
+/// much later, from git, as
+/// `repository 'https://github.com/../dep.git/' not found`. The manifest has
+/// had `path` and `git` since it existed; only `add` could not spell them.
+enum AddedSource {
+    GitHub(String),
+    Git(String),
+    Path(String),
+}
+
+fn classify_source(source: &str) -> anyhow::Result<AddedSource> {
+    let trimmed = source.trim();
+    if trimmed.contains("://") || trimmed.starts_with("git@") {
+        return Ok(AddedSource::Git(trimmed.to_string()));
+    }
+    if trimmed.starts_with("./") || trimmed.starts_with("../") || trimmed.starts_with('/') || trimmed.starts_with('~') {
+        return Ok(AddedSource::Path(trimmed.to_string()));
+    }
+    // `owner/repo`: exactly one separator, both halves present, no spaces.
+    let mut parts = trimmed.split('/');
+    if let (Some(owner), Some(repo), None) = (parts.next(), parts.next(), parts.next())
+        && !owner.is_empty()
+        && !repo.is_empty()
+        && !trimmed.contains(char::is_whitespace)
+    {
+        return Ok(AddedSource::GitHub(trimmed.to_string()));
+    }
+    anyhow::bail!(
+        "`{source}` is not a dependency source. Write `owner/repo` for GitHub, a URL \
+         (`https://…` or `git@…`) for any other git host, or a path starting with `./`, `../` or `/` \
+         for a local package"
+    )
+}
+
 fn add_dependency(
     name: String,
     source: String,
@@ -43,16 +81,34 @@ fn add_dependency(
     rev: Option<String>,
 ) -> anyhow::Result<()> {
     let (manifest_path, mut manifest) = load_project_manifest()?;
-    let spec = if branch.is_none() && tag.is_none() && rev.is_none() {
-        DependencySpec::GitHub(source)
-    } else {
-        DependencySpec::Detailed(DetailedDependency {
-            github: Some(source),
+    let pinned = branch.is_some() || tag.is_some() || rev.is_some();
+    let spec = match classify_source(&source)? {
+        // A local package has no revision to pin, and silently keeping one in
+        // the manifest would read as if it did.
+        AddedSource::Path(path) if pinned => {
+            anyhow::bail!("--branch/--tag/--rev do not apply to the path dependency `{path}`")
+        }
+        AddedSource::Path(path) => DependencySpec::Detailed(DetailedDependency {
+            path: Some(path),
+            ..Default::default()
+        }),
+        AddedSource::Git(url) => DependencySpec::Detailed(DetailedDependency {
+            git: Some(url),
             branch,
             tag,
             rev,
             ..Default::default()
-        })
+        }),
+        // The bare-string form is the manifest's shorthand for GitHub, and it
+        // only survives when there is nothing else to say.
+        AddedSource::GitHub(repo) if !pinned => DependencySpec::GitHub(repo),
+        AddedSource::GitHub(repo) => DependencySpec::Detailed(DetailedDependency {
+            github: Some(repo),
+            branch,
+            tag,
+            rev,
+            ..Default::default()
+        }),
     };
     manifest.dependencies.insert(name, spec);
     manifest.write(&manifest_path)?;
@@ -84,8 +140,13 @@ fn fetch_dependencies(only: Option<String>) -> anyhow::Result<()> {
         let source = spec
             .git_url()
             .ok_or_else(|| anyhow::anyhow!("dependency '{name}' has no git source"))?;
-        let dir = cache_dir_for_source(&source);
-        fetch_git_dependency(&source, &dir, &spec)?;
+        let dir = cache_dir_for_source(&source)?;
+        // Named here: `git failed with status exit status: 128` says which
+        // *process* failed, not which dependency — and with several of them the
+        // reader has to guess. git's own message above already explains the
+        // cause; this says what LK was doing when it appeared.
+        fetch_git_dependency(&source, &dir, &spec)
+            .with_context(|| format!("fetching dependency `{name}` from {source}"))?;
         let rev = git_output(&dir, ["rev-parse", "HEAD"])?;
         locked.insert(
             name.clone(),
@@ -145,7 +206,12 @@ fn fetch_git_dependency(source: &str, dir: &Path, spec: &DependencySpec) -> anyh
 fn git_status(cmd: &mut Command) -> anyhow::Result<()> {
     let status = cmd.status().context("run git")?;
     if !status.success() {
-        anyhow::bail!("git failed with status {status}");
+        // git has already printed its own diagnosis to stderr; repeating the
+        // exit status adds nothing a reader can act on, so this only names the
+        // command. The caller supplies which dependency it was for.
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        anyhow::bail!("`{program} {}` failed (see git's message above)", args.join(" "));
     }
     Ok(())
 }
@@ -177,7 +243,7 @@ fn print_package_tree() -> anyhow::Result<()> {
         println!("  {} -> {}", module.name, module.root.display());
     }
     for missing in &graph.missing {
-        println!("  {} -> <missing; run lk pkg fetch>", missing);
+        println!("  {} -> <{}>", missing.name, missing.advice());
     }
     Ok(())
 }
@@ -185,12 +251,26 @@ fn print_package_tree() -> anyhow::Result<()> {
 fn check_package() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("read current directory")?;
     let graph = PackageGraph::discover(&cwd)?.ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
+    if let Some(package) = &graph.manifest.package {
+        lk_core::package::validate_package_section(package)?;
+    }
     graph.validate_macro_distribution()?;
     if graph.missing.is_empty() {
         println!("package check ok");
     } else {
-        println!(
-            "package check ok ({} missing dependencies; run lk pkg fetch)",
+        for missing in &graph.missing {
+            println!("  {} -> {}", missing.name, missing.advice());
+        }
+        // The per-dependency lines above already say what each one needs; a
+        // summary that repeats one of the two answers for all of them is how a
+        // path dependency got told to run `lk pkg fetch`.
+        //
+        // And it **fails**. "package check ok (1 dependencies unresolved)" said
+        // two opposite things in one line and exited 0, so a CI step running
+        // `lk pkg check` passed on a package that cannot run — which is the one
+        // question this command exists to answer.
+        anyhow::bail!(
+            "{} dependencies unresolved — the package cannot run until they are",
             graph.missing.len()
         );
     }

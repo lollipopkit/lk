@@ -72,16 +72,30 @@ fn test_numeric_auto_promotion() {
     assert_eq!(result_type, Type::Float);
 }
 
+/// `/` yields a `Float`, whatever it divides.
+///
+/// The checker always said this; the executors did not, and the constant
+/// folder said it only when the literals did *not* divide evenly. All four
+/// paths agree now, which is what this test is for.
 #[test]
 fn test_division_promotes_float() {
     let mut checker = TypeChecker::new();
-    let div_expr = Expr::Bin(
-        Box::new(Expr::Literal(LiteralVal::Int(3))),
-        BinOp::Div,
-        Box::new(Expr::Literal(LiteralVal::Int(2))),
-    );
-    let result_type = checker.check_expr(&div_expr).unwrap();
-    assert_eq!(result_type, Type::Float);
+    for (lhs, rhs) in [
+        (LiteralVal::Int(3), LiteralVal::Int(2)),
+        (LiteralVal::Int(20), LiteralVal::Int(4)),
+        (LiteralVal::Int(3), LiteralVal::Float(2.0)),
+    ] {
+        let div_expr = Expr::Bin(
+            Box::new(Expr::Literal(lhs.clone())),
+            BinOp::Div,
+            Box::new(Expr::Literal(rhs.clone())),
+        );
+        assert_eq!(
+            checker.check_expr(&div_expr).unwrap(),
+            Type::Float,
+            "{lhs:?} / {rhs:?} should be a Float"
+        );
+    }
 }
 
 #[test]
@@ -93,7 +107,7 @@ fn test_numeric_type_error_message() {
         Box::new(Expr::Literal(LiteralVal::Bool(true))),
     );
     let err = checker.check_expr(&bad_expr).unwrap_err();
-    assert!(err.to_string().contains("must by numeric types"));
+    assert!(err.to_string().contains("must be numeric types"));
 }
 
 #[test]
@@ -311,14 +325,14 @@ fn test_while_statement_type_checking() {
     // Test while statement with boolean condition
     let while_stmt = Stmt::While {
         condition: Box::new(Expr::Literal(LiteralVal::Bool(true))),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
     assert!(while_stmt.type_check(&mut checker).is_ok());
 
     // Test while statement with non-boolean condition
     let while_stmt_invalid = Stmt::While {
         condition: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int instead of Bool
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
     assert!(while_stmt_invalid.type_check(&mut checker).is_ok());
 }
@@ -334,7 +348,7 @@ fn test_for_statement_type_checking() {
             Box::new(Expr::Literal(LiteralVal::Int(1))),
             Box::new(Expr::Literal(LiteralVal::Int(2))),
         ])),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     assert!(for_stmt.type_check(&mut checker).is_ok());
 
@@ -342,7 +356,7 @@ fn test_for_statement_type_checking() {
     let for_stmt_invalid = Stmt::For {
         pattern: ForPattern::Variable("item".to_string()),
         iterable: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int is not iterable
-        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
+        body: Box::new(Stmt::expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     let result = for_stmt_invalid.type_check(&mut checker);
     assert!(result.is_err());
@@ -350,6 +364,138 @@ fn test_for_statement_type_checking() {
         result
             .unwrap_err()
             .to_string()
-            .contains("For loop iterable must be List, String, Map, or Set")
+            .contains("For loop iterable must be List, String, Map, Set, Bytes, Slice or Tuple")
     );
+}
+
+/// The three ways a machine integer refuses to mix, and why each is a rule
+/// rather than an oversight.
+///
+/// A `u32` register write has to be exactly 32 bits wide and has to wrap rather
+/// than promote — promoting to `Int` would silently give the operation 64-bit
+/// semantics, which is the opposite of what asking for a width was for. So the
+/// checker refuses three things, and the messages are what a driver author
+/// reads when a width is wrong.
+///
+/// What is *not* refused, and used to be: an integer literal beside a machine
+/// An empty list learns its element type from a *container* argument too.
+///
+/// `xs.push(y)` has parameter `'T` — a bare variable — so the argument was used
+/// to bind it. `xs.chain(ys)` has parameter `List<'T>`, which is not a variable,
+/// so it was *checked* instead: passing a `List<Int>` reported "expected
+/// List<'T0>, got List<Int>" rather than binding `'T0` to `Int`.
+///
+/// What that cost is a workaround in real code. `bare-metal-x86/program.lk`
+/// wrote `let line = [0]; line = [];` — build a list with a placeholder element
+/// so the element type is known, then throw the element away — because
+/// `let line = []; line = line.chain(…)` did not type-check.
+#[test]
+fn an_empty_list_learns_its_element_type_from_a_container_argument() {
+    for source in [
+        // The shape the kernel had to work around.
+        "let a = [];
+a = a.chain([1]);
+",
+        // The one that always worked, so a change here cannot have broken it.
+        "let a = [];
+a.push(1);
+",
+        // Learned from the far side, and then used: the binding has to reach
+        // the reads, not merely silence the argument check.
+        "let a = [];
+a = a.chain([1]);
+let b: Int = a.len();
+",
+        // Nested one deeper.
+        "let a = [];
+a = a.chain([[1]]);
+",
+    ] {
+        let program = crate::syntax::parse_program_source(source, Default::default())
+            .unwrap_or_else(|e| panic!("should parse: {source}: {e}"));
+        let mut checker = TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .unwrap_or_else(|e| panic!("should type-check: {source:?}: {e}"));
+    }
+}
+
+/// integer takes its width. `reg + 1` is what driver code is made of. Relaxing
+/// the checker alone was a miscompile for one round — the compiler went on
+/// materialising the literal as an ordinary `Int`, so `255u8 + 1` answered 256
+/// with the type still claiming `u8` — so the literal is now normalised to the
+/// width first, in `adopt_machine_width_for_literal`.
+#[test]
+fn machine_integers_refuse_to_mix() {
+    for (source, expected) in [
+        // A variable of another numeric type: a width mistake.
+        (
+            "let a: u8 = 5;\nlet n = 3;\nlet c = a + n;\n",
+            "machine integers do not mix",
+        ),
+        // A literal that does not fit the width it is used with. The literal
+        // itself is fine — `a + 1` compiles now, at the width — and this is the
+        // range check that comes with having a width at all.
+        (
+            "let a: u8 = 5;\nlet c = a + 300;\n",
+            "out of range for the machine integer",
+        ),
+        // Two machine integers of different widths.
+        (
+            "let a: u8 = 5;\nlet b: u16 = 3;\nlet c = a + b;\n",
+            "machine integer operands must have the same type",
+        ),
+        // A literal that does not fit the width it was given.
+        ("let a: u8 = 300;\n", "out of range"),
+    ] {
+        // Parsed and *type-checked*, which is the path `lk FILE` takes.
+        // `execute_source` skips the checker and simply runs, so a program that
+        // should be refused executes and the test passes for the wrong reason —
+        // this one did, answering 8 for `u8 + Int`.
+        let program = crate::syntax::parse_program_source(source, Default::default())
+            .unwrap_or_else(|e| panic!("should parse: {source}: {e}"));
+        let mut checker = TypeChecker::new();
+        let error = program
+            .type_check(&mut checker)
+            .expect_err(&alloc::format!("should be refused: {source}"))
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} for {source:?}, got {error}"
+        );
+    }
+}
+
+/// Strings order lexicographically. `list.sort()` has always put them in that
+/// order and the executor has always had a string arm, but this rule refused
+/// `<` on them — so the one way to ask which string came first was to sort a
+/// two-element list.
+#[test]
+fn ordering_accepts_two_strings_and_still_rejects_mixed_operands() {
+    let text = |value: &str| Expr::Literal(LiteralVal::from_str(value));
+    let compare = |left, op, right| Expr::Bin(Box::new(left), op, Box::new(right));
+
+    let mut checker = TypeChecker::new();
+    checker
+        .check_expr(&compare(text("a"), BinOp::Lt, text("b")))
+        .expect("two strings order");
+    checker
+        .check_expr(&compare(text("a"), BinOp::Ge, text("b")))
+        .expect("two strings order");
+
+    // Mixed still refuses — and says what the rule is. It used to report "the
+    // left operand must be numeric types", which blames the wrong thing twice:
+    // the left operand here *is* a number, and a String would have been fine.
+    let err = checker
+        .check_expr(&compare(Expr::Literal(LiteralVal::Int(1)), BinOp::Lt, text("a")))
+        .expect_err("Int against String");
+    assert!(err.to_string().contains("compares two of a kind"), "{err}");
+
+    // A type with no ordering at all is told that, rather than being told it is
+    // not a number — and the expected set no longer omits String.
+    let list = Expr::List(vec![Box::new(Expr::Literal(LiteralVal::Int(1)))]);
+    let err = checker
+        .check_expr(&compare(list.clone(), BinOp::Lt, list))
+        .expect_err("lists have no ordering");
+    assert!(err.to_string().contains("has no ordering"), "{err}");
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::vm::analysis::{PerfCallFact, PerfCallTargetKind};
+use crate::vm::analysis::PerfCallFact;
 
 #[test]
 fn execute_module_calls_closure_function() {
@@ -34,7 +34,6 @@ fn execute_module_calls_closure_function() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -90,7 +89,6 @@ fn execute_module_uses_call_shape_fact_for_call_window() {
     );
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -135,7 +133,6 @@ fn execute_module_caches_call_shape_without_static_fact() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -147,15 +144,11 @@ fn execute_module_caches_call_shape_without_static_fact() {
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(module.functions[0].performance.call_site(3).is_none());
-    assert_eq!(
-        result.state.inline_caches.call(3),
-        Some(PerfCallFact {
-            call_base: 0,
-            positional_count: 2,
-            named_count: 0,
-            target_kind: PerfCallTargetKind::Closure,
-        })
-    );
+    // The shape came off the instruction, which is the point: this module has
+    // no call-site fact and the call still ran with the right window. It used
+    // to also be asserted that the *state* cached the shape by pc; that cache
+    // is gone — it was keyed by pc across every function in the module, and
+    // nothing ever read it.
 }
 
 #[test]
@@ -173,7 +166,7 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     let entry = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["y".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("y")],
             ..ConstPool::default()
         },
         code: vec![
@@ -193,7 +186,6 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -208,15 +200,7 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
     assert_eq!(result.state.stack[1], RuntimeVal::Nil);
     assert_eq!(result.state.stack[2], RuntimeVal::Nil);
     assert_eq!(result.state.stack[3], RuntimeVal::Nil);
-    assert_eq!(
-        result.state.inline_caches.call(4),
-        Some(PerfCallFact {
-            call_base: 0,
-            positional_count: 1,
-            named_count: 1,
-            target_kind: PerfCallTargetKind::Closure,
-        })
-    );
+    // As above: no fact, and the named call still placed its arguments.
 }
 
 #[test]
@@ -256,7 +240,6 @@ fn execute_module_calls_closure_with_captured_value() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -313,7 +296,6 @@ fn execute_module_reuses_shared_stack_for_repeated_closure_calls() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -364,7 +346,9 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
             ..ConstPool::default()
         },
         code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
+            // Slot 1: the native. Slot 0 stays the closure the native looks up
+            // through `runtime.globals().first()`.
+            Instr::abx(Opcode::GetGlobal, 0, 1),
             Instr::abx(Opcode::LoadInt, 1, 0),
             Instr::abc(Opcode::Call, 0, 0, 1),
             Instr::abc(Opcode::Return, 0, 1, 0),
@@ -378,12 +362,12 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
     };
     let module = Module {
         functions: vec![entry, callee],
-        natives: vec![NativeEntry {
-            name: "invoke_global_closure".to_string(),
-            arity: 1,
-            function: NativeFunction::FullState(invoke_global_closure),
-        }],
-        globals: vec![GlobalSlot { name: "f".into() }],
+        globals: vec![
+            GlobalSlot { name: "f".into() },
+            GlobalSlot {
+                name: "invoke_global_closure".into(),
+            },
+        ],
         entry: 0,
         type_info: Default::default(),
         type_scope: Default::default(),
@@ -393,9 +377,16 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
         function_index: 1,
         captures: Arc::new(Vec::new()),
     })));
+    // The native as a global too — the shape a loaded module has, rather than
+    // an inline table nothing outside these tests fills.
+    let native = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+        name: Arc::<str>::from("invoke_global_closure"),
+        arity: 1,
+        function: NativeFunction::FullState(invoke_global_closure),
+    })));
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let result = execute_module_with_globals_heap_and_ctx(&module, vec![closure], heap, &mut ctx)
+    let result = execute_module_with_globals_heap_and_ctx(&module, vec![closure, native], heap, &mut ctx)
         .expect("execute native-mediated closure call");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);

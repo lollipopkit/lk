@@ -49,6 +49,49 @@ mod test {
         assert_eq!(parsed, expr);
     }
 
+    /// `{` opens a block where a map cannot be, and a map everywhere it was.
+    ///
+    /// `Expr::Block` is what every `if` arm and every function body is, and it
+    /// could not be *written* in value position: `let x = { let a = 1; a + 1 };`
+    /// was "Invalid map key start: Let", because `{` committed to a map
+    /// literal. A macro whose template needs a temporary has no other spelling.
+    ///
+    /// The map cases are the point of the test: this rule must not take one
+    /// away.
+    #[test]
+    fn a_brace_opens_a_block_only_where_a_map_cannot_be() {
+        let block = |source: &str| {
+            let tokens = Tokenizer::tokenize(source).expect("tokenize");
+            match Parser::new(&tokens).parse().expect(source) {
+                Expr::Block(_) => true,
+                Expr::Map(_) => false,
+                other => panic!("{source} parsed as neither a block nor a map: {other:?}"),
+            }
+        };
+
+        // A statement keyword after the brace: a block, whatever punctuation
+        // follows. `let a: Int = …` puts a colon at depth 0, which the scan
+        // below would read as a map key — hence the keyword rule comes first.
+        assert!(block("{ let a = 1; a + 1 }"));
+        assert!(block("{ let a: Int = 1; a }"));
+        assert!(block("{ return 1; }"));
+        // No keyword: whichever of `:` / `;` / `}` comes first at depth 0.
+        assert!(block("{ f(); 2 }"));
+        assert!(block("{ 7 }"));
+        assert!(block("{ xs[0] }"));
+        // Maps, all of which still parse as maps.
+        assert!(!block("{}"));
+        assert!(!block("{\"a\": 1}"));
+        assert!(!block("{\"a\": {\"b\": 2}}"));
+        assert!(!block("{f(x): 1}"));
+        assert!(!block("{xs[0]: 1}"));
+        // A statement keyword cannot be a map key in the first place —
+        // `{let: 1}` was a syntax error before this rule and still is — so the
+        // keyword check has nothing to disambiguate against.
+        let tokens = Tokenizer::tokenize("{let: 1}").expect("tokenize");
+        assert!(Parser::new(&tokens).parse().is_err());
+    }
+
     #[test]
     fn paren() {
         let r = r#"
@@ -637,6 +680,59 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// Only a bare **name** can start a macro invocation.
+    ///
+    /// The test used to be the open delimiter alone, so `m["a"]![0]` — unwrap a
+    /// map read, then index it — was "a macro invocation reached the parser",
+    /// for a spelling no macro could ever have. The workaround was to
+    /// parenthesise or split the line, for an expression with no ambiguity in
+    /// it.
+    #[test]
+    fn postfix_unwrap_is_not_a_macro_invocation() {
+        let parses = |src: &str| {
+            let tokens = Tokenizer::tokenize(src).expect("tokenize");
+            Parser::new(&tokens).parse().is_ok()
+        };
+        assert!(parses(r#"m["a"]![0]"#), "unwrap a map read, then index it");
+        assert!(parses("xs[0]![0]"), "unwrap a list read, then index it");
+        assert!(parses("m.field![0]"), "unwrap a field read, then index it");
+        assert!(
+            parses("(m!)[0]"),
+            "the parenthesised spelling for unwrapping a bare name"
+        );
+        assert!(
+            parses("m[\"a\"]! + 1"),
+            "a `!` not followed by a delimiter was always fine"
+        );
+
+        // A bare name *is* ambiguous, and the name goes to the macro — with the
+        // message that says so, since expansion runs before the parser.
+        let tokens = Tokenizer::tokenize("nope!()").expect("tokenize");
+        let error = Parser::new(&tokens).parse().expect_err("no such macro");
+        let text = alloc::format!("{error:#}");
+        assert!(text.contains("no macro named `nope`"), "{text}");
+        assert!(text.contains("(nope!)(…)"), "{text}");
+    }
+
+    /// `Expr` is parsed recursively, so its *size* is part of how deep the
+    /// parser can go before the stack runs out — and the depth guard is only
+    /// useful if it trips first.
+    ///
+    /// Adding a `Type` field to `Expr::Closure` by value (a large enum, inline)
+    /// grew every parse frame enough that
+    /// `deeply_nested_match_arms_error_instead_of_overflowing_the_stack` started
+    /// aborting instead of erroring. Boxing fixed it; this says so out loud, so
+    /// the next field either stays small or is a deliberate decision about the
+    /// depth bound rather than a surprise crash.
+    #[test]
+    fn the_expression_node_stays_small_enough_to_recurse_over() {
+        let size = core::mem::size_of::<crate::expr::Expr>();
+        assert!(
+            size <= 80,
+            "Expr grew to {size} bytes; box the new field or re-tune the parser's depth guard"
+        );
+    }
+
     /// A `match` value is parsed by its own `Parser`; without inheriting the
     /// budget, nesting there would get a fresh allowance each level.
     #[test]
@@ -674,7 +770,7 @@ mod test {
             panic!("unsafe should wrap a block");
         };
         assert!(
-            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr(_))),
+            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr { .. })),
             "the tail must stay an expression, not become a return: {statements:?}"
         );
     }
@@ -759,5 +855,72 @@ mod test {
             Parser::new_with_spans(&tokens, &spans).parse().is_err(),
             "`1 < < 3` must not parse as a shift"
         );
+    }
+
+    /// Macro expansion runs before parsing, so a `name!(…)` that reaches the
+    /// parser is one no macro answered. It used to leave the `!` unconsumed and
+    /// report "Unexpected tokens at end (found Not)" — a token the program does
+    /// not contain, and no mention of macros at all.
+    #[test]
+    fn an_undefined_macro_says_so() {
+        for source in ["nope!();", "let x = nope!();", "println(nope!());", "let y = nope![1];"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let error = crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .expect_err("no macro named `nope`");
+            let text = format!("{error:#}");
+            assert!(text.contains("no macro named `nope`"), "{source} → {text}");
+        }
+    }
+
+    /// A parenthesised comma says the language has no tuple literal, and what
+    /// to write instead.
+    ///
+    /// `(1, 2)` is what somebody coming from Python or Rust writes first. The
+    /// message was `Expecting ')', found Comma` — true, and no help at all:
+    /// there is a `Tuple<A, B>` *type* in this language, so "no tuples" is not
+    /// the answer either. The value it describes is a list.
+    #[test]
+    fn a_parenthesised_comma_names_the_missing_tuple_literal() {
+        for source in ["let t = (1, 2);", "f((1, 2));", "return (a, b);"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let error = crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .expect_err("there is no tuple literal");
+            let text = format!("{error:#}");
+            assert!(text.contains("there is no tuple literal"), "{source} → {text}");
+            assert!(text.contains("`[a, b]`"), "{source} → {text}");
+        }
+
+        // An unbalanced parenthesis that is *not* a comma keeps the plain
+        // report — the hint is about one mistake, not about every `)`.
+        let tokens = crate::token::Tokenizer::tokenize("let t = (1;").expect("tokenize");
+        let error = crate::stmt::StmtParser::new(&tokens)
+            .parse_program()
+            .expect_err("unbalanced");
+        let text = format!("{error:#}");
+        assert!(text.contains("Expecting ')'"), "{text}");
+    }
+
+    /// `try` may start a container element, like the other block expressions.
+    ///
+    /// It became an expression in 2026-07, and `let x = try …`, `f(try …)` and
+    /// `return try …` all took it — but a list element and a map value are
+    /// decided by their own start-token list, and `Token::Try` was not on it.
+    /// So the one place a fallible value is most often *collected* was the one
+    /// place it could not be written.
+    #[test]
+    fn try_may_start_a_container_element() {
+        for source in [
+            "let xs = [try { 1 } catch e { 0 }];",
+            "let m = {\"k\": try { 1 } catch e { 0 }};",
+            "let s = Set([try { 1 } catch e { 0 }]);",
+            "let xs = [1, try { 2 } catch e { 0 }, 3];",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            crate::stmt::StmtParser::new(&tokens)
+                .parse_program()
+                .unwrap_or_else(|error| panic!("{source} → {error:#}"));
+        }
     }
 }

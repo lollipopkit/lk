@@ -17,7 +17,6 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
 
 use anyhow::{Result, anyhow};
 use lk_core::{
@@ -26,7 +25,6 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::runtime_display_value;
 
 /// Where `print`/`println` go. A plain `fn` pointer rather than a closure so
 /// the slot is `const`-initialisable and needs no allocation before `main`.
@@ -67,15 +65,13 @@ const BARE_MODULES: &[fn(&mut ModuleRegistry) -> Result<()>] = &[
     lk_stdlib_iter::register,
     #[cfg(feature = "math")]
     lk_stdlib_math::register,
-    #[cfg(feature = "slice")]
-    lk_stdlib_slice::register,
     #[cfg(feature = "string")]
     lk_stdlib_string::register,
 ];
 
 /// Modules that exist in LK but cannot be backed by anything on bare metal.
 /// Kept explicit so the error names the reason rather than the symptom.
-const UNSUPPORTED_MODULES: &[&str] = &[
+pub const UNSUPPORTED_MODULES: &[&str] = &[
     "chan", "datetime", "env", "fs", "http", "io", "net", "os", "path", "process", "random", "regex", "stream", "task",
     "time", "uuid",
 ];
@@ -97,8 +93,54 @@ pub fn register_bare_stdlib_globals(registry: &mut ModuleRegistry) {
             full_state "panic" => panic, NativeEntry::VARIADIC,
             full_state "assert" => assert, NativeEntry::VARIADIC,
             full_state "assert_eq" => assert_eq, NativeEntry::VARIADIC,
+            full_state "assert_ne" => assert_ne, NativeEntry::VARIADIC,
+            // `error`, which is what a `catch` catches.
+            //
+            // Not a module: a host may leave `fs` out and a program importing it
+            // is told so, by name. This is a global the language's own error
+            // handling is written in terms of, and without it every
+            // `try { error(…) } catch` that `bare-metal-x86`'s interpreter ran
+            // failed at run time — after the program had been parsed and
+            // accepted — with a stage code that says only "it raised".
+            full_state "error" => lk_stdlib_common::language::error, NativeEntry::VARIADIC,
+            // Present and refusing, rather than absent — see `unavailable`.
+            full_state "spawn" => spawn, 1,
+            full_state "chan" => chan, NativeEntry::VARIADIC,
+            full_state "send" => send, 2,
+            full_state "recv" => recv, 1,
         ],
     );
+}
+
+/// The concurrency globals, present and refusing by name.
+///
+/// `chan` is already in `UNSUPPORTED_MODULES`, so `use chan` answers "not
+/// available on bare metal". `spawn(f)` answered "undefined function `spawn`" —
+/// the same absence, reported as if the program had a typo. There is one task on
+/// this host and no way to make a second, so these cannot work; what they can do
+/// is say which of the two problems the reader has.
+fn unavailable(name: &str) -> Result<RuntimeVal> {
+    Err(anyhow!("`{name}` is not available on bare metal: there is one task"))
+}
+
+fn spawn(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("spawn")
+}
+
+fn chan(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("chan")
+}
+
+fn send(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("send")
+}
+
+fn recv(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    unavailable("recv")
+}
+
+fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    lk_stdlib_common::language::assert_ne(args, runtime)
 }
 
 pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
@@ -112,122 +154,31 @@ pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()>
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    emit(&format_variadic(args.as_slice(), runtime)?);
+    emit(&lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
 fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut text = format_variadic(args.as_slice(), runtime)?;
+    let mut text = lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?;
     text.push('\n');
     emit(&text);
     Ok(RuntimeVal::Nil)
 }
 
 fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let message = if args.is_empty() {
-        "panic".to_string()
-    } else {
-        format_variadic(args.as_slice(), runtime)?
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::panic(args, runtime)
 }
 
+// `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an
+// assertion is arithmetic on values, and only `print` needs to know where
+// output goes. They were written out three times and had drifted three ways;
+// see `lk_stdlib_common::language`.
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some(condition) = values.first() else {
-        return Err(anyhow!("assert expects at least 1 argument"));
-    };
-    if truthy(condition) {
-        return Ok(RuntimeVal::Nil);
-    }
-    match values.get(1) {
-        Some(message) => Err(anyhow!("assertion failed: {}", display(message, runtime)?)),
-        None => Err(anyhow!("assertion failed")),
-    }
+    lk_stdlib_common::language::assert(args, runtime)
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    if values.len() < 2 {
-        return Err(anyhow!("assert_eq expects at least 2 arguments"));
-    }
-    if values[0] == values[1] {
-        return Ok(RuntimeVal::Nil);
-    }
-    let actual = display(&values[0], runtime)?;
-    let expected = display(&values[1], runtime)?;
-    Err(anyhow!("assertion failed: expected {expected}, got {actual}"))
-}
-
-fn truthy(value: &RuntimeVal) -> bool {
-    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
-}
-
-fn display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    runtime_display_value(value, runtime.heap())
-}
-
-/// `println("{} of {}", a, b)`-style formatting: a leading string argument acts
-/// as a template whose `{}` holes consume the rest, and anything left over is
-/// appended space-separated. Without a leading string, all arguments are simply
-/// joined by spaces.
-fn format_variadic(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let Some((first, rest)) = args.split_first() else {
-        return Ok(String::new());
-    };
-
-    let Some(template) = string_maybe(first, runtime)? else {
-        return join_with_spaces(args, runtime);
-    };
-
-    let mut out = String::with_capacity(template.len() + rest.len() * 8);
-    let mut chars = template.chars().peekable();
-    let mut next_arg = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            match rest.get(next_arg) {
-                Some(value) => {
-                    out.push_str(&display(value, runtime)?);
-                    next_arg += 1;
-                }
-                None => out.push_str("{}"),
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    for value in &rest[next_arg.min(rest.len())..] {
-        out.push(' ');
-        out.push_str(&display(value, runtime)?);
-    }
-    Ok(out)
-}
-
-/// A string argument may be inline (`ShortStr`) or on the heap — only short
-/// ones are inline, so matching just `ShortStr` silently fails to treat any
-/// realistic format string as a template.
-fn string_maybe(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
-    Ok(match value {
-        RuntimeVal::ShortStr(value) => Some(value.as_str().to_string()),
-        RuntimeVal::Obj(handle) => match runtime.heap().get(*handle) {
-            Some(lk_core::val::HeapValue::String(value)) => Some(value.to_string()),
-            Some(_) => None,
-            None => return Err(anyhow!("heap object {} out of bounds", handle.index())),
-        },
-        _ => None,
-    })
-}
-
-fn join_with_spaces(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let mut out = String::new();
-    for (index, value) in args.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&display(value, runtime)?);
-    }
-    Ok(out)
+    lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
 #[derive(Debug)]

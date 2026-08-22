@@ -585,15 +585,24 @@ fn is_removable(inst: &Inst) -> bool {
         // follows the ordinary rule and may be dropped when nothing reads it.
         Inst::CallIndirect { .. } => false,
         Inst::SymbolAddr { .. } => true,
+        // A device access is the effect. A read whose result nothing uses is
+        // still a read — of a UART's receive register it is what empties the
+        // FIFO — so neither of these is ever dead.
+        Inst::VolatileLoad { .. } | Inst::VolatileStore { .. } => false,
+        // Running the body is the point; its outcome flag being unread does not
+        // make the call dead.
+        Inst::TryRegionCall { .. } => false,
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
         Inst::Const { .. }
         | Inst::Cmp { .. }
+        | Inst::BitsToFloat { .. }
         | Inst::IntToFloat { .. }
         | Inst::FloatToInt { .. }
         | Inst::ZextBool { .. }
         | Inst::IntTruncate { .. }
         | Inst::Not { .. }
+        | Inst::FloatNeg { .. }
         | Inst::BoolAnd { .. }
         | Inst::MaybePresent { .. }
         | Inst::MaybeValue { .. }
@@ -602,6 +611,8 @@ fn is_removable(inst: &Inst) -> bool {
         // Container reads with `Maybe` semantics never abort (a missing
         // element is `present = 0`), so a dead read is genuinely dead.
         | Inst::ListGetMaybe { .. }
+        | Inst::SliceGetMaybe { .. }
+        | Inst::StrByteAtMaybe { .. }
         | Inst::ListGetMaybeF64 { .. }
         | Inst::ListGetMaybeStr { .. }
         | Inst::MapGetMaybe { .. }
@@ -612,11 +623,13 @@ fn is_removable(inst: &Inst) -> bool {
         // A `Maybe` unwrap aborts when the element was absent — dropping it
         // would turn the VM's halt into a silent continue.
         Inst::UnwrapMaybeI64 { .. } | Inst::UnwrapMaybeF64 { .. } | Inst::UnwrapMaybeStr { .. } => false,
+        // Pure: they only take apart and put back together values they were
+        // handed.
+        Inst::CarrierWord { .. } | Inst::CarrierFromParts { .. } => true,
         // Calls stay even when `Pure`: an unused aborting call (`socket.addr`
         // with a bad port) is observable precisely by aborting.
         Inst::Call { .. }
         | Inst::CallFn { .. }
-        | Inst::TryCall { .. }
         | Inst::TraitDispatch { .. }
         | Inst::CallVm { .. }
         | Inst::PrintStr { .. }
@@ -630,6 +643,9 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
         Inst::CallExtern { args, .. } => args.iter_mut().collect(),
         Inst::SymbolAddr { .. } => vec![],
+        Inst::VolatileLoad { addr, .. } => vec![addr],
+        Inst::VolatileStore { addr, value, .. } => vec![addr, value],
+        Inst::TryRegionCall { args, .. } => args.iter_mut().collect(),
         Inst::CallIndirect { callee, args, .. } => {
             let mut values: Vec<&mut ValueId> = vec![callee];
             values.extend(args.iter_mut());
@@ -639,11 +655,13 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }
         | Inst::BoolAnd { lhs, rhs, .. } => vec![lhs, rhs],
-        Inst::IntToFloat { src, .. }
+        Inst::BitsToFloat { src, .. }
+        | Inst::IntToFloat { src, .. }
         | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
+        | Inst::FloatNeg { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::MaybeValue { src, .. }
         | Inst::MaybeWrap { src, .. }
@@ -651,12 +669,13 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::UnwrapMaybeF64 { src, .. }
         | Inst::UnwrapMaybeStr { src, .. }
         | Inst::GlobalSet { src, .. } => vec![src],
-        Inst::Call { args, .. }
-        | Inst::CallFn { args, .. }
-        | Inst::TryCall { args, .. }
-        | Inst::CallVm { args, .. } => args.iter_mut().collect(),
+        Inst::Call { args, .. } | Inst::CallFn { args, .. } | Inst::CallVm { args, .. } => args.iter_mut().collect(),
+        Inst::CarrierWord { src, .. } => vec![src],
+        Inst::CarrierFromParts { lo, hi, .. } => vec![lo, hi],
         Inst::TraitDispatch { self_arg, .. } => vec![self_arg],
         Inst::ListGetMaybe { handle, index, .. }
+        | Inst::SliceGetMaybe { handle, index, .. }
+        | Inst::StrByteAtMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => vec![handle, index],
         Inst::MapGetMaybe { handle, key, .. }

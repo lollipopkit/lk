@@ -32,7 +32,6 @@ mod seed;
 use float::FloatExt as _;
 
 use anyhow::{Result, anyhow, bail};
-use lk_core::compat::collections::HashSet;
 use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeRuntime},
@@ -53,7 +52,7 @@ pub struct MathModule;
 #[stdlib_value("epsilon" => RuntimeVal::Float(f64::EPSILON))]
 impl MathModule {
     #[stdlib_export(params(value: Int, min?: Int = 0, max?: Int = 100), named(min, max), returns = Int)]
-    fn clamp(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    fn clamp(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
             bail!("clamp() requires at least the value argument");
@@ -62,30 +61,23 @@ impl MathModule {
             bail!("clamp() takes at most 3 positional arguments: value, min, max");
         }
 
+        // `min:` / `max:` never reach here as *named* arguments: the
+        // `named(min, max)` declaration makes the export wrapper fold them
+        // into their positional slots first, so this reads one shape. The
+        // wrapper is also what rejects a duplicate or an unknown name — the
+        // hand-written loop that used to do it here was the only copy, so
+        // every other `named(...)` function was silently accepting both.
         let value = int_arg(&pos[0], "clamp() first argument (value)")?;
-        let mut min = if pos.len() >= 2 {
+        let min = if pos.len() >= 2 {
             int_arg(&pos[1], "clamp() second argument (min)")?
         } else {
             0
         };
-        let mut max = if pos.len() >= 3 {
+        let max = if pos.len() >= 3 {
             int_arg(&pos[2], "clamp() third argument (max)")?
         } else {
             100
         };
-
-        let mut seen = HashSet::with_capacity(args.named_len());
-        args.try_for_each_named(runtime.heap(), |name, value| {
-            if !seen.insert(name.to_string()) {
-                bail!("clamp() received duplicate named argument '{}'", name);
-            }
-            match name {
-                "min" => min = int_arg(value, "clamp() named 'min'")?,
-                "max" => max = int_arg(value, "clamp() named 'max'")?,
-                other => bail!("clamp() does not accept named argument '{}'", other),
-            }
-            Ok(())
-        })?;
 
         if min > max {
             bail!("clamp() requires 'min' to be less than or equal to 'max'");
@@ -102,7 +94,11 @@ impl MathModule {
     #[stdlib_export(params(value: Int | Float), returns = Int | Float)]
     fn abs(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         match args.as_slice()[0] {
-            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.abs())),
+            // Wrapping, because that is the language's rule for Int overflow
+            // (`docs/semantics.md`) and `abs(Int::MIN)` is exactly that: there
+            // is no positive `Int::MIN`. `i64::abs` panicked instead, so
+            // `math.abs` on one value took the process down.
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.wrapping_abs())),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.abs())),
             _ => bail!("abs() argument must be a number"),
         }
@@ -156,7 +152,7 @@ impl MathModule {
         unary_float(args, "atan()", f64::atan)
     }
 
-    #[stdlib_export(name = "atan2", params(y: Number, x: Number), returns = Float)]
+    #[stdlib_export(name = "atan2", params(y: Number, x: Number), named(x), returns = Float)]
     fn atan2_(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let y = number_arg(&values[0], "atan2() first argument")?;
@@ -184,7 +180,7 @@ impl MathModule {
         unary_float(args, "exp()", f64::exp)
     }
 
-    #[stdlib_export(params(base: Number, exponent: Number), returns = Float)]
+    #[stdlib_export(params(base: Number, exponent: Number), named(exponent), returns = Float)]
     fn pow(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let base = number_arg(&values[0], "pow() first argument")?;

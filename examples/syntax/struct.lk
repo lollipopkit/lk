@@ -14,4 +14,87 @@ println("u2.id={}, u2.name={}, u2.active={}", u2.id, u2.name, u2.active);
 let u3 = User { id: 3, name: "Bob", active: true };
 println("u3.id={}, u3.name={}, u3.active={}", u3.id, u3.name, u3.active);
 
+// Struct update (`{ ..base, field: value }`) keeps the *declared* field order,
+// like every other way of building the type. It printed the hash map's own
+// order instead, so the same struct rendered two ways depending on which syntax
+// built it — and the interpreter and the compiled build disagreed about which.
+// Six fields, deliberately: with fewer, the two orders can coincide.
+struct Reading { zebra: Int, apple: Int, mango: Int, kiwi: Int, pear: Int, fig: Int }
+let base = Reading { zebra: 1, apple: 2, mango: 3, kiwi: 4, pear: 5, fig: 6 };
+let shown = "{}".format(base);
+assert(shown == "Reading{zebra:1,apple:2,mango:3,kiwi:4,pear:5,fig:6}");
+let bumped = Reading { ..base, apple: 99 };
+assert("{}".format(bumped) == "Reading{zebra:1,apple:99,mango:3,kiwi:4,pear:5,fig:6}");
+assert(bumped.apple == 99);
+assert(bumped.zebra == 1);
+
 return;
+
+// A declared struct's fields are an ordered list, and a read of one is a read
+// at a known position.
+//
+// The storage is a string-keyed map, so a field read used to hash the name on
+// every access — measured at ~107ns each, which was the entire cost of a loop
+// that reads a field. The declaration order travels with the module now, so
+// the read is an index; the name still travels along and is compared, because
+// an instance built somewhere the lowering did not see may store its fields in
+// another order.
+struct Sample { at: Int, value: Float, sensor: String }
+
+fn newer(a: Sample, b: Sample) -> Int {
+    if a.at > b.at { return a.at; }
+    return b.at;
+}
+let first = Sample { at: 10, value: 1.5, sensor: "a" };
+let second = Sample { at: 4, value: 2.5, sensor: "b" };
+assert(newer(first, second) == 10);
+assert(first.value + second.value == 4.0);
+assert(first.sensor + second.sensor == "ab");
+
+// Through a list of them, where the struct identity has to survive the element
+// read for the position to be known.
+let readings = [first, second];
+assert(readings[0].at == 10);
+assert(readings[1].at + 1 == 5);
+let total = 0;
+for r in readings { total = total + r.at; }
+assert(total == 14);
+
+// A declared field type is enforced, not decorative.
+//
+// The type checker catches every store it can type. It cannot type a store
+// through an untyped binding — `fn poison(p) { p["v"] = "s"; }` — and without
+// a runtime check a `struct Sample { at: Int }` could hold a String, which
+// makes the declaration a comment. Every way of writing a field is checked:
+// the two store spellings, the two construction spellings.
+struct Counter { n: Int, label: String?, ratio: Float }
+
+fn store_by_index(c, v) { c["n"] = v; }
+fn store_by_dot(c, v) { c.n = v; }
+fn build(v) { let made = Counter { n: v, label: nil, ratio: 1.5 }; }
+fn spread(fields) { let made = Counter { ..fields }; }
+
+let counter = Counter { n: 1, label: nil, ratio: 0.5 };
+
+// An `Int` satisfies a `Float` field and stays an `Int`: this language never
+// coerces at a typed boundary, so the value keeps its own type.
+store_by_dot(counter, 7);
+assert(counter.n == 7);
+counter.ratio = 2;
+assert(counter.ratio == 2);
+assert(typeof(counter.ratio) == "Int");
+
+// A nullable field takes nil; a non-nullable one does not.
+counter.label = nil;
+assert(counter.label == nil);
+
+let refused = [];
+try { store_by_index(counter, "x"); } catch e { refused.push("{}".format(e)); }
+try { store_by_dot(counter, "x"); } catch e { refused.push("{}".format(e)); }
+try { build("x"); } catch e { refused.push("{}".format(e)); }
+try { spread({"n": "x", "label": nil, "ratio": 1.0}); } catch e { refused.push("{}".format(e)); }
+assert(refused.len() == 4);
+for message in refused {
+    assert(message == "field `n` of Counter is declared Int, and a String cannot be stored in it");
+}
+assert(counter.n == 7);

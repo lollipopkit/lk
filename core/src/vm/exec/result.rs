@@ -1,5 +1,6 @@
-use super::format::format_runtime_val;
+use super::display::runtime_display_value;
 use super::*;
+use crate::util::value_map::value_map_new;
 
 impl ProgramResult {
     pub fn first_return(&self) -> &RuntimeVal {
@@ -8,7 +9,10 @@ impl ProgramResult {
 
     pub fn first_return_list(&self) -> Result<&TypedList> {
         let RuntimeVal::Obj(handle) = self.first_return() else {
-            bail!("first return is {:?}, expected list object", self.first_return().kind());
+            bail!(
+                "first return is {}, expected list object",
+                self.first_return().type_name_in(&self.state.heap)
+            );
         };
         match self.state.heap.get(*handle) {
             Some(HeapValue::List(values)) => Ok(values),
@@ -19,7 +23,10 @@ impl ProgramResult {
 
     pub fn first_return_map(&self) -> Result<&TypedMap> {
         let RuntimeVal::Obj(handle) = self.first_return() else {
-            bail!("first return is {:?}, expected map object", self.first_return().kind());
+            bail!(
+                "first return is {}, expected map object",
+                self.first_return().type_name_in(&self.state.heap)
+            );
         };
         match self.state.heap.get(*handle) {
             Some(HeapValue::Map(values)) => Ok(values),
@@ -30,17 +37,20 @@ impl ProgramResult {
 
     pub fn into_exports(self) -> RuntimeExport {
         let mut state = self.state;
-        let mut entries = fast_hash_map_new();
+        let mut entries = value_map_new();
         for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
-            entries.insert(RuntimeMapKey::String(slot.name.clone()), *value);
+            entries.insert(RuntimeMapKey::from_shared(slot.name.clone()), *value);
         }
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
+        let mut module_state = RuntimeModuleState::new(state.heap, state.globals);
+        // The map just allocated is this module's value, and it lives in this
+        // module's heap with nothing else pointing at it. Without saying so, a
+        // collection driven from anywhere but `collect_runtime_export` frees it
+        // — see `RuntimeModuleState::export_root`.
+        module_state.set_export_root(value);
         RuntimeExport::new(
             value,
-            Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
-                state.heap,
-                state.globals,
-            ))),
+            Arc::new(crate::compat::sync::Mutex::new(module_state)),
             self.module,
         )
     }
@@ -59,6 +69,6 @@ impl ProgramResult {
 
     /// Format the first return value as a human-readable string for REPL/CLI display.
     pub fn display_first_return(&self) -> String {
-        format_runtime_val(self.first_return(), &self.state.heap, 0)
+        runtime_display_value(self.first_return(), &self.state.heap).unwrap_or_else(|_| "<invalid ref>".to_string())
     }
 }

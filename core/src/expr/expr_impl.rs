@@ -68,6 +68,79 @@ pub enum Pattern {
         inclusive: bool,
     },
 }
+
+/// The first name a binder declares twice, if any.
+///
+/// A construct that binds one name twice can never read the first binding: the
+/// second shadows it before anything runs, so `fn f(a: Int, a: Int)` ignores
+/// its first argument and `[a, a]` matches *any* two elements rather than two
+/// equal ones — the reading somebody arrives with from a language whose
+/// patterns are non-linear.
+///
+/// `Or` alternatives are walked one at a time on purpose: `A(x) | B(x)` binds
+/// the same name in every arm deliberately, and that is the only way an `Or`
+/// binds anything at all.
+pub(crate) fn duplicate_binding(pattern: &Pattern) -> Option<String> {
+    fn note(name: &str, seen: &mut Vec<String>) -> Option<String> {
+        if seen.iter().any(|s| s == name) {
+            return Some(name.to_string());
+        }
+        seen.push(name.to_string());
+        None
+    }
+
+    fn walk(pattern: &Pattern, seen: &mut Vec<String>) -> Option<String> {
+        match pattern {
+            Pattern::Variable(name) => note(name, seen),
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => None,
+            Pattern::List { patterns, rest } => {
+                for p in patterns {
+                    if let Some(dup) = walk(p, seen) {
+                        return Some(dup);
+                    }
+                }
+                rest.as_ref().and_then(|r| note(r, seen))
+            }
+            Pattern::Map { patterns, rest } => {
+                for (_key, p) in patterns {
+                    if let Some(dup) = walk(p, seen) {
+                        return Some(dup);
+                    }
+                }
+                rest.as_ref().and_then(|r| note(r, seen))
+            }
+            Pattern::Or(alts) => alts.iter().find_map(|alt| walk(alt, &mut seen.clone())),
+            Pattern::Guard { pattern, .. } => walk(pattern, seen),
+        }
+    }
+
+    walk(pattern, &mut Vec::new())
+}
+
+impl Pattern {
+    /// Whether this pattern matches every value, with no guard to make it
+    /// conditional.
+    ///
+    /// Two questions the type checker asks are the same question, so they
+    /// share one answer: whether a `match` can fall through all its arms
+    /// (which is why its type is `T?` and not `T`), and whether a later arm is
+    /// dead code. Answering them separately lets a pattern be total for one
+    /// and partial for the other.
+    ///
+    /// The VM compiler recognizes a *narrower* set — `Compiler::bind_catch_all`
+    /// takes only `Wildcard` and `Variable`, leaving an or-pattern to its
+    /// ordinary test — so it is conservative exactly where this is permissive,
+    /// which is the safe direction: it emits a fallthrough the checker has
+    /// proven unreachable, rather than dropping one that is not.
+    pub fn is_unguarded_catch_all(&self) -> bool {
+        match self {
+            Pattern::Wildcard | Pattern::Variable(_) => true,
+            // An or-pattern is total when any alternative is.
+            Pattern::Or(alternatives) => alternatives.iter().any(Pattern::is_unguarded_catch_all),
+            _ => false,
+        }
+    }
+}
 /// Match arm: pattern => expression
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
@@ -159,9 +232,25 @@ pub enum Expr {
     },
     /// Template string: `Hello ${name}!`
     TemplateString(Vec<TemplateStringPart>),
-    /// Closure: |param1, param2| expr
+    /// Closure: `|param1, param2| expr`, optionally annotated —
+    /// `|x: Int, y: Int| -> Int { … }`.
     Closure {
         params: Vec<String>,
+        /// Declared parameter types, positionally; `None` where unannotated.
+        /// Always the same length as `params`.
+        ///
+        /// A lambda used to be the one callable in the language whose types
+        /// could not be written down, even though `Type::Function` has always
+        /// had both halves — so a lambda's parameter type could only ever be
+        /// *guessed* from a call site.
+        param_types: Vec<Option<crate::val::Type>>,
+        /// Declared return type, when written.
+        ///
+        /// Boxed: `Type` is a large enum, and `Expr` is parsed recursively —
+        /// inlining it here grew every parse frame enough to overflow the stack
+        /// at a nesting depth the parser's own guard used to catch first
+        /// (`deeply_nested_match_arms_error_instead_of_overflowing_the_stack`).
+        return_type: Option<Box<crate::val::Type>>,
         body: Box<Expr>,
     },
     /// Expression-level block, primarily for multi-statement closure bodies.
@@ -170,6 +259,26 @@ pub enum Expr {
     Match {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
+    },
+    /// `try { body } catch name { handler }` — a protected region, and a value.
+    ///
+    /// One node for both positions. It used to be a statement, so
+    /// `let r = try { … } catch e { … };` was a syntax error while `if` and
+    /// `match` were both expressions. In statement position it is a
+    /// `Stmt::Expr` of this and the value is discarded — which is how `if` and
+    /// `match` sit there too, so it needs no second node.
+    ///
+    /// A real node rather than parse-time sugar, for the reason it stopped
+    /// being sugar in the first place: rewritten as
+    /// `let [ok, e] = try$call(|| { body })`, every later stage saw a closure
+    /// and a destructuring `let` instead of a protected region, and an
+    /// annotated local assigned inside the body came back out as a fresh type
+    /// variable.
+    Try {
+        body: Vec<Box<crate::stmt::Stmt>>,
+        /// The name the handler binds the caught error to.
+        catch_var: String,
+        handler: Vec<Box<crate::stmt::Stmt>>,
     },
     Literal(LiteralVal),
 }
@@ -270,10 +379,10 @@ impl Expr {
                     }
                 }
             }
-            Expr::Closure { params: _, body } => {
+            Expr::Closure { params: _, body, .. } => {
                 body.collect_ctx_names(names);
             }
-            Expr::Block(_) => {}
+            Expr::Block(_) | Expr::Try { .. } => {}
             Expr::Match { value, arms } => {
                 value.collect_ctx_names(names);
                 for arm in arms {
@@ -293,7 +402,26 @@ impl Expr {
             Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
     }
-    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
+    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants.
+    ///
+    /// This runs in the **parser**, before name resolution and before the type
+    /// checker. So it may *compute*, but it may not *delete*: a fold that
+    /// selects one of two operands throws the other one away, and whatever was
+    /// in there is then never checked by anybody. `let x = if false {
+    /// undefined_fn() } else { 1 };` and `let x = false && undefined_fn();`
+    /// both passed `lk check` for exactly that reason — the call was gone
+    /// before the checker ran.
+    ///
+    /// The rule is therefore: **a selecting fold is allowed only when the
+    /// discarded side is already a literal**, since a literal has nothing left
+    /// to check. Eliminating a branch on a constant condition is an
+    /// optimization, and optimizations belong after the front end — the VM
+    /// compiler sees the same constant and the AOT backend folds it again.
+    ///
+    /// The other half of the same mistake is folding without looking at the
+    /// operator: `-true` used to fold to `false` and print it, while `-b` on a
+    /// `Bool` variable is rejected. That is a wrong answer, not a missing
+    /// diagnostic.
     pub(crate) fn fold_constants(self) -> Expr {
         match self {
             Expr::Literal(_) => self, // Constant value, return directly
@@ -322,15 +450,34 @@ impl Expr {
                 let t = (*t_box).fold_constants();
                 let e = (*e_box).fold_constants();
                 if let Expr::Literal(LiteralVal::Bool(b)) = c {
-                    return if b { t } else { e };
+                    // Only when the arm being dropped is itself a literal —
+                    // see the note on this method.
+                    let discarded = if b { &e } else { &t };
+                    if matches!(discarded, Expr::Literal(_)) {
+                        return if b { t } else { e };
+                    }
                 }
                 Expr::Conditional(Box::new(c), Box::new(t), Box::new(e))
             }
             Expr::Unary(op, expr_box) => {
                 let inner = (*expr_box).fold_constants();
-                // Constant folding: !expr, if expr is boolean constant then calculate result
-                if let Expr::Literal(LiteralVal::Bool(b)) = &inner {
-                    return Expr::Literal(LiteralVal::Bool(!*b));
+                // The operator decides what folds. `!` on a `Bool` and `-` on a
+                // number; every other pairing is a type error the checker owns.
+                match (&op, &inner) {
+                    (UnaryOp::Not, Expr::Literal(LiteralVal::Bool(b))) => {
+                        return Expr::Literal(LiteralVal::Bool(!*b));
+                    }
+                    // `checked_neg`, because `-i64::MIN` has no answer and the
+                    // executor raises there rather than wrapping.
+                    (UnaryOp::Neg, Expr::Literal(LiteralVal::Int(i))) => {
+                        if let Some(negated) = i.checked_neg() {
+                            return Expr::Literal(LiteralVal::Int(negated));
+                        }
+                    }
+                    (UnaryOp::Neg, Expr::Literal(LiteralVal::Float(f))) => {
+                        return Expr::Literal(LiteralVal::Float(-*f));
+                    }
+                    _ => {}
                 }
                 Expr::Unary(op, Box::new(inner))
             }
@@ -340,18 +487,13 @@ impl Expr {
             Expr::Cast(expr_box, ty) => Expr::Cast(Box::new((*expr_box).fold_constants()), ty),
             // The marker survives folding; it is what the checker reads.
             Expr::Unsafe(expr_box) => Expr::Unsafe(Box::new((*expr_box).fold_constants())),
+            // `&&` and `||` do not short-circuit *here*. Dropping the right
+            // operand because the left is a constant hides it from the type
+            // checker; the executor still short-circuits at run time, which is
+            // the only place short-circuiting is observable.
             Expr::And(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                // Short-circuit constant false: left side constant false, then entire AND is constant false
-                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
-                    return Expr::Literal(LiteralVal::Bool(false));
-                }
                 let e2 = (*e2_box).fold_constants();
-                // Short-circuit constant true: left side constant true, then return right side expression result
-                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
-                    return e2;
-                }
-                // Both folded, if both are boolean constants then can further fold
                 if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
                     return Expr::Literal(LiteralVal::Bool(*b1 && *b2));
                 }
@@ -359,15 +501,7 @@ impl Expr {
             }
             Expr::Or(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
-                    // Left side constant true, OR expression is constant true
-                    return Expr::Literal(LiteralVal::Bool(true));
-                }
                 let e2 = (*e2_box).fold_constants();
-                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
-                    // Left side constant false, OR result depends on right side
-                    return e2;
-                }
                 if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
                     return Expr::Literal(LiteralVal::Bool(*b1 || *b2));
                 }
@@ -375,15 +509,25 @@ impl Expr {
             }
             Expr::NullishCoalescing(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                // If left side is constant not nil, return it
-                if let Expr::Literal(v) = &e1
-                    && *v != LiteralVal::Nil
-                {
-                    return e1;
-                }
                 let e2 = (*e2_box).fold_constants();
-                // If left side is constant nil, return right side
-                if let Expr::Literal(LiteralVal::Nil) = e1 {
+                // `nil ?? e` discards only the literal `nil`, so it folds.
+                //
+                // The other direction does **not**, even with two literals. It
+                // discards `e` — and `??` requires its two sides to unify, so
+                // discarding one hides a type error that only the checker can
+                // see:
+                //
+                // ```lk
+                // let a = 7 ?? "ab";        // folded to 7
+                // let b = maybe_int() ?? "ab";   // Cannot unify Int with String
+                // ```
+                //
+                // That was fourteen of the operator/type pairs in the fold-vs-run
+                // differential, and every one of them the same shape as the
+                // string-repeat fold: the folder deciding a typing question it
+                // has no business deciding. Folding `7 ?? 0` bought one branch
+                // at run time in code nobody writes.
+                if let Expr::Literal(LiteralVal::Nil) = &e1 {
                     return e2;
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
@@ -524,14 +668,30 @@ impl Expr {
                 }
                 Expr::TemplateString(folded_parts)
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure {
+                params,
+                param_types,
+                return_type,
+                body,
+            } => {
                 // Closures cannot be folded at compile time due to environment capture
                 Expr::Closure {
                     params: params.clone(),
+                    param_types: param_types.clone(),
+                    return_type: return_type.clone(),
                     body: Box::new(body.fold_constants()),
                 }
             }
             Expr::Block(statements) => Expr::Block(statements),
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => Expr::Try {
+                body,
+                catch_var,
+                handler,
+            },
             Expr::Match { value, arms } => {
                 // Match expressions cannot be fully folded without runtime evaluation
                 // but we can fold the value and arm bodies
@@ -660,11 +820,12 @@ impl Display for Expr {
                 }
                 write!(f, "\"")
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 let params_str = params.join(", ");
                 write!(f, "|{}| {}", params_str, body)
             }
             Expr::Block(_) => write!(f, "{{ ... }}"),
+            Expr::Try { catch_var, .. } => write!(f, "try {{ ... }} catch {catch_var} {{ ... }}"),
             Expr::Match { value, arms } => {
                 write!(f, "match {} {{", value)?;
                 for (i, arm) in arms.iter().enumerate() {
@@ -690,10 +851,23 @@ impl Display for Expr {
     }
 }
 
+/// Folding is a *shortcut*, so every one of these must answer exactly what the
+/// executors answer — the fold happens before the type checker even runs, so a
+/// rule that only exists here is a rule no diagnostic can reach.
+///
+/// Two ways that went wrong, both fixed below:
+///
+/// - **Overflow.** These used the bare operators. Int arithmetic wraps in both
+///   executors (`i64::MAX + 1` is `i64::MIN`, `i64::MIN % -1` is `0`), but
+///   `a + b` in Rust *panics* in a debug build and wraps in a release one — so
+///   `9223372036854775807 + 1` in a source file crashed the parser with
+///   `attempt to add with overflow`, or folded correctly, depending on which
+///   profile `lk` itself was built with. `wrapping_*` states the rule.
+/// - **Operations the language does not have.** See `fold_literal_mul`.
 fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<LiteralVal> {
     match op {
         BinOp::Add => fold_literal_add(lhs, rhs),
-        BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
+        BinOp::Sub => fold_literal_numeric(lhs, rhs, i64::wrapping_sub, |a, b| a - b),
         BinOp::Mul => fold_literal_mul(lhs, rhs),
         BinOp::Div => fold_literal_div(lhs, rhs),
         BinOp::Mod => fold_literal_mod(lhs, rhs),
@@ -703,7 +877,7 @@ fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<
 
 fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a + b)),
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a.wrapping_add(*b))),
         (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(a + b)),
         (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(a + *b as f64)),
         (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(*a as f64 + b)),
@@ -718,13 +892,17 @@ fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
                 buf.format(*value),
             ))
         }
-        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => {
-            let mut buf = ryu::Buffer::new();
-            Some(LiteralVal::concat_strings(
-                lhs.as_str().expect("checked string"),
-                buf.format(*value),
-            ))
-        }
+        // `to_string`, not `ryu`. A float's rendering is Rust's `Display`
+        // (`docs/semantics.md`), which lkrt is aligned to byte for byte —
+        // `ryu` is a *shortest round-trip* formatter and answers differently:
+        // `3.0` where `Display` says `3`, `1e300` where it says three hundred
+        // digits. Folding used it, so `"" + 1.0e300` and
+        // `let x = 1.0e300; "" + x` were the same expression with two answers,
+        // decided by whether the operand happened to be a literal.
+        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => Some(LiteralVal::concat_strings(
+            lhs.as_str().expect("checked string"),
+            &value.to_string(),
+        )),
         (LiteralVal::Int(value), rhs) if rhs.as_str().is_some() => {
             let mut buf = itoa::Buffer::new();
             Some(LiteralVal::concat_strings(
@@ -732,35 +910,32 @@ fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
                 rhs.as_str().expect("checked string"),
             ))
         }
-        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => {
-            let mut buf = ryu::Buffer::new();
-            Some(LiteralVal::concat_strings(
-                buf.format(*value),
-                rhs.as_str().expect("checked string"),
-            ))
-        }
+        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => Some(LiteralVal::concat_strings(
+            &value.to_string(),
+            rhs.as_str().expect("checked string"),
+        )),
         _ => None,
     }
 }
 
+/// Numeric only — `*` **does not repeat strings** in this language.
+///
+/// This used to fold `"ha" * 3` to `"hahaha"`, while the type checker rejects
+/// `*` on a string with a message naming the operation that does exist
+/// (`text.repeat(count)`). Folding runs before the checker, so which of the two
+/// rules a program met depended on whether the count was a literal:
+///
+/// ```lk
+/// let a = "ha" * 3;      // folded → "hahaha"
+/// let n = 3;
+/// let b = "ha" * n;      // Type Error: `*` does not repeat a string
+/// ```
+///
+/// The checker's rule is the language's rule; this one was a leftover of the
+/// feature the checker removed, and it is what kept three documents claiming
+/// the feature still worked.
 fn fold_literal_mul(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
-    match (lhs, rhs) {
-        (left, LiteralVal::Int(count)) if left.as_str().is_some() => {
-            Some(repeat_literal_string(left.as_str()?, *count))
-        }
-        (LiteralVal::Int(count), right) if right.as_str().is_some() => {
-            Some(repeat_literal_string(right.as_str()?, *count))
-        }
-        _ => fold_literal_numeric(lhs, rhs, |a, b| a * b, |a, b| a * b),
-    }
-}
-
-fn repeat_literal_string(value: &str, count: i64) -> LiteralVal {
-    if count <= 0 {
-        LiteralVal::from_str("")
-    } else {
-        LiteralVal::from_str(&value.repeat(count as usize))
-    }
+    fold_literal_numeric(lhs, rhs, i64::wrapping_mul, |a, b| a * b)
 }
 
 fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
@@ -769,14 +944,10 @@ fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     }
 
     match (lhs, rhs) {
-        (LiteralVal::Int(a), LiteralVal::Int(b)) => {
-            let result = (*a as f64) / (*b as f64);
-            if crate::compat::float::fract(result) == 0.0 {
-                Some(LiteralVal::Int(result as i64))
-            } else {
-                Some(LiteralVal::Float(result))
-            }
-        }
+        // `Int / Int` is a `Float`, always. This used to keep the quotient as
+        // an `Int` when it came out whole, so the *values* picked the *type*:
+        // `20 / 4` folded to `Int` and `7 / 2` to `Float`.
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(*a as f64 / *b as f64)),
         _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
     }
 }
@@ -785,7 +956,8 @@ fn fold_literal_mod(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     if literal_is_zero(rhs) {
         return None;
     }
-    fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b)
+    // `i64::MIN % -1` is 0 in both executors; `%` on those operands panics.
+    fold_literal_numeric(lhs, rhs, i64::wrapping_rem, |a, b| a % b)
 }
 
 fn literal_is_zero(value: &LiteralVal) -> bool {
@@ -812,7 +984,7 @@ fn fold_literal_numeric(
 }
 
 impl Expr {
-    /// 静态类型检查表达式
+    /// Type-checks the expression.
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<Type> {
         type_checker.check_expr(self)
     }

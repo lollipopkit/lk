@@ -17,11 +17,169 @@ use super::{
     Compiler, Instr, Opcode,
     facts::{expr_static_value_kind, index_fact_from_target},
     get_field_key,
-    support::{FunctionSignature, checked_u8, simple_local_expr_name},
+    support::{FunctionSignature, access_member_name, checked_u8, simple_local_expr_name},
 };
 
+/// `__lk_u64_str(expr)` — the unsigned decimal rendering of a carrier-filling
+/// value, as an expression the caller can lower in the argument's place.
+pub(in crate::vm::compiler) fn unsigned_rendering_of(expr: &Expr) -> Expr {
+    Expr::Call(
+        alloc::string::String::from("__lk_u64_str"),
+        alloc::vec![Box::new(expr.clone())],
+    )
+}
+
 impl Compiler {
+    /// `__lk_shr` becomes `__lk_shr_u` when the value being shifted is a `u64`.
+    ///
+    /// Answering a `String` rather than a `&str` so the caller can rebind the
+    /// name: the operand has to be *peeked at* to decide, and peeking means
+    /// lowering it, which cannot happen twice.
+    fn unsigned_shift_name(&self, name: &str, args: &[Box<Expr>]) -> Result<alloc::string::String> {
+        use alloc::string::ToString;
+        if name != "__lk_shr" || args.len() != 2 {
+            return Ok(name.to_string());
+        }
+        let Some(kind) = self.expr_machine_width(&args[0]) else {
+            return Ok(name.to_string());
+        };
+        let fills_the_carrier = matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize);
+        Ok(if fills_the_carrier { "__lk_shr_u" } else { name }.to_string())
+    }
+
+    /// The globals that do nothing with an argument but format it.
+    ///
+    /// Deliberately short, and the boundary is not "prints" but "*only* prints".
+    /// `assert_eq` prints its arguments too, and also compares them — turning one
+    /// into a string there would make the comparison ask whether a string equals
+    /// a number, which is a wrong answer traded for a right rendering. A call
+    /// that computes with the value keeps the value.
+    fn renders_its_arguments(name: &str) -> bool {
+        matches!(name, "print" | "println" | "panic" | "error")
+    }
+
+    /// Rewrites carrier-filling arguments into their unsigned rendering.
+    ///
+    /// `None` when nothing changed, so the common call pays one width lookup per
+    /// argument and no allocation.
+    #[allow(clippy::vec_box, reason = "the AST stores call arguments as `Vec<Box<Expr>>`")]
+    fn render_arguments_unsigned(&self, name: &str, args: &[Box<Expr>]) -> Option<Vec<Box<Expr>>> {
+        if !Self::renders_its_arguments(name) {
+            return None;
+        }
+        let fills_carrier = |expr: &Expr| {
+            self.expr_machine_width(expr)
+                .is_some_and(|kind| matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize))
+        };
+        if !args.iter().any(|arg| fills_carrier(arg)) {
+            return None;
+        }
+        Some(
+            args.iter()
+                .map(|arg| {
+                    if fills_carrier(arg) {
+                        Box::new(unsigned_rendering_of(arg))
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn lower_named_call(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // A `u64` handed to something that only *renders* it prints unsigned.
+        //
+        // The value was never wrong: `top + 5` computes the right bits. What was
+        // wrong is that `println` receives runtime values, where the width is
+        // gone, and hands the carrier to an `i64` formatter — so a page-table
+        // entry or a physical address above `i64::MAX` printed as a negative
+        // number. The width exists only here, at the call site, so this is where
+        // the rendering has to be chosen.
+        //
+        // Only for callees that *purely* render. Rewriting an argument changes
+        // its type from `Int` to `Str`, which is harmless for something that was
+        // going to format it and destructive for anything that compares or
+        // computes: `assert_eq(top, other)` would compare a string with a
+        // number. See `renders_its_arguments`.
+        if let Some(rendered) = self.render_arguments_unsigned(name, args) {
+            return self.lower_named_call(name, &rendered);
+        }
+        // `~x` on a machine integer is that width's complement.
+        //
+        // Every value rides an `i64` carrier, so complementing a `u32` sets the
+        // 32 bits above it too: `~(0xff as u32)` answered `0xFFFFFFFFFFFFFF00`,
+        // which reads back as -256. It stayed unnoticed because the shape people
+        // write is `a & ~b`, where the `&` masks the strays away — and the one
+        // that does not, `~mask` on its own, is exactly what a driver writes to
+        // clear a field.
+        //
+        // The arithmetic operators normalise afterwards; this is the same
+        // normalisation for the one bitwise operation that can leave the width.
+        //
+        // A previous round recorded here that this cost two examples their
+        // native lowering and reverted it. That was a misattribution: neither
+        // example contains a `~`, so this branch never fired for them, and the
+        // AOT coverage number is identical with and without it. The drop came
+        // from a change landing alongside. Measure at your own commit before
+        // blaming your own diff.
+        // The shifts are the other two. `<<` and `>>` desugar into named calls
+        // the same way, and they were not in this branch: at `u8`, `1 << 9`
+        // answered 512, and at `i32`, `1 << 31` answered 2147483648 where the
+        // sign bit makes it -2147483648. `&`, `|` and `^` need nothing — two
+        // operands already inside the width cannot leave it.
+        //
+        // The width is argument 0's in all three: a shift count has its own
+        // type and does not decide the result's.
+        if matches!(name, "__lk_bit_not" | "__lk_shl" | "__lk_shr")
+            && !args.is_empty()
+            && let Some(kind) = self.expr_machine_width(&args[0])
+        {
+            let dst = self.lower_named_call_body(name, args)?;
+            self.emit_machine_wrap(dst, kind)?;
+            self.machine_regs.insert(dst, super::RegisterWidth::Scalar(kind));
+            return Ok(dst);
+        }
+        let dst = self.lower_named_call_body(name, args)?;
+        // A declared return width is a width the *caller* can rely on, and the
+        // register the result lands in had none: `fn ret() -> u8 { … }` then
+        // `ret() + 10` added at 64 bits and answered 260 where `let v = ret();
+        // v + 10` answered 4. The fact existed (`function_machine_returns`) and
+        // only `expr_machine_width` consulted it — and the arithmetic path asks
+        // the *register*, not the expression.
+        // The declared return type's width, whichever half it is: a `u8`
+        // return and a `List<u8>` return are the same fact one level apart, and
+        // recording only the first is what let `ret_buf()[0] + 10` add at 64
+        // bits.
+        match self.call_register_width(name) {
+            Some(width) => {
+                self.machine_regs.insert(dst, width);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
+        Ok(dst)
+    }
+
+    fn lower_named_call_body(&mut self, name: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // `>>` on a `u64` is a *logical* shift.
+        //
+        // The parser desugars `a >> b` into `__lk_shr(a, b)` before anything
+        // knows a type, and the builtin behind that name shifts an `i64`
+        // arithmetically. Every value in this language rides an `i64` carrier,
+        // so for a `u8`, `u16` or `u32` the high bits are zero and the sign
+        // replication has nothing to replicate — it happens to be right. A
+        // `u64` fills the carrier: bit 63 *is* the sign bit, so
+        // `(1u64 << 63) >> 63` answered -1 instead of 1, silently and on both
+        // backends. That value is a physical address, a page-table entry, the
+        // high half of a 64-bit BAR.
+        //
+        // The choice is made here because this is the first place that has both
+        // the operator and a proven width. `usize` too, for the same reason on a
+        // 64-bit target.
+        let shift_name = self.unsigned_shift_name(name, args)?;
+        let name = shift_name.as_str();
         if let Some(signature) = self.function_signatures.get(name).cloned()
             && !signature.named_params.is_empty()
             && self.function_names.contains_key(name)
@@ -48,7 +206,7 @@ impl Compiler {
             return self.lower_named_call(name, args);
         }
         if let Expr::Access(target, method) = callee
-            && let Some(method) = method_name(method)
+            && let Some(method) = access_member_name(method)
         {
             if self.is_external_global_access_target(target) {
                 if self.is_stdlib_module_method(target, "map", "get", method) {
@@ -73,15 +231,22 @@ impl Compiler {
         let Expr::Var(name) = target else {
             return false;
         };
-        // A top-level `let` occupies a global slot but holds user data:
+        // A top-level `let`/`:=` occupies a global slot but holds user data:
         // `names.len()` inside a function must dispatch as a method, not as a
         // module-member property read (which would index the list/map value
         // with the method name).
+        //
+        // This used to consult `user_let_globals`, which is `let`-only and
+        // additionally filtered to names some function mentions — so `xs := …`
+        // read from a function body dispatched as a module member and failed
+        // with "register N expected Int, got String". `top_level_data_globals`
+        // is the unfiltered set, and the REPL adds its live bindings to it.
         self.global_names.contains_key(name)
             && !self.locals.contains_key(name)
             && !self.function_names.contains_key(name)
             && !self.native_names.contains_key(name)
             && !self.user_let_globals.contains(name)
+            && !self.top_level_data_globals.contains(name)
     }
 
     fn is_stdlib_module_method(&self, target: &Expr, module: &str, method: &str, actual_method: &str) -> bool {
@@ -176,6 +341,13 @@ impl Compiler {
         if self.try_lower_int_midpoint_to_register(dst, &args[0])? {
             return Ok(dst);
         }
+        // `math.floor(a / b)` is the only way to write integer division now
+        // that `/` yields a `Float`, so it gets one instruction. Reached from
+        // here as well as from `lower_into`, because an operand position
+        // (`sub - math.floor(sub / 10)`) never goes through that path.
+        if self.try_lower_int_floor_div_to_register(dst, &args[0])? {
+            return Ok(dst);
+        }
         self.next_reg = watermark;
         let arg = self.lower_readonly_operand(&args[0])?;
         if self.function.performance.value_kind(arg) == PerfValueKind::Int {
@@ -242,6 +414,14 @@ impl Compiler {
     }
 
     fn lower_builtin_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // A name some `impl` in this program declares is not assumed builtin —
+        // see `collect_impl_method_names`. The dedicated opcodes below are
+        // chosen from the method name alone, with no type for the receiver, so
+        // a struct method called `len` answered "Len target object is not
+        // sized" and one called `push` failed at compile time on arity.
+        if self.impl_method_names.contains(method) {
+            return self.lower_dynamic_method_call(target, method, args);
+        }
         match method {
             "len" => {
                 if !args.is_empty() {
@@ -277,12 +457,19 @@ impl Compiler {
         }
     }
 
+    /// `xs.set(i, v)` / `m.set(k, v)` — writes in place and answers the
+    /// receiver, so writes chain the way `push` and `insert` do.
+    ///
+    /// It used to answer `nil`, which made "write one element" the one
+    /// mutating method you could not chain — an arbitrary split, since
+    /// `push` beside it has always answered the container.
     fn lower_set_method_call(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<u16> {
-        self.emit_set_method_effect(target, key, value)?;
-        let dst = self.alloc_reg();
-        self.emit(Instr::abc(Opcode::LoadNil, checked_u8("method set result", dst)?, 0, 0));
-        self.set_register_kind(dst, PerfValueKind::Nil);
-        Ok(dst)
+        // The register the write went through *is* the answer. Lowering the
+        // receiver a second time here evaluated the expression twice: for a
+        // local that is the same slot, but `make().set(0, 9)` called `make`
+        // twice, wrote into the first list and answered the second — so the
+        // write appeared to do nothing. `push` beside it never had this shape.
+        self.emit_set_method_effect(target, key, value)
     }
 
     fn lower_len_method_call(&mut self, target: &Expr) -> Result<u16> {
@@ -322,7 +509,7 @@ impl Compiler {
         let Expr::Access(target, method) = callee.as_ref() else {
             return Ok(false);
         };
-        let Some("set") = method_name(method) else {
+        let Some("set") = access_member_name(method) else {
             return Ok(false);
         };
         if self.is_external_global_access_target(target) {
@@ -335,13 +522,19 @@ impl Compiler {
         Ok(true)
     }
 
-    fn emit_set_method_effect(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<()> {
+    /// Emits the write and answers the register it wrote through — the
+    /// receiver, which is what `xs.set(k, v)` evaluates to.
+    fn emit_set_method_effect(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<u16> {
         self.clear_const_map_target(target);
+        let was_plain = self.plain_local_receiver(target);
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target_reg)
             .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
         if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {
             let value_reg = self.lower_readonly_operand(value)?;
+            // See `reread_promoted_receiver`: the key or the value may have
+            // boxed the receiver's local.
+            let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
             let move_value = !self.is_current_local_slot(value_reg);
             let pc = self.function.code.len();
             self.emit(Instr::abc(
@@ -361,10 +554,11 @@ impl Compiler {
             if let Some(fact) = index_fact {
                 self.function.performance.set_index_fact(pc, fact);
             }
-            return Ok(());
+            return Ok(target_reg);
         }
         let (key_reg, key_fact) = self.lower_index_key_for_target(target_reg, index_fact, key)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
         let move_key = set_method_key_move_preferred(key) && !self.is_current_local_slot(key_reg);
         let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
@@ -392,12 +586,16 @@ impl Compiler {
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
-        Ok(())
+        Ok(target_reg)
     }
 
     fn lower_push_method_call(&mut self, target: &Expr, value: &Expr) -> Result<u16> {
+        let was_plain = self.plain_local_receiver(target);
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        // The value may have boxed the receiver's local — see
+        // `reread_promoted_receiver`.
+        let target_reg = self.reread_promoted_receiver(target, target_reg, was_plain)?;
         let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
         self.emit(Instr::abc(
@@ -494,11 +692,13 @@ impl Compiler {
         // to the generic helper call below.
         let name_const = self.push_string(method)?;
         if name_const <= u16::from(u8::MAX) && args.len() <= u8::MAX as usize {
+            let was_plain = self.plain_local_receiver(target);
             let receiver = self.lower_readonly_operand(target)?;
             let mut arg_regs = Vec::with_capacity(args.len());
             for arg in args {
                 arg_regs.push(self.lower_readonly_operand(arg)?);
             }
+            let receiver = self.reread_promoted_receiver(target, receiver, was_plain)?;
             let base = self.alloc_regs(args.len() + 1)?;
             self.emit_call_window_move(base, receiver, "method receiver")?;
             for (offset, arg) in arg_regs.iter().copied().enumerate() {
@@ -514,12 +714,14 @@ impl Compiler {
             return Ok(base);
         }
         let helper = self.load_callable_by_name("__lk_call_method")?;
+        let was_plain = self.plain_local_receiver(target);
         let receiver = self.lower_readonly_operand(target)?;
         let method = self.lower_val(&LiteralVal::from_str(method))?;
         let mut arg_regs = Vec::with_capacity(args.len());
         for arg in args {
             arg_regs.push(self.lower_readonly_operand(arg)?);
         }
+        let receiver = self.reread_promoted_receiver(target, receiver, was_plain)?;
         let args_list = self.materialize_list(arg_regs)?;
         self.lower_call_window_regs(helper, &[receiver, method, args_list])
     }
@@ -541,11 +743,22 @@ impl Compiler {
             bail!("Compiler named call `{function_name}` is shadowed by a local binding");
         }
 
-        let signature = self
-            .function_signatures
-            .get(function_name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Compiler missing named-call signature for `{function_name}`"))?;
+        let Some(signature) = self.function_signatures.get(function_name).cloned() else {
+            // A name with no signature *here* is normally an imported function:
+            // signatures are collected from this program's own declarations, and
+            // an import has none to collect. The call still has everything it
+            // needs — the names are constants and the callee's own metadata
+            // says the order — so it goes out as a dynamic `CallNamed`, which is
+            // the same opcode a call through a variable uses.
+            //
+            // Without this, `use { scale } from "m"; scale(value: 3, by: 4)`
+            // failed to *compile*, with a sentence about the compiler's
+            // bookkeeping; the identical call to a local function worked.
+            if self.global_names.contains_key(function_name) {
+                return self.lower_dynamic_named_arg_call(callee, positional, named);
+            }
+            bail!("undefined function `{function_name}` called with named arguments");
+        };
         if positional.len() != signature.positional_count {
             bail!(
                 "Compiler named call `{function_name}` expects {} positional args, got {}",
@@ -574,7 +787,7 @@ impl Compiler {
         self.lower_signature_named_call(function_name, &signature, positional, &provided)
     }
 
-    fn lower_dynamic_named_arg_call(
+    pub(super) fn lower_dynamic_named_arg_call(
         &mut self,
         callee: &Expr,
         positional: &[Box<Expr>],
@@ -592,13 +805,20 @@ impl Compiler {
         let callee = self.lower_readonly_operand(callee)?;
         let call_base = self.alloc_regs(1 + positional.len() + named.len() * 2)?;
         self.emit_call_window_move(call_base, callee, "named call callee")?;
+        // Each argument's scratch is handed back before the next one is
+        // lowered: the window stays, what an argument needed to reach it does
+        // not. Without this a wide call cost two registers per argument on top
+        // of the window — 60 arguments of `f(a) + g(b) + i` reached 191.
+        let watermark = self.next_reg;
         for (offset, arg) in positional.iter().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "named call positional arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
         let mut offset = 1 + positional.len() as u16;
         for (name, value) in named {
             self.emit_literal_to_register(call_base + offset, &LiteralVal::from_str(name))?;
             self.lower_expr_to_register(call_base + offset + 1, value, "named call arg value")?;
+            self.next_reg = self.live_register_floor().max(watermark);
             offset += 2;
         }
 
@@ -662,7 +882,7 @@ impl Compiler {
             let reg = if index < supplied_named {
                 self.lower_readonly_operand(&args[signature.positional_count + index])?
             } else if let Some(default) = param.default.as_ref() {
-                self.lower_readonly_operand(default)?
+                self.lower_named_default(default, &previous)?
             } else {
                 self.restore_call_params(previous);
                 bail!(
@@ -715,7 +935,7 @@ impl Compiler {
             let reg = if let Some(expr) = provided.get(param.name.as_str()) {
                 self.lower_readonly_operand(expr)?
             } else if let Some(default) = param.default.as_ref() {
-                self.lower_readonly_operand(default)?
+                self.lower_named_default(default, &previous)?
             } else {
                 self.restore_call_params(previous);
                 bail!(
@@ -747,10 +967,15 @@ impl Compiler {
         let call_base = self.alloc_regs(total_count + 1)?;
         let mut previous = Vec::with_capacity(total_count);
 
+        // Per argument, as in `lower_named_arg_call_window`. A bound parameter
+        // name points *into* the window, which is below this mark, so binding
+        // and recycling do not compete.
+        let watermark = self.next_reg;
         let result = (|| {
             for (index, (param_name, arg)) in signature.positional_params.iter().zip(args.iter()).enumerate() {
                 let dst = call_base + 1 + index as u16;
                 self.lower_expr_to_register(dst, arg, "direct signature positional arg")?;
+                self.next_reg = self.live_register_floor().max(watermark);
                 self.bind_call_param(param_name, dst, &mut previous);
             }
 
@@ -764,7 +989,7 @@ impl Compiler {
                         "direct signature positional named arg",
                     )?;
                 } else if let Some(default) = param.default.as_ref() {
-                    self.lower_expr_to_register(dst, default, "direct signature default arg")?;
+                    self.lower_named_default_to_register(dst, default, &previous, "direct signature default arg")?;
                 } else {
                     bail!(
                         "Compiler missing required named argument `{}` in call to `{function_name}`",
@@ -793,10 +1018,13 @@ impl Compiler {
         let call_base = self.alloc_regs(total_count + 1)?;
         let mut previous = Vec::with_capacity(total_count);
 
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         let result = (|| {
             for (index, (param_name, arg)) in signature.positional_params.iter().zip(positional.iter()).enumerate() {
                 let dst = call_base + 1 + index as u16;
                 self.lower_expr_to_register(dst, arg, "direct signature named positional arg")?;
+                self.next_reg = self.live_register_floor().max(watermark);
                 self.bind_call_param(param_name, dst, &mut previous);
             }
 
@@ -805,7 +1033,12 @@ impl Compiler {
                 if let Some(expr) = provided.get(param.name.as_str()) {
                     self.lower_expr_to_register(dst, expr, "direct signature named arg")?;
                 } else if let Some(default) = param.default.as_ref() {
-                    self.lower_expr_to_register(dst, default, "direct signature named default arg")?;
+                    self.lower_named_default_to_register(
+                        dst,
+                        default,
+                        &previous,
+                        "direct signature named default arg",
+                    )?;
                 } else {
                     bail!(
                         "Compiler missing required named argument `{}` in call to `{function_name}`",
@@ -820,6 +1053,62 @@ impl Compiler {
         result?;
 
         self.emit_direct_call_at_window(function_index, call_base, total_count)
+    }
+
+    /// Lowers a named parameter's default, in the callee's scope rather than
+    /// the caller's.
+    ///
+    /// A default belongs to the *declaration*. The names it may read are the
+    /// callee's own parameters — bound above, in declaration order, which is
+    /// what makes `fn f(x: Int, {y: Int = x + 1})` work — and then module
+    /// scope. It used to be lowered with the caller's locals still in view, so
+    /// a caller that happened to have a binding of the same name captured it:
+    ///
+    /// ```lk
+    /// const LIMIT: Int = 7;
+    /// fn f({n: Int = LIMIT}) -> Int { return n; }
+    /// fn g() -> Int { let LIMIT = 99; return f(); }
+    /// ```
+    ///
+    /// `f()` answered 7 from the top level and 99 from `g` — a silent wrong
+    /// answer that neither `lk check` nor any gate saw, because the default is
+    /// written in one function and read in another.
+    fn lower_named_default(&mut self, default: &Expr, bound: &[(String, Option<u16>)]) -> Result<u16> {
+        let params = self.bound_parameter_registers(bound);
+        let saved = self.take_name_environment();
+        for (name, reg) in params {
+            self.insert_local(name, reg);
+        }
+        let lowered = self.lower_readonly_operand(default);
+        self.restore_name_environment(saved);
+        lowered
+    }
+
+    /// The same, writing into a fixed destination register (the direct-call
+    /// path, which places each argument itself).
+    fn lower_named_default_to_register(
+        &mut self,
+        dst: u16,
+        default: &Expr,
+        bound: &[(String, Option<u16>)],
+        context: &str,
+    ) -> Result<()> {
+        let params = self.bound_parameter_registers(bound);
+        let saved = self.take_name_environment();
+        for (name, reg) in params {
+            self.insert_local(name, reg);
+        }
+        let lowered = self.lower_expr_to_register(dst, default, context);
+        self.restore_name_environment(saved);
+        lowered
+    }
+
+    /// The callee parameters bound so far, by the name each was bound under.
+    fn bound_parameter_registers(&self, bound: &[(String, Option<u16>)]) -> Vec<(String, u16)> {
+        bound
+            .iter()
+            .filter_map(|(name, _)| self.locals.get(name).map(|reg| (name.clone(), *reg)))
+            .collect()
     }
 
     fn bind_call_param(&mut self, name: &str, reg: u16, previous: &mut Vec<(String, Option<u16>)>) {
@@ -845,13 +1134,21 @@ impl Compiler {
     }
 
     fn lower_call_window_exprs(&mut self, callee: u16, args: &[&Expr]) -> Result<u16> {
-        if args.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", args.len(), i8::MAX);
+        if args.len() > crate::vm::compiler::MAX_CALL_ARGUMENTS {
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                args.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let call_base = self.alloc_regs(args.len() + 1)?;
         self.emit_call_window_move(call_base, callee, "call callee")?;
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         for (offset, arg) in args.iter().copied().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "call arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
 
         let pc = self.function.code.len();
@@ -877,7 +1174,12 @@ impl Compiler {
 
     pub(super) fn lower_call_window_regs(&mut self, callee: u16, arg_regs: &[u16]) -> Result<u16> {
         if arg_regs.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", arg_regs.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                arg_regs.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let call_base = self.alloc_regs(arg_regs.len() + 1)?;
         self.emit_call_window_move(call_base, callee, "call callee")?;
@@ -955,7 +1257,12 @@ impl Compiler {
             return Ok(inlined);
         }
         if args.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", args.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                args.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let function_index = *self
             .function_names
@@ -971,8 +1278,11 @@ impl Compiler {
         }
 
         let call_base = self.alloc_regs(args.len() + 1)?;
+        // Per argument, as in `lower_named_arg_call_window`.
+        let watermark = self.next_reg;
         for (offset, arg) in args.iter().enumerate() {
             self.lower_expr_to_register(call_base + 1 + offset as u16, arg, "direct call arg")?;
+            self.next_reg = self.live_register_floor().max(watermark);
         }
 
         let pc = self.function.code.len();
@@ -997,7 +1307,12 @@ impl Compiler {
 
     fn lower_direct_function_call_regs(&mut self, function_name: &str, arg_regs: &[u16]) -> Result<u16> {
         if arg_regs.len() > i8::MAX as usize {
-            bail!("Compiler call has {} args, max {}", arg_regs.len(), i8::MAX);
+            bail!(
+                "this call passes {} arguments, and {} is the most one call can pass: every call names its \
+                 argument count in 7 bits of the instruction. Pass a list instead",
+                arg_regs.len(),
+                crate::vm::compiler::MAX_CALL_ARGUMENTS
+            );
         }
         let function_index = *self
             .function_names
@@ -1034,14 +1349,6 @@ impl Compiler {
     }
 }
 
-fn method_name(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Var(name) => Some(name.as_str()),
-        Expr::Literal(value) => value.as_str(),
-        _ => None,
-    }
-}
-
 pub(super) fn map_get_method_call_args<'a>(callee: &'a Expr, args: &'a [Box<Expr>]) -> Option<(&'a Expr, &'a Expr)> {
     if args.len() != 1 {
         return None;
@@ -1049,7 +1356,7 @@ pub(super) fn map_get_method_call_args<'a>(callee: &'a Expr, args: &'a [Box<Expr
     let Expr::Access(target, method) = callee else {
         return None;
     };
-    if method_name(method) != Some("get") {
+    if access_member_name(method) != Some("get") {
         return None;
     }
     Some((target.as_ref(), args[0].as_ref()))
@@ -1078,7 +1385,7 @@ fn split_join_same_separator_string_target<'a>(
     let Expr::Access(join_target, join_method) = unparen_expr(join_callee) else {
         return None;
     };
-    if method_name(join_method) != Some("join") {
+    if access_member_name(join_method) != Some("join") {
         return None;
     }
     let Expr::CallExpr(split_callee, split_args) = unparen_expr(join_target) else {
@@ -1093,7 +1400,7 @@ fn split_join_same_separator_string_target<'a>(
     let Expr::Access(split_target, split_method) = unparen_expr(split_callee) else {
         return None;
     };
-    if method_name(split_method) != Some("split") || !known_string_expr(split_target, facts, locals) {
+    if access_member_name(split_method) != Some("split") || !known_string_expr(split_target, facts, locals) {
         return None;
     }
     Some(split_target)

@@ -23,7 +23,7 @@ pub struct TimeModule;
 impl TimeModule {
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
     fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
+        let duration_ms = lk_stdlib_common::duration_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
         runtime
             .async_runtime()
             .with(|runtime| {
@@ -38,14 +38,14 @@ impl TimeModule {
 
     #[stdlib_export(name = "timeout", params(ms: Int | Float), returns = Channel)]
     fn timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
+        let duration_ms = lk_stdlib_common::duration_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
         let channel_id = spawn_timer(&runtime.async_runtime(), duration_ms, RuntimeVal::Nil)?;
         Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
     }
 
     #[stdlib_export(name = "after", params(ms: Int | Float), returns = Channel)]
     fn after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
+        let duration_ms = lk_stdlib_common::duration_millis(args.get(0).expect("checked arity"), "time.after()")?;
         let channel_id = spawn_timer(&runtime.async_runtime(), duration_ms, RuntimeVal::Int(epoch_millis()))?;
         Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
     }
@@ -55,7 +55,7 @@ impl TimeModule {
         Ok(RuntimeVal::Int(epoch_millis()))
     }
 
-    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), returns = Int)]
+    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), named(end_ms), returns = Int)]
     fn since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let start = numeric_millis(&values[0], "time.since()")?;
@@ -64,6 +64,11 @@ impl TimeModule {
     }
 }
 
+/// An *instant* in milliseconds, of either sign.
+///
+/// Distinct from `lk_stdlib_common::duration_millis`, which is a *duration* and
+/// must be non-negative: `time.since(start, end)` takes two points on a clock,
+/// and their difference is the thing with a direction.
 fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
     match value {
         RuntimeVal::Int(ms) => Ok(*ms),
@@ -73,7 +78,12 @@ fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
 }
 
 fn epoch_millis() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    // A clock set before 1970 answers `Err`, and unwrapping it aborted the
+    // process — every `time.*` call, on a machine whose clock is merely wrong.
+    // Zero is the epoch, which is what a pre-epoch clock is closest to.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
@@ -127,12 +137,26 @@ mod tests {
         function(NativeArgs::new(args), &mut runtime)
     }
 
+    /// Registered arity follows the declaration: a member with `named(...)`
+    /// registers variadic, because a named argument occupies no positional
+    /// slot and the generated precheck — which knows the names — checks the
+    /// bounds instead.
     #[test]
     fn time_exports_use_runtime_native() -> Result<()> {
         for name in ["sleep", "timeout", "after", "now", "since"] {
             let (arity, function) = time_native(name)?;
             assert!(matches!(function, NativeFunction::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
+            let path = format!("time.{name}");
+            let nameable = TimeModule::stdlib_metadata()
+                .signatures
+                .iter()
+                .find(|signature| signature.path == path)
+                .is_some_and(|signature| signature.params.iter().any(|param| param.named));
+            if nameable {
+                assert_eq!(arity, lk_core::vm::NativeEntry::VARIADIC, "{name} declares named(...)");
+            } else {
+                assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC, "{name}");
+            }
         }
         Ok(())
     }

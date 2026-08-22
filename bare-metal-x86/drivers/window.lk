@@ -105,7 +105,7 @@ fn put(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, colour: In
 // on the shared page in the inner loop, which is both the cost this is removing
 // and a race with the handlers.
 fn put_within(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int,
-              x: Int, y: Int, colour: Int) -> Int {
+    x: Int, y: Int, colour: Int) -> Int {
     if (x < 0 || y < 0 || x >= width || y >= height) {
         return 1;
     }
@@ -123,7 +123,7 @@ fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: In
     for row in 0..height {
         for column in 0..width {
             drops = drops + put_within(base, stride, left, top, limit_x, limit_y,
-                                       x + column, y + row, colour);
+                x + column, y + row, colour);
         }
     }
     if (drops > 0) {

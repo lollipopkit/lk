@@ -36,6 +36,7 @@ pub mod stmt;
 pub mod syntax;
 pub mod token;
 pub mod typ;
+pub(crate) mod type_syntax;
 pub mod util;
 pub mod val;
 

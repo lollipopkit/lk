@@ -7,6 +7,7 @@
 
 mod ast;
 mod display;
+mod flow;
 mod type_check;
 
 pub use ast::{Attribute, ForPattern, NamedParamDecl, Program, Stmt};

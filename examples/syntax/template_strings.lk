@@ -48,4 +48,35 @@ println("{} + {} = {}", a, b, a + b);
 let s10 = "Price: \$100";
 assert(s10 == "Price: $100");
 
+// 11. A template inside a loop.
+//
+// `format` expands at compile time, so the template has to be a constant — and
+// the bytecode compiler hoists a loop-invariant literal out of the loop body,
+// which means inside the loop the template is a *phi parameter* rather than the
+// literal itself. Looking the constant up by SSA value found nothing there, so
+// every `"{}".format(x)` written in a loop fell off the native path.
+let joined = "";
+for i in 0..4 {
+    joined = joined + "[{}]".format(i);
+}
+assert(joined == "[0][1][2][3]");
+
+let rows = [];
+let table = {"a": 1, "b": 2};
+for k in table.keys() {
+    rows.push("{}={}".format(k, table[k]));
+}
+assert(rows == ["a=1", "b=2"]);
+
+fn render(n: Int) -> String {
+    let out = "";
+    let i = 0;
+    while i < n {
+        out = out + "{} of {};".format(i, n);
+        i = i + 1;
+    }
+    return out;
+}
+assert(render(2) == "0 of 2;1 of 2;");
+
 println("template_strings: all assertions passed");

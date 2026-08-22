@@ -24,7 +24,7 @@ The REPL and CLI only print a result when it is not `nil`. Functions return `nil
 
 LK has six primitive types and several collection types. Use `typeof(value)` to check the runtime type name.
 
-```lk
+```lk,fragment
 typeof(42)        // "Int"
 typeof(3.14)      // "Float"
 typeof("hello")   // "String"
@@ -60,7 +60,7 @@ count := 0;       // equivalent to let count = 0;
 
 `const` cannot be reassigned; `let` can:
 
-```lk
+```lk,fragment
 let x = 1;
 x = 2;            // OK
 
@@ -90,7 +90,7 @@ let { "name": n, "age": age } = { "name": "LK", "age": 1 };
 
 ### Arithmetic & Comparison
 
-```lk
+```lk,fragment
 1 + 2       // 3
 10 % 3      // 1
 3 == 3      // true
@@ -100,7 +100,7 @@ let { "name": n, "age": age } = { "name": "LK", "age": 1 };
 
 ### Logic & Bitwise
 
-```lk
+```lk,fragment
 true && false   // false
 !true           // false
 0xA & 0xF      // bitwise AND
@@ -129,7 +129,7 @@ let label = status ? "active" : "inactive";  // "active"
 
 ### Optional Chaining
 
-```lk
+```lk,fragment
 let user = { "name": "LK" };
 user?.name       // "LK"
 nil?.name        // nil
@@ -147,9 +147,8 @@ let even = 0..10..2; // [0, 2, 4, 6, 8]
 
 ### String & Collection Operators
 
-```lk
-"ha" * 3            // "hahaha"
-3 * "ab"            // "ababab"
+```lk,fragment
+"ha".repeat(3)      // "hahaha"  (`*` does not repeat a string)
 [1, 2] + [3, 4]     // [1, 2, 3, 4]
 [1, 2, 3] - [2]     // [1, 3]
 { "a": 1 } + { "b": 2 }  // { "a": 1, "b": 2 }
@@ -161,7 +160,7 @@ let even = 0..10..2; // [0, 2, 4, 6, 8]
 
 ### Lists
 
-```lk
+```lk,fragment
 let fruits = ["apple", "banana", "cherry"];
 fruits[0]          // "apple"
 fruits[-1]         // "cherry"
@@ -170,7 +169,7 @@ fruits[1..3]       // ["banana", "cherry"]
 
 List meta-methods (no import needed):
 
-```lk
+```lk,fragment
 fruits.len()       // 3
 fruits.push("date");
 fruits.contains("apple")  // true
@@ -182,7 +181,7 @@ fruits.filter(|f| f.starts_with("a"))
 
 Spread syntax:
 
-```lk
+```lk,fragment
 let more = ["date", "elderberry"];
 let all = [..fruits, ..more, "fig"];
 ```
@@ -191,7 +190,7 @@ let all = [..fruits, ..more, "fig"];
 
 Bare keys are string keys:
 
-```lk
+```lk,fragment
 let profile = { name: "LK", version: 1 };
 // equivalent to { "name": "LK", "version": 1 }
 profile.name                    // "LK"
@@ -204,7 +203,7 @@ Map methods: `len`, `is_empty`, `keys`, `values`, `has`, `get`, `set`, `delete`,
 
 ### Sets
 
-```lk
+```lk,fragment
 let s = Set([1, 2, 3, 2]);  // {1, 2, 3}
 s.has(2)      // true
 s.add(4)
@@ -218,7 +217,7 @@ s.values()    // [2, 3, 4] (order not guaranteed)
 
 Parentheses are optional. `false` and `nil` are falsy; everything else (including `0`, `""`) is truthy:
 
-```lk
+```lk,fragment
 if score > 90 {
     println("A");
 } else if score > 80 {
@@ -227,6 +226,19 @@ if score > 90 {
     println("C");
 }
 ```
+
+`if` is an expression, and so is a block — `{ … }` in value position evaluates
+to its last expression:
+
+```lk,fragment
+let grade = if score > 90 { "A" } else { "B" };
+let area = { let w = 3; let h = 4; w * h };   // 12
+```
+
+`{` still opens a **map** wherever a map is possible: `{}` is the empty map, and
+`{"a": 1}` is a map. The brace is a block when what follows it cannot be a map —
+a statement keyword (`let`, `return`, `for`, …), or no `:` before the first `;`
+or `}`.
 
 ### Loops
 
@@ -244,7 +256,8 @@ for ch in "hello" {
     println(ch);
 }
 
-for entry in { "a": 1, "b": 2 } {
+let pairs = { "a": 1, "b": 2 };
+for entry in pairs {
     println(entry);  // ["a", 1]
 }
 ```
@@ -291,7 +304,7 @@ let { "name": n, "age": a, ..other } = { "name": "LK", "age": 1, "lang": "script
 
 ### if let / while let
 
-```lk
+```lk,fragment
 if let { "user": { "id": uid } } = payload {
     println("User ID: {}", uid);
 }
@@ -304,7 +317,7 @@ while let [item, ..tail] = remaining {
 
 ### Guards & Ranges
 
-```lk
+```lk,fragment
 match score {
     n if n >= 90 => "A",
     n if n >= 80 => "B",
@@ -317,7 +330,7 @@ match score {
 
 ### Definition
 
-```lk
+```lk,fragment
 fn add(a, b) {
     return a + b;
 }
@@ -345,7 +358,7 @@ draw_rect(0, 0, width: 50, height: 200);
 
 ### Closures
 
-```lk
+```lk,fragment
 let double = |x| x * 2;
 let add = |a, b| { let sum = a + b; sum };
 
@@ -356,7 +369,7 @@ add(3, 4)      // 7
 Closures capture and mutate enclosing variables:
 
 ```lk
-let count := 0;
+let count = 0;
 let inc = || { count += 1; };
 inc();
 inc();
@@ -367,7 +380,7 @@ Function-literal form: `fn(a, b) => a + b`
 
 ### First-class Functions
 
-```lk
+```lk,fragment
 fn apply(f, x) {
     return f(x);
 }
@@ -379,7 +392,7 @@ apply(|n| n * 3, 7)  // 21
 
 ### Definition & Instantiation
 
-```lk
+```lk,fragment
 struct Rect { w: Int, h: Int }
 
 let shape = Rect { w: 8, h: 5 };
@@ -388,13 +401,13 @@ shape.w             // 8
 
 Call sugar (equivalent to `Rect(w: 8, h: 5)`) and update syntax:
 
-```lk
+```lk,fragment
 let bigger = Rect { ..shape, h: 10 };
 ```
 
 ### Traits & Impl
 
-```lk
+```lk,fragment
 trait Area {
     fn area(self) -> Int;
 }
@@ -408,9 +421,11 @@ impl Area for Rect {
 shape.area()   // 40
 ```
 
-Auto-display: implement `show`, `display`, or `to_string` and `println("{}")` and `${value}` will use it:
+Auto-display: implement a method named `show` and `println("{}")` and
+`${value}` will use it. One name, not three — `display` and `to_string` are not
+looked up, and a method by either of those names changes nothing.
 
-```lk
+```lk,fragment
 impl Area for Rect {
     fn area(self) -> Int { return self.w * self.h; }
     fn show(self) -> String { return "Rect(${self.w}x${self.h})"; }
@@ -433,9 +448,9 @@ println("{}", p);  // Point { x: 1, y: 2 }
 
 ## Strings & Bytes
 
-String meta-methods (no import needed): `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`, `format`
+String meta-methods (no import needed): `len`, `is_empty`, `lower`, `upper`, `trim`, `reverse`, `repeat`, `starts_with`, `ends_with`, `contains`, `count`, `index_of`, `slice`, `get`, `first`, `last`, `take`, `skip`, `replace`, `split`, `chars`, `bytes`, `byte_at`, `capitalize`, `title`, `strip`, `strip_prefix`, `strip_suffix`, `pad_left`, `pad_right`, `format`
 
-```lk
+```lk,fragment
 "Hello".len()                    // 5
 "hello".upper()                  // "HELLO"
 "  hi  ".trim()                  // "hi"
@@ -448,7 +463,7 @@ String meta-methods (no import needed): `len`, `lower`, `upper`, `trim`, `starts
 
 The `bytes` module handles binary data (requires `use bytes`):
 
-```lk
+```lk,fragment
 use bytes;
 
 let raw = bytes.from_string("hello");
@@ -475,7 +490,7 @@ Also: `enumerate`, `zip`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`
 
 The `stream` module provides lazy evaluation pipelines (requires `use stream`):
 
-```lk
+```lk,fragment
 use stream;
 
 let s = stream.from_list([1, 2, 3, 4, 5]);
@@ -492,7 +507,7 @@ stream.collect(cursor)  // [30, 40, 50]
 
 ### use Imports
 
-```lk
+```lk,fragment
 use math;                          // entire module as namespace
 use { abs, sqrt } from math;       // selective import
 use math as m;                     // alias
@@ -541,7 +556,7 @@ Built-in macros: `vec!`, `assert!`, `assert_eq!`, `assert_ne!`, `matches!`, `pan
 
 ```lk
 #[derive(Show)]
-struct Point { x: Int, y: y: Int }
+struct Point { x: Int, y: Int }
 
 #[cfg(feature = "debug")]
 fn debug_log(msg) { println(msg); }
@@ -576,9 +591,9 @@ let [ok, val] = recv(ch);
 
 // select chooses
 select {
-    case value <- recv(ch) => println("got {}", value),
-    case send(ch, 42) => println("sent"),
-    default => println("none ready"),
+    case value <- recv(ch) => println("got {}", value);
+    case send(ch, 42) => println("sent");
+    default => println("none ready");
 }
 ```
 

@@ -341,6 +341,7 @@ impl TestLanguageServer {
             }
             T::Str(s) => format!("String literal: \"{}\"", s),
             T::Int(i) => format!("Integer: {}", i),
+            T::UInt { value, radix } => format!("Integer: {}", lk_core::token::render_radix(*value, *radix)),
             T::Float(f) => format!("Float: {}", f),
             T::Bool(b) => format!("Boolean: {}", b),
             T::Nil => "Nil literal".to_string(),
@@ -350,6 +351,7 @@ impl TestLanguageServer {
             T::Let => "Keyword: let".to_string(),
             T::Break => "Keyword: break".to_string(),
             T::Continue => "Keyword: continue".to_string(),
+            T::Defer => "Keyword: defer".to_string(),
             T::Return => "Keyword: return".to_string(),
             T::Struct => "Keyword: struct".to_string(),
             T::Fn => "Keyword: fn".to_string(),
@@ -367,6 +369,9 @@ impl TestLanguageServer {
             T::And => "Operator: &&".to_string(),
             T::Or => "Operator: ||".to_string(),
             T::Not => "Operator: !".to_string(),
+            // Not an operator: the grammar gives it no meaning, and it exists so
+            // a `macro_rules!` can mark its internal rules the way Rust's do.
+            T::At => "Macro internal-rule marker: @".to_string(),
             T::In => "Operator: in".to_string(),
             T::Assign => "Operator: =".to_string(),
             T::Add => "Operator: +".to_string(),
@@ -375,6 +380,10 @@ impl TestLanguageServer {
             T::Div => "Operator: /".to_string(),
             T::Mod => "Operator: %".to_string(),
             T::BitAnd => "Operator: &".to_string(),
+            T::BitXor => "Operator: ^".to_string(),
+            T::BitAndAssign => "Operator: &=".to_string(),
+            T::BitOrAssign => "Operator: |=".to_string(),
+            T::BitXorAssign => "Operator: ^=".to_string(),
             T::BitNot => "Operator: ~".to_string(),
             T::Dot => "Accessor: .".to_string(),
             T::Colon => "Symbol: :".to_string(),

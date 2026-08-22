@@ -17,9 +17,10 @@ happened.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 # The top-left pixel of each window's frame.
 SHELL = (0, 0)
@@ -39,9 +40,7 @@ def pixel(path, x, y):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         qemu = subprocess.Popen(

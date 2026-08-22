@@ -16,10 +16,12 @@
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_void};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn};
+use crate::lkdyn::{
+    DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, is_list_tag, is_map_tag, map_entries,
+};
 use crate::lkmap::StrDynMap;
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
@@ -27,17 +29,30 @@ use crate::state::arena_handle;
 /// A value that crossed an isolate boundary: fully owned, `Send`. Maps keep
 /// their iteration order (entries captured in order, replayed on rebuild —
 /// same keys + same insertion order = the same Fx layout on the other side).
-enum OwnedVal {
+#[derive(Clone)]
+pub(crate) enum OwnedVal {
     Nil,
     Bool(bool),
     Int(i64),
     Float(f64),
     Str(String),
     List(Vec<OwnedVal>),
-    Map(Vec<(String, OwnedVal)>),
+    /// A map's entries, and the declared-struct id if the map is a struct
+    /// instance. Copying the entries alone dropped the identity at the channel:
+    /// the receiver got a plain map, so `typeof` answered `Map` and `println`
+    /// printed `{"p":1}` where the interpreter had `P{p:1}`.
+    Map(Vec<(String, OwnedVal)>, i64),
+    /// A closure: its code address, its visible arity, its module function
+    /// index (for `display`), and its own captures owned the same way. The
+    /// address is shared rather than copied — it is code.
+    Closure(usize, i64, i64, Vec<OwnedVal>),
+    /// A channel or a task, as its tag and its id. Copied by *identity*: the
+    /// registry is process-wide, so a channel that crosses a channel is the
+    /// same channel — which is what the interpreter's handle copy means too.
+    Handle(i64, i64),
 }
 
-fn own(v: LkDyn) -> OwnedVal {
+pub(crate) fn own(v: LkDyn) -> OwnedVal {
     match v.tag {
         DYN_NIL => OwnedVal::Nil,
         DYN_BOOL => OwnedVal::Bool(v.payload != 0),
@@ -53,33 +68,48 @@ fn own(v: LkDyn) -> OwnedVal {
             };
             OwnedVal::Str(text)
         }
-        DYN_LIST => {
-            let handle = v.payload as *mut c_void;
-            let items: &[LkDyn] = if handle.is_null() {
-                &[]
-            } else {
-                // SAFETY: DYN_LIST payloads are live dyn-list handles.
-                unsafe { &*(handle as *mut Vec<LkDyn>) }
-            };
-            OwnedVal::List(items.iter().map(|&item| own(item)).collect())
+        // A channel copies by value, so every list representation deep-copies
+        // the same way — the typed carriers box in place now and would
+        // otherwise fall through to the unsupported arm.
+        tag if is_list_tag(tag) => {
+            OwnedVal::List(crate::lkdyn::dyn_list_values(v).iter().map(|&item| own(item)).collect())
         }
-        DYN_MAP => {
-            let handle = v.payload as *mut c_void;
-            if handle.is_null() {
-                return OwnedVal::Map(Vec::new());
+        // Every map representation, for the same reason the list arm covers
+        // every list one: a map whose values are all Int is a `MapStrI64`
+        // carrier, not a boxed `DYN_MAP`, and it used to fall through to the
+        // unsupported arm below. `send(c, {"code": 7})` answered "value cannot
+        // cross a channel" natively while the interpreter sent it — and a raise
+        // out of a task travels this same path, so `error({"code": 7})` inside
+        // `spawn` reported the same thing.
+        tag if is_map_tag(tag) => {
+            if v.payload == 0 {
+                return OwnedVal::Map(Vec::new(), 0);
             }
-            // SAFETY: DYN_MAP payloads are live `StrDynMap` handles.
-            let map = unsafe { &*(handle as *mut StrDynMap) };
-            OwnedVal::Map(map.iter().map(|(k, &val)| (k.clone(), own(val))).collect())
+            let type_id = crate::lkdyn::lkrt_dyn_obj_type_id(v);
+            OwnedVal::Map(
+                map_entries(v)
+                    .into_iter()
+                    .map(|(key, val)| (String::from(crate::vm_mirror::key_str(&key)), own(val)))
+                    .collect(),
+                type_id,
+            )
         }
-        // Channels/tasks/functions do not cross as *values* in the native
-        // subset (channels travel as their i64 ids).
+        // A closure copies its captures the same way and shares its code.
+        crate::lkdyn::DYN_CLOSURE => crate::lkclosure::own_closure(v),
+        // A channel or a task crosses as itself. They used to travel as bare
+        // `i64` ids, which is why this arm did not exist — and why `typeof` on
+        // one answered `Int`.
+        crate::lkdyn::DYN_CHAN | crate::lkdyn::DYN_TASK => OwnedVal::Handle(v.tag, v.payload),
         _ => crate::panic::raise_str("value cannot cross a channel"),
     }
 }
 
-fn materialize(v: &OwnedVal) -> LkDyn {
+pub(crate) fn materialize(v: &OwnedVal) -> LkDyn {
     match v {
+        OwnedVal::Handle(tag, id) => LkDyn {
+            tag: *tag,
+            payload: *id,
+        },
         OwnedVal::Nil => LkDyn::NIL,
         OwnedVal::Bool(b) => LkDyn {
             tag: DYN_BOOL,
@@ -107,15 +137,19 @@ fn materialize(v: &OwnedVal) -> LkDyn {
                 payload: arena_handle(list) as i64,
             }
         }
-        OwnedVal::Map(entries) => {
+        OwnedVal::Map(entries, type_id) => {
             let mut map = StrDynMap::default();
             for (k, val) in entries {
-                map.insert(k.clone(), materialize(val));
+                map.insert(crate::lkmap::StrKey::Owned(k.clone()), materialize(val));
             }
+            map.type_id = *type_id;
             LkDyn {
                 tag: DYN_MAP,
                 payload: arena_handle(map) as i64,
             }
+        }
+        OwnedVal::Closure(code, params, fn_index, env) => {
+            crate::lkclosure::materialize_closure(*code, *params, *fn_index, env)
         }
     }
 }
@@ -123,6 +157,20 @@ fn materialize(v: &OwnedVal) -> LkDyn {
 struct ChanState {
     queue: VecDeque<OwnedVal>,
     closed: bool,
+    /// How many threads are inside `recv_cv.wait` / `send_cv.wait` on this
+    /// channel.
+    ///
+    /// Kept in the state rather than in an atomic because it is only ever read
+    /// and written under `state`, which makes it exact for free: a waiter
+    /// increments it before `wait` releases the lock, so a notifier holding the
+    /// lock and seeing zero knows nobody is waiting *and* nobody can start
+    /// without going through it.
+    ///
+    /// The point is the syscall. `Condvar::notify_one` on Linux issues a
+    /// `futex_wake` whether or not anything is parked, and a send/receive loop
+    /// spent a third of its time in that syscall waking nobody.
+    recv_waiters: usize,
+    send_waiters: usize,
 }
 
 struct ChanInner {
@@ -132,11 +180,31 @@ struct ChanInner {
     /// Signals bounded senders (space available / closed).
     send_cv: Condvar,
     cap: Option<usize>,
+    /// What the program asked for, which is not `cap`: `chan.new(0)` is
+    /// unbuffered and reports `0` while the queue's bound is 1. The VM keeps
+    /// the same two numbers apart (`ChannelValue::capacity`).
+    requested: i64,
 }
 
-fn registry() -> &'static Mutex<HashMap<i64, Arc<ChanInner>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<i64, Arc<ChanInner>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// Every channel ever created, indexed by `id - 1`.
+///
+/// A `Vec` rather than a map because ids come from one `fetch_add` and nothing
+/// is ever removed — a channel outlives the program, which is the same arena
+/// model the rest of lkrt uses. Lookup is then a bounds check and an `Arc`
+/// clone, and it takes a *read* lock, so two threads on two channels do not
+/// serialize on each other.
+///
+/// It was a `Mutex<HashMap<i64, _>>` with the default hasher. Every send and
+/// every receive resolves its channel through here, so each one paid a
+/// process-global mutex plus a SipHash of an `i64` — 28% of a send/receive loop
+/// between them, to look up a dense integer.
+///
+/// `Option` because ids are handed out before the insert takes the lock, so two
+/// threads creating channels can arrive out of order and leave a hole for the
+/// slower one to fill.
+fn registry() -> &'static RwLock<Vec<Option<Arc<ChanInner>>>> {
+    static REGISTRY: OnceLock<RwLock<Vec<Option<Arc<ChanInner>>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
 /// Process-global select wake-up: a generation counter bumped (and
@@ -150,6 +218,32 @@ struct SelectGen {
     cv: Condvar,
 }
 
+/// How many `select`s are parked on [`SelectGen`] right now.
+///
+/// Read by every send and receive so that a program with no `select` in it pays
+/// one relaxed load instead of a process-global mutex and a `notify_all`. That
+/// was not a rounding error: on a send/receive loop with no `select` anywhere,
+/// `notify_selects` and the futex calls its broadcast made were **58% of the
+/// program** — a global serialization point on the hot path of a feature the
+/// program did not use.
+static BLOCKED_SELECTS: AtomicUsize = AtomicUsize::new(0);
+
+/// A `select` counted in [`BLOCKED_SELECTS`] for as long as this is alive.
+struct SelectParked;
+
+impl SelectParked {
+    fn enter() -> Self {
+        BLOCKED_SELECTS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for SelectParked {
+    fn drop(&mut self) {
+        BLOCKED_SELECTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn select_gen() -> &'static SelectGen {
     static INSTANCE: OnceLock<SelectGen> = OnceLock::new();
     INSTANCE.get_or_init(|| SelectGen {
@@ -159,7 +253,19 @@ fn select_gen() -> &'static SelectGen {
 }
 
 /// Signals every blocked `select` that some channel changed state.
+///
+/// Skipping the broadcast when nothing is parked is safe, and the ordering is
+/// what makes it so. A notifier reaches here having *already* released its
+/// channel's `state` guard, so its change is published; a `select` increments
+/// [`BLOCKED_SELECTS`] *before* reading the generation and polling. So if the
+/// load below sees zero, the increment that would have made it one comes later
+/// in the `SeqCst` total order — and the poll that follows that increment takes
+/// the channel lock, and therefore sees the change this notifier just made.
+/// Either the notifier wakes the select, or the select was never going to sleep.
 fn notify_selects() {
+    if BLOCKED_SELECTS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
     let wake = select_gen();
     {
         let mut generation = wake.lock.lock().expect("select generation poisoned");
@@ -173,7 +279,14 @@ fn channel(id: i64) -> Arc<ChanInner> {
     // raise longjmps to the nearest handler, skipping Rust drops — a live
     // guard would leave the *global* registry locked forever, deadlocking
     // every later channel operation once the raise is caught.
-    let found = registry().lock().expect("channel registry poisoned").get(&id).cloned();
+    let found = usize::try_from(id).ok().and_then(|id| {
+        registry()
+            .read()
+            .expect("channel registry poisoned")
+            .get(id.checked_sub(1)?)
+            .cloned()
+            .flatten()
+    });
     match found {
         Some(inner) => inner,
         None => crate::panic::raise_str("Channel not found"),
@@ -182,21 +295,42 @@ fn channel(id: i64) -> Arc<ChanInner> {
 
 static NEXT_CHANNEL_ID: AtomicI64 = AtomicI64::new(1);
 
-/// `chan(capacity)` — `capacity <= 0` is unbounded (the VM's rule). The
-/// channel travels as its `i64` id.
+/// `chan(capacity)`. The channel travels as its `i64` id.
+///
+/// `0` is **unbuffered**, not unbounded — the same ruling the VM's
+/// `create_channel_value` records, and this had been left behind on the older
+/// one (`capacity <= 0` meant unbounded here). It was observable: `chan.new(0)`
+/// then two `try_send`s answered `true, false` on the VM and `true, true`
+/// natively. As there, unbuffered takes the smallest bound the queue offers.
+///
+/// A negative capacity raises, likewise matching the VM instead of silently
+/// handing back an unbounded channel.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_new(capacity: i64) -> i64 {
+    if capacity < 0 {
+        crate::panic::raise_str(&format!("chan() capacity cannot be negative, got {capacity}"));
+    }
     let id = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
     let inner = Arc::new(ChanInner {
         state: Mutex::new(ChanState {
             queue: VecDeque::new(),
             closed: false,
+            recv_waiters: 0,
+            send_waiters: 0,
         }),
         recv_cv: Condvar::new(),
         send_cv: Condvar::new(),
-        cap: if capacity <= 0 { None } else { Some(capacity as usize) },
+        cap: Some((capacity as usize).max(1)),
+        requested: capacity,
     });
-    registry().lock().expect("channel registry poisoned").insert(id, inner);
+    {
+        let mut table = registry().write().expect("channel registry poisoned");
+        let slot = id as usize - 1;
+        if table.len() <= slot {
+            table.resize(slot + 1, None);
+        }
+        table[slot] = Some(inner);
+    }
     id
 }
 
@@ -215,12 +349,17 @@ pub extern "C" fn lkrt_chan_send(id: i64, value: LkDyn) {
         }
         if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
             state.queue.push_back(owned);
+            let wake = state.recv_waiters > 0;
             drop(state);
-            inner.recv_cv.notify_one();
+            if wake {
+                inner.recv_cv.notify_one();
+            }
             notify_selects();
             return;
         }
+        state.send_waiters += 1;
         state = inner.send_cv.wait(state).expect("channel poisoned");
+        state.send_waiters -= 1;
     }
 }
 
@@ -232,8 +371,11 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
     let mut state = inner.state.lock().expect("channel poisoned");
     loop {
         if let Some(value) = state.queue.pop_front() {
+            let wake = state.send_waiters > 0;
             drop(state);
-            inner.send_cv.notify_one();
+            if wake {
+                inner.send_cv.notify_one();
+            }
             notify_selects();
             return materialize(&value);
         }
@@ -241,7 +383,9 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
             drop(state);
             crate::panic::raise_str("receive on closed channel");
         }
+        state.recv_waiters += 1;
         state = inner.recv_cv.wait(state).expect("channel poisoned");
+        state.recv_waiters -= 1;
     }
 }
 
@@ -250,10 +394,73 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_close(id: i64) {
     let inner = channel(id);
-    inner.state.lock().expect("channel poisoned").closed = true;
-    inner.recv_cv.notify_all();
-    inner.send_cv.notify_all();
+    let (wake_recv, wake_send) = {
+        let mut state = inner.state.lock().expect("channel poisoned");
+        state.closed = true;
+        (state.recv_waiters > 0, state.send_waiters > 0)
+    };
+    if wake_recv {
+        inner.recv_cv.notify_all();
+    }
+    if wake_send {
+        inner.send_cv.notify_all();
+    }
     notify_selects();
+}
+
+/// `time.timeout(ms)` / `time.after(ms)` — a capacity-1 channel that receives
+/// one value once the duration is up.
+///
+/// The stdlib module builds this out of a tokio timer plus its async runtime's
+/// channel; here it is a thread that sleeps and then sends, because lkrt's
+/// channels are already thread-backed. What matters is the observable part, and
+/// it is the same on both: capacity 1, exactly one value, and the value itself
+/// — `timeout` sends nil, `after` sends the epoch milliseconds **read when the
+/// timer fires**, not when it was armed.
+///
+/// The send is a `try_send` whose result is dropped, matching the module: if
+/// nobody ever receives, the timer must not keep a thread parked forever, and a
+/// closed channel is not the timer's error to report.
+fn spawn_timer(duration_ms: i64, after: bool) -> i64 {
+    let id = lkrt_chan_new(1);
+    let delay = core::time::Duration::from_millis(duration_ms.max(0) as u64);
+    register_task(std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let value = if after {
+            crate::lkdyn::lkrt_dyn_from_i64(crate::host::lkrt_time_now_ms())
+        } else {
+            crate::lkdyn::lkrt_dyn_from_nil()
+        };
+        let inner = channel(id);
+        let mut state = inner.state.lock().expect("channel poisoned");
+        // Not `lkrt_chan_try_send`: that raises on a closed channel, and a
+        // raise `longjmp`s — out of a spawned thread, past this lock guard,
+        // with nobody to catch it. A closed channel means the receiver is gone,
+        // which is the timer's cue to do nothing.
+        if !state.closed && inner.cap.is_none_or(|cap| state.queue.len() < cap) {
+            state.queue.push_back(own(value));
+            if state.recv_waiters > 0 {
+                inner.recv_cv.notify_all();
+            }
+        }
+        drop(state);
+        // The timer body raises nothing — the comment above says why — so it
+        // reports the outcome directly rather than going through a try frame.
+        TaskOutcome::Returned(own(crate::lkdyn::lkrt_dyn_from_nil()))
+    }));
+    id
+}
+
+/// `time.timeout(ms)` — fires with nil.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_time_timeout(duration_ms: i64) -> i64 {
+    spawn_timer(duration_ms, false)
+}
+
+/// `time.after(ms)` — fires with the epoch milliseconds at that moment.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_time_after(duration_ms: i64) -> i64 {
+    spawn_timer(duration_ms, true)
 }
 
 /// Non-blocking send: 1 delivered, 0 full; closed raises.
@@ -268,8 +475,11 @@ pub extern "C" fn lkrt_chan_try_send(id: i64, value: LkDyn) -> i64 {
     }
     if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
         state.queue.push_back(owned);
+        let wake = state.recv_waiters > 0;
         drop(state);
-        inner.recv_cv.notify_one();
+        if wake {
+            inner.recv_cv.notify_one();
+        }
         notify_selects();
         1
     } else {
@@ -284,8 +494,11 @@ pub extern "C" fn lkrt_chan_try_recv(id: i64) -> LkDyn {
     let inner = channel(id);
     let mut state = inner.state.lock().expect("channel poisoned");
     if let Some(value) = state.queue.pop_front() {
+        let wake = state.send_waiters > 0;
         drop(state);
-        inner.send_cv.notify_one();
+        if wake {
+            inner.send_cv.notify_one();
+        }
         notify_selects();
         return materialize(&value);
     }
@@ -300,6 +513,12 @@ pub extern "C" fn lkrt_chan_try_recv(id: i64) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_chan_len(id: i64) -> i64 {
     channel(id).state.lock().expect("channel poisoned").queue.len() as i64
+}
+
+/// `chan.capacity(c)` — the capacity as asked for, so `chan.new(0)` reports 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_chan_capacity(id: i64) -> i64 {
+    channel(id).requested
 }
 
 /// `chan.is_closed(c)`.
@@ -357,45 +576,72 @@ pub unsafe extern "C" fn lkrt_chan_select(
         ];
         arena_handle(list)
     };
-    // Pre-validate arm kinds and deep-copy the armed send payloads *before*
-    // any channel lock is taken: `own` and the shape guards raise, and a
-    // longjmp past a live `MutexGuard` would leave that channel locked
-    // forever (the blocking send/recv paths follow the same
-    // drop-before-raise discipline). A send arm's copy is taken exactly
-    // once, up front; the retry loop consumes it on delivery.
-    let mut kinds = Vec::with_capacity(len);
+    // Everything that can raise, and everything that does not change between
+    // polls, happens here — before any channel lock is taken and before this
+    // call registers itself as a parked select.
+    //
+    // Raising is the original reason: `own` and the shape guards raise, and a
+    // longjmp past a live `MutexGuard` would leave that channel locked forever
+    // (the blocking send/recv paths follow the same drop-before-raise
+    // discipline). A send arm's copy is taken exactly once, up front; the retry
+    // loop consumes it on delivery.
+    //
+    // Resolving the channels here as well does two more things. It keeps the
+    // *global registry* mutex out of the poll loop, which used to take it once
+    // per armed arm per round. And it leaves the loop below with only one raise
+    // in it, which matters because a raise skips the parked-select bookkeeping
+    // (see `SelectParked`) — one site is a thing that can be got right by
+    // reading, a site per arm is not.
+    //
+    // A *disarmed* arm is not resolved and not shape-checked, because it was
+    // not before: `select { c1 <- v if false, … }` naming a channel that does
+    // not exist is a program the VM runs.
+    let mut arms: Vec<Option<(i64, Arc<ChanInner>)>> = Vec::with_capacity(len);
     let mut owned_sends: Vec<Option<OwnedVal>> = Vec::with_capacity(len);
     for index in 0..len {
         let kind = match types[index].tag {
             DYN_I64 if matches!(types[index].payload, 0 | 1) => types[index].payload,
             _ => crate::panic::raise_str("select$block: invalid arm entry types"),
         };
+        // Guard must be exactly `true` (the VM normalizes to Bool).
         let armed = guards[index].tag == DYN_BOOL && guards[index].payload != 0;
         owned_sends.push((kind == 1 && armed).then(|| own(values[index])));
-        kinds.push(kind);
+        arms.push(armed.then(|| {
+            let id = match channels[index].tag {
+                // A channel travels boxed under its own tag; the bare id is
+                // still accepted, which is what a `chan::…` spelling that has
+                // not been through the boxing path hands over.
+                crate::lkdyn::DYN_CHAN | DYN_I64 => channels[index].payload,
+                _ => crate::panic::raise_str("select$block: invalid channel arm"),
+            };
+            (kind, channel(id))
+        }));
     }
+    let any_armed = arms.iter().any(Option::is_some);
     loop {
+        // Registered *before* the poll, which is what lets a notifier skip its
+        // broadcast when this counter reads zero — see `notify_selects` for the
+        // ordering argument. Dropped on every way out of this loop body,
+        // including the `return`s inside the poll.
+        let parked = SelectParked::enter();
         // Read the wake-up generation *before* polling: a channel op that
         // lands mid-poll bumps it, so the wait below returns immediately
         // instead of missing the change.
         let round_gen = *select_gen().lock.lock().expect("select generation poisoned");
         for index in 0..len {
-            // Guard must be exactly `true` (the VM normalizes to Bool).
-            if !(guards[index].tag == DYN_BOOL && guards[index].payload != 0) {
+            let Some((kind, inner)) = &arms[index] else {
                 continue;
-            }
-            let id = match channels[index].tag {
-                DYN_I64 => channels[index].payload,
-                _ => crate::panic::raise_str("select$block: invalid channel arm"),
             };
-            let kind = kinds[index];
-            let inner = channel(id);
+            let (kind, inner) = (*kind, inner.clone());
             let mut state = inner.state.lock().expect("channel poisoned");
             match kind {
                 0 => {
                     if let Some(value) = state.queue.pop_front() {
+                        let wake = state.send_waiters > 0;
                         drop(state);
-                        inner.send_cv.notify_one();
+                        if wake {
+                            inner.send_cv.notify_one();
+                        }
                         notify_selects();
                         let payload = arena_handle(vec![
                             LkDyn {
@@ -436,13 +682,22 @@ pub unsafe extern "C" fn lkrt_chan_select(
                 1 => {
                     if state.closed {
                         drop(state);
+                        // The one raise left inside the poll. A raise longjmps
+                        // past Rust drops, so the registration has to come off
+                        // by hand — otherwise this select stays counted as
+                        // parked forever and every channel operation in the
+                        // process goes back to broadcasting.
+                        drop(parked);
                         crate::panic::raise_str("send on closed channel");
                     }
                     if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
                         let owned = owned_sends[index].take().expect("armed send payload pre-owned");
                         state.queue.push_back(owned);
+                        let wake = state.recv_waiters > 0;
                         drop(state);
-                        inner.recv_cv.notify_one();
+                        if wake {
+                            inner.recv_cv.notify_one();
+                        }
                         notify_selects();
                         return result(false, index as i64, LkDyn::NIL);
                     }
@@ -455,7 +710,7 @@ pub unsafe extern "C" fn lkrt_chan_select(
         if has_default != 0 {
             return result(true, -1, LkDyn::NIL);
         }
-        if len == 0 || !guards.iter().any(|g| g.tag == DYN_BOOL && g.payload != 0) {
+        if !any_armed {
             // Every arm disabled and no default: the VM yields nil-ish;
             // mirror its documented "all guards off → nil" rule by
             // reporting the default shape.
@@ -481,8 +736,19 @@ pub unsafe extern "C" fn lkrt_chan_select(
 
 // ── Goroutine threads + task registry (H2) ─────────────────────────────
 
+/// How a task finished.
+///
+/// A raise inside a task is the task's *result*, not the process's: the
+/// interpreter hands it to whoever awaits, and a task nobody awaits fails
+/// silently. Natively the raise had no handler on that thread and took the
+/// uncaught path — print and exit — so one failing task killed the program.
+enum TaskOutcome {
+    Returned(OwnedVal),
+    Raised(OwnedVal),
+}
+
 struct TaskSlot {
-    handle: Option<std::thread::JoinHandle<OwnedVal>>,
+    handle: Option<std::thread::JoinHandle<TaskOutcome>>,
 }
 
 fn tasks() -> &'static Mutex<HashMap<i64, TaskSlot>> {
@@ -525,7 +791,7 @@ pub unsafe extern "C" fn lkrt_spawn_arg(block: *mut c_void, index: i64) -> LkDyn
     }
 }
 
-fn register_task(handle: std::thread::JoinHandle<OwnedVal>) -> i64 {
+fn register_task(handle: std::thread::JoinHandle<TaskOutcome>) -> i64 {
     let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
     tasks()
         .lock()
@@ -552,12 +818,61 @@ macro_rules! spawn_arity {
                 let block = block_addr as *mut c_void;
                 // SAFETY: ownership of the block moved into this thread.
                 let args = unsafe { Box::from_raw(block as *mut Vec<OwnedVal>) };
-                let result = f($(materialize(&args[$idx])),*);
-                own(result)
+                // Materialised before the protected call: a raise jumps past
+                // every drop in between, and `args` must not be one of them.
+                let ready: Vec<LkDyn> = alloc::vec![$(materialize(&args[$idx])),*];
+                drop(args);
+                // `ready` is the closure's; a raise jumps past its drop, so a
+                // failing task leaks one small `Vec`. Bounded by the number of
+                // tasks that fail, which is why it is left rather than worked
+                // around with a thread-local.
+                run_protected(move || store_task_result(own(f($(ready[$idx]),*))))
             }))
         }
     };
     (@ty $idx:literal) => { LkDyn };
+}
+
+unsafe extern "C" {
+    /// See `try_trampoline.c`. Cranelift and Rust both refuse `setjmp`, so the
+    /// frame that survives the jump has to be a C one.
+    fn lkrt_rt_try_thunk(thunk: extern "C" fn(*mut c_void), state: *mut c_void) -> i64;
+}
+
+extern "C" fn call_boxed_thunk(state: *mut c_void) {
+    // SAFETY: `state` is the `Box<dyn FnMut()>` `run_protected` handed over.
+    let body = unsafe { &mut *(state as *mut Box<dyn FnMut()>) };
+    body();
+}
+
+/// Runs a task body under its own `try` frame and reports how it finished.
+///
+/// The body must own nothing that needs dropping: a raise `longjmp`s past every
+/// Rust drop between here and the C frame. That is why the arguments are
+/// materialised *before* the call and only the plain call happens inside.
+fn run_protected(body: impl FnMut() + 'static) -> TaskOutcome {
+    let mut boxed: Box<dyn FnMut()> = Box::new(body);
+    let state = (&raw mut boxed).cast::<c_void>();
+    // SAFETY: `call_boxed_thunk` reads exactly the pointer passed here, and
+    // `boxed` outlives the call.
+    if unsafe { lkrt_rt_try_thunk(call_boxed_thunk, state) } == 0 {
+        return TaskOutcome::Raised(own(crate::panic::lkrt_rt_current_error()));
+    }
+    TaskOutcome::Returned(
+        TASK_RESULT
+            .with(|slot| slot.borrow_mut().take())
+            .unwrap_or(OwnedVal::Nil),
+    )
+}
+
+std::thread_local! {
+    /// Where a protected task body leaves its result. A value cannot be
+    /// returned *through* the C trampoline, which speaks only `long long`.
+    static TASK_RESULT: core::cell::RefCell<Option<OwnedVal>> = const { core::cell::RefCell::new(None) };
+}
+
+fn store_task_result(value: OwnedVal) {
+    TASK_RESULT.with(|slot| *slot.borrow_mut() = Some(value));
 }
 
 /// Zero-capture spawn (no argument block).
@@ -566,7 +881,9 @@ macro_rules! spawn_arity {
 /// `f` must be a compiled zero-argument function returning a boxed value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_spawn0(f: extern "C" fn() -> LkDyn) -> i64 {
-    register_task(std::thread::spawn(move || own(f())))
+    register_task(std::thread::spawn(move || {
+        run_protected(move || store_task_result(own(f())))
+    }))
 }
 
 spawn_arity!(lkrt_spawn1, 0);
@@ -585,10 +902,22 @@ pub extern "C" fn lkrt_task_await(id: i64) -> LkDyn {
     };
     match handle {
         Some(handle) => match handle.join() {
-            Ok(owned) => materialize(&owned),
+            Ok(TaskOutcome::Returned(owned)) => materialize(&owned),
+            // The task's raise, delivered here — the interpreter's rule, and
+            // the reason it is caught rather than fatal. Materialised into this
+            // thread's arena first: the value was built in the task's.
+            Ok(TaskOutcome::Raised(owned)) => {
+                let value = materialize(&owned);
+                crate::panic::lkrt_rt_raise_dyn(value);
+                unreachable!("a raise does not return")
+            }
             Err(_) => crate::panic::raise_str("task failed"),
         },
-        None => crate::panic::raise_str("Task not found"),
+        // Same wording as the VM: awaiting takes the task, so a second
+        // await finds nothing.
+        None => {
+            crate::panic::raise_str("this task has already been awaited — its result was handed to the first `await`")
+        }
     }
 }
 

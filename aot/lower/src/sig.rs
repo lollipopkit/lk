@@ -19,18 +19,305 @@ pub(crate) struct SigInfer {
     /// default as a real mismatch.
     pub(crate) ret_known: Vec<bool>,
     pub(crate) conflict: bool,
+    /// `(function, TryBegin pc)` → the function that region's body became.
+    ///
+    /// Filled before any function is lowered, because a region's body has to
+    /// exist as a function *before* the parent can call it — and because the
+    /// bodies are ordinary entries in the function table from then on, lowered
+    /// by the same loop as everything else.
+    pub(crate) try_bodies: std::collections::HashMap<(u32, usize), u32>,
+    /// A try body's parameters, as *registers of the enclosing function*.
+    ///
+    /// Discovered rather than declared: the body is lowered, and a read with no
+    /// definition inside it names the register that has to come in from
+    /// outside. Repeating that until it lowers gives exactly the set it needs —
+    /// no table of which operand each opcode reads, which is the kind of table
+    /// that is wrong in one entry and produces a wrong answer.
+    pub(crate) try_body_params: std::collections::HashMap<u32, Vec<u8>>,
+    /// Registers a body actually **rebound**, as opposed to objects it mutated
+    /// through a handle it shares with the parent.
+    ///
+    /// Recorded while the body is lowered, by comparing the SSA's `current_def`
+    /// before and after each instruction — the same device the body already
+    /// uses to notice a cell's value changing, widened from the tracked cells
+    /// to every register.
+    ///
+    /// It replaces reading the instruction's `a` field as "the register this
+    /// writes", which is not true of every opcode: `log.push(2)` lowers to
+    /// `ListPush a=log`, where `a` is the *receiver*. Counting that as a
+    /// rebinding gave the register a cell, and the `dyn.from_list` /
+    /// `dyn.as_list` round trip a cell implies is what loses the mutation.
+    pub(crate) try_body_rebound: std::collections::HashMap<u32, std::collections::HashSet<u8>>,
+    /// What type each of those inputs travels as, when it is not `I64`.
+    ///
+    /// The trampoline marshals a body's inputs as machine words in a stack
+    /// buffer, so anything a word can hold may cross: an integer, and a
+    /// container handle, which *is* a pointer. What may not are the carriers
+    /// that occupy two registers (`Dyn`, the `Maybe`s) and `F64`, which the ABI
+    /// passes in XMM while the trampoline passes integers.
+    ///
+    /// Recorded by the caller, which is where the register's real type is
+    /// known, and read by the body on the next pass — the same fixpoint that
+    /// discovers *which* registers are inputs at all.
+    pub(crate) try_body_param_tys: std::collections::HashMap<(u32, u8), Ty>,
+    /// Region inputs the enclosing function holds as a *closure reference*
+    /// rather than as a value.
+    ///
+    /// A lambda has no runtime representation natively — it is a compile-time
+    /// `GlobalRef`, which is why storing one in a list rejects — so a region
+    /// input that is one has no word to marshal. It crosses the same way an
+    /// erased lambda argument crosses an ordinary call instead: the *identity*
+    /// travels at compile time (the body seeds the register with the ref) and
+    /// only the environment travels at run time, as extra words in the same
+    /// argument buffer.
+    ///
+    /// Without it `try { r = inner(); }` rejected for any local `inner`, which
+    /// is a shape a `try` block is written around constantly.
+    pub(crate) try_body_lambdas: std::collections::HashMap<(u32, u8), LambdaIdentity>,
+    /// Region inputs the enclosing function holds as an *upvalue cell* — a
+    /// variable some closure in it captured. See [`cell_region_input`].
+    /// Region inputs that are a **struct instance**, by the struct's name.
+    ///
+    /// `ssa.struct_facts` is the enclosing function's own SSA state and stops
+    /// at the boundary, so inside the body the input is an ordinary
+    /// `Map<str, Dyn>` — which is what a struct rides, and which `IsMap`
+    /// answers `true` for. `let {p: c} = p;` inside a `try` then matched a map
+    /// pattern against a struct, where the interpreter refuses.
+    pub(crate) try_body_struct_inputs: std::collections::HashMap<(u32, u8), crate::ssa::StructFact>,
+    /// Region inputs whose word is a **closure handle**.
+    ///
+    /// `ssa.closure_values` is the enclosing function's own SSA state and stops
+    /// at the boundary: the body is a separate lowering and the input arrives
+    /// as an ordinary `Dyn` word. What that costs is precision at the one place
+    /// the fact is load-bearing — a store whose *key* is a closure is provably
+    /// not a key and may lower to the runtime's refusal, while any other `Dyn`
+    /// key might be a valid key of the wrong kind and must not.
+    ///
+    /// Only for lambdas used as *values*; one still travelling as a compile-time
+    /// identity is [`SigInfer::try_body_lambdas`] and has no word at all.
+    pub(crate) try_body_closure_inputs: std::collections::HashSet<(u32, u8)>,
+    pub(crate) try_body_cell_inputs: std::collections::HashSet<(u32, u8)>,
+    /// What a cell input's *content* type is, as the caller saw it entering the
+    /// region.
+    ///
+    /// A cell is dynamically typed — reading one answers a `Dyn` — so without
+    /// this every use of a captured variable inside a region became `Dyn`
+    /// arithmetic, which has no lowering: `if (p0 % 5 == 0)` rejected for a `p0`
+    /// some lambda in the function happened to capture. The body unboxes to this
+    /// type instead, and a store of a *different* type joins the entry to `Dyn`
+    /// and retries, so the two ends cannot disagree about what the cell holds.
+    pub(crate) try_body_cell_input_tys: std::collections::HashMap<(u32, u8), Ty>,
+    /// What a runtime-cell capture *holds*, by `(callee, capture index)`.
+    ///
+    /// A cell is dynamically typed, so reading one answers `Dyn` — and `Dyn`
+    /// arithmetic has no lowering, so a closure that merely *adds* to what it
+    /// captured rejected the moment the capture became a cell (which is what
+    /// assigning to it, or handing it to a `try` region, does). The call site
+    /// seeds the cell and therefore knows the type; the callee unboxes reads to
+    /// it, and a store of a different type joins the entry to `Dyn` and retries,
+    /// so the two ends cannot hold two opinions about one object.
+    ///
+    /// [`SigInfer::try_body_cell_input_tys`] is the same notion for a region
+    /// input, keyed by *register* because that is what the caller has there.
+    pub(crate) cell_capture_tys: std::collections::HashMap<(u32, usize), Ty>,
+    /// Lambdas the program uses as **runtime values** — stored in a container,
+    /// put in a struct field, returned from a branch — mapped to the *clone*
+    /// that is that value.
+    ///
+    /// A clone, not the lambda itself. A closure value is called through one
+    /// arity switch in the runtime, so it must have an all-`Dyn` signature;
+    /// the same lambda's other uses are often the ones that resolve statically,
+    /// and the typed HOF path takes its address with the typed signature.
+    /// Pinning the original to `Dyn` cost `examples/syntax/closure.lk` its
+    /// lowering. So the original keeps its signature and the value form is a
+    /// second copy of the body — the mechanism lambda erasure already uses.
+    ///
+    /// The value is built **at the consumer that needs one**
+    /// (`lower_call::read_value`), never at the definition, so a register that
+    /// names a lambda keeps exactly one meaning and `Move`, a call window and
+    /// an iteration need to know nothing about any of this.
+    pub(crate) value_lambdas: std::collections::HashMap<u32, u32>,
+    /// The clones themselves: what [`SigInfer::param_ty`] answers `Dyn` for.
+    pub(crate) value_lambda_bodies: std::collections::HashSet<u32>,
+    /// What type each of those environment words travels as, keyed by
+    /// `(body, register, capture index)` — the [`SigInfer::try_body_param_tys`]
+    /// of a lambda input, which needs one type per capture rather than one per
+    /// register.
+    pub(crate) try_body_lambda_env_tys: std::collections::HashMap<(u32, u8, u8), Ty>,
+    /// A try body's *outputs*: registers of the enclosing function that the
+    /// body assigns and the enclosing function goes on to read.
+    ///
+    /// They cannot travel in registers. The body runs in a frame of its own, so
+    /// a write there leaves the parent's copy alone — and on the raise path the
+    /// body never returns at all, while the VM still shows whatever it managed
+    /// to write. So each one becomes a cell: the parent makes it, the body
+    /// writes through it as it goes, and the parent reads it back on both
+    /// edges.
+    pub(crate) try_body_cells: std::collections::HashMap<u32, Vec<u8>>,
+    /// Which of a body's cells the *caller* allocated as **raw** — parking a
+    /// typed container handle rather than a boxed value.
+    ///
+    /// The kind is one decision, and it belongs to whoever creates the cell.
+    /// Both sides used to decide it independently — the caller from the
+    /// register's type *entering* the region, the body from the type it
+    /// *stores* — and the two disagree exactly when a register that was `nil`
+    /// is assigned a container inside the body. `let out = nil; try { out =
+    /// b.take(1); } catch e { }` then wrote a raw handle into a value cell, and
+    /// the read raised "runtime type error" where the VM printed the bytes.
+    pub(crate) try_body_raw_cells: std::collections::HashSet<(u32, u8)>,
+    /// Registers a *later* read proved the body had to write back.
+    ///
+    /// `try_body_cells` is what the region's own scan could see: registers the
+    /// enclosing function had already defined. This is the other half — a
+    /// register first defined *inside* the body and read after it, which the
+    /// scan cannot know about because nothing in the parent defines it. The
+    /// read itself is the evidence, and it arrives as an `UndefinedOperand`.
+    pub(crate) try_body_extra_cells: std::collections::HashMap<u32, std::collections::HashSet<u8>>,
+    /// Try bodies that `return` from the **enclosing** function.
+    ///
+    /// A body is outlined into a function of its own, so a `return` written in
+    /// it would return from *that* function — a different program. It used to be
+    /// refused, which made `try { return n * 2; } catch e { return -1; }` drop
+    /// the whole program to the VM while the value form
+    /// (`let v = try { n * 2 } catch e { -1 }; return v;`) lowered. The same
+    /// function, two spellings, one of them three times slower.
+    ///
+    /// So the body gets a third channel beside "the value" and "it raised": two
+    /// more output cells, a flag and the value. The body sets them and returns
+    /// normally; the caller checks the flag on the ok edge and returns.
+    pub(crate) try_body_returns: std::collections::HashSet<u32>,
+    /// What a try body's parked `return` *is*, by body index.
+    ///
+    /// The value is boxed into the outcome cell and read back out with the
+    /// enclosing function's return type — which is joined over the returns that
+    /// function makes *directly*, and a region's return is not one of those. So
+    ///
+    /// ```lk
+    /// fn f() -> Any { let r: Any = []; try { return "ok " + r; } catch e { return "E"; } }
+    /// ```
+    ///
+    /// took `Str` from the `catch` arm, read a list back as a string, and
+    /// raised where the interpreter answered. Recording the parked type lets
+    /// the two be joined, and a disagreement takes the `dyn_rets` retry that
+    /// two disagreeing direct returns already take.
+    pub(crate) try_body_ret_tys: std::collections::HashMap<u32, Ty>,
+    /// How many escape trailers a try body ends with — one per distinct pc
+    /// outside the region that its `break`/`continue` jumps to
+    /// (`TryRegionShape::escape_targets`).
+    ///
+    /// The body cannot work this out for itself: the trailers are `Return0`
+    /// placeholders, and which of its instructions are trailers rather than code
+    /// is a fact about the *region*, which lives in the parent. The count is
+    /// enough — they are the last `n` instructions, and the outcome code of the
+    /// `k`th is `2 + k`.
+    ///
+    /// A body with any of these takes the outcome flag whether or not it also
+    /// `return`s; the value cell stays tied to [`SigInfer::try_body_returns`],
+    /// since a `break` carries nothing and the trampoline's argument budget is
+    /// eight.
+    pub(crate) try_body_escapes: std::collections::HashMap<u32, usize>,
+    /// The *enclosing* function's captures, handed to a try body so its
+    /// `LoadCapture k` has somewhere to resolve.
+    ///
+    /// A body is outlined with `capture_count == 0`, so its own capture list
+    /// held only the region's cell inputs — and `LoadCapture 0` inside it either
+    /// found nothing (a refusal) or, with enough cell inputs, would have found
+    /// the wrong one. That made a `try` inside *any* capturing closure
+    /// unlowerable, which is most closures: `spawn(|| { try { … } catch e { … }
+    /// })` is the ordinary way to write a goroutine that handles its own errors.
+    ///
+    /// Passed positionally and always, not on demand: the body's capture indices
+    /// are the enclosing function's, so index `k` has to be index `k`. A
+    /// statically-known capture still occupies a slot and carries a dead word,
+    /// the same way `ClosureCapture::StaticRef` already does at an ordinary call.
+    pub(crate) try_body_outer_captures: std::collections::HashMap<u32, Vec<Ty>>,
+    /// What a `Cell`-typed [`SigInfer::try_body_outer_captures`] entry holds,
+    /// copied from what the enclosing function reads it as — so the body's
+    /// arithmetic on a captured variable is typed the same way the enclosing
+    /// closure's is, rather than falling back to `Dyn`.
+    pub(crate) try_body_outer_cell_tys: std::collections::HashMap<(u32, usize), Ty>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.
-    pub(crate) dyn_empty_lists: std::collections::HashSet<(u32, usize)>,
+    pub(crate) dyn_literals: std::collections::HashSet<(u32, usize)>,
+    /// `(function, parameter register)` pairs whose list argument must be
+    /// built as a Dyn list by every caller, because the callee pushes an
+    /// element the typed carrier cannot hold.
+    ///
+    /// The demand travels *up*: a callee cannot fix its own parameter (the
+    /// allocation belongs to the caller, and the caller's other aliases read
+    /// it), so the carrier has to be decided at the literal.
+    pub(crate) dyn_params: std::collections::HashSet<(u32, u8)>,
     /// Loop-header phis discovered to merge heterogeneous boxable types
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.
+    /// Loop-header phis forbidden from inheriting provenance, discovered by a
+    /// contradicting edge (`Unsupported::PhiProvenance`).
+    pub(crate) no_phi_provenance: std::collections::HashSet<(u32, usize, usize)>,
     pub(crate) dyn_loop_phis: std::collections::HashSet<(u32, usize, usize)>,
     /// Functions whose returns disagreed on a boxable type (or returned a
     /// nullable carrier): the next fixpoint pass boxes every return point,
     /// making the function return `Dyn` instead of rejecting the module.
     pub(crate) dyn_rets: std::collections::HashSet<u32>,
+    /// `(function, capture index)` pairs that must travel as a **runtime cell**
+    /// rather than by value, because the body assigns to them.
+    ///
+    /// A closure's captures are hidden trailing arguments holding the cell's
+    /// content at the call site — right for a capture the body reads, and with
+    /// nowhere to put a write. So `|v| { acc = acc + v; }`, which is most of
+    /// what a closure is for, dropped the whole program to the VM.
+    ///
+    /// Discovered the same way `dyn_rets` and `try_body_params` are: the body
+    /// is lowered, the assignment finds a by-value capture, records the pair
+    /// and asks for a retry. The next pass has the caller seed an `rt.cell_new`
+    /// and read it back — the same carrier a `try` body's outer assignment
+    /// already crosses on. Nothing guesses at the bytecode's register
+    /// provenance, and a read-only capture keeps passing as a plain value.
+    pub(crate) cell_captures: std::collections::HashSet<(u32, usize)>,
+    /// `(function, capture index)` → the callable that capture *is*.
+    ///
+    /// `let f = |x| x + 1; let g = |x| f(x) * 2;` — composing two lambdas, which
+    /// is most of what having them is for. `f` is captured, so the compiler puts
+    /// it in a cell, and what goes into that cell is a lowering-time reference,
+    /// not a value. The callee's `LoadCapture` + `LoadCellVal` then read a
+    /// parameter that holds nothing meaningful.
+    ///
+    /// A reference has no runtime representation here, so the capture still
+    /// occupies its ABI slot (a dead `0`) and the *meaning* travels through this
+    /// map instead. Discovered by the caller and retried, the same loop
+    /// `cell_captures` uses — so the callee never lowers before the fact exists;
+    /// if it somehow did, the `Call` on a plain integer refuses and the retry
+    /// fixes it.
+    pub(crate) ref_captures: std::collections::HashMap<(u32, usize), GlobalRef>,
+    /// Per function: the struct its returns are known to construct.
+    ///
+    /// A type's *name* only ever entered the lowering from a `NewObject`
+    /// (`ssa.struct_facts`), so it stopped at the function boundary: the
+    /// receiver of `make(3, 4).norm()` had no type and the method call fell out
+    /// of the devirtualizing path — in one module as much as across two. This
+    /// carries it out, and the fixpoint carries it to callers lowered before
+    /// their callee.
+    ///
+    /// `Some(None)` where the returns disagree or one of them is not a struct:
+    /// an answer that is sometimes wrong would devirtualize to the wrong impl.
+    pub(crate) ret_structs: std::collections::HashMap<u32, Option<crate::ssa::StructFact>>,
+    /// `(callee, parameter slot)` → the struct every call site passes there.
+    ///
+    /// The parameter-side twin of [`Self::ret_structs`], and the same missing
+    /// provenance one step earlier: a struct arriving as an *argument* had no
+    /// type name, so `fn area(q: P) { return q.w * q.h; }` read fields fine
+    /// (the carrier is `MapStrDyn` either way) while `fn area(q: P) { return
+    /// q.norm(); }` could not devirtualize and dropped the module to the VM.
+    /// Passing a value to a function is at least as common as returning one.
+    ///
+    /// `Some(None)` where the call sites disagree, or one of them passes
+    /// something that is not a struct: a name that is right only sometimes
+    /// would devirtualize to the wrong impl, which is worse than not lowering.
+    /// [`Self::observe_param`] takes the argument's name as a parameter — not
+    /// as a separate call the caller might forget — because a site that
+    /// silently records nothing inherits another site's answer, and that is
+    /// exactly the wrong-impl case.
+    pub(crate) param_structs: std::collections::HashMap<(usize, usize), Option<crate::ssa::StructFact>>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -44,6 +331,10 @@ pub(crate) struct SigInfer {
     /// assigned exactly once, in the entry prefix, from a zero-capture
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     pub(crate) lambda_globals: Vec<Option<u32>>,
+    /// Global slots the program writes — see
+    /// [`crate::prescan::prescan_shadowed_globals`]. A read of one resolves to
+    /// the slot, never to the stdlib module or builtin of the same name.
+    pub(crate) shadowed_globals: Vec<bool>,
     /// `lambda_params[f][i]` — this function's i-th parameter is an *erased*
     /// lambda with a statically known identity: the callee seeds the register
     /// with a `GlobalRef::Lambda`/`Closure` instead of binding a value, so
@@ -101,6 +392,46 @@ pub(crate) struct SigInfer {
 }
 
 impl SigInfer {
+    /// Appends one function's worth of state to **every** per-function table,
+    /// returning its index.
+    ///
+    /// These tables are parallel arrays indexed by function, and the working
+    /// function list grows in three places: `try`-body outlining, a
+    /// lambda-argument specialization, and a closure-value clone. Each pushed
+    /// to the subset it happened to care about, and the subsets differed — so
+    /// after a single outlined `try` body, `lambda_params.len()` was one short
+    /// of `param_obs.len()` and a specialization's entry landed under the
+    /// *previous* function's index. The visible symptom was that
+    /// `fn ap(xs, f) { return xs.map(f); }` stopped lowering as soon as the
+    /// module contained a `try` anywhere, because the erased lambda parameter
+    /// was recorded for somebody else.
+    pub(crate) fn push_function(&mut self, params: Vec<Option<Ty>>, ret: Ty) -> u32 {
+        let index = self.param_obs.len() as u32;
+        self.param_obs.push(params);
+        self.ret_types.push(ret);
+        self.ret_known.push(true);
+        self.lambda_params.push(Vec::new());
+        self.specialized.push(false);
+        self.plain_called.push(false);
+        self.ret_closures.push(None);
+        self.ret_closure_poisoned.push(false);
+        debug_assert!(
+            [
+                self.ret_types.len(),
+                self.ret_known.len(),
+                self.lambda_params.len(),
+                self.specialized.len(),
+                self.plain_called.len(),
+                self.ret_closures.len(),
+                self.ret_closure_poisoned.len(),
+            ]
+            .iter()
+            .all(|&len| len == self.param_obs.len()),
+            "per-function tables must stay parallel"
+        );
+        index
+    }
+
     /// The type a parameter is believed to hold.
     ///
     /// An unobserved parameter defaults to `I64` rather than `Dyn`. `Dyn`
@@ -110,7 +441,27 @@ impl SigInfer {
     /// the live functions it happens to call. A function that cannot lower on
     /// the `I64` guess is dropped instead, provided nothing reaches it.
     pub(crate) fn param_ty(&self, func: usize, i: usize) -> Ty {
-        self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
+        // The value form of a lambda is called through one arity switch, so
+        // every one of them has the same signature: all `Dyn`, parameters and
+        // captures alike. Same pinning `spawn` does to the body it launches by
+        // address.
+        if self.value_lambda_bodies.contains(&(func as u32)) {
+            return Ty::Dyn;
+        }
+        if let Some(observed) = self.param_obs[func].get(i).copied().flatten() {
+            return observed;
+        }
+        // `self` in `impl T { … }` is a struct instance, whatever the call
+        // sites said — including when there are none. Every impl method is a
+        // lowering root (a trait's arms must all exist), so an *uncalled* one
+        // was lowered with the `I64` default and then failed reading a field:
+        // `an operand at pc 1 is a str where a i64 is required`, in a method
+        // nobody calls, killing the whole module. `t4`/`t6` in the trait notes
+        // are exactly that.
+        if i == 0 && self.traits.impl_owner(func as u32).is_some() {
+            return Ty::MapStrDyn;
+        }
+        Ty::I64
     }
 
     /// Records one call-site observation of `callee`'s parameter `slot_idx`
@@ -121,7 +472,23 @@ impl SigInfer {
     /// observe as `Dyn` directly. The join is monotonic on a two-level
     /// lattice, so the fixpoint still terminates; function-vs-value
     /// polymorphism keeps its own reject (`lambda_params`).
-    pub(crate) fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty) -> Ty {
+    pub(crate) fn observe_param(
+        &mut self,
+        callee: usize,
+        slot_idx: usize,
+        arg_ty: Ty,
+        arg_fact: Option<&crate::ssa::StructFact>,
+    ) -> Ty {
+        match self.param_structs.entry((callee, slot_idx)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(arg_fact.cloned());
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if slot.get().as_ref() != arg_fact {
+                    slot.insert(None);
+                }
+            }
+        }
         let obs = match arg_ty {
             Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => Ty::Dyn,
             other => other,
@@ -138,6 +505,40 @@ impl SigInfer {
             }
             None => obs,
         }
+    }
+
+    /// Whether *every* capture of `callee` is a static reference.
+    ///
+    /// Then the closure needs nothing at runtime — it is a plain function
+    /// reference — so the capture environment is erased entirely rather than
+    /// carried as dead slots. That is what lets `xs.map(|x| f(x))` reach the
+    /// typed `map_fn` fast path, which calls the callback with exactly the
+    /// element and nothing else.
+    ///
+    /// All-or-nothing on purpose: a *mixed* environment would need a hole at one
+    /// index, and every call site would have to agree on where the hole is. The
+    /// dead-slot form already handles that case correctly, just with one wasted
+    /// register.
+    pub(crate) fn captures_all_static(&self, callee: usize, capture_count: usize) -> bool {
+        capture_count > 0 && (0..capture_count).all(|k| self.ref_captures.contains_key(&(callee as u32, k)))
+    }
+
+    /// Records that capture `k` of `callee` has to arrive as a runtime cell,
+    /// and **pins** its parameter slot to [`Ty::Cell`].
+    ///
+    /// The pin is the point: `param_obs` accumulates across fixpoint passes and
+    /// never resets, so the by-value type observed before the body's assignment
+    /// was seen would join with `Cell` to `Dyn` and the call site would then
+    /// fail to coerce the cell pointer at all. Returns whether this is new
+    /// information (the caller retries when it is).
+    pub(crate) fn require_cell_capture(&mut self, callee: usize, param_count: usize, k: usize) -> bool {
+        let fresh = self.cell_captures.insert((callee as u32, k));
+        if let Some(slot) = self.param_obs.get_mut(callee).and_then(|p| p.get_mut(param_count + k)) {
+            let changed = *slot != Some(Ty::Cell);
+            *slot = Some(Ty::Cell);
+            return fresh || changed;
+        }
+        fresh
     }
 
     pub(crate) fn gvar(&self, slot: u16) -> u32 {
@@ -166,6 +567,9 @@ pub(crate) fn ret_closure_candidate(
                 let slot = ssa.cell_slot(*cid);
                 ssa.read_slot(slot, block, 0).ok()?
             }
+            // A capture taken onward from an enclosing closure is not one of
+            // *this* function's parameter values, so the summary does not apply.
+            ClosureCapture::CellParam(_) | ClosureCapture::StaticRef => return None,
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
         let k = fn_params

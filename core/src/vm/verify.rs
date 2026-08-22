@@ -195,6 +195,7 @@ impl FunctionVerifier<'_> {
                 | Opcode::SubInt
                 | Opcode::MulInt
                 | Opcode::DivInt
+                | Opcode::FloorDivInt
                 | Opcode::ModInt
                 | Opcode::AddMulInt
                 | Opcode::Add2Int
@@ -268,6 +269,7 @@ impl FunctionVerifier<'_> {
                 | Opcode::ToIter
                 | Opcode::ToString
                 | Opcode::Not
+                | Opcode::Neg
                 | Opcode::IsNil
                 | Opcode::IsList
                 | Opcode::IsMap
@@ -384,19 +386,6 @@ impl FunctionVerifier<'_> {
                             format_args!(
                                 "LoadFunction index {index} out of bounds ({} functions)",
                                 self.module.functions.len()
-                            ),
-                        ));
-                    }
-                }
-                Opcode::LoadNative => {
-                    self.check_reg(pc, "a", instr.a())?;
-                    let index = instr.bx() as usize;
-                    if index >= self.module.natives.len() {
-                        return Err(self.fail(
-                            pc,
-                            format_args!(
-                                "LoadNative index {index} out of bounds ({} natives)",
-                                self.module.natives.len()
                             ),
                         ));
                     }

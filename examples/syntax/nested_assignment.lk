@@ -1,0 +1,73 @@
+// An assignment target is a *chain*, and the store belongs to its last step.
+//
+// The parser used to read the chain's *first* step and discard the rest, so
+// `p.m["b"] = 2` became `p.m = 2`: it replaced the map with the value, on both
+// engines, and `lk check` had nothing to object to whenever the field's type
+// left room for it. `p.q.n = 5` did the same to a nested struct, and the two
+// spellings that are all index (`m["a"]["b"] = 2`) were a syntax error.
+
+struct Inner {
+    n: Int,
+}
+
+struct Outer {
+    inner: Inner,
+    counts: Map<String, Int>,
+    items: List<Int>,
+}
+
+let o = Outer {
+    inner: Inner { n: 1 },
+    counts: { "a": 1 },
+    items: [10, 20],
+};
+
+// A field of a field.
+o.inner.n = 5;
+println(o.inner.n);
+
+// A key of a field, and an index of a field.
+o.counts["b"] = 2;
+o.items[0] = 99;
+println(o.counts);
+println(o.items);
+
+// Compound assignment reads the same chain it writes.
+o.counts["a"] += 10;
+o.items[1] *= 3;
+println(o.counts);
+println(o.items);
+
+// All the way down, with no struct in sight.
+let grid = [[1, 2], [3, 4]];
+grid[1][0] = 30;
+println(grid);
+
+let nested = { "x": { "y": 1 } };
+nested["x"]["y"] = 2;
+println(nested);
+
+// The store lands on the container the chain names, so anything else holding
+// that container sees it.
+let alias = o.inner;
+o.inner.n = 42;
+println(alias.n);
+
+// A map pattern destructures a map, and a struct is not one — even though a
+// struct instance rides the map carrier natively, where this used to match.
+let pairs = { "left": 1, "right": 2 };
+let { left: l, right: r } = pairs;
+println(l + r);
+
+struct Corner {
+    left: Int,
+    right: Int,
+}
+
+let corner = Corner { left: 3, right: 4 };
+try {
+    let { left: bad, right: worse } = corner;
+    println(bad + worse);
+} catch e {
+    println("a struct is not a map");
+}

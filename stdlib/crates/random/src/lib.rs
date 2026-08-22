@@ -15,7 +15,7 @@ pub struct RandomModule;
 
 #[lk_stdlib_common::stdlib_exports(module = "random")]
 impl RandomModule {
-    #[stdlib_export(name = "int", params(min: Int, max: Int), returns = Int)]
+    #[stdlib_export(name = "int", params(min: Int, max: Int), named(max), returns = Int)]
     fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let min = int_arg(args.get(0).expect("checked arity"), "random.int min")?;
         let max = int_arg(args.get(1).expect("checked arity"), "random.int max")?;
@@ -57,7 +57,7 @@ impl RandomModule {
         Ok(runtime_bytes_value(data, runtime.heap_mut()))
     }
 
-    #[stdlib_export(name = "choice", params(values: List), returns = Any)]
+    #[stdlib_export(name = "choice", params(values: List<_>), returns = Any)]
     fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = list_values(args.get(0).expect("checked arity"), runtime, "random.choice list")?;
         if values.is_empty() {
@@ -67,7 +67,7 @@ impl RandomModule {
         Ok(values[index])
     }
 
-    #[stdlib_export(name = "shuffle", params(values: List), returns = List)]
+    #[stdlib_export(name = "shuffle", params(values: List<_>), returns = List)]
     fn shuffle(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let mut values = list_values(args.get(0).expect("checked arity"), runtime, "random.shuffle list")?;
         for i in (1..values.len()).rev() {

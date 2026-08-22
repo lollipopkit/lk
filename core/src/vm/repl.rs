@@ -11,7 +11,7 @@ use crate::{
     stmt::{Program, Stmt},
     typ::TypeChecker,
     val::RuntimeVal,
-    vm::{Module, RuntimeExport, RuntimeModuleState, VmContext, execute_program_with_ctx},
+    vm::{Module, RuntimeExport, RuntimeModuleState, VmContext},
 };
 
 /// Persistent VM state for interactive REPL execution.
@@ -24,6 +24,23 @@ pub struct ReplVmSession {
     ctx: VmContext,
     type_checker: TypeChecker,
     persistent_names: BTreeSet<String>,
+    /// Every `struct` the session has declared, in the order first seen — see
+    /// [`ReplVmSession::carry_struct_declarations`].
+    struct_decls: Vec<crate::vm::StructDecl>,
+    /// Default method bodies from every `trait` the session has declared, so a
+    /// later input's `impl` gets them — see `apply_carried_trait_defaults`.
+    trait_defaults: crate::compat::collections::HashMap<String, Vec<Stmt>>,
+    /// Where an import path is relative to, for the *type* side of an import.
+    ///
+    /// Every other entry point seeds the checker with the signatures an import
+    /// brings (`typ::seed_imported_signatures` — the CLI does it for a file,
+    /// the native compiler for a compile, and `execute_with_ctx_from` for a
+    /// module loaded as an import). The session did not, so `use { Pt } from
+    /// "lib";` bound the value and left the *type* unknown: `Pt { x: 1, y: 2 }`
+    /// was refused with "no type named `Pt` is declared here", by a message
+    /// that then suggested writing the import that had just been written.
+    #[cfg(feature = "std")]
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl ReplVmSession {
@@ -32,7 +49,18 @@ impl ReplVmSession {
             ctx,
             type_checker,
             persistent_names: BTreeSet::new(),
+            struct_decls: Vec::new(),
+            trait_defaults: crate::compat::collections::HashMap::new(),
+            #[cfg(feature = "std")]
+            base_dir: None,
         }
+    }
+
+    /// Where this session's import paths are relative to — the working
+    /// directory, for the REPL.
+    #[cfg(feature = "std")]
+    pub fn set_base_dir(&mut self, base_dir: std::path::PathBuf) {
+        self.base_dir = Some(base_dir);
     }
 
     pub fn ctx(&self) -> &VmContext {
@@ -44,15 +72,125 @@ impl ReplVmSession {
     }
 
     pub fn execute_program(&mut self, program: &Program) -> Result<ReplExecutionResult> {
+        // A trait's default bodies are copied into the impls that leave them out
+        // during parsing, over one program's statements. An input that declares
+        // the `impl` without the `trait` beside it never saw them.
+        let carried_defaults;
+        let program = if self.trait_defaults.is_empty() {
+            program
+        } else {
+            let mut owned = program.clone();
+            crate::stmt::trait_defaults::apply_carried_trait_defaults(&mut owned.statements, &self.trait_defaults);
+            carried_defaults = owned;
+            &carried_defaults
+        };
         let mut next_type_checker = self.type_checker.clone();
+        let carried = self.carried_function_types(program);
+        // The signatures and types this input's imports bring, before checking
+        // it — see `base_dir`.
+        #[cfg(feature = "std")]
+        if let Some(base_dir) = self.base_dir.as_deref() {
+            crate::typ::seed_imported_signatures(program, base_dir, &mut next_type_checker);
+        }
         program.type_check(&mut next_type_checker)?;
+        restore_carried_function_types(&mut next_type_checker, carried);
 
         let (runtime_program, declared_names) = repl_runtime_program(program, &self.persistent_names)?;
-        let result = execute_program_with_ctx(&runtime_program, &mut self.ctx)?;
+        // The session's own bindings are user data, not module objects: without
+        // saying so, `xs` from an earlier line is indistinguishable from an
+        // imported `math`, and `xs.len()` compiles to an index read keyed by
+        // `"len"` (`compile_program_module_with_ctx_and_data_globals`).
+        let data_globals = self.persistent_names.iter().cloned().collect::<Vec<_>>();
+        let module = crate::vm::compile_program_module_with_ctx_and_data_globals(
+            &runtime_program,
+            &mut self.ctx,
+            &data_globals,
+        )?;
+        let module = self.carry_struct_declarations(module);
+        let result = crate::vm::execute_compiled_module_with_ctx(module, &mut self.ctx)?;
 
         self.type_checker = next_type_checker;
         self.persistent_names.extend(declared_names);
+        self.trait_defaults
+            .extend(crate::stmt::trait_defaults::trait_defaults_of(&program.statements));
+        self.record_struct_declarations(&result.module);
         self.sync_result_globals(result)
+    }
+
+    /// Give this input's module the `struct` declarations earlier inputs made.
+    ///
+    /// A field's *declaration order* travels with the type, and both paths that
+    /// build an instance read it from the module being executed
+    /// (`exec::container::declared_type` and `__lk_make_struct`). Every REPL
+    /// input is its own module, so a struct declared on one line and built on
+    /// the next had no declaration to order by and fell back to the field map's
+    /// own iteration:
+    ///
+    /// ```text
+    /// > struct Reading { zebra: Int, apple: Int, mango: Int, … }
+    /// > Reading { zebra: 1, apple: 2, mango: 3, … }
+    /// Reading{apple:2,fig:6,kiwi:4,mango:3,pear:5,zebra:1}
+    /// ```
+    ///
+    /// Written on one line, or in a file, or across a real `use`, the same
+    /// value prints in declaration order. This makes the session behave like
+    /// the file: a declaration stays visible to the inputs after it.
+    fn carry_struct_declarations(&self, module: Arc<crate::vm::Module>) -> Arc<crate::vm::Module> {
+        // A redeclaration in *this* input wins — it is what the source being run
+        // says, exactly as a later `struct` in a file would.
+        let missing: Vec<crate::vm::StructDecl> = self
+            .struct_decls
+            .iter()
+            .filter(|decl| !module.type_info.structs.iter().any(|own| own.name == decl.name))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return module;
+        }
+        let mut module = module;
+        Arc::make_mut(&mut module).type_info.structs.extend(missing);
+        module
+    }
+
+    /// Keep what this input declared, for the inputs after it.
+    fn record_struct_declarations(&mut self, module: &crate::vm::Module) {
+        for decl in &module.type_info.structs {
+            match self.struct_decls.iter_mut().find(|held| held.name == decl.name) {
+                Some(held) => *held = decl.clone(),
+                None => self.struct_decls.push(decl.clone()),
+            }
+        }
+    }
+
+    /// The recorded types of functions this program does *not* declare.
+    ///
+    /// After checking a program the checker applies the solved substitutions to
+    /// everything it has recorded — right for one program, and wrong for a
+    /// sequence of them. An unannotated parameter's type is a derivation from
+    /// the body rather than a claim by the source (see `FunctionSig::annotated`),
+    /// and this turned one input's derivation into a claim binding every later
+    /// input: `fn f(x) { return x; }` then `f(1)` left `f` as `(Int) -> Int`, so
+    /// `f("a")` on the next line answered "Cannot unify Int with String". The
+    /// same three lines in a file are fine, because there the substitution pass
+    /// runs once with every call site already contributing to it.
+    ///
+    /// A function the program *does* declare is left alone: its definition and
+    /// this input's uses were checked together, exactly as in a file.
+    fn carried_function_types(
+        &self,
+        program: &Program,
+    ) -> Vec<(String, crate::typ::FunctionSig, Option<crate::val::Type>)> {
+        let declared_here = declared_function_names(program);
+        self.type_checker
+            .declared_function_names()
+            .into_iter()
+            .filter(|name| !declared_here.contains(name.as_str()))
+            .filter_map(|name| {
+                let sig = self.type_checker.get_function_sig(&name)?.clone();
+                let local = self.type_checker.get_local_type(&name).cloned();
+                Some((name, sig, local))
+            })
+            .collect()
     }
 
     fn sync_result_globals(&mut self, result: crate::vm::ProgramResult) -> Result<ReplExecutionResult> {
@@ -95,6 +233,44 @@ impl ReplExecutionResult {
     pub fn display_first_return(&self) -> String {
         self.display_first_return.clone().unwrap_or_else(|| "nil".to_string())
     }
+}
+
+fn restore_carried_function_types(
+    checker: &mut TypeChecker,
+    carried: Vec<(String, crate::typ::FunctionSig, Option<crate::val::Type>)>,
+) {
+    for (name, mut sig, local) in carried {
+        // A function from an earlier input is, quite literally, in another
+        // module: every input is compiled as one. So it carries the same rule a
+        // real import does — a named parameter's default cannot be filled from
+        // here — and saying that at check time is better than the run time's
+        // `missing required named argument`, about a parameter that is not
+        // required.
+        sig.origin = crate::typ::SigOrigin::Imported;
+        checker.add_function_sig(name.clone(), sig);
+        if let Some(local) = local {
+            checker.add_local_type(name, local);
+        }
+    }
+}
+
+/// The names of functions a program declares at its top level, including the
+/// constructor a `struct` brings with it.
+fn declared_function_names(program: &Program) -> BTreeSet<String> {
+    fn item(stmt: &Stmt) -> &Stmt {
+        match stmt {
+            Stmt::Attributed { item, .. } => item,
+            other => other,
+        }
+    }
+    program
+        .statements
+        .iter()
+        .filter_map(|stmt| match item(stmt.as_ref()) {
+            Stmt::Function { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn repl_runtime_program(program: &Program, existing_names: &BTreeSet<String>) -> Result<(Program, BTreeSet<String>)> {
@@ -186,6 +362,8 @@ fn flush_global_stmt(name: String) -> Stmt {
     Stmt::Define {
         name: name.clone(),
         value: Box::new(Expr::Var(name)),
+        // Synthesised to flush a REPL global; it corresponds to no source text.
+        span: None,
     }
 }
 
@@ -269,6 +447,20 @@ mod tests {
         let result = execute(&mut session, "let c = a + b; return c;").expect("use destructured names");
 
         assert_eq!(result.returns, vec![RuntimeVal::Int(3)]);
+    }
+
+    /// A binding from an earlier input is an *external* global to the module
+    /// compiled for this one — indistinguishable from an imported `math` unless
+    /// the session says otherwise. Without that, `xs.len()` compiled to an
+    /// index read keyed by `"len"` and every method call on a REPL binding
+    /// failed: `xs.push(1)`, `s.upper()`, `m.get(k)`.
+    #[test]
+    fn repl_method_call_on_earlier_binding_dispatches_as_method() {
+        let mut session = new_session();
+        execute(&mut session, "xs := [1, 2];").expect("define list");
+        let result = execute(&mut session, "return xs.len();").expect("method call across inputs");
+
+        assert_eq!(result.returns, vec![RuntimeVal::Int(2)]);
     }
 
     #[test]

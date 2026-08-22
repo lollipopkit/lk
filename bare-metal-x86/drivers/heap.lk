@@ -36,8 +36,16 @@ const OFF_USED = 4;
 const OFF_NEXT = 8;
 
 // The arena's own three words, at an address the caller picks — the same
-// arrangement the page allocator uses, and for the same reason: an interrupt
-// handler cannot see a global.
+// arrangement the page allocator uses, and for the same reason: a global is not
+// *provably initialised* when a handler reads it.
+//
+// Not that a handler cannot see one. It can, and `program.lk`'s keyboard ISR
+// reads a global table. What it cannot have is a proof that the top-level `let`
+// which fills the global ran first — an interrupt arrives between any two
+// instructions, including the ones before that `let` — so the value arrives
+// dynamic, and "dynamic" includes nil. An allocator that answers nil is worse
+// than one that answers badly. A fixed address has no initialisation order to
+// be on the wrong side of.
 //
 //   +0  arena base
 //   +4  arena length

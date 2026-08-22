@@ -1,0 +1,31 @@
+// `impl Type { … }` — methods that belong to the type itself.
+//
+// A method used to need a trait to hang off, and there is no UFCS either, so
+// giving a struct a plain method meant declaring a trait that said nothing:
+//
+//     trait Methods { }
+//     impl Methods for Point { fn norm2(self) -> Int { … } }
+//
+// Everything else was already in place — dispatch keys on the target type, not
+// on the trait — so only this spelling was missing.
+
+struct Point { x: Int, y: Int }
+
+impl Point {
+    fn norm2(self) -> Int { return self.x * self.x + self.y * self.y; }
+    fn scaled(self, by: Int) -> Point { return Point { x: self.x * by, y: self.y * by }; }
+}
+
+let p = Point { x: 3, y: 4 };
+assert(p.norm2() == 25);
+assert(p.scaled(2).x == 6);
+
+// An inherent impl and a trait impl coexist on the same type: the trait states
+// what the type promises, the inherent block holds what is simply its own.
+trait Area { fn area(self) -> Int; }
+impl Area for Point { fn area(self) -> Int { return self.x * self.y; } }
+
+assert(p.area() == 12);
+assert(p.norm2() == 25);
+
+println("impl_inherent: all assertions passed");

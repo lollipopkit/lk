@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::ValueMap;
 use crate::vm::ModuleResolver;
 use alloc::sync::Arc;
 
@@ -17,7 +18,7 @@ use crate::vm::{
 use crate::typ::{TraitDef, TraitImpl};
 
 mod core_methods;
-pub(crate) use core_methods::core_call_method_windowed;
+pub use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
 
 /// Where a trait-impl method's body lives.
@@ -74,28 +75,28 @@ pub struct VmContext {
     /// The outer key is what makes the table *correct* rather than merely fast.
     /// Keyed by type name alone, two modules that both declare `Point` shared
     /// one entry and the later registration silently won for both of them (see
-    /// [`crate::vm::TypeScope`]). Scoping it also makes registration
+    /// [`crate::val::TypeScope`]). Scoping it also makes registration
     /// order-independent, which is what lets the transitive closure of loaded
     /// modules be registered wholesale without any of them clobbering another.
     ///
     /// Nested rather than tuple-keyed so a lookup borrows every part of the
     /// key: a flat map forced two `String` allocations on *every* dynamic
     /// method dispatch just to build a throwaway probe.
-    methods: FastHashMap<crate::vm::TypeScope, FastHashMap<String, FastHashMap<String, MethodImpl>>>,
+    methods: FastHashMap<crate::val::TypeScope, FastHashMap<String, FastHashMap<String, MethodImpl>>>,
     /// Identity to stamp on the module compiled in this context, and therefore
     /// on every object it constructs. Set by the loader, which knows the path;
-    /// the compiler does not (see [`crate::vm::TypeScope`]).
-    type_scope: crate::vm::TypeScope,
+    /// the compiler does not (see [`crate::val::TypeScope`]).
+    type_scope: crate::val::TypeScope,
     /// Which module declared each `impl Trait for <builtin>` — keyed by
     /// `(type name, trait name)`.
     ///
     /// A builtin type has no declaring module, so every module's impls for it
-    /// share one scope (see [`crate::vm::TypeScope::builtin`]) and the later
+    /// share one scope (see [`crate::val::TypeScope::builtin`]) and the later
     /// registration used to overwrite the earlier one *silently*: with two
     /// modules implementing `Doubler for Int`, `(5).dbl()` answered whichever
     /// was imported last, so moving a `use` line changed the result. Recording
     /// the owner turns the overlap into an error at registration.
-    builtin_impl_owner: FastHashMap<(String, String), crate::vm::TypeScope>,
+    builtin_impl_owner: FastHashMap<(String, String), crate::val::TypeScope>,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -109,7 +110,7 @@ impl Default for VmContext {
     }
 }
 
-/// 调用帧信息，用于错误报告。
+/// One call frame, for error reporting.
 #[derive(Debug, Clone)]
 pub struct CallFrameInfo {
     pub function_name: Arc<str>,
@@ -118,7 +119,7 @@ pub struct CallFrameInfo {
 }
 
 impl VmContext {
-    /// 创建一个空上下文。
+    /// An empty context.
     pub fn new() -> Self {
         let mut ctx = Self::new_without_core_vm_builtins();
         ctx.type_checker = Some(TypeChecker::new());
@@ -138,14 +139,14 @@ impl VmContext {
             type_checker: None,
             structs: fast_hash_map_new(),
             methods: fast_hash_map_new(),
-            type_scope: crate::vm::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
             builtin_impl_owner: fast_hash_map_new(),
             call_stack: Vec::new(),
             async_runtime: crate::rt::AsyncRuntimeHandle::new(),
         }
     }
 
-    /// 当前全局缓存版本。
+    /// The global cache version.
     #[inline]
     pub fn generation(&self) -> u64 {
         self.generation
@@ -200,7 +201,7 @@ impl VmContext {
         self.generation = generation;
     }
 
-    /// 构建函数，允许自定义组件。
+    /// Builds one with the components given.
     pub fn with_resolver(mut self, resolver: Arc<ModuleResolver>) -> Self {
         for (name, value) in resolver.runtime_builtin_iter() {
             if self.runtime_globals.contains_key(name.as_ref()) {
@@ -213,22 +214,22 @@ impl VmContext {
         self
     }
 
-    /// 设置类型检查器。
+    /// Installs a type checker.
     pub fn with_type_checker(mut self, type_checker: Option<TypeChecker>) -> Self {
         self.type_checker = type_checker;
         self
     }
 
     /// Identity to stamp on the module compiled here (see
-    /// [`crate::vm::TypeScope`]). The loader sets this before compiling a file
+    /// [`crate::val::TypeScope`]). The loader sets this before compiling a file
     /// module; anything else keeps the anonymous scope.
-    pub fn with_type_scope(mut self, type_scope: crate::vm::TypeScope) -> Self {
+    pub fn with_type_scope(mut self, type_scope: crate::val::TypeScope) -> Self {
         self.type_scope = type_scope;
         self
     }
 
     #[inline]
-    pub fn type_scope(&self) -> &crate::vm::TypeScope {
+    pub fn type_scope(&self) -> &crate::val::TypeScope {
         &self.type_scope
     }
 
@@ -258,7 +259,7 @@ impl VmContext {
         self.define_runtime_global(name, RuntimeExport::from_value(value, heap));
     }
 
-    /// 手动递增版本号，用于强制失效缓存。
+    /// Bumps the version, invalidating the caches.
     #[inline]
     pub fn touch(&mut self) {
         self.bump_generation();
@@ -268,7 +269,7 @@ impl VmContext {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// 调用栈管理：进入函数调用
+    /// Pushes a call frame.
     pub fn push_call_frame<N, L>(&mut self, name: N, location: Option<L>)
     where
         N: Into<Arc<str>>,
@@ -281,23 +282,24 @@ impl VmContext {
         });
     }
 
-    /// 调用栈管理：退出函数调用
+    /// Pops a call frame.
     pub fn pop_call_frame(&mut self) -> Option<CallFrameInfo> {
         self.call_stack.pop()
     }
 
-    /// 获取当前调用栈信息
+    /// The current call stack.
     pub fn call_stack(&self) -> &[CallFrameInfo] {
         &self.call_stack
     }
 
-    /// 获取当前函数名
+    /// The function being executed.
     pub fn current_function(&self) -> Option<&str> {
         self.call_stack.last().map(|frame| frame.function_name.as_ref())
     }
 
-    /// 返回当前调用栈的格式化字符串。深栈截断打印(头 20 帧 + 尾 10 帧):
-    /// 递归打满调用深度上限时,完整 traceback 会有几十万行,淹没真正的错误。
+    /// The call stack, rendered. A deep stack prints its first 20 and last 10
+    /// frames: a recursion that reaches the depth limit has a traceback of
+    /// hundreds of thousands of lines, which buries the actual error.
     pub fn call_stack_report(&self) -> Option<String> {
         const HEAD_FRAMES: usize = 20;
         const TAIL_FRAMES: usize = 10;
@@ -335,7 +337,7 @@ impl VmContext {
         Some(msg)
     }
 
-    /// 生成增强的错误信息，包含调用栈上下文
+    /// The error with its call-stack context attached.
     pub fn format_error_with_context(&self, error_message: &str) -> String {
         if let Some(report) = self.call_stack_report() {
             let mut msg = error_message.to_string();
@@ -347,27 +349,27 @@ impl VmContext {
         }
     }
 
-    /// 获取模块解析器的引用
+    /// The module resolver.
     pub fn resolver(&self) -> &Arc<ModuleResolver> {
         &self.resolver
     }
 
-    /// 获取类型检查器的引用
+    /// The type checker.
     pub fn type_checker(&self) -> &Option<TypeChecker> {
         &self.type_checker
     }
 
-    /// 获取结构体定义的引用
+    /// The struct declarations.
     pub fn structs(&self) -> &FastHashMap<String, FastHashMap<String, Type>> {
         &self.structs
     }
 
-    /// 获取类型检查器的可变引用
+    /// The type checker, mutably.
     pub fn get_type_checker_mut(&mut self) -> Option<&mut TypeChecker> {
         self.type_checker.as_mut()
     }
 
-    /// 注册结构体模式
+    /// Registers a struct shape.
     pub fn register_struct_schema(&mut self, name: String, fields: FastHashMap<String, Type>) {
         self.structs.insert(name, fields);
     }
@@ -409,6 +411,39 @@ impl VmContext {
             NativeFunction::Plain(core_cpu_wait_for_interrupt_builtin),
             0,
         );
+        // The one x86 instruction whose operand a program cannot supply: `int`
+        // takes its vector as an immediate. Without this a kernel written in
+        // this language can handle an interrupt but not raise one, which is the
+        // difference between defining a syscall and merely answering it.
+        self.install_runtime_builtin(
+            "cpu_raise_interrupt",
+            NativeFunction::Plain(core_cpu_raise_interrupt_builtin),
+            1,
+        );
+        // System control: descriptor tables, CR2/CR3, the TLB. Gated like port
+        // I/O rather than always refused — the bare-metal x86 kernel hosts this
+        // interpreter, and a program it loads off a disk reaches the same
+        // builtins the compiled kernel does.
+        self.install_runtime_builtin("cpu_load_idt", NativeFunction::Plain(core_cpu_load_idt_builtin), 2);
+        self.install_runtime_builtin("cpu_load_gdt", NativeFunction::Plain(core_cpu_load_gdt_builtin), 2);
+        self.install_runtime_builtin(
+            "cpu_reload_segments",
+            NativeFunction::Plain(core_cpu_reload_segments_builtin),
+            2,
+        );
+        self.install_runtime_builtin(
+            "cpu_load_task_register",
+            NativeFunction::Plain(core_cpu_load_task_register_builtin),
+            1,
+        );
+        self.install_runtime_builtin("cpu_read_cr2", NativeFunction::Plain(core_cpu_read_cr2_builtin), 0);
+        self.install_runtime_builtin("cpu_read_cr3", NativeFunction::Plain(core_cpu_read_cr3_builtin), 0);
+        self.install_runtime_builtin("cpu_write_cr3", NativeFunction::Plain(core_cpu_write_cr3_builtin), 1);
+        self.install_runtime_builtin(
+            "cpu_invalidate_page",
+            NativeFunction::Plain(core_cpu_invalidate_page_builtin),
+            1,
+        );
         // Volatile MMIO access.
         //
         // Whether this can mean anything depends on where the VM itself is
@@ -439,6 +474,7 @@ impl VmContext {
         self.install_runtime_builtin("port_out_u32", NativeFunction::Plain(core_port_out_u32), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
+        self.install_runtime_builtin("__lk_bit_xor", NativeFunction::Plain(core_bit_xor_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
         // Function pointers: the address of an exported function, and a call
         // through one. Native-only, like the rest of `hardware` — the VM
@@ -447,6 +483,24 @@ impl VmContext {
         self.install_runtime_builtin("call_address_2", NativeFunction::Plain(core_call_address_2_builtin), 3);
         self.install_runtime_builtin("__lk_shl", NativeFunction::Plain(core_shl_builtin), 2);
         self.install_runtime_builtin("__lk_shr", NativeFunction::Plain(core_shr_builtin), 2);
+        // The same shift, logical. The compiler picks this name when the left
+        // operand is a `u64`: every value rides an `i64` carrier, so for a `u8`,
+        // `u16` or `u32` the high bits are zero and an arithmetic shift happens
+        // to be right — a `u64` fills the carrier, and bit 63 is part of the
+        // value rather than its sign.
+        self.install_runtime_builtin("__lk_shr_u", NativeFunction::Plain(core_shr_unsigned_builtin), 2);
+        // The other three the `i64` carrier cannot answer for a `u64`: a value
+        // with bit 63 set *is* a negative carrier, so a signed compare puts it
+        // below 1 and a signed divide answers a negative. One comparison
+        // primitive rather than four — `a > b` is `b < a`, and the inclusive
+        // forms are those negated.
+        self.install_runtime_builtin("__lk_lt_u", NativeFunction::Plain(core_lt_unsigned_builtin), 2);
+        self.install_runtime_builtin("__lk_div_u", NativeFunction::Plain(core_div_unsigned_builtin), 2);
+        self.install_runtime_builtin("__lk_mod_u", NativeFunction::Plain(core_mod_unsigned_builtin), 2);
+        self.install_runtime_builtin("__lk_u64_to_float", NativeFunction::Plain(core_u64_to_float_builtin), 1);
+        // And the display, which the compiler inserts at the places that render
+        // a value rather than compute with it.
+        self.install_runtime_builtin("__lk_u64_str", NativeFunction::Plain(core_u64_to_str_builtin), 1);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -455,7 +509,7 @@ impl VmContext {
     /// The scope is not optional and there is deliberately no name-only
     /// fallback: falling back would re-admit exactly the cross-module
     /// collision this key exists to prevent, and would do it silently.
-    pub fn trait_method(&self, scope: &crate::vm::TypeScope, type_name: &str, method: &str) -> Option<&MethodImpl> {
+    pub fn trait_method(&self, scope: &crate::val::TypeScope, type_name: &str, method: &str) -> Option<&MethodImpl> {
         self.methods.get(scope)?.get(type_name)?.get(method)
     }
 
@@ -469,14 +523,21 @@ impl VmContext {
     /// is fine — it is the *same* owner.
     fn claim_builtin_impl(
         &mut self,
-        scope: &crate::vm::TypeScope,
-        declaring: &crate::vm::TypeScope,
+        scope: &crate::val::TypeScope,
+        declaring: &crate::val::TypeScope,
         type_name: &str,
-        trait_name: &str,
+        trait_name: Option<&str>,
     ) -> Result<()> {
         if !scope.is_builtin() {
             return Ok(());
         }
+        // An inherent impl claims nothing: the conflict this guards against is
+        // "one trait implemented twice for a builtin type", and there is no
+        // trait here. Two inherent impls of the same method on a builtin would
+        // collide in the dispatch table instead, where every type does.
+        let Some(trait_name) = trait_name else {
+            return Ok(());
+        };
         let key = (type_name.to_string(), trait_name.to_string());
         match self.builtin_impl_owner.get(&key) {
             Some(owner) if owner != declaring => Err(anyhow!(
@@ -507,7 +568,7 @@ impl VmContext {
         }
         for decl in &module.type_info.impls {
             let scope = impl_target_scope(&decl.type_name, &module.type_scope);
-            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, decl.trait_name.as_deref())?;
             let by_method = self
                 .methods
                 .entry(scope)
@@ -549,7 +610,7 @@ impl VmContext {
         // loop afterwards left a rejected module half-registered.
         for decl in &type_info.impls {
             let scope = impl_target_scope(&decl.type_name, &module.type_scope);
-            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, decl.trait_name.as_deref())?;
         }
         // Checker registration only happens when there *is* a checker; the
         // dispatch table below is unconditional. Returning early without one
@@ -581,8 +642,14 @@ impl VmContext {
                     .iter()
                     .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
                     .collect();
+                // Only a *trait* impl is registered with the checker: there is
+                // nothing to conform to otherwise, and dispatch keys on the
+                // target type either way (the table above).
+                let Some(trait_name) = decl.trait_name.clone() else {
+                    continue;
+                };
                 let impl_def = TraitImpl {
-                    trait_name: decl.trait_name.clone(),
+                    trait_name,
                     target_type,
                     methods,
                 };
@@ -614,7 +681,12 @@ impl VmContext {
         Ok(())
     }
 
-    fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
+    /// Install a native under a global name — the shape every stdlib native
+    /// arrives in (a global holding a `CallableValue::RuntimeNative`).
+    ///
+    /// `pub(crate)` so tests can reach the *shipped* path; see
+    /// `exec_tests::execute_source_with_natives`.
+    pub(crate) fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
         if self.runtime_globals.contains_key(name) {
             return;
         }
@@ -627,30 +699,42 @@ impl VmContext {
 ///
 /// A user-declared type (`Type::Named`) belongs to the module that declared it;
 /// anything else is a builtin, shared by every module (see
-/// [`crate::vm::TypeScope::builtin`]). An unparseable target is treated as
+/// [`crate::val::TypeScope::builtin`]). An unparseable target is treated as
 /// declared — the conservative side, since filing it under the builtin scope
 /// would let it collide with every other module's.
-fn impl_target_scope(target_type: &str, declaring: &crate::vm::TypeScope) -> crate::vm::TypeScope {
+fn impl_target_scope(target_type: &str, declaring: &crate::val::TypeScope) -> crate::val::TypeScope {
     match Type::parse(target_type) {
         // A user *generic* (`Wrapper<Int>` → `Type::Generic`) is as module-local
         // as a plain `Named`: two modules may each declare their own `Wrapper`.
         // Lumping it in with the builtins made them share one coherence key and
         // conflict with each other.
+        // Two builtin types have no `Type` variant of their own: `Bytes` parses
+        // as `Named` and `Slice` as a `Generic`, so both were filed with the
+        // declared types. That put `impl Bytes { … }` in the *module's* scope
+        // while a bytes value dispatches in the builtin one —
+        // `receiver_type_scope` has no declared type to read off a non-`Object`
+        // — so the impl was registered where nothing would look for it and
+        // `"ab".bytes().mine()` said "Bytes has no method 'mine'". They are the
+        // only two; every other builtin has a variant and takes the last arm.
+        Some(Type::Named(name)) if name == "Bytes" => crate::val::TypeScope::builtin(),
+        Some(Type::Generic { ref name, .. }) if matches!(name.as_str(), "Slice" | "Stream") => {
+            crate::val::TypeScope::builtin()
+        }
         Some(Type::Named(_)) | Some(Type::Generic { .. }) | None => declaring.clone(),
-        Some(_) => crate::vm::TypeScope::builtin(),
+        Some(_) => crate::val::TypeScope::builtin(),
     }
 }
 
 /// The scope to dispatch `receiver`'s methods in: its own, if it is a declared
 /// type; the builtin scope otherwise. Only a heap `Object` carries a declared
 /// type — every other receiver is an `Int`, a `List`, a string, and so on.
-pub fn receiver_type_scope(receiver: &RuntimeVal, heap: &HeapStore) -> crate::vm::TypeScope {
+pub fn receiver_type_scope(receiver: &RuntimeVal, heap: &HeapStore) -> crate::val::TypeScope {
     if let RuntimeVal::Obj(handle) = receiver
         && let Some(HeapValue::Object(object)) = heap.get(*handle)
     {
         return object.type_scope().clone();
     }
-    crate::vm::TypeScope::builtin()
+    crate::val::TypeScope::builtin()
 }
 
 fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
@@ -671,7 +755,7 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         .unwrap_or_default();
 
     let fields = match args.get(1).expect("arity checked") {
-        RuntimeVal::Nil => fast_hash_map_new(),
+        RuntimeVal::Nil => crate::util::value_map::value_map_new(),
         RuntimeVal::Obj(handle) => {
             let value = runtime
                 .heap()
@@ -687,13 +771,59 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         }
         other => {
             return Err(anyhow!(
-                "__lk_make_struct expects fields as map, got {:?}",
-                other.kind()
+                "__lk_make_struct expects fields as map, got {}",
+                other.type_name_in(runtime.heap())
             ));
         }
     };
 
-    let ty = Arc::new(crate::vm::DeclaredType::new(type_scope, type_name));
+    // The declaration's field order travels with the type, exactly as it does
+    // for an ordinary `NewObject` (see `exec::container::declared_type`).
+    // Without it `display` had nothing to order by and fell back to the hash
+    // map's own iteration, so `P { ..base, x: 9 }` printed its fields in a
+    // different order from the `P { … }` two lines above it — the same type,
+    // two renderings, decided by which syntax built the value.
+    let declared: Arc<[crate::val::DeclaredField]> = runtime
+        .module()
+        .and_then(|module| {
+            module
+                .type_info
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_str() == &*type_name)
+        })
+        .map(|decl| {
+            decl.fields
+                .iter()
+                .map(|field| {
+                    crate::val::DeclaredField::new(
+                        Arc::<str>::from(field.name.as_str()),
+                        field.ty.as_deref().and_then(crate::val::Type::parse),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| Arc::from([] as [crate::val::DeclaredField; 0]));
+    let ty = Arc::new(crate::val::DeclaredType::with_fields(
+        type_scope,
+        Arc::<str>::from(&*type_name),
+        declared,
+    ));
+    // The spread spelling builds from a *map*, whose values the checker never
+    // measured against the declaration — `A { ..m }` with `m["v"]` a String is
+    // the same hole `A { v: x }` was.
+    for (key, value) in &fields {
+        if let Some(declared) = ty.field_type(key)
+            && !crate::val::value_satisfies_declared(value, declared, runtime.heap())
+        {
+            return Err(anyhow!(
+                "field `{key}` of {} is declared {}, and a {} cannot be stored in it",
+                ty.name,
+                declared.display(),
+                value.type_name_in(runtime.heap())
+            ));
+        }
+    }
     Ok(RuntimeVal::Obj(
         runtime
             .heap_mut()
@@ -705,19 +835,22 @@ fn core_typeof_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) ->
     let value = args
         .get(0)
         .ok_or_else(|| anyhow!("typeof(value) expects exactly one argument"))?;
-    let name = match value {
-        RuntimeVal::Int(_) => "Int",
-        RuntimeVal::Float(_) => "Float",
-        RuntimeVal::Bool(_) => "Bool",
-        RuntimeVal::ShortStr(_) => "String",
-        RuntimeVal::Nil => "Nil",
+    // Owned before `heap_mut()`: a struct instance's name borrows the heap
+    // (it is the declared name, not a `&'static str`).
+    let name: alloc::string::String = match value {
+        RuntimeVal::Int(_) => "Int".into(),
+        RuntimeVal::Float(_) => "Float".into(),
+        RuntimeVal::Bool(_) => "Bool".into(),
+        RuntimeVal::ShortStr(_) => "String".into(),
+        RuntimeVal::Nil => "Nil".into(),
         RuntimeVal::Obj(handle) => runtime
             .heap()
             .get(*handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            .type_name(),
+            .type_name()
+            .into(),
     };
-    Ok(runtime_string_value(name, runtime.heap_mut()))
+    Ok(runtime_string_value(&name, runtime.heap_mut()))
 }
 
 fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
@@ -735,7 +868,10 @@ fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::Map(map) => HeapValue::Map(set_string_field_on_map(map, key, field_value)),
-                HeapValue::Object(object) => HeapValue::Object(set_string_field_on_object(object, key, field_value)),
+                HeapValue::Object(object) => {
+                    check_declared_field(object, &key, &field_value, runtime.heap())?;
+                    HeapValue::Object(set_string_field_on_object(object, key, field_value))
+                }
                 other => Err(anyhow!(
                     "__lk_set_field target must be Map or Object, got {}",
                     other.type_name()
@@ -744,8 +880,8 @@ fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>)
             Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(updated)))
         }
         other => Err(anyhow!(
-            "__lk_set_field target must be Map or Object, got {:?}",
-            other.kind()
+            "__lk_set_field target must be Map or Object, got {}",
+            other.type_name_in(runtime.heap())
         )),
     }
 }
@@ -775,8 +911,8 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
         RuntimeVal::Nil => None,
         other => {
             return Err(anyhow!(
-                "__lk_merge_fields base must be Object, Map, or Nil, got {:?}",
-                other.kind()
+                "__lk_merge_fields base must be Object, Map, or Nil, got {}",
+                other.type_name_in(runtime.heap())
             ));
         }
     };
@@ -799,38 +935,69 @@ fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'
             };
             Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(fields))))
         }
-        other => Err(anyhow!("__lk_merge_fields overlay must be Map, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "__lk_merge_fields overlay must be Map, got {}",
+            other.kind().scalar_type_name()
+        )),
     }
 }
 
+/// A store into a declared field, checked against the type it was declared
+/// with.
+///
+/// A `struct P { count: Int }` whose `count` can hold a String makes the
+/// declaration decorative. The type checker catches the store it can see; this
+/// is the one it cannot — a write through an untyped binding:
+///
+/// ```lk
+/// fn poison(p) { p["v"] = "s"; }
+/// ```
+///
+/// Scalars only (`val::value_satisfies_declared` says why), so the cost is a
+/// discriminant test on a path that was already cloning a map.
+fn check_declared_field(
+    object: &RuntimeObject,
+    key: &str,
+    value: &RuntimeVal,
+    heap: &crate::val::HeapStore,
+) -> anyhow::Result<()> {
+    let Some(declared) = object.ty.field_type(key) else {
+        return Ok(());
+    };
+    if crate::val::value_satisfies_declared(value, declared, heap) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "field `{key}` of {} is declared {}, and a {} cannot be stored in it",
+        object.ty.name,
+        declared.display(),
+        value.type_name_in(heap)
+    ))
+}
+
 fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: RuntimeVal) -> RuntimeObject {
-    let mut fields = fast_hash_map_new();
-    for (field_key, field_value) in &object.fields {
-        if field_key.as_ref() != key.as_ref() {
-            fields.insert(Arc::clone(field_key), *field_value);
-        }
-    }
-    fields.insert(Arc::clone(&key), value);
-
-    let mut field_slots = object.field_slots.clone();
-    if !field_slots.iter().any(|field_key| field_key.as_ref() == key.as_ref()) {
-        field_slots.push(key);
-    }
-
+    // Clone and overwrite: an existing field keeps its position and a new one
+    // lands at the end, which is `IndexMap::insert`'s behaviour and the only
+    // sensible reading of "the same object with one value replaced".
+    //
+    // This used to rebuild the map *skipping* the key and then append it, which
+    // moved an existing field to the end — invisible only because a parallel
+    // slot table, which did keep the position, was what `display` read. One
+    // ordered map cannot disagree with itself.
+    let mut fields = object.fields.clone();
+    fields.insert(key, value);
     RuntimeObject {
-        // Setting a field produces the same object with one value replaced —
-        // same type, so the identity is shared, not rebuilt.
+        // Same type, so the identity is shared, not rebuilt.
         ty: Arc::clone(&object.ty),
         fields,
-        field_slots,
     }
 }
 
 fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
     match (map, value) {
         (TypedMap::Mixed(entries), value) => {
-            let runtime_key = RuntimeMapKey::String(key);
-            let mut out = fast_hash_map_new();
+            let runtime_key = RuntimeMapKey::from_shared(key);
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if *entry_key != runtime_key {
                     out.insert(entry_key.clone(), *entry_value);
@@ -840,7 +1007,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::Mixed(out)
         }
         (TypedMap::StringMixed(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -850,7 +1017,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringInt(entries), RuntimeVal::Int(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -860,7 +1027,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringInt(out)
         }
         (TypedMap::StringFloat(entries), RuntimeVal::Float(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -870,7 +1037,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringFloat(out)
         }
         (TypedMap::StringBool(entries), RuntimeVal::Bool(value)) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -880,7 +1047,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringBool(out)
         }
         (TypedMap::StringInt(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
@@ -890,7 +1057,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringFloat(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
@@ -900,7 +1067,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringBool(entries), value) => {
-            let mut out = fast_hash_map_new();
+            let mut out = crate::util::value_map::value_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
@@ -920,7 +1087,7 @@ enum FieldMergeBase<'a> {
 fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     match base {
         FieldMergeBase::Object(object) => {
-            let mut entries = fast_hash_map_new();
+            let mut entries = crate::util::value_map::value_map_new();
             for (key, value) in &object.fields {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
                     entries.insert(Arc::clone(key), *value);
@@ -938,77 +1105,30 @@ fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     }
 }
 
+/// A copy of the map, keys and all.
+///
+/// A plain `clone`, which it could not be while iteration order was the hash
+/// layout's: reproducing an order meant *replaying the insertion sequence*, so
+/// every copy re-hashed every key into a fresh table. Insertion order makes the
+/// copy structural — the entry vector and its index table are memcpy'd — which
+/// is both the simpler code and the faster one.
 fn copy_typed_map(map: &TypedMap) -> TypedMap {
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                out.insert(key.clone(), *value);
-            }
-            TypedMap::Mixed(out)
-        }
-        TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                out.insert(Arc::clone(key), *value);
-            }
-            TypedMap::StringMixed(out)
-        }
-        TypedMap::StringInt(entries) => TypedMap::StringInt(copy_string_map_entries(entries)),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(copy_string_map_entries(entries)),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(copy_string_map_entries(entries)),
-    }
+    map.clone()
 }
 
+/// The same copy, minus whatever the overlay is about to shadow.
+///
+/// `retain` rather than a rebuild: it keeps the survivors in order and touches
+/// the index table once, where inserting one key at a time hashed each survivor
+/// a second time.
 fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> TypedMap {
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                if !typed_map_contains(overlay, key) {
-                    out.insert(key.clone(), *value);
-                }
-            }
-            TypedMap::Mixed(out)
-        }
-        TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
-            for (key, value) in entries {
-                if !typed_map_contains_str(overlay, key.as_ref()) {
-                    out.insert(Arc::clone(key), *value);
-                }
-            }
-            TypedMap::StringMixed(out)
-        }
-        TypedMap::StringInt(entries) => {
-            TypedMap::StringInt(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-        TypedMap::StringFloat(entries) => {
-            TypedMap::StringFloat(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-        TypedMap::StringBool(entries) => {
-            TypedMap::StringBool(copy_string_map_entries_without_overlay_keys(entries, overlay))
-        }
-    }
-}
-
-fn copy_string_map_entries<T: Copy>(entries: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
-    for (key, value) in entries {
-        out.insert(Arc::clone(key), *value);
-    }
-    out
-}
-
-fn copy_string_map_entries_without_overlay_keys<T: Copy>(
-    entries: &FastHashMap<Arc<str>, T>,
-    overlay: &TypedMap,
-) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
-    for (key, value) in entries {
-        if !typed_map_contains_str(overlay, key.as_ref()) {
-            out.insert(Arc::clone(key), *value);
-        }
+    let mut out = map.clone();
+    match &mut out {
+        TypedMap::Mixed(entries) => entries.retain(|key, _| !typed_map_contains(overlay, key)),
+        TypedMap::StringMixed(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringInt(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringFloat(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
+        TypedMap::StringBool(entries) => entries.retain(|key, _| !typed_map_contains_str(overlay, key.as_ref())),
     }
     out
 }
@@ -1027,7 +1147,7 @@ fn typed_map_contains_str(map: &TypedMap, key: &str) -> bool {
     match map {
         TypedMap::Mixed(entries) => {
             ShortStr::new(key).is_some_and(|key| entries.contains_key(&RuntimeMapKey::ShortStr(key)))
-                || entries.contains_key(&RuntimeMapKey::String(Arc::<str>::from(key)))
+                || entries.contains_key(&RuntimeMapKey::from_text(key))
         }
         TypedMap::StringMixed(entries) => entries.contains_key(key),
         TypedMap::StringInt(entries) => entries.contains_key(key),
@@ -1046,7 +1166,10 @@ fn runtime_string_arg(value: &RuntimeVal, heap: &HeapStore, func: &str) -> anyho
             HeapValue::String(value) => Ok(value.clone()),
             other => Err(anyhow!("{func} expects string argument, got {}", other.type_name())),
         },
-        other => Err(anyhow!("{func} expects string argument, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "{func} expects string argument, got {}",
+            other.type_name_in(heap)
+        )),
     }
 }
 
@@ -1058,8 +1181,8 @@ fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
     }
 }
 
-fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<FastHashMap<Arc<str>, RuntimeVal>> {
-    let mut fields = fast_hash_map_new();
+fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<ValueMap<Arc<str>, RuntimeVal>> {
+    let mut fields = crate::util::value_map::value_map_new();
     match map {
         TypedMap::Mixed(entries) => {
             for (key, value) in entries {
@@ -1106,22 +1229,22 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), *value);
+                out.set(RuntimeMapKey::from_shared(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Int(*value));
             }
         }
         TypedMap::StringFloat(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Float(*value));
             }
         }
         TypedMap::StringBool(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value));
+                out.set(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Bool(*value));
             }
         }
     }
@@ -1130,7 +1253,10 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
 fn bit_arg(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<i64> {
     match value {
         crate::val::RuntimeVal::Int(i) => Ok(*i),
-        other => Err(anyhow!("{func} expects Int arguments, got {:?}", other.kind())),
+        other => Err(anyhow!(
+            "{func} expects Int arguments, got {}",
+            other.kind().scalar_type_name()
+        )),
     }
 }
 
@@ -1160,6 +1286,19 @@ fn core_bit_or_builtin(
     ))
 }
 
+fn core_bit_xor_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_bit_xor(left, right) expects exactly 2 arguments"));
+    }
+    Ok(crate::val::RuntimeVal::Int(
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_xor")?
+            ^ bit_arg(args.get(1).expect("arity checked"), "__lk_bit_xor")?,
+    ))
+}
+
 /// The shift amount both shifts accept.
 ///
 /// Out of range is an error rather than a wrap or a zero. The hardware masks it
@@ -1167,10 +1306,15 @@ fn core_bit_or_builtin(
 /// same thing on every target, and a shift by a variable that turned out to be
 /// 64 is a bug wherever it happens. The native path raises from
 /// `lkrt_i64_sh*_checked`, so both back ends fail identically.
+///
+/// The message does not name `__lk_shl`: that is the internal builtin the
+/// parser desugars `<<` to, and a program that wrote `<<` has never heard of
+/// it. `func` is still what the argument-type errors use, where naming the
+/// operand position matters more.
 fn shift_amount(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<u32> {
     let amount = bit_arg(value, func)?;
     if !(0..64).contains(&amount) {
-        return Err(anyhow!("{func} shift amount {amount} is out of range 0..63"));
+        return Err(anyhow!("shift amount {amount} is out of range 0..63"));
     }
     Ok(amount as u32)
 }
@@ -1193,6 +1337,91 @@ fn core_shr_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> a
     let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr")?;
     let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr")?;
     Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shr(rhs)))
+}
+
+fn core_shr_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shr_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr_u")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr_u")?;
+    Ok(crate::val::RuntimeVal::Int(((lhs as u64).wrapping_shr(rhs)) as i64))
+}
+
+fn core_lt_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_lt_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_lt_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_lt_u")? as u64;
+    Ok(crate::val::RuntimeVal::Bool(lhs < rhs))
+}
+
+fn core_div_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_div_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_div_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_div_u")? as u64;
+    if rhs == 0 {
+        return Err(anyhow!("division by zero"));
+    }
+    Ok(crate::val::RuntimeVal::Int((lhs / rhs) as i64))
+}
+
+fn core_mod_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_mod_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_mod_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_mod_u")? as u64;
+    if rhs == 0 {
+        return Err(anyhow!("modulo by zero"));
+    }
+    Ok(crate::val::RuntimeVal::Int((lhs % rhs) as i64))
+}
+
+fn core_u64_to_float_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 1 {
+        return Err(anyhow!("__lk_u64_to_float(value) expects exactly 1 argument"));
+    }
+    let value = bit_arg(args.get(0).expect("arity checked"), "__lk_u64_to_float")? as u64;
+    Ok(crate::val::RuntimeVal::Float(value as f64))
+}
+
+/// The unsigned decimal rendering of the carrier.
+///
+/// Every other member of this family fixes an *operation*; this one fixes the
+/// *display*, which is the last place a `u64` above `i64::MAX` still told a
+/// visible lie. The value was always right — `top + 5` computes the right bits —
+/// but `println` handed those bits to an `i64` formatter and got a negative
+/// number, so a page-table entry or a physical address printed as nonsense.
+fn core_u64_to_str_builtin(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    use alloc::string::ToString;
+    if args.len() != 1 {
+        return Err(anyhow!("__lk_u64_str(value) expects exactly 1 argument"));
+    }
+    let value = bit_arg(args.get(0).expect("arity checked"), "__lk_u64_str")? as u64;
+    // 20 digits at most, so never a `ShortStr` — `runtime_string_value` picks.
+    Ok(runtime_string_value(&value.to_string(), runtime.heap_mut()))
 }
 
 fn core_bit_not_builtin(
@@ -1233,7 +1462,16 @@ hardware_builtins! {
     core_cpu_irq_save_builtin => super::hardware::cpu_irq_save;
     core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
     core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
+    core_cpu_raise_interrupt_builtin => super::hardware::cpu_raise_interrupt;
     core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
+    core_cpu_load_idt_builtin => super::hardware::cpu_load_idt;
+    core_cpu_load_gdt_builtin => super::hardware::cpu_load_gdt;
+    core_cpu_reload_segments_builtin => super::hardware::cpu_reload_segments;
+    core_cpu_load_task_register_builtin => super::hardware::cpu_load_task_register;
+    core_cpu_read_cr2_builtin => super::hardware::cpu_read_cr2;
+    core_cpu_read_cr3_builtin => super::hardware::cpu_read_cr3;
+    core_cpu_write_cr3_builtin => super::hardware::cpu_write_cr3;
+    core_cpu_invalidate_page_builtin => super::hardware::cpu_invalidate_page;
     core_symbol_address_builtin => super::hardware::symbol_address;
     core_call_address_2_builtin => super::hardware::call_address_2;
     core_volatile_read_u8 => super::hardware::volatile_read_u8;
@@ -1255,15 +1493,15 @@ hardware_builtins! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::fast_map::fast_hash_map_from_iter;
+    use crate::val::TypedList;
     use crate::vm::{Module, RuntimeModuleState};
 
     fn module_with_impl(type_name: &str, method: &str, function: u32) -> Arc<Module> {
-        scoped_module_with_impl(crate::vm::TypeScope::anonymous(), type_name, method, function)
+        scoped_module_with_impl(crate::val::TypeScope::anonymous(), type_name, method, function)
     }
 
     fn scoped_module_with_impl(
-        type_scope: crate::vm::TypeScope,
+        type_scope: crate::val::TypeScope,
         type_name: &str,
         method: &str,
         function: u32,
@@ -1276,7 +1514,7 @@ mod tests {
                     methods: vec![(method.to_string(), "Function".to_string())],
                 }],
                 impls: vec![crate::vm::ImplDecl {
-                    trait_name: "Area".to_string(),
+                    trait_name: Some("Area".to_string()),
                     type_name: type_name.to_string(),
                     methods: vec![crate::vm::ImplMethod {
                         name: method.to_string(),
@@ -1286,6 +1524,7 @@ mod tests {
                         reads_globals: Vec::new(),
                     }],
                 }],
+                structs: Vec::new(),
             },
             ..Module::default()
         })
@@ -1297,7 +1536,7 @@ mod tests {
         // entry has to name the module it indexes into. Re-registering the
         // *same* scope replaces the entry (the REPL and the hybrid bridge both
         // do it); it must still point at the module it came from.
-        let scope = crate::vm::TypeScope::from_path("a.lk");
+        let scope = crate::val::TypeScope::from_path("a.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         let first = scoped_module_with_impl(scope.clone(), "Sq", "area", 3);
         ctx.register_module_types(&first).expect("register first module");
@@ -1321,9 +1560,9 @@ mod tests {
     fn same_type_name_in_two_modules_keeps_two_entries() {
         // `struct Point` in `a.lk` and in `b.lk` are different types. Keyed by
         // the bare name they shared one slot and the later registration won for
-        // both, so `a`'s value ran `b`'s method body (see `vm::TypeScope`).
-        let a = crate::vm::TypeScope::from_path("a.lk");
-        let b = crate::vm::TypeScope::from_path("b.lk");
+        // both, so `a`'s value ran `b`'s method body (see `val::TypeScope`).
+        let a = crate::val::TypeScope::from_path("a.lk");
+        let b = crate::val::TypeScope::from_path("b.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         let from_a = scoped_module_with_impl(a.clone(), "Point", "tag", 3);
         let from_b = scoped_module_with_impl(b.clone(), "Point", "tag", 9);
@@ -1347,7 +1586,7 @@ mod tests {
         // `impl Doubler for Int` has no declaring module to be scoped to — the
         // receiver is a bare `5` — so it is filed under the shared builtin
         // scope and found from anywhere.
-        let declaring = crate::vm::TypeScope::from_path("a.lk");
+        let declaring = crate::val::TypeScope::from_path("a.lk");
         let mut ctx = VmContext::new_without_core_vm_builtins();
         ctx.register_module_types(&scoped_module_with_impl(declaring.clone(), "Int", "dbl", 2))
             .expect("register");
@@ -1356,7 +1595,7 @@ mod tests {
             "a builtin target does not belong to the declaring module's scope"
         );
         assert!(matches!(
-            ctx.trait_method(&crate::vm::TypeScope::builtin(), "Int", "dbl"),
+            ctx.trait_method(&crate::val::TypeScope::builtin(), "Int", "dbl"),
             Some(MethodImpl::Local { function: 2, .. })
         ));
     }
@@ -1391,7 +1630,7 @@ mod tests {
         ctx.register_module_types(&module_with_impl("Sq", "area", 1))
             .expect("register without a checker");
         assert!(matches!(
-            ctx.trait_method(&crate::vm::TypeScope::anonymous(), "Sq", "area"),
+            ctx.trait_method(&crate::val::TypeScope::anonymous(), "Sq", "area"),
             Some(MethodImpl::Local { function: 1, .. })
         ));
     }
@@ -1461,6 +1700,7 @@ mod tests {
             "__lk_merge_fields",
             "__lk_bit_and",
             "__lk_bit_or",
+            "__lk_bit_xor",
             "__lk_bit_not",
         ] {
             let value = ctx
@@ -1481,14 +1721,9 @@ mod tests {
     #[test]
     fn core_make_struct_reads_typed_map_backing_directly() {
         let mut state = RuntimeModuleState::default();
-        let fields = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("answer"),
-                    42,
-                )])))),
-        );
+        let fields = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("answer"), 42)]),
+        ))));
         let name = RuntimeVal::ShortStr(crate::val::ShortStr::new("Point").expect("short"));
         let args = [name, fields];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1508,22 +1743,12 @@ mod tests {
     #[test]
     fn core_merge_fields_reads_typed_map_backing_directly() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("a"),
-                    1,
-                )])))),
-        );
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("b"),
-                    2,
-                )])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("a"), 1)]),
+        ))));
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("b"), 2)]),
+        ))));
         let args = [base, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 
@@ -1544,14 +1769,12 @@ mod tests {
     #[test]
     fn core_set_field_preserves_typed_string_int_map_without_copying_overwritten_entry() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Int(42)];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1575,14 +1798,12 @@ mod tests {
     #[test]
     fn core_set_field_pollutes_typed_map_without_copying_overwritten_entry() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Bool(true)];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
@@ -1606,22 +1827,15 @@ mod tests {
     #[test]
     fn core_merge_fields_filters_base_keys_overwritten_by_overlay() {
         let mut state = RuntimeModuleState::default();
-        let base = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
-                    (Arc::<str>::from("answer"), 1),
-                    (Arc::<str>::from("keep"), 2),
-                ])))),
-        );
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-                    Arc::<str>::from("answer"),
-                    42,
-                )])))),
-        );
+        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([
+                (Arc::<str>::from("answer"), 1),
+                (Arc::<str>::from("keep"), 2),
+            ]),
+        ))));
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("answer"), 42)]),
+        ))));
         let args = [base, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 
@@ -1644,14 +1858,9 @@ mod tests {
     #[test]
     fn core_merge_fields_nil_base_preserves_overlay_typed_backing() {
         let mut state = RuntimeModuleState::default();
-        let overlay = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::StringBool(fast_hash_map_from_iter([(
-                    Arc::<str>::from("ok"),
-                    true,
-                )])))),
-        );
+        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringBool(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("ok"), true)]),
+        ))));
         let args = [RuntimeVal::Nil, overlay];
         let mut runtime = NativeRuntime::new(&mut state, None, None);
 
@@ -1665,5 +1874,63 @@ mod tests {
         };
         assert!(matches!(map, TypedMap::StringBool(_)));
         assert_eq!(map.get_str("ok"), Some(RuntimeVal::Bool(true)));
+    }
+
+    /// A list's representation follows its *contents*, not the route that
+    /// built it.
+    ///
+    /// Every projection used to allocate `TypedList::Mixed` unconditionally, so
+    /// `[1, 2, 3].map(f)` came back as 16-bytes-per-element boxes even when
+    /// every element was an `Int`, and so did `push`, `keys`, `values`,
+    /// `flatten`, `chunk`, `zip`. Representation is not observable from LK, so
+    /// nothing failed — it just cost double the memory and gave up the typed
+    /// fast paths. (In-place mutation may still *degrade* a list; re-narrowing
+    /// on every write would be O(n) per write. This is about construction.)
+    #[test]
+    fn a_new_list_narrows_to_the_shape_of_what_is_in_it() {
+        fn returned_list_variant(source: &str) -> String {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::stmt_parser::StmtParser::new(&tokens)
+                .parse_program()
+                .expect("parse");
+            let result = crate::vm::test_support::run_program_default(&program).expect("run");
+            let RuntimeVal::Obj(handle) = result.first_return() else {
+                panic!("{source} should return a list");
+            };
+            let Some(HeapValue::List(list)) = result.state.heap.get(*handle) else {
+                panic!("{source} should return a list");
+            };
+            match list {
+                TypedList::Mixed(_) => "Mixed",
+                TypedList::Int(_) => "Int",
+                TypedList::Float(_) => "Float",
+                TypedList::Bool(_) => "Bool",
+                TypedList::String(_) => "String",
+            }
+            .to_string()
+        }
+
+        for (source, expected) in [
+            ("return [1, 2, 3];", "Int"),
+            ("return [1, 2, 3].map(|x| x * 2);", "Int"),
+            ("return [1, 2, 3].filter(|x| x > 1);", "Int"),
+            ("return [1, 2].push(3);", "Int"),
+            ("return [1, 2, 3].flatten();", "Int"),
+            ("return [[1, 2], [3]].flatten();", "Int"),
+            ("return {\"a\": 1, \"b\": 2}.values();", "Int"),
+            ("return {\"a\": 1, \"b\": 2}.keys();", "String"),
+            ("return [1, 2, 3].map(|x| \"long-enough-to-heap\");", "String"),
+            // A genuinely mixed result stays mixed — the scan reports what is
+            // there, it does not force a shape.
+            ("return [1, \"two\", 3.0];", "Mixed"),
+            // Pairs are heap objects, so zip is mixed no matter what went in.
+            ("return [1, 2].zip([3, 4]);", "Mixed"),
+        ] {
+            assert_eq!(
+                returned_list_variant(source),
+                expected,
+                "{source} should be represented as {expected}"
+            );
+        }
     }
 }

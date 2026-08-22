@@ -70,7 +70,8 @@ impl Executor {
     pub(super) fn dispatch_load_capture(&mut self, instr: Instr) -> Result<()> {
         let value = self
             .captures
-            .get(instr.bx() as usize)
+            .as_ref()
+            .and_then(|captures| captures.get(instr.bx() as usize))
             .cloned()
             .ok_or_else(|| anyhow!("LoadCapture index {} out of bounds", instr.bx()))?;
         self.write(instr.a(), value)?;
@@ -116,13 +117,6 @@ impl Executor {
     }
 
     #[cold]
-    pub(super) fn dispatch_load_native(&mut self, instr: Instr, module: Option<&Module>) -> Result<()> {
-        self.load_native_value(instr.a(), instr.bx(), module)?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    #[cold]
     /// `A = B as <C>`.
     ///
     /// Machine-int targets truncate to the width and then sign- or zero-extend
@@ -150,7 +144,7 @@ impl Executor {
                 RuntimeVal::Int(value) => value != 0,
                 RuntimeVal::Float(value) => value != 0.0,
                 RuntimeVal::Nil => false,
-                other => bail!("cannot cast {:?} to Bool", other.kind()),
+                other => bail!("cannot cast {} to Bool", self.value_type_name(&other)),
             }),
             CastTarget::Float => RuntimeVal::Float(match source {
                 RuntimeVal::Float(value) => value,
@@ -162,16 +156,55 @@ impl Executor {
                         0.0
                     }
                 }
-                other => bail!("cannot cast {:?} to Float", other.kind()),
+                other => bail!("cannot cast {} to Float", self.value_type_name(&other)),
             }),
             CastTarget::Int => RuntimeVal::Int(cast_source_to_i64(&source)?),
             machine => {
                 let kind = machine.int_kind().expect("non-scalar targets handled above");
-                RuntimeVal::Int(truncate_to_width(cast_source_to_i64(&source)?, kind))
+                RuntimeVal::Int(cast_to_machine_int(&source, kind)?)
             }
         };
 
         self.write_unchecked(instr.a(), result);
+        self.pc += 1;
+        Ok(())
+    }
+
+    /// `A = -B`.
+    ///
+    /// Deliberately not lowered as `0 - B`: floats have two zeros, and
+    /// `-(0.0)` is `-0.0` while `0.0 - 0.0` is `0.0`. Negating `Int::MIN`
+    /// wraps, the same as every other integer overflow in the VM.
+    /// `A = floor(B / C)` — the fused `math.floor(a / b)`.
+    ///
+    /// Two `Int`s take the integer path, which is *floor* rather than
+    /// truncation: `-7 / 2` floors to `-4` where Rust's `/` gives `-3`.
+    /// Anything else divides as `f64` and floors that, which is exactly what
+    /// the `math.floor` call this replaces would have answered.
+    pub(super) fn dispatch_floor_div_int(&mut self, instr: Instr) -> Result<()> {
+        let (dst, lhs_idx, rhs_idx) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("division by zero"),
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.div_euclid(*rhs)),
+            (lhs, rhs) => {
+                let lhs = self.number_value(lhs)?;
+                let rhs = self.number_value(rhs)?;
+                RuntimeVal::Int(crate::compat::float::floor(lhs / rhs) as i64)
+            }
+        };
+        self.write_stack_index(dst, value);
+        self.pc += 1;
+        Ok(())
+    }
+
+    pub(super) fn dispatch_neg(&mut self, instr: Instr) -> Result<()> {
+        let index = self.stack_index_unchecked(instr.b());
+        let value = match &self.state.stack[index] {
+            RuntimeVal::Int(value) => RuntimeVal::Int(value.wrapping_neg()),
+            RuntimeVal::Float(value) => RuntimeVal::Float(-value),
+            other => bail!("unary '-' expects Int or Float, got {}", self.value_type_name(other)),
+        };
+        self.write_unchecked(instr.a(), value);
         self.pc += 1;
         Ok(())
     }
@@ -181,7 +214,7 @@ impl Executor {
         let value = match &self.state.stack[index] {
             RuntimeVal::Bool(b) => !b,
             RuntimeVal::Nil => true,
-            other => bail!("Not expected Bool or Nil, got {:?}", other.kind()),
+            other => bail!("Not expected Bool or Nil, got {}", self.value_type_name(other)),
         };
         if self.try_fused_bool_branch(function, instr.a(), value, self.collect_metrics)? {
             return Ok(());
@@ -531,10 +564,32 @@ impl Executor {
         collect_metrics: bool,
     ) -> Result<Option<u32>> {
         self.safepoint()?;
-        if collect_metrics {
-            record_call_op_known_enabled(VmCallMetric::Generic);
-        }
         let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
+        if collect_metrics {
+            // Classified, not just counted. `native_call_ops` / `closure_call_ops`
+            // were printed by `lk coverage --profile` and were **structurally
+            // zero**: the variants had arms adding them up and no site ever
+            // constructed one, so every `Call` landed in `Generic`. A report that
+            // says a program calling `println` made no native calls is worse than
+            // one that says nothing, and `bench/README.md` decides fused opcodes
+            // from these numbers.
+            //
+            // The kind comes from the *callee value*, not from the static fact:
+            // the fact is `Unknown` at most call sites (the compiler proves it
+            // only for a direct module call), so classifying by it left the same
+            // zeroes it was supposed to fix. `observe_call_target_kind` reads the
+            // heap value the call is about to enter — which is what the counter
+            // is asking about. `Runtime` (a compiled LK function reached through
+            // a value) has no bucket of its own, so it stays in the unclassified
+            // total along with `Unknown`.
+            record_call_op_known_enabled(match self.observe_call_target_kind(call_fact.call_base) {
+                crate::vm::analysis::PerfCallTargetKind::Native => VmCallMetric::Native,
+                crate::vm::analysis::PerfCallTargetKind::Closure => VmCallMetric::Closure,
+                crate::vm::analysis::PerfCallTargetKind::Runtime | crate::vm::analysis::PerfCallTargetKind::Unknown => {
+                    VmCallMetric::Generic
+                }
+            });
+        }
         let window = CallWindow::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
         let call_pc = self.pc;
         match self.call_function(module, window, Some(call_fact.target_kind), ctx)? {
@@ -592,7 +647,7 @@ impl Executor {
         } else {
             *self.read(instr.a())?
         };
-        let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+        let slot = self.global_slot_from_fact_or_instr(function, instr);
         self.write_global(slot, value)?;
         self.pc += 1;
         Ok(())
@@ -625,11 +680,14 @@ impl Executor {
             Opcode::MakeClosure => {
                 self.dispatch_make_closure(instr, module)?;
             }
-            Opcode::LoadNative => {
-                self.dispatch_load_native(instr, module)?;
-            }
             Opcode::Not => {
                 self.dispatch_not(function, instr)?;
+            }
+            Opcode::Neg => {
+                self.dispatch_neg(instr)?;
+            }
+            Opcode::FloorDivInt => {
+                self.dispatch_floor_div_int(instr)?;
             }
             Opcode::CastTo => {
                 self.dispatch_cast(instr)?;
@@ -722,7 +780,8 @@ impl Executor {
                     }
                 }
                 RuntimeVal::Int(n) => {
-                    let n_str = n.to_string();
+                    let mut digits = [0u8; MAX_I64_DIGITS];
+                    let n_str = int_decimal(*n, &mut digits);
                     if short_len + n_str.len() <= 7 {
                         short_buf[short_len..short_len + n_str.len()].copy_from_slice(n_str.as_bytes());
                         short_len += n_str.len();
@@ -782,20 +841,86 @@ fn cast_source_to_i64(source: &RuntimeVal) -> Result<i64> {
         // Truncates toward zero, like every other language's float-to-int cast.
         RuntimeVal::Float(value) => *value as i64,
         RuntimeVal::Bool(value) => i64::from(*value),
-        other => bail!("cannot cast {:?} to an integer", other.kind()),
+        // No heap here, and none is needed: only a scalar can be cast, so a
+        // handle is exactly the case this refuses. `scalar_type_name` says
+        // `Object` and names itself for saying it.
+        other => bail!("cannot cast {} to an integer", other.kind().scalar_type_name()),
     })
+}
+
+/// The `i64` carrier holding `source` narrowed to `kind`.
+///
+/// An integer source **wraps** — `300 as u8` is 44, which is what `as` means
+/// between integers. A float source **saturates to `kind`'s own range**, and
+/// that is the difference this exists for: going through `i64` first saturated
+/// to *its* range and then masked the result, so a value out of range came back
+/// as an arbitrary bit pattern rather than as the nearest representable one.
+///
+/// It showed on division, because `/` is float division and dividing by zero is
+/// `inf`:
+///
+/// | expression | was | now |
+/// | --- | --- | --- |
+/// | `1 / 0` at `i32` | `-1` | `2147483647` |
+/// | `-1 / 0` at `i32` | `0` | `-2147483648` |
+/// | `1 / 0` at `u8` | `255` | `255` |
+/// | `0 / 0` at `u8` | `0` | `0` |
+///
+/// Two of the four were already right by coincidence — `u8`'s mask happens to
+/// keep the low byte of `i64::MAX`, which is `255`.
+fn cast_to_machine_int(source: &RuntimeVal, kind: crate::val::IntKind) -> Result<i64> {
+    if let RuntimeVal::Float(value) = source {
+        let bits = kind.bits().unwrap_or(usize::BITS);
+        if bits >= 64 {
+            // The `i64`/`u64` carriers are the full width, so `as` already
+            // saturates to exactly the right range — except `u64`, whose range
+            // the carrier holds as a bit pattern.
+            return Ok(if kind.is_signed() {
+                *value as i64
+            } else {
+                *value as u64 as i64
+            });
+        }
+        let (low, high) = if kind.is_signed() {
+            (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+        } else {
+            (0, (1i64 << bits) - 1)
+        };
+        // NaN casts to zero, as it does everywhere `as` is defined.
+        if value.is_nan() {
+            return Ok(0);
+        }
+        return Ok(if *value <= low as f64 {
+            low
+        } else if *value >= high as f64 {
+            high
+        } else {
+            *value as i64
+        });
+    }
+    Ok(truncate_to_width(cast_source_to_i64(source)?, kind))
 }
 
 /// Reduce `value` to `kind`'s width, then widen it back into the `i64` carrier
 /// by `kind`'s signedness.
 ///
-/// Pointer-width kinds are treated as 64-bit here. That is the width on every
-/// target the VM itself runs on; a 32-bit *deployment* target gets its real
-/// width from the AOT path, which lowers to a genuine `i32`.
+/// A pointer-width kind takes the width of the machine this VM is *running on*,
+/// which is what `isize`/`usize` mean: on `thumbv7em-none-eabi` — a target this
+/// VM is built for — a `usize` is 32 bits, and a value that does not fit one is
+/// not an address that machine can hold.
+///
+/// This used to leave them unmasked with the note that "a 32-bit deployment
+/// target gets its real width from the AOT path, which lowers to a genuine
+/// `i32`". The AOT path cannot: Cranelift's backend set here has no 32-bit
+/// target, and every 32-bit triple is refused at `isa::lookup`
+/// (`no_32_bit_target_is_reachable_yet` pins that, and names what to fix when
+/// one becomes reachable). So the promise was to a mechanism that does not
+/// exist, and the VM was the only thing that could have kept it.
+///
+/// On a 64-bit host this changes nothing — `usize::BITS` is 64 and the early
+/// return below already covered it.
 fn truncate_to_width(value: i64, kind: crate::val::IntKind) -> i64 {
-    let Some(bits) = kind.bits() else {
-        return value;
-    };
+    let bits = kind.bits().unwrap_or(usize::BITS);
     if bits >= 64 {
         return value;
     }
@@ -805,5 +930,57 @@ fn truncate_to_width(value: i64, kind: crate::val::IntKind) -> i64 {
         ((masked << (64 - bits)) as i64) >> (64 - bits)
     } else {
         masked as i64
+    }
+}
+
+/// Widest decimal `i64` — `i64::MIN` is 20 characters including the sign.
+const MAX_I64_DIGITS: usize = 20;
+
+/// `value` in decimal, written into a caller-owned buffer.
+///
+/// The interpolation fast path above builds a `ShortStr` in a stack array
+/// precisely so that a short result costs no heap allocation. It reached the
+/// integer arm through `to_string()`, which allocates a `String` and frees it
+/// two lines later — the fast path was paying the allocation it exists to
+/// avoid, on every interpolation with an integer in it.
+fn int_decimal(value: i64, buf: &mut [u8; MAX_I64_DIGITS]) -> &str {
+    let mut magnitude = value.unsigned_abs();
+    let mut index = buf.len();
+    loop {
+        index -= 1;
+        buf[index] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        index -= 1;
+        buf[index] = b'-';
+    }
+    // Only ASCII digits and `-` were written, so this cannot fail.
+    core::str::from_utf8(&buf[index..]).unwrap_or("")
+}
+
+#[cfg(test)]
+mod int_decimal_tests {
+    use alloc::string::ToString;
+
+    use super::{MAX_I64_DIGITS, int_decimal};
+
+    /// Against `to_string`, which is what this replaced — including the two
+    /// values a hand-rolled formatter gets wrong: zero (the loop must run once)
+    /// and `i64::MIN` (whose magnitude does not fit in `i64`).
+    #[test]
+    fn matches_to_string_including_the_edges() {
+        let cases = [0, 1, -1, 9, 10, -10, 99, 1234567, -1234567, i64::MAX, i64::MIN];
+        for value in cases {
+            let mut buf = [0u8; MAX_I64_DIGITS];
+            assert_eq!(int_decimal(value, &mut buf), value.to_string(), "for {value}");
+        }
+        for value in -1000..1000i64 {
+            let mut buf = [0u8; MAX_I64_DIGITS];
+            assert_eq!(int_decimal(value, &mut buf), value.to_string(), "for {value}");
+        }
     }
 }

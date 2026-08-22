@@ -37,13 +37,32 @@ where
     cmd
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum NativePath {
+    PureNative,
+    /// A documented lowering gap whose required behavior is a Tier 0 fallback.
+    MayDegrade,
+}
+
 struct Case {
     name: &'static str,
     source: &'static str,
+    native_path: NativePath,
 }
 
 const fn new(name: &'static str, source: &'static str) -> Case {
-    Case { name, source }
+    Case {
+        name,
+        source,
+        native_path: NativePath::PureNative,
+    }
+}
+
+const fn may_degrade(name: &'static str, source: &'static str) -> Case {
+    Case {
+        native_path: NativePath::MayDegrade,
+        ..new(name, source)
+    }
 }
 
 /// Compile `case` natively with the MIR gate enabled, run it, run the same
@@ -64,10 +83,20 @@ fn run_differential(area: &str, cases: &[Case]) {
         let vm = run_cli(&dir, [file.as_str()]).output().expect("spawn vm run");
         let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
-        // Native build + run.
-        let exe = run_cli(&dir, ["compile", &file])
-            .output()
-            .expect("spawn native compile");
+        // Native build + run. Most cases are pure-native even when the caller
+        // exported `LK_AOT_NO_FALLBACK`; the explicit degradation case clears it
+        // because the test documents that Tier 0 is the required safe outcome.
+        let mut compile = run_cli(&dir, ["compile", &file]);
+        match case.native_path {
+            NativePath::PureNative => {
+                compile.env("LK_AOT_NO_FALLBACK", "1");
+            }
+            NativePath::MayDegrade => {
+                compile.env("LK_AOT_HYBRID", "0");
+                compile.env_remove("LK_AOT_NO_FALLBACK");
+            }
+        }
+        let exe = compile.output().expect("spawn native compile");
         assert!(
             exe.status.success(),
             "[{area}/{}] native compile failed: {}",
@@ -129,6 +158,151 @@ fn differential_scalars() {
     );
 }
 
+/// The shapes `docs/semantics.md` used to exclude from this corpus.
+///
+/// They were excluded because the two backends genuinely disagreed:
+/// `unique()` had a hand-written equality on each side, and lkrt's still
+/// described the VM *of the time* — numerics by `to_bits`, strings "never
+/// equal" past seven bytes, lists by handle. Once the VM's equality became
+/// heap-aware the two drifted, and being outside the corpus is why nothing
+/// said so. One equality now, so these belong here.
+#[test]
+fn differential_equality_and_unique() {
+    run_differential(
+        "equality",
+        &[
+            new("unique_zeros", "let xs = [0.0, -0.0];\nreturn xs.unique();\n"),
+            new("unique_floats", "let xs = [1.0, 2.0, 1.0];\nreturn xs.unique();\n"),
+            new(
+                "unique_long_strings",
+                "let s = \"abcdefghij\";\nlet xs = [s, s, \"ab\"];\nreturn xs.unique();\n",
+            ),
+            new("unique_nested", "let xs = [[1], [1], [2]];\nreturn xs.unique();\n"),
+            new("eq_across_int_float", "let a = 1;\nlet b = 1.0;\nreturn a == b;\n"),
+            new(
+                "in_across_int_float",
+                "let a = 1;\nlet ys = [1.0, 2.0];\nreturn a in ys;\n",
+            ),
+            new(
+                "in_across_float_int",
+                "let a = 1.0;\nlet ys = [1, 2];\nreturn a in ys;\n",
+            ),
+            new("in_misses", "let ys = [1, 2];\nreturn 1.5 in ys;\n"),
+            // A miss is nil on every sequence, not -1: -1 is a valid index (the
+            // last element), so `xs[xs.index_of(v)]` used to answer that
+            // instead of failing.
+            // `try` is an expression, so its value has to survive the region on
+            // both backends — natively that means a cell, and a register seeded
+            // with nil used to have no way back out of one.
+            // Int overflow wraps rather than raising, and both backends have to
+            // wrap the same way.
+            new(
+                "int_overflow_wraps",
+                "let a = 9223372036854775807;\nlet b = -9223372036854775807 - 1;\nreturn [a + 1, a * 2, b - 1];\n",
+            ),
+            new(
+                "try_expression_value",
+                "fn d(a: Int, b: Int) -> Float {\n  if (b == 0) { error(\"zero\"); }\n  return a / b;\n}\nlet ok = try { d(10, 2) } catch e { -1.0 };\nlet bad = try { d(1, 0) } catch e { -1.0 };\nreturn [ok, bad];\n",
+            ),
+            new(
+                "try_expression_nil_branch",
+                "let r = try { 1 % 0 } catch e { let unused = 1; };\nreturn r;\n",
+            ),
+            new(
+                "index_of_miss_is_nil",
+                "let xs = [1, 2, 3];\nreturn [xs.index_of(9), xs.index_of(2), \"abc\".index_of(\"z\")];\n",
+            ),
+            // Strings order lexicographically on both backends. The type
+            // checker used to refuse `<` on them outright, so `sort()` was the
+            // only way to ask — and the native lowering, told the VM did not
+            // support it either, rejected the whole function.
+            new(
+                "str_lt_long",
+                "let a = \"aaaaaaaaa\" + \"a\";\nlet z = \"zzzzzzzzz\" + \"z\";\nreturn a < z;\n",
+            ),
+            new(
+                "str_ge_long",
+                "let a = \"aaaaaaaaa\" + \"a\";\nlet z = \"zzzzzzzzz\" + \"z\";\nreturn z >= a;\n",
+            ),
+            new("str_le_equal", "let a = \"mm\";\nreturn a <= \"mm\";\n"),
+            new("str_gt_prefix", "let a = \"abc\";\nreturn a > \"ab\";\n"),
+            // The String read surface, on text with multi-byte characters in
+            // it. Only `substring`/`find` used to lower, both to byte-indexed
+            // helpers, so this is exactly where the two backends disagreed —
+            // and nothing compared them, because the corpus was ASCII.
+            new(
+                "str_slice_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.slice(1, 4);\n",
+            ),
+            new(
+                "str_slice_open_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.slice(6);\n",
+            ),
+            new(
+                "str_take_skip_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.take(3) + s.skip(9);\n",
+            ),
+            new(
+                "str_index_of_multibyte",
+                "let s = \"héllo wörld\";\nreturn s.index_of(\"wörld\");\n",
+            ),
+            new("str_index_of_miss", "let s = \"héllo\";\nreturn s.index_of(\"zz\");\n"),
+            new(
+                "str_negative_index_multibyte",
+                "let s = \"中文abc\";\nreturn s[-1] + s[-5];\n",
+            ),
+            new(
+                "str_first_last_multibyte",
+                "let s = \"中文abc\";\nreturn [s.first(), s.last(), \"\".first()];\n",
+            ),
+            // `in` on a heap element. The VM compares these by value and this
+            // runtime compared them by handle, so each of these answered false
+            // compiled and true interpreted — and `-` and `index_of`, which
+            // share the comparison, answered with it.
+            new(
+                "in_nested_list",
+                "return [[1, 2] in [[1, 2], [3]], [] in [[]], [1, 2] in [[1, 2, 3]]];\n",
+            ),
+            new("in_nested_map", "return {\"k\": 1} in [{\"k\": 1}];\n"),
+            new(
+                "in_two_handles_one_value",
+                "let a = \"ab\".bytes();\nlet b = \"ab\".bytes();\nreturn [a in [b], a == b];\n",
+            ),
+            // A mixed list compares its elements the way `==` does, which
+            // includes reading an Int and a Float as one number.
+            new(
+                "in_mixed_list_across_int_float",
+                "return [1.0 in [1, \"a\"], 1 in [1.0, \"a\"]];\n",
+            ),
+            new(
+                "sub_removes_nested",
+                "return [[[1], [2], [3]] - [[2]], [{\"k\": 1}, {\"j\": 2}] - [{\"k\": 1}]];\n",
+            ),
+            new(
+                "index_of_nested_and_across_int_float",
+                "return [[[1], [2]].index_of([2]), [1, \"x\", 2].index_of(2.0)];\n",
+            ),
+            // `count` and `index_of` are one scan in the VM. They were two here
+            // and had diverged in which carriers exist, so a `List<str>` could
+            // be searched but not counted. Every carrier, and a boxed receiver
+            // for each, since that is the spelling that had nothing at all.
+            new(
+                "count_every_carrier",
+                "fn n(xs, v) { return xs.count(v); }\nreturn [\n  n([1, 2, 1], 1), n([1.5, 2.5, 1.5], 1.5), n([\"a\", \"b\", \"a\"], \"a\"),\n  n([[1], [2], [1]], [1]), n([1, \"a\", 1.0], 1), n([], 1),\n  [1, 2, 1].count(1), [\"a\", \"b\", \"a\"].count(\"a\"),\n  [1.5, 1.5].count(1.5), [[1], [1]].count([1]),\n];\n",
+            ),
+            // The exception, and the reason the comparison is not simply `==`
+            // everywhere: a byte string holds byte values, so the VM asks for an
+            // Int and answers false for anything else — where a list of the same
+            // numbers reads a Float as one of them. A boxed haystack is what
+            // picks between the two at run time.
+            new(
+                "in_bytes_wants_an_int_where_a_list_takes_a_float",
+                "let c = [\"ab\".bytes(), [97, 98]];\nreturn [97 in c[0], 97.0 in c[0], 99 in c[0], 97 in c[1], 97.0 in c[1]];\n",
+            ),
+        ],
+    );
+}
+
 #[test]
 fn differential_control_flow() {
     run_differential(
@@ -168,6 +342,33 @@ fn differential_control_flow() {
             new(
                 "float_loop",
                 "let s = 0.0;\nlet i = 0;\nwhile (i < 5) { s = s + 1.5; i = i + 1; }\nreturn s;\n",
+            ),
+            // Every arm returns, so nothing follows the match — the function's
+            // last block has no terminator, and the catch-all arm is entered
+            // with no test. Lowering saw a phantom edge off the end and either
+            // rejected the function or built a `ret void` in an `-> i64` one.
+            new(
+                "match_arms_return",
+                "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        1 => { return 8; }\n        _ => { return 9; }\n    }\n}\nprintln(g(0));\nprintln(g(1));\nprintln(g(2));\nreturn 0;\n",
+            ),
+            // Unreachable code: with no predecessors it has a definition for no
+            // register, and that emptiness used to flow into the blocks it
+            // falls into, rejecting the function over its own parameter.
+            new(
+                "code_after_a_total_if",
+                "fn h(n: Int) -> Int {\n    if n > 0 { return 1; } else { return 2; }\n    let z = n + 1;\n    return z;\n}\nprintln(h(5));\nprintln(h(-5));\nreturn 0;\n",
+            ),
+            // A `return` in one branch of a conditional expression ends that
+            // branch, not the lowering of what follows the conditional.
+            new(
+                "conditional_branch_returns",
+                "fn f(n: Int) -> Int {\n    let a = if n > 0 { return 1; } else { 2 };\n    return a + 10;\n}\nprintln(f(5));\nprintln(f(-5));\nreturn 0;\n",
+            ),
+            // A binding arm catches every value, nil included — the same rule
+            // the wildcard follows.
+            new(
+                "binding_arm_catches_nil",
+                "fn f(v: Int?) -> Int {\n    return match v { x => 1 };\n}\nprintln(f(nil));\nprintln(f(3));\nreturn 0;\n",
             ),
         ],
     );
@@ -214,6 +415,32 @@ fn differential_lists() {
     run_differential(
         "lists",
         &[
+            // The same rule across a call: the callee widens a *parameter*,
+            // and only the caller can build the list that way. Two shapes,
+            // because they are discovered differently — a parameter two call
+            // sites disagree about is erased to Dyn and the caller has to be
+            // pessimistic, while a parameter a single call site pins keeps its
+            // typed carrier and the callee is the one that reports the push.
+            new(
+                "a_callee_widens_a_shared_parameter",
+                "fn widen(xs: Any) -> Int {\n  xs.push(\"z\");\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(widen(a));\nprintln(widen(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "a_callee_widens_its_only_caller_s_list",
+                "fn widen(xs: Any) -> Int {\n  xs.push(\"z\");\n  return xs.len();\n}\nlet a = [1, 2];\nprintln(widen(a));\nprintln(a);\nreturn 0;\n",
+            ),
+            // A list literal whose element type a later push contradicts is
+            // built as a Dyn list from the start — the same fixpoint retry an
+            // empty `[]` already used. The VM widens the carrier in place;
+            // native cannot, so this used to fall back.
+            new(
+                "widened_after_a_typed_literal",
+                "let a: List<Any> = [1, 2];\na.push(\"x\");\nprintln(a);\nlet b: List<Any> = [1.5, 2.5];\nb.push(\"y\");\nprintln(b);\nlet c: List<Any> = [\"p\", \"q\"];\nc.push(7);\nprintln(c);\nreturn 0;\n",
+            ),
+            new(
+                "widened_from_a_register_window",
+                "let n = 3;\nlet d: List<Any> = [n, n + 1];\nd.push(\"z\");\nprintln(d);\nlet f: List<Any> = [1, 2];\nfor i in 0..2 { f.push(\"s\"); }\nprintln(f);\nreturn 0;\n",
+            ),
             new("len", "let xs = [1, 2, 3, 4];\nreturn xs.len();\n"),
             new("const_index", "let xs = [10, 20, 30, 40];\nreturn xs[0] + xs[2];\n"),
             new("oob_nil", "let xs = [10];\nreturn xs[9];\n"),
@@ -252,9 +479,30 @@ fn differential_lists() {
                 "str_nil_branch",
                 "let xs = [\"a\"];\nif xs[9] == nil { return 1; }\nreturn 0;\n",
             ),
+            // `index_of` on an int list. The VM has it on every sequence; the
+            // lowering had it only on `Str`, so this dropped its module to the
+            // VM — same answer, only slower, which no gate can see.
+            new(
+                "list_index_of",
+                "let xs = [10, 20, 30];\nprintln(xs.index_of(20) ?? -1);\nprintln(xs.index_of(99) ?? -1);\nprintln([1].index_of(1) ?? -1);\nreturn 0;\n",
+            ),
             new(
                 "nil_branch_oob",
                 "let xs = [1];\nif xs[9] == nil { return 1; }\nreturn 0;\n",
+            ),
+            // Writing at a negative index means what reading at one means. It
+            // used to raise in both backends while `xs[-1]` read the last
+            // element — the same expression, one direction.
+            new(
+                "negative_store",
+                "let xs = [1, 2, 3];\nxs[-1] = 9;\nxs.set(-2, 8);\nprintln(xs);\nreturn 0;\n",
+            ),
+            // A window's negative bounds count from the end, like `xs[-1]`.
+            // The VM raised on them and the native slice raised too, while the
+            // *string* slice on each side did something different again.
+            new(
+                "slice_negative",
+                "let xs = [1, 2, 3, 4, 5];\nprintln(xs.slice(-2, 5).len());\nprintln(xs.slice(1, -1).len());\nprintln(xs.slice(-99, 99).len());\nprintln(xs.slice(-1, -3).len());\nreturn 0;\n",
             ),
         ],
     );
@@ -265,6 +513,42 @@ fn differential_maps() {
     run_differential(
         "maps",
         &[
+            // The same rule across a call, for the other container: the
+            // callee stores a value the parameter's carrier cannot hold, so
+            // the caller's literal is built with a Dyn carrier. Both shapes,
+            // as for lists — the erased one stores through `dyn.index_set`.
+            new(
+                "a_callee_widens_a_shared_map_parameter",
+                "fn widen(m: Any) -> Int {\n  m[\"k\"] = \"z\";\n  return m.len();\n}\nlet a = {\"x\": 1};\nlet b = {\"y\": 1.5};\nprintln(widen(a));\nprintln(widen(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            // An index store through a boxed receiver, which is the other
+            // spelling `dyn.index_set` carries: an integer key is a position
+            // on a list and a key on a map, and the negative-from-end and
+            // out-of-range rules are the unboxed ones.
+            new(
+                "a_boxed_receiver_stores_by_index",
+                "fn setit(xs: Any) -> Int {\n  xs[0] = 9;\n  xs[-1] = 8;\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(setit(a));\nprintln(setit(b));\nprintln(a);\nprintln(b);\nreturn 0;\n",
+            ),
+            new(
+                "a_boxed_receiver_store_is_bounds_checked",
+                "fn setit(xs: Any) -> Int {\n  xs[5] = 9;\n  return xs.len();\n}\nlet a = [1, 2];\nlet b = [1.5, 2.5];\nprintln(setit(a));\nprintln(setit(b));\nreturn 0;\n",
+            ),
+            new(
+                "a_callee_widens_its_only_caller_s_map",
+                "fn widen(m: Any) -> Int {\n  m[\"k\"] = \"z\";\n  return m.len();\n}\nlet a = {\"x\": 1};\nprintln(widen(a));\nprintln(a);\nreturn 0;\n",
+            ),
+            // A map literal whose value type a later store contradicts is
+            // built with a Dyn carrier — the same fixpoint retry the list
+            // literals use. The VM widens the carrier in place; native cannot,
+            // so both of these used to fall back.
+            new(
+                "widened_after_a_typed_literal",
+                "let m: Map<String, Any> = {\"a\": 1};\nm[\"b\"] = \"x\";\nprintln(m);\nreturn 0;\n",
+            ),
+            new(
+                "widened_from_an_empty_literal",
+                "let n: Map<String, Any> = {};\nn[\"a\"] = 1;\nn[\"b\"] = \"y\";\nprintln(n);\nreturn 0;\n",
+            ),
             new("str_get", "let m = {\"a\": 1, \"b\": 2};\nreturn m[\"b\"];\n"),
             new("missing_nil", "let m = {\"a\": 1};\nreturn m[\"z\"];\n"),
             new(
@@ -297,6 +581,301 @@ fn differential_strings() {
     run_differential(
         "strings",
         &[
+            // `needle in text` is `text.contains(needle)`. The method
+            // spelling lowered and the operator sent the whole program back to
+            // the VM, which is a 3x slowdown with no message.
+            new(
+                "in_operator_on_a_string",
+                "let s = \"abc\";\nprintln(\"b\" in s);\nprintln(\"z\" in s);\nfn f(t: String) -> Bool {\n  return \"c\" in t;\n}\nprintln(f(s));\nreturn 0;\n",
+            ),
+            // An erased container is a container: `in` refused an `Any`
+            // operand while indexing, `len`, iteration, method dispatch and
+            // `push` all took one. Three carriers behind one `Dyn`, so the
+            // runtime is what picks.
+            new(
+                "in_operator_on_an_erased_container",
+                "fn has(h: Any, n: Any) -> Bool {\n  return n in h;\n}\nprintln(has(\"abc\", \"b\"));\nprintln(has(\"abc\", \"z\"));\nprintln(has([1, 2], 2));\nprintln(has([1, 2], 9));\nprintln(has({\"k\": 1}, \"k\"));\nreturn 0;\n",
+            ),
+            // The other two container operators followed it too: list
+            // removal and map merge. Four siblings, one rule.
+            new(
+                "remove_and_merge_with_an_erased_operand",
+                "fn rm(xs: Any) -> Int {\n  println(xs - [1]);\n  return 0;\n}\nfn mg(m: Any) -> Int {\n  println(m + {\"b\": 2});\n  return 0;\n}\nrm([1, 2]);\nmg({\"a\": 1});\nreturn 0;\n",
+            ),
+            // Concatenation followed the same rule as `in`, and refused the
+            // same erased operand.
+            new(
+                "concat_with_an_erased_operand",
+                "fn app(xs: Any) -> Int {\n  println(xs + [7]);\n  return 0;\n}\napp([1, 2]);\napp([1.5, 2.5]);\nreturn 0;\n",
+            ),
+            // A list operand absorbs the other one, in position — the VM's
+            // rule, which `lkrt_dyn_add` states, and which only the checker
+            // refused. A heterogeneous literal is the case that mattered most:
+            // it infers to a `Tuple`, so it missed the list rule entirely and
+            // `"" + [1, "a"]` was typed `String` while both executors answered
+            // a list.
+            new(
+                "a_list_operand_absorbs_the_other",
+                "println(\"p=\" + [1, 2]);\nprintln([1, 2] + \"x\");\nprintln(\"\" + [1, \"a\"]);\nprintln([1, \"a\"] + \"z\");\nprintln(1 + [2, 3]);\nprintln([2, 3] + 1);\nprintln(nil + [1]);\nprintln([1] + nil);\nprintln([1] + {\"k\": 2});\nprintln({\"k\": 2} + [1]);\nreturn 0;\n",
+            ),
+            // …and the element type the checker gives the answer holds up when
+            // it is written down.
+            // A container beside a string in `+` renders the way `print`
+            // renders it. Four ways to print one value and this was the one
+            // that failed — `println(xs)`, `println("{}", xs)` and
+            // `println("${xs}")` all worked. A list is not here because a list
+            // operand *wins* and the answer is a list, which is a different
+            // operation; what changed is `Set`, a byte string, a window, a
+            // struct and a map beside a string.
+            // A raise is *observable output*: `catch e { println(e) }` puts the
+            // message on stdout, so a guard the runtime does not have is a
+            // wrong answer and not a diagnostic difference. `repeat` was the
+            // one of the four negative-count guards that had none —
+            // `"ab".repeat(-1)` answered `""` compiled and stopped the program
+            // interpreted.
+            // `to_bytes` had one runtime helper serving two spellings with a
+            // message of its own — `bytes.from_list(xs)` *is* `xs.to_bytes()`
+            // in the interpreter and both say `to_bytes`. So a caught error
+            // read differently compiled, on a plain `List<Int>`, with no boxing
+            // anywhere. The boxed carrier has to ask whether each element is an
+            // Int at all, which is the second refusal.
+            // `datetime.parse` reads three shapes — a full datetime, a date
+            // alone at midnight, a time alone on the epoch day — and lkrt read
+            // one, so two of the three answered interpreted and failed
+            // compiled. The refusal names the value and the format rather than
+            // repeating chrono's phrasing about its own parser.
+            new(
+                "datetime_parse_reads_three_shapes",
+                "use datetime;\nfn p(v: String, f: String) -> String { try { return \"ok \" + datetime.parse(v, f); } catch e { return \"E: \" + e; } }\nprintln(p(\"2026-08-20 10:30:00\", \"%Y-%m-%d %H:%M:%S\"));\nprintln(p(\"2026-08-20\", \"%Y-%m-%d\"));\nprintln(p(\"10:30:00\", \"%H:%M:%S\"));\nprintln(p(\"nope\", \"%Y\"));\nreturn 0;\n",
+            ),
+            new(
+                "to_bytes_refuses_in_the_interpreters_words",
+                "fn c(xs) -> String { try { return \"ok \" + xs.to_bytes(); } catch e { return \"E: \" + e; } }\nprintln(c([1, 2]));\nprintln(c([3, \"x\"].take(1)));\nprintln(c([300, \"y\"].take(1)));\nprintln(c([1, \"z\"]));\nprintln(c([1.5, \"w\"].take(1)));\nprintln(c([]));\nreturn 0;\n",
+            ),
+            new(
+                "a_negative_count_raises_on_both_ends",
+                "fn t(s: String, n: Int) -> String { try { return \"ok[\" + s.take(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn k(s: String, n: Int) -> String { try { return \"ok[\" + s.skip(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn r(s: String, n: Int) -> String { try { return \"ok[\" + s.repeat(n) + \"]\"; } catch e { return \"E: \" + e; } }\nfn p(s: String, n: Int) -> String { try { return \"ok[\" + s.pad_right(n, \"-\") + \"]\"; } catch e { return \"E: \" + e; } }\nprintln(t(\"abc\", -1));\nprintln(k(\"abc\", -1));\nprintln(r(\"abc\", -1));\nprintln(p(\"abc\", -1));\nprintln(r(\"abc\", 0));\nprintln(r(\"abc\", 2));\nreturn 0;\n",
+            ),
+            // `-` removes a *single* value too: `xs - v` drops the first
+            // element equal to `v`, `m - k` drops that key. The VM has an arm
+            // for each beside the two-container ones, and nothing could reach
+            // either — the checker refused the shape, so the lowering had none
+            // and `lkrt_dyn_sub` raised. All three had to open together.
+            // Membership is a *predicate* and answers: a value that cannot be
+            // a key is not one the map or set holds. It used to depend on the
+            // map's internal carrier — `1.5 in {"k": 1}` was false and
+            // `1.5 in {1: 2}` raised, one question with two answers decided by
+            // something no program can see — and the method spellings
+            // disagreed with the operator besides.
+            //
+            // Building a key still refuses, which is the line: `m.set(1.5, x)`,
+            // `m.delete(1.5)`, `s.add([1])`, `m[1.5]` and `m - 1.5` all say so.
+            // The method spellings of the predicates take any value, the way
+            // their operator spellings always have. A container searched for
+            // something it cannot hold answers "absent" — and where the type
+            // settles it, the answer is a constant rather than a call.
+            // Reading a key of another type is a *miss*: the interpreter
+            // answers nil, the way it does for a key that is simply absent.
+            // The checker unified the two types instead — `{"k": 1}[0]` was
+            // "Cannot unify String with Int", a message about the checker's own
+            // machinery for a lookup that has an answer. Writing still refuses,
+            // because it would put a key in the map the type says is not there.
+            //
+            // And a `Tuple` slices: each container arm carries a range guard
+            // and that one did not, so a heterogeneous literal was the one list
+            // that could not be sliced.
+            // A value nested past `MAX_VALUE_DEPTH`. The interpreter refuses to
+            // print it and refuses to compare it, and lkrt had no bound on
+            // either: a 520-deep value compared `true` compiled and stopped the
+            // program interpreted, and `println` printed it compiled.
+            //
+            // Relying on the stack instead is not the same rule twice — where
+            // it lands depends on the build and on how much stack was left, so
+            // the threshold would not be a property of the language. The
+            // message it gave said so: "a native binary is bounded by the real
+            // stack, not by LK_MAX_CALL_DEPTH", which is true of LK recursion
+            // and was not what had happened.
+            // A boxed value stored into a container the lowering guessed a
+            // carrier for. An empty `{}` guesses `str -> i64`, so this stored
+            // an Int and raised "runtime type error" for every other kind while
+            // the interpreter stored all of them — the guess is meant to cost a
+            // widening, and unboxing spent it on a raise.
+            new(
+                "a_boxed_value_widens_the_container_it_is_stored_in",
+                "fn m(v: Any) -> String { try { let c = {}; c[\"k\"] = v; return \"map \" + c.len(); } catch e { return \"map E\"; } }\nfn l(v: Any) -> String { try { let c = []; c.push(v); return \"list \" + c.len(); } catch e { return \"list E\"; } }\nfn s(v: Any) -> String { try { let c = [0]; c[0] = v; return \"set \" + c.len(); } catch e { return \"set E\"; } }\nprintln(m(1));\nprintln(m(\"a\"));\nprintln(m([1]));\nprintln(m({\"j\": 1}));\nprintln(m(nil));\nprintln(m(1.5));\nprintln(m(true));\nprintln(l(1));\nprintln(l(\"a\"));\nprintln(l([1]));\nprintln(l(nil));\nprintln(s(1));\nprintln(s(\"a\"));\nprintln(s([1]));\nprintln(s(nil));\nreturn 0;\n",
+            ),
+            // A value compared against itself answers without being walked,
+            // which is what the interpreter does — and without it the depth
+            // bound above turned `d == d` and `[d, d].unique()` into refusals
+            // for a value 2000 levels deep. A Float is excluded: `NaN != NaN`,
+            // and two NaNs are the same bits.
+            new(
+                "a_value_equals_itself_without_being_walked",
+                "fn build(n: Int) -> Any {\n    let v: Any = 1;\n    let i = 0;\n    while i < n { v = [v]; i = i + 1; }\n    return v;\n}\nfn t(f: Int, d: Any, e: Any) -> String {\n  try {\n    if f == 0 { return \"self: \" + (d == d); }\n    if f == 1 { return \"unique: \" + [d, d].unique().len(); }\n    if f == 2 { return \"other: \" + (d == e); }\n    return \"nan: \" + ((0.0 / 0.0) == (0.0 / 0.0));\n  } catch err { return \"E\"; }\n}\nlet d = build(2000);\nlet e = build(2000);\nprintln(t(0, d, e));\nprintln(t(1, d, e));\nprintln(t(2, d, e));\nprintln(t(3, d, e));\nreturn 0;\n",
+            ),
+            new(
+                "a_value_too_deep_is_refused_the_same_way",
+                "fn build(n: Int) -> Any {\n    let v: Any = 1;\n    let i = 0;\n    while i < n { v = [v]; i = i + 1; }\n    return v;\n}\nfn t(label: String, f: Int, d: Any, e: Any) -> String {\n    try {\n        if f == 0 { return label + \": \" + (d == e); }\n        if f == 1 { return label + \": \" + [d].contains(e); }\n        if f == 2 { return label + \": \" + [d, e].index_of(e); }\n        if f == 3 { return label + \": \" + ([d] - [e]).len(); }\n        return label + \": \" + [d, e].sort().len();\n    } catch err { return label + \": E \" + err; }\n}\nlet a = build(600);\nlet b = build(600);\nprintln(t(\"eq\", 0, a, b));\nprintln(t(\"contains\", 1, a, b));\nprintln(t(\"index_of\", 2, a, b));\nprintln(t(\"sub\", 3, a, b));\nprintln(t(\"sort\", 4, a, b));\nlet shallow = build(100);\nprintln(shallow == build(100));\nreturn 0;\n",
+            ),
+            new(
+                "a_key_of_another_type_is_a_miss",
+                "println([1, \"a\"][0..2]);\nprintln([1, \"a\"][1..2]);\nprintln([1, 2, 3][0..2]);\nprintln({\"k\": 1}[0]);\nprintln({1: 2}[\"k\"]);\nprintln({\"k\": 1}[\"k\"]);\nreturn 0;\n",
+            ),
+            // …and with a key the lowering cannot type, where unboxing it to
+            // the map's key type used to raise: the map boxes and the tag
+            // decides, which is what the interpreter does.
+            new(
+                "a_key_of_another_type_is_a_miss_erased",
+                "fn r(m: Any, k: Any) -> Any { return m[k]; }\nprintln(r({\"k\": 1}, 0));\nprintln(r({\"k\": 1}, \"k\"));\nreturn 0;\n",
+            ),
+            // The receiver has to *have* the method before "it cannot hold this"
+            // is an answer. A map has `has` and `delete` and no `contains`,
+            // `index_of` or `count` at all, so folding those to "absent" made
+            // `m.contains(x)` answer `false` where the interpreter says "a Map
+            // has no method `contains`".
+            //
+            // The receiver is the *empty* map literal, which is the shape that
+            // still reaches the fold. `{1: 2}.index_of(k)` used to be here and
+            // is now a check error — a map whose key type cannot be a string
+            // and whose value type cannot be a function has no field to call,
+            // so the checker says so before the program runs. `{}` has neither
+            // type pinned, so it type-checks and the fold is what decides the
+            // answer.
+            new(
+                "a_fold_needs_the_method_to_exist",
+                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {}.contains([1, 2]); return \"ok \" + r; }\n    if f == 1 { let r: Any = {}.index_of({\"k\": 1}); return \"ok \" + r; }\n    if f == 2 { let r: Any = {}.count(2.5); return \"ok \" + r; }\n    if f == 3 { let r: Any = [1, 2].contains(\"a\"); return \"ok \" + r; }\n    let r: Any = {\"a\": 1}.has(1);\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nprintln(p(4));\nreturn 0;\n",
+            ),
+            // Removing something that cannot be a key removes nothing — and the
+            // answer has to come back under the tag the caller unboxes.
+            // Handing the *typed* map back where `dyn.as_map` wants the boxed
+            // one made `{"a": 1} - []` raise where the interpreter answered.
+            new(
+                "removing_a_non_key_answers_the_map",
+                "fn p(f: Int) -> String {\n  try {\n    if f == 0 { let r: Any = {} - []; return \"ok \" + r; }\n    if f == 1 { let r: Any = {\"a\": 1} - []; return \"ok \" + r; }\n    if f == 2 { let r: Any = {\"a\": 1} - 1.5; return \"ok \" + r; }\n    let r: Any = {\"a\": 1} - \"a\";\n    return \"ok \" + r;\n  } catch e { return \"E\"; }\n}\nprintln(p(0));\nprintln(p(1));\nprintln(p(2));\nprintln(p(3));\nreturn 0;\n",
+            ),
+            // A *caught* error's message is stdout, so the two engines have to
+            // agree on the words. The runtime used to answer "runtime type
+            // error" for three of these and "value is not callable" for the
+            // fourth, where the interpreter names the operation and the type.
+            //
+            // `cl` is the fine one: which sentence a value gets is its
+            // *representation*. A scalar — and a string short enough to be
+            // inline — is named by its display, anything on the heap by its
+            // type, and the cut is at seven bytes. `"s"` and `"abcdefgh"` are
+            // both here for that reason, and the map carries the interpreter's
+            // nudge about imported modules.
+            new(
+                "a_caught_error_says_what_the_interpreter_says",
+                "fn ix(a: Any) { try { let r: Any = a[0]; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn ln(a: Any) { try { let r: Any = a.len(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cn(a: Any) { try { let r: Any = 1 in a; println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nfn cl(a: Any) { try { let r: Any = a(); println(\"ok \" + r); } catch e { println(\"E \" + e); } }\nix(nil);\nix(1);\nix(1.5);\nix(true);\nix(Set([1]));\nln(nil);\nln(1);\nln(true);\nln(1.5);\ncn(nil);\ncn(1);\ncn(true);\ncl(nil);\ncl(1);\ncl(true);\ncl(1.5);\ncl(\"s\");\ncl(\"abcdefgh\");\ncl([1]);\ncl({\"k\": 1});\ncl(Set([1]));\nreturn 0;\n",
+            ),
+            // A map takes nil, a Bool, an Int and a String as keys alike, and
+            // which native carrier holds it is a representation choice no
+            // program asked for. The runtime unbox refused every kind but the
+            // carrier's, so the same helper stored a string key and raised
+            // "runtime type error" on an integer one — on an explicit literal,
+            // not only on the empty-literal guess.
+            //
+            // These do not lower, and that is the point: the answer has to be
+            // the interpreter's, and until a boxed map is generally keyed
+            // (`docs/aot/aot-gaps-and-lkrt.md` §62) the only way to have it is
+            // to decline. What this pins is that declining is what happens.
+            may_degrade(
+                "a_map_key_of_any_kind_answers_or_declines",
+                "fn put(m: Any, k: Any) -> Any {\n  m[k] = 1;\n  return m;\n}\nprintln(put({\"a\": 1}, \"b\"));\nprintln(put({\"a\": 1}, 7));\nprintln(put({\"a\": 1}, nil));\nprintln(put({\"a\": 1}, true));\nprintln(put({1: 2}, 7));\nprintln(put({1: 2}, \"k\"));\nfn build(k: Any) -> Any {\n  let m = {};\n  m[k] = 1;\n  return m;\n}\nprintln(build(\"kk\"));\nprintln(build(7));\nreturn 0;\n",
+            ),
+            new(
+                "a_predicate_takes_any_value",
+                "println([\"a\", \"b\"].contains(1));\nprintln([\"a\", \"b\"].index_of(1));\nprintln([\"a\", \"b\"].count(1));\nprintln([1, 2].contains(1.5));\nprintln([1, 2].contains(1.0));\nprintln(\"abc\".contains(1));\nprintln(\"abc\".index_of(1));\nprintln(\"ab\".bytes().contains(\"a\"));\nprintln([1, 2, 3].slice(0, 2).contains(\"a\"));\nprintln({1: 2}.has(\"k\"));\nprintln({1: 2}.delete(\"k\"));\nprintln({\"k\": 1}.delete(1));\nprintln(Set([1]).contains(\"a\"));\nprintln(Set([1]).delete(\"a\"));\nprintln([\"a\", \"b\"].contains(\"a\"));\nprintln([1, 2].contains(1));\nprintln(\"abc\".contains(\"b\"));\nprintln({\"k\": 1}.has(\"k\"));\nreturn 0;\n",
+            ),
+            new(
+                "membership_answers_for_a_needle_that_cannot_be_a_key",
+                "fn i(c: Any, v: Any) -> String { try { let r: Any = v in c; return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn h(c: Any, v: Any) -> String { try { let r: Any = c.has(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nfn c2(c: Any, v: Any) -> String { try { let r: Any = c.contains(v); return \"ok \" + r; } catch e { return \"E: \" + e; } }\nprintln(i({\"a\": 1}, \"a\"));\nprintln(i({\"a\": 1}, 1.5));\nprintln(i({\"a\": 1}, [1]));\nprintln(i([1, 2], 1.5));\nprintln(i(\"abc\", \"b\"));\nprintln(h({\"a\": 1}, \"a\"));\nprintln(h({\"a\": 1}, 1.5));\nprintln(c2([1, 2], 1.5));\nprintln(c2(\"abc\", \"b\"));\nreturn 0;\n",
+            ),
+            may_degrade(
+                "building_a_key_still_refuses",
+                "fn t(f: Int, bad: Any) -> String {\n  let s = Set([1]);\n  let m = {\"a\": 1};\n  try {\n    if f == 0 { s.add(bad); }\n    if f == 1 { m.delete(bad); }\n    if f == 2 { m.set(bad, 1); }\n    if f == 3 { let v: Any = m[bad]; let _ = v; }\n    if f == 4 { let d: Any = m.set(bad, 1); let _ = d; }\n    return \"ok\";\n  } catch e { return \"E: \" + e; }\n}\nprintln(t(0, [1]));\nprintln(t(1, 1.5));\nprintln(t(2, 1.5));\nprintln(t(3, 1.5));\nprintln(t(4, 1.5));\nreturn 0;\n",
+            ),
+            new(
+                "removing_a_single_value",
+                "println([1, 2, 1] - [1]);\nprintln([1, 2, 1] - 1);\nprintln([\"a\", \"b\"] - \"a\");\nprintln([1.5, 2.5] - 1.5);\nprintln([1] - 1.5);\nprintln([[1], [2]] - [[1]]);\nprintln([1, \"a\"] - 1);\nprintln({\"a\": 1, \"b\": 2} - {\"a\": 1});\nprintln({\"a\": 1, \"b\": 2} - \"a\");\nprintln({\"a\": 1} - 1);\nprintln({\"a\": 1} - nil);\nprintln({\"a\": 1} - true);\nreturn 0;\n",
+            ),
+            // …and erased, where a key that cannot be one still raises: a map's
+            // members are keyed by nil, Bool, Int and String, so `m - 1.5` is a
+            // question with no answer rather than a removal of nothing.
+            new(
+                "removing_a_single_value_erased",
+                "fn s(a: Any, b: Any) -> String { try { let r: Any = a - b; let _ = r; return \"ok\"; } catch e { return \"E: \" + e; } }\nprintln(s([1, 2, 1], 1));\nprintln(s([1, 2], \"s\"));\nprintln(s([[1], [2]], [1]));\nprintln(s({\"a\": 1}, \"a\"));\nprintln(s({\"a\": 1}, 1.5));\nprintln(s({\"a\": 1}, [1]));\nreturn 0;\n",
+            ),
+            new(
+                "a_container_beside_a_string_renders",
+                "struct P { x: Int }\nprintln(\"\" + Set([1]));\nprintln(\"\" + \"ab\".bytes());\nprintln(\"v=\" + {\"k\": 1});\nprintln({\"k\": 1} + \"v=\");\nprintln(\"\" + P { x: 1 });\nlet w = [1, 2, 3].slice(0, 1);\nprintln(\"\" + w);\nreturn 0;\n",
+            ),
+            // …and through an erased operand, which is the path that already
+            // answered while the typed one refused to lower.
+            new(
+                "a_container_beside_a_string_renders_erased",
+                "struct P { x: Int }\nfn j(a, b) { return a + b; }\nprintln(j(\"v=\", {\"k\": 1}));\nprintln(j(\"\", Set([1])));\nprintln(j(\"\", \"ab\".bytes()));\nprintln(j(\"\", P { x: 1 }));\nprintln(j({\"k\": 1}, \"v=\"));\nprintln(j(\"\", [1, 2]));\nreturn 0;\n",
+            ),
+            new(
+                "an_absorbed_operand_widens_the_element_type",
+                "let xs: List<Int> = [1, 2] + 3;\nlet ys: List<Any> = [1, 2] + \"x\";\nprintln(xs);\nprintln(ys);\nreturn 0;\n",
+            ),
+            // Three more names whose `ListDyn` arms were already there and
+            // whose method-table row was not, so a boxed receiver never
+            // reached them.
+            // `sort`, `min` and `max` on a list whose elements are not all one
+            // carrier. This is the whole of the cross-kind order, and it is the
+            // gate for it: the order is *imposed* rather than emergent, so a
+            // corpus shows everything a unit-level mirror would — unlike map
+            // iteration order, which needed `vm_mirror` because a hash layout
+            // can drift without any program saying so.
+            //
+            // Each line is one of the three things a copy of the VM's
+            // comparator would have got wrong. The rank tables: the VM keeps
+            // two and reaches the second only for two heap values, so they have
+            // to be shown to agree — a short string and a long one sort the
+            // same way against a list. The window: it is a list by content but
+            // shares a tag value with the end of the map range. The struct: it
+            // is a marked map in the runtime and a distinct heap kind in the
+            // VM, and it sorts *after* a plain map.
+            new(
+                "cross_kind_sort_order",
+                "struct P { x: Int }\nstruct Q { y: Int }\nfn s(xs) { return xs.sort(); }\nprintln(s([nil, true, 1, 2.5, \"ab\", [1], {\"k\": 1}]));\nprintln(s([{\"k\": 1}, [1], \"ab\", 2.5, 1, true, nil]));\nprintln(s([[2], [1, 0], [1], []]));\nprintln(s([[1, 2], [1, 2, 3], [1]]));\nprintln(s([\"b\", \"a\", \"a-long-string-past-seven\", \"B\"]));\nprintln(s([2, 1.5, 1, 2.0, 0.0, -0.0]));\nprintln(s([1, \"1\", true]));\nprintln(s([\"ab\".bytes(), [1], \"zz\"]));\nprintln(s([{\"k\": 1}, P { x: 1 }, [1], \"s\"]));\nprintln(s([P { x: 2 }, P { x: 1 }, Q { y: 1 }]));\nprintln(s([]));\nlet w = [1, 2, 3];\nprintln(s([w.slice(1, 3), [0], [1, 2]]));\nreturn 0;\n",
+            ),
+            // The two reductions that share the order, and the empty answer
+            // that no unboxed carrier can hold.
+            new(
+                "cross_kind_min_and_max",
+                "fn mn(xs) { return xs.min(); }\nfn mx(xs) { return xs.max(); }\nprintln(mn([3, 1.5, \"a\", nil]));\nprintln(mx([3, 1.5, \"a\", nil]));\nprintln(mn([[2], [1]]));\nprintln(mx([[2], [1]]));\nprintln(mn([]) == nil);\nprintln(mx([]) == nil);\nprintln(mn([true, nil, 0]));\nreturn 0;\n",
+            ),
+            // `sum` folds with *two* accumulators because the VM does: an Int
+            // element advances the integer total and the float one both, so
+            // the float sum runs over every element in written order.
+            // Promoting on the first float folds a different sequence, and
+            // float addition is not associative. The refusal names the element
+            // that is not a number, in the VM's words.
+            new(
+                "dyn_receiver_sum",
+                "fn s(xs) { return \"\" + s2(xs); }\nfn s2(xs) { return xs.sum(); }\nprintln(s([1, 2, 3]));\nprintln(s([1.5, 2.5]));\nprintln(s([1, 2.5]));\nprintln(s([]));\nprintln(s([1e308, 1.0, -1e308]));\nprintln(s([-1, 1]));\nreturn 0;\n",
+            ),
+            // `is_empty` takes `dyn.len_of` rather than the method table's
+            // unbox, because this arm serves maps too and unboxing one to a
+            // list aborts. It is the dispatch `xs.len()` already takes.
+            new(
+                "dyn_receiver_is_empty",
+                "fn e(c) { return c.is_empty(); }\nprintln(e([1, 2]));\nprintln(e([]));\nprintln(e([1.5]));\nprintln(e({\"k\": 1}));\nprintln(e({}));\nprintln(e(\"ab\"));\nprintln(e(\"\"));\nreturn 0;\n",
+            ),
+            // `zip` had the `ListDyn` receiver arm and refused anyway, because
+            // its *argument* was boxed and only `chain` had written the unbox
+            // out. It is `to_dyn_list_handle`'s now, so both spellings reach it.
+            new(
+                "dyn_receiver_zip",
+                "fn z(xs, ys) { return xs.zip(ys); }\nprintln(z([1, 2], [3, 4]));\nprintln(z([1, 2], [\"a\", \"b\"]));\nprintln(z([1.5], [2.5]));\nprintln(z([], [1]));\nprintln(z([1, 2, 3], [9]));\nprintln(z([[1]], [[2]]));\nreturn 0;\n",
+            ),
+            new(
+                "dyn_receiver_chunk_enumerate_flatten",
+                "fn c(xs) { return xs.chunk(2); }\nfn e(xs) { return xs.enumerate(); }\nfn fl(xs) { return xs.flatten(); }\nprintln(c([1, 2, 3]));\nprintln(c([\"a\", \"b\", \"c\"]));\nprintln(c([]));\nprintln(e([1, 2]));\nprintln(e([[1], [2]]));\nprintln(fl([[1], [2, 3]]));\nprintln(fl([[[1]], [[2]]]));\nreturn 0;\n",
+            ),
             new("const_ret", "return \"hello\";\n"),
             new("eq", "return \"hi\" == \"hi\";\n"),
             new("ne", "return \"hi\" != \"ho\";\n"),
@@ -314,6 +893,39 @@ fn differential_strings() {
             new(
                 "long_string_var",
                 "let s = \"a-fairly-long-string-literal\";\nreturn s + \"!\";\n",
+            ),
+            // Text → number: the whole point is that unparseable text answers
+            // nil rather than guessing, so the two engines must agree on which
+            // spellings are numbers. `lkrt_str_to_int` is a second
+            // implementation of `lk_stdlib_string::to_int`'s String arm; this
+            // is what keeps them the same one.
+            new(
+                "to_int_ok",
+                "use string;\nprintln(string.to_int(\"42\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_trims",
+                "use string;\nprintln(string.to_int(\"  -7\\n\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_refuses",
+                "use string;\nprintln(string.to_int(\"42abc\") ?? -1);\nprintln(string.to_int(\"\") ?? -1);\nprintln(string.to_int(\"42.0\") ?? -1);\nprintln(string.to_int(\"9223372036854775808\") ?? -1);\nreturn 0;\n",
+            ),
+            new(
+                "to_int_base",
+                "use string;\nprintln(string.to_int(\"ff\", 16) ?? -1);\nprintln(string.to_int(\"-101\", 2) ?? -1);\nprintln(string.to_int(\"9\", 8) ?? -1);\nreturn 0;\n",
+            ),
+            // A negative `slice` bound counts from the end, like `[-1]`. The
+            // four implementations had three answers for it, and the two
+            // *backends* disagreed: `"abcde".slice(1, -1)` was `""` in the VM
+            // and `"bcd"` compiled.
+            new(
+                "slice_negative",
+                "println(\"abcde\".slice(-2, 5));\nprintln(\"abcde\".slice(1, -1));\nprintln(\"abcde\".slice(-99, 99));\nprintln(\"abcde\".slice(-1, -3));\nreturn 0;\n",
+            ),
+            new(
+                "to_float_ok",
+                "use string;\nprintln(string.to_float(\"3.5\") ?? -1.0);\nprintln(string.to_float(\" -2e3 \") ?? -1.0);\nprintln(string.to_float(\"nope\") ?? -1.0);\nreturn 0;\n",
             ),
         ],
     );
@@ -673,6 +1285,41 @@ fn differential_dyn_cross_function() {
         &[
             // Disagreeing call-site types join the parameter to Dyn (each
             // site boxes); the body consumes through the Dyn arms.
+            // A capture whose type the compiler proved is `Nil`, or a nullable
+            // one. The function ABI has no word for either, and a call argument
+            // in the same position has boxed all along — `observe_param`
+            // widens a nil argument to `Dyn`. The capture refused instead, so
+            // `let v = nil; let f = || v == nil;` dropped its whole module to
+            // the VM, which is an ordinary thing to write.
+            // A `nil` local crossing into a `try` region. The region is
+            // outlined and its inputs are marshalled as machine words; a `Nil`
+            // has none of its own, and it does not need one — what it says is
+            // what was there *going in*, and the body boxes whatever it writes
+            // back. It crosses boxed now, which is what a cell holding the same
+            // value already did.
+            // A `try` region's parked `return` and the function's own returns
+            // are different arms of one function, and only the second kind was
+            // joined: the parked value is boxed into the outcome cell and read
+            // back with the function's return type, so a list parked by the
+            // `try` arm came back as the `Str` the `catch` arm settled on and
+            // raised. Both kinds join now, and disagreeing takes the retry that
+            // two disagreeing direct returns already take.
+            new(
+                "a_try_region_return_joins_with_the_functions_own",
+                "fn a() -> Any { let r: Any = []; try { return \"ok \" + r; } catch e { return \"E\"; } }\nfn b() -> String { let r: Any = []; try { return \"ok \" + r; } catch e { return \"E\"; } }\nfn c() -> Int { try { return 1; } catch e { return 2; } }\nfn d(f: Bool) -> Any { try { if f { return 1; } return \"s\"; } catch e { return nil; } }\nprintln(a());\nprintln(b());\nprintln(c());\nprintln(d(true));\nprintln(d(false));\nreturn 0;\n",
+            ),
+            new(
+                "a_nil_crosses_into_a_try_region",
+                "fn a() -> String {\n  let n = nil;\n  try { let c = || n == nil; return \"a\" + c(); }\n  catch e { return \"E\"; }\n}\nfn b() -> Int {\n  let n = nil;\n  try { if n == nil { return 1; } return 2; }\n  catch e { return 3; }\n}\nfn c() -> String {\n  let m = {\"a\": 1};\n  let x = m.get(\"zz\");\n  try { let f = || x == nil; return \"a\" + f(); }\n  catch e { return \"E\"; }\n}\nprintln(a());\nprintln(b());\nprintln(c());\nreturn 0;\n",
+            ),
+            new(
+                "a_nil_capture_boxes_like_a_nil_argument",
+                "let m = {\"a\": 1};\nlet v = nil;\nlet x = m.get(\"zz\");\nlet y = m.get(\"a\");\nlet f = || v == nil;\nlet g = || x == nil;\nlet h = || y;\nprintln(f());\nprintln(g());\nprintln(h());\nreturn 0;\n",
+            ),
+            new(
+                "a_nil_capture_inside_a_function",
+                "fn t() -> Bool {\n  let v = nil;\n  let f = || v == nil;\n  return f();\n}\nprintln(t());\nreturn 0;\n",
+            ),
             new(
                 "param_join_int_str",
                 "fn id(x) { return x; }\nprintln(id(1));\nprintln(id(\"s\"));\nprintln(id(2.5));\nprintln(id(true));\nreturn 0;\n",
@@ -711,6 +1358,32 @@ fn differential_dyn_cross_function() {
                 "maybe_ret_boxes",
                 "fn lookup(k) {\n  let m = {};\n  m.set(\"a\", 7);\n  return m.get(k);\n}\nprintln(lookup(\"a\"));\nprintln(lookup(\"zz\") == nil);\nreturn 0;\n",
             ),
+            // A boxed *receiver* reaches a list method. `chain` accepted a Dyn
+            // argument and not a Dyn receiver, so a list that is reset on one
+            // path, extended on another, and handed to a Dyn parameter — which
+            // is what a line buffer is — refused to lower. The `bare-metal-x86`
+            // kernel is written exactly this way and stopped compiling for it.
+            new(
+                "dyn_receiver_chain",
+                "fn emit(base, line) { return base + line.len(); }\nfn build(n) {\n  let line = [];\n  let out = 0;\n  let i = 0;\n  while (i < n) {\n    if (i % 4 == 0) { out = emit(out, line); line = []; }\n    else { line = line.chain([i]); }\n    i = i + 1;\n  }\n  return emit(out, line);\n}\nprintln(build(11));\nprintln(build(0));\nreturn 0;\n",
+            ),
+            // The rest of the boxed-receiver names whose arms already accepted
+            // `ListDyn` and whose method-table row was missing, so the receiver
+            // never reached them. `index_of` is here for its absent answer too:
+            // a miss is nil, and nil has to survive the unboxed path.
+            new(
+                "dyn_receiver_element_methods",
+                "fn probe(xs) { return \"\" + xs.first() + xs.last() + xs.index_of(1); }\nprintln(probe([3, 1, 2]));\nprintln(probe([3.5, 1.5]));\nprintln(probe([\"a\", \"b\"]));\nreturn 0;\n",
+            ),
+            // `join` on a boxed receiver, which is an opcode rather than a
+            // method and so was never offered the method table's unbox. The
+            // renderings are the point: `-0.0`, the infinities and a nested
+            // container are where a second renderer would show, and there is no
+            // second renderer — the boxed path reaches the same `dyn_join`.
+            new(
+                "dyn_receiver_join",
+                "fn show(xs) { return xs.join(\"|\"); }\nprintln(show([2.0, -0.0, 0.5]));\nprintln(show([1, -1, 0]));\nprintln(show([\"a\", \"\", \"c\"]));\nprintln(show([true, false]));\nprintln(show([nil, 1, \"s\", 2.0, true]));\nprintln(show([[1, 2], [3]]));\nprintln(show([]));\nprintln(show([1.0 / 0.0, -1.0 / 0.0]));\nprintln(show([{\"k\": 1}]));\nreturn 0;\n",
+            ),
             // An all-nil branch join must not build a Nil-typed phi: it widens
             // to Dyn (boxed nil) and compares by tag.
             new(
@@ -733,10 +1406,176 @@ fn differential_trait_dispatch_contract() {
     // merely skips) into a red test here.
     run_differential(
         "trait_contract",
-        &[new(
-            "trait_static_dynamic_show",
-            "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",
-        )],
+        &[
+            // `self` inside an impl method is that type, so a method built on
+            // the type's *other* methods devirtualizes. Without that
+            // provenance the receiver was an untyped parameter and the whole
+            // shape — which is what a trait default body always is — fell out
+            // of the native subset. `run_differential` requires the lowering,
+            // so this stays honest.
+            new(
+                "trait_method_calls_sibling",
+                "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct A { v: Int }\nimpl Sz for A { fn base(self) -> Int { return self.v; } }\nprintln(A { v: 5 }.base());\nprintln(A { v: 5 }.doubled());\nprintln(A { v: 5 }.quad());\nreturn 0;\n",
+            ),
+            // The same identity guarantee for every other carrier and every
+            // other way a container reaches a mutator. None of these had
+            // coverage, which is how the typed-list copy above survived: a
+            // container's writes being the caller's writes is the single most
+            // load-bearing thing about a reference type, and only the list
+            // carrier was ever wrong.
+            new(
+                "every_container_carrier_keeps_its_identity",
+                "struct Box { xs: List<Int> }\n\
+                 trait Sink { fn take(self, n: Int) -> Int; }\n\
+                 struct S { xs: List<Int> }\n\
+                 impl Sink for S { fn take(self, n: Int) -> Int { self.xs.push(n); return self.xs.len(); } }\n\
+                 fn put(m: Map<String, Int>, k: String, v: Int) -> Int { m.set(k, v); return m.len(); }\n\
+                 fn addset(s: Set<Int>, n: Int) -> Int { s.add(n); return s.len(); }\n\
+                 fn bump(p: Box, n: Int) -> Int { p.xs.push(n); return p.xs.len(); }\n\
+                 fn relay(xs: List<Int>, n: Int) -> Int { return inner(xs, n); }\n\
+                 fn inner(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }\n\
+                 let m: Map<String, Int> = {};\nprintln(put(m, \"a\", 1));\nprintln(m.len());\n\
+                 let st = Set([1]);\nprintln(addset(st, 2));\nprintln(st.len());\n\
+                 let b = Box { xs: [1] };\nprintln(bump(b, 2));\nprintln(\"${b.xs}\");\n\
+                 let s = S { xs: [] };\nprintln(s.take(1));\nprintln(s.take(2));\nprintln(\"${s.xs}\");\n\
+                 let r: List<Int> = [];\nprintln(relay(r, 5));\nprintln(\"${r}\");\n\
+                 let c: List<Int> = [1];\nlet g = |n: Int| -> Int { c.push(n); return c.len(); };\n\
+                 println(g(2));\nprintln(\"${c}\");\nreturn 0;\n",
+            ),
+            // A container passed to a function keeps its identity — the
+            // callee's writes are the caller's.
+            //
+            // It did not. The first fixpoint pass observes call arguments while
+            // every callee's return type is still its `I64` default, and the
+            // parameter lattice *joins* observations: pass 1's `I64` and pass
+            // 2's real `list<i64>` disagreed, so the parameter became `Dyn` and
+            // every call site boxed. A typed list boxes by **rebuilding**
+            // (`list_h.i64_to_dyn`), so the callee held a copy and its `push`
+            // was lost — a wrong answer that still printed a plausible length.
+            // `ret_known` already existed for this hazard on the HOF re-route
+            // path; the parameter lattice never got it.
+            new(
+                "a_container_argument_keeps_its_identity",
+                "fn mk() -> List<Int> { return [1]; }\n\
+                 fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }\n\
+                 let xs = mk();\nprintln(add(xs, 2));\nprintln(xs.len());\nprintln(\"${xs}\");\n\
+                 let ys: List<Int> = [];\n\
+                 println(try { \"${add(ys, 7)}\" } catch e { \"c\" });\nprintln(ys.len());\n\
+                 println(\"${ys}\");\nreturn 0;\n",
+            ),
+            // `typeof` names the struct, and both engines agree about which
+            // carriers it can decide statically. A struct instance and a plain
+            // map share `MapStrDyn`, so the static table's `Map` was a wrong
+            // answer for structs: `typeof(p)` read `Map` compiled and `Object`
+            // interpreted — two engines, two wrong answers, neither of them the
+            // struct's name.
+            new(
+                "typeof_names_the_struct",
+                "struct S { a: Int }\nfn name_of(x: Any) -> String { return typeof(x); }\n\
+                 let m = {\"a\": 1, \"b\": \"x\"};\nlet p = S { a: 1 };\n\
+                 println(typeof(p));\nprintln(typeof(m));\nprintln(name_of(p));\nprintln(name_of(m));\n\
+                 println(name_of(1));\nprintln(name_of(\"s\"));\nprintln(name_of([1]));\n\
+                 println(typeof(1));\nprintln(typeof(1.5));\nprintln(typeof(true));\nprintln(typeof(nil));\n\
+                 return 0;\n",
+            ),
+            // The receiver whose type the lowering *cannot* name — two call
+            // sites passing different structs into one parameter, or a mixed
+            // list — dispatches at run time off the arena type mark instead of
+            // taking the module to the VM. It knows its type then; only the
+            // already-boxed `Dyn` shape used to reach that path, and only with
+            // zero arguments.
+            new(
+                "a_receiver_of_unknown_struct_type_dispatches_at_run_time",
+                "struct A { v: Int }\nstruct B { v: Int }\n\
+                 trait N { fn name(self) -> String; fn scaled(self, k: Int) -> Int;\n\
+                 fn label(self, p: String, q: String) -> String; }\n\
+                 impl N for A { fn name(self) -> String { return \"A\"; }\n\
+                 fn scaled(self, k: Int) -> Int { return self.v * k; }\n\
+                 fn label(self, p: String, q: String) -> String { return p + \"A\" + q; } }\n\
+                 impl N for B { fn name(self) -> String { return \"B\"; }\n\
+                 fn scaled(self, k: Int) -> Int { return self.v + k; }\n\
+                 fn label(self, p: String, q: String) -> String { return p + \"B\" + q; } }\n\
+                 fn describe(x: Any, k: Int) -> String { return x.name() + \":${x.scaled(k)}\" + x.label(\"<\", \">\"); }\n\
+                 println(describe(A { v: 3 }, 4));\nprintln(describe(B { v: 3 }, 4));\n\
+                 let xs = [A { v: 1 }, B { v: 2 }];\nfor x in xs { println(x.scaled(10)); }\nreturn 0;\n",
+            ),
+            // A struct that arrives as an *argument* is that type too. The
+            // provenance came only from a `NewObject` the lowering saw, so it
+            // survived a `return` (`ret_structs`) but not a parameter:
+            // `fn area(q: P) { return q.w * q.h; }` lowered (fields need no
+            // name) while `fn area(q: P) { return q.norm(); }` could not
+            // devirtualize and took the whole module to the VM. Covered here
+            // for a plain function, a lambda, a second argument, and a callee
+            // that passes its own parameter on.
+            new(
+                "a_struct_argument_keeps_its_type",
+                "struct P { w: Int, h: Int }\ntrait Sz { fn area(self) -> Int; }\nimpl Sz for P { fn area(self) -> Int { return self.w * self.h; } }\n\
+                 fn area_of(q: P) -> Int { return q.area(); }\nfn relay(q: P) -> Int { return area_of(q); }\n\
+                 fn tagged(tag: String, q: P) -> String { return tag + \"=\" + \"${q.area()}\"; }\n\
+                 let f = |q: P| -> Int { return q.area() + 1; };\nlet p = P { w: 2, h: 3 };\n\
+                 println(area_of(p));\nprintln(relay(p));\nprintln(tagged(\"a\", p));\nprintln(f(p));\n\
+                 println(area_of(P { w: 4, h: 5 }));\nreturn 0;\n",
+            ),
+            // An impl method nobody calls is no longer a lowering root — and
+            // `show` is the one method reached *without* a call naming it
+            // (a display site does). Dropping it from the roots leaves a
+            // dangling callee and the module fails MIR validation, so this
+            // pins both halves at once: an uncalled `unused` alongside a
+            // `show` that only `"${…}"` reaches.
+            // A container in a template renders. `docs/semantics.md` used to
+            // rule this a loud failure — the VM stopped doing that, and the
+            // lowering kept mirroring the retired rule, so every template
+            // holding a list or a struct list dropped its module to the VM.
+            new(
+                "container_in_template",
+                "struct P { v: Int }\nlet xs = [1, 2, 3];\nlet ps = [P { v: 1 }, P { v: 2 }];\nprintln(\"${xs}\");\nprintln(\"a${xs}b\");\nprintln(\"${ps}\");\nprintln(\"n=${xs}, p=${ps}\");\nreturn 0;\n",
+            ),
+            // A struct with no `show` renders like the VM's default:
+            // `Name{f:v,…}`, declaration order, nested values quoted.
+            //
+            // **Nesting is the point.** An earlier attempt spelled the
+            // rendering out at the display site and printed a nested struct as
+            // a hash-ordered map — a field holding a struct is a bare map by
+            // then, and the display site cannot tell. The type description now
+            // lives at runtime, where the mark is, so nesting recurses.
+            new(
+                "struct_default_display",
+                "struct P { name: String, n: Int, ok: Bool, f: Float }\nstruct Outer { inner: P, tag: String }\nstruct WithList { p: P, xs: List<Int>, s: String }\nstruct E {}\nlet p = P { name: \"a, b\", n: -3, ok: true, f: 1.5 };\nlet o = Outer { inner: p, tag: \"x\" };\nlet w = WithList { p: p, xs: [1, 2], s: \"z\" };\nlet e = E {};\nprintln(\"${p}\");\nprintln(\"${o}\");\nprintln(\"${w}\");\nprintln(\"${e}\");\nprintln(p);\nreturn 0;\n",
+            ),
+            // A function that returns a struct carries the type name out to
+            // its callers, so a method on the result devirtualizes. The name
+            // used to stop at the function boundary — `make(3, 4).norm()` had
+            // an untyped receiver, in one module as much as across two.
+            new(
+                "struct_returning_function",
+                "struct Pt { x: Int, y: Int }\ntrait Norm { fn norm(self) -> Int; }\nimpl Norm for Pt { fn norm(self) -> Int { return self.x + self.y; } }\nfn make(a: Int, b: Int) -> Pt { return Pt { x: a, y: b }; }\nfn pick(c: Bool) -> Pt { if c { return make(1, 2); } return make(3, 4); }\nprintln(make(3, 4).norm());\nprintln(pick(true).norm());\nprintln(pick(false).norm());\nreturn 0;\n",
+            ),
+            // A named call devirtualizes like a positional one, plus the
+            // argument *order*: every name is a constant, so the permutation
+            // into the callee's frame order is a compile-time fact. The whole
+            // opcode had no lowering, which mattered once `module.Type { … }`
+            // started desugaring to one.
+            new(
+                "named_call_permutes_arguments",
+                "fn mk({x: Int, y: Int}) -> Int { return x * 10 + y; }\nfn pos(a: Int, {b: Int}) -> Int { return a * 100 + b; }\nprintln(mk(y: 2, x: 3));\nprintln(mk(x: 1, y: 9));\nprintln(pos(7, b: 4));\nreturn 0;\n",
+            ),
+            new(
+                "trait_show_hook_and_uncalled",
+                "trait Show { fn show(self) -> String; }\nstruct R { w: Int }\nimpl Show for R { fn show(self) -> String { return \"R!\"; } }\ntrait Extra { fn unused(self, s: String) -> Int; }\nimpl Extra for R { fn unused(self, s: String) -> Int { return s.len(); } }\nlet r = R { w: 3 };\nprintln(\"${r}\");\nreturn 0;\n",
+            ),
+            // Two implementors, one of them never calling a method it defines.
+            // Every impl method is a lowering root, so an *uncalled* one used to
+            // be lowered with the `I64` parameter default and fail reading a
+            // field — killing the module from a method nobody calls.
+            new(
+                "trait_uncalled_impl_method",
+                "trait Sz {\n  fn base(self) -> Int;\n  fn doubled(self) -> Int;\n  fn quad(self) -> Int;\n}\nstruct A { v: Int }\nimpl Sz for A {\n  fn base(self) -> Int { return self.v; }\n  fn doubled(self) -> Int { return self.base() * 2; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nstruct B { v: Int }\nimpl Sz for B {\n  fn base(self) -> Int { return self.v; }\n  fn doubled(self) -> Int { return self.v * 3; }\n  fn quad(self) -> Int { return self.doubled() * 2; }\n}\nprintln(A { v: 5 }.quad());\nprintln(B { v: 5 }.quad());\nreturn 0;\n",
+            ),
+            new(
+                "trait_static_dynamic_show",
+                "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",
+            ),
+        ],
     );
 }
 
@@ -745,6 +1584,16 @@ fn differential_concurrency_edges() {
     run_differential(
         "concurrency_edges",
         &[
+            // The module spelling needs the import — on both ends. `chan` is
+            // the one name that is a module *and* a bare global (the channel
+            // constructor), and `chan.new(1)` compiles to the same bytecode
+            // either way: the import is what replaces the global with the
+            // module object at run time. Native used to resolve it regardless,
+            // so an unimported program ran natively and failed under the VM.
+            new(
+                "the module spelling after its import",
+                "use chan;\nlet c = chan.new(1);\nchan.send(c, 7);\nprintln(chan.recv(c));\nreturn 0;\n",
+            ),
             // The two try/catch cases that used to live here moved to
             // `try_catch_differential` in clif_differential_test.rs: this corpus
             // runs under `LK_AOT_NO_FALLBACK=1` in CI, and a protected region has

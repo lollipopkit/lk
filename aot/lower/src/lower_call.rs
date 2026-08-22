@@ -13,19 +13,28 @@ pub(crate) fn lower_spawn(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     base: u8,
     argc: usize,
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 1 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a spawned callee must be a statically known function with scalar arguments",
+        });
     }
     let arg_reg = base.wrapping_add(1);
     let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
         Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
         Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "a spawned callee must be a statically known function with scalar arguments",
+            });
+        }
     };
     if fidx >= funcs.len()
         || fidx == entry as usize
@@ -33,7 +42,10 @@ pub(crate) fn lower_spawn(
         || caps.len() != funcs[fidx].capture_count as usize
         || caps.len() > 4
     {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a spawned callee must be a statically known function with scalar arguments",
+        });
     }
     sig.spawned_isolate.insert(fidx as u32);
     // Snapshot the captures into the argument block, boxed.
@@ -46,21 +58,29 @@ pub(crate) fn lower_spawn(
             callee: AbiRef::new("rt", "spawn_args_new"),
             args: Vec::new(),
         });
+        let site = CaptureSite::new(cap_ctx, fidx as u32, CaptureMode::Snapshot, block, pc);
         for (k, capture) in caps.iter().enumerate() {
-            let (v, ty) = match capture {
-                ClosureCapture::Cell(cid) => {
+            // Isolate: every capture crosses as a private copy taken here, so a
+            // cell is read for its *content* rather than passed by pointer.
+            let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                Some(resolved) => resolved,
+                None => {
+                    let ClosureCapture::Cell(cid) = capture else {
+                        unreachable!("only `Cell` is left to the call site")
+                    };
                     let slot = ssa.cell_slot(*cid);
                     ssa.read_slot(slot, block, pc)?
                 }
-                ClosureCapture::Value(v, ty) => (*v, *ty),
             };
-            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("rt", "spawn_args_push"),
                 args: vec![b, boxed],
             });
-            let want = sig.observe_param(fidx, k, Ty::Dyn);
+            // Boxed into `Dyn` on the way in, so the callee's parameter is
+            // never a typed struct: no provenance to carry.
+            let want = sig.observe_param(fidx, k, Ty::Dyn, None);
             if want != Ty::Dyn {
                 return Err(Unsupported::TypeMismatch { pc });
             }
@@ -97,7 +117,14 @@ pub(crate) fn lower_spawn(
         callee: AbiRef::new("rt", spawn_fn),
         args,
     });
-    ssa.write(base, block, (dst, Ty::I64));
+    // Boxed under `DYN_TASK`; see `chan` for why the bare id is not enough.
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", "from_task"),
+        args: vec![dst],
+    });
+    ssa.write(base, block, (boxed, Ty::Dyn));
     Ok(())
 }
 
@@ -114,18 +141,46 @@ pub(crate) fn lower_merge_fields(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 2 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a field merge needs two map operands",
+        });
     }
     let (bv, bty) = ssa.read(base.wrapping_add(1), block, pc)?;
     let (ov, oty) = ssa.read(base.wrapping_add(2), block, pc)?;
     let base_map = to_dyn_map_handle(ssa, insts, bv, bty, pc)?;
-    let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
     let dst = ssa.new_val();
-    insts.push(Inst::Call {
-        dst: Some(dst),
-        callee: AbiRef::new("map_h", "str_dyn_merge"),
-        args: vec![base_map, overlay_map],
-    });
+    // The overlay is walked where it lives rather than converted. A struct
+    // update's overlay is the `{x: 42}` field literal — a *typed* map — and
+    // converting it meant re-inserting its entries into a fresh table in its
+    // iteration order, which is not the sequence that built it. The overlay's
+    // order is the tail of the merged result's, so that was a reorder waiting
+    // to be noticed (see `map_h.str_dyn_merge_typed`).
+    match typed_map_kind(oty) {
+        Some(kind) => {
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
+            });
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_merge_typed"),
+                args: vec![base_map, ov, kind_v],
+            });
+        }
+        None => {
+            let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_merge"),
+                args: vec![base_map, overlay_map],
+            });
+        }
+    }
+    // Merging two maps makes an ordinary one, whichever the operands were:
+    // `{..p, ..q}` on struct instances is a map in the interpreter too.
+    ssa.set_plain_map(dst);
     ssa.write(base, block, (dst, Ty::MapStrDyn));
     Ok(())
 }
@@ -145,15 +200,16 @@ pub(crate) fn lower_make_struct(
     pc: usize,
 ) -> Result<(), Unsupported> {
     if argc != 2 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a struct construction needs a constant type name and a map of fields",
+        });
     }
     let name_reg = base.wrapping_add(1);
-    let type_name = {
-        let nv = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
-        nv.and_then(|v| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-    }
-    .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?;
+    let type_name = ssa.const_str_at(name_reg, block, pc).ok_or(Unsupported::CallShape {
+        pc,
+        reason: "a struct construction needs a constant type name and a map of fields",
+    })?;
     let (fv, fty) = ssa.read(base.wrapping_add(2), block, pc)?;
     let fields = to_dyn_map_handle(ssa, insts, fv, fty, pc)?;
     let dst = ssa.new_val();
@@ -170,101 +226,14 @@ pub(crate) fn lower_make_struct(
         });
         insts.push(Inst::Call {
             dst: None,
-            callee: AbiRef::new("map_h", "obj_mark"),
+            // The checked mark: this shape rebuilt the map from a base, so its
+            // entries were never measured against the declaration.
+            callee: AbiRef::new("map_h", "obj_mark_checked"),
             args: vec![dst, tid_v],
         });
     }
-    ssa.struct_types.insert(dst, type_name);
+    ssa.set_struct(dst, type_name);
     ssa.write(base, block, (dst, Ty::MapStrDyn));
-    Ok(())
-}
-
-/// `try$call(closure)` — the try/catch desugar's protected call (plan G).
-/// The body closure lowers as a normal `Dyn`-returning function; the call
-/// site emits [`Inst::TryCall`], which codegen expands into `rt.try_push` +
-/// `_setjmp` + a conditional body call joining into the `[ok, value]` dyn
-/// list the desugared destructuring consumes. Mutable captures (`UpvalCell`)
-/// materialize as *runtime cells* across the boundary: the body writes
-/// through the shared slot, and the caller re-reads it afterwards, so the
-/// SSA-tracked cell world stays coherent.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_try_call(
-    ssa: &mut Ssa,
-    insts: &mut Vec<Inst>,
-    funcs: &[FunctionData],
-    entry: u32,
-    sig: &mut SigInfer,
-    base: u8,
-    argc: usize,
-    block: usize,
-    pc: usize,
-) -> Result<(), Unsupported> {
-    if argc != 1 {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
-    }
-    let arg_reg = base.wrapping_add(1);
-    let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
-        Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
-        Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
-    };
-    if fidx >= funcs.len()
-        || fidx == entry as usize
-        || funcs[fidx].param_count != 0
-        || caps.len() != funcs[fidx].capture_count as usize
-    {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
-    }
-    let mut args = Vec::with_capacity(caps.len());
-    let mut cell_writebacks: Vec<(u32, ValueId)> = Vec::new();
-    for (k, capture) in caps.iter().enumerate() {
-        let (v, ty) = match capture {
-            ClosureCapture::Cell(cid) => {
-                // Seed a runtime cell with the current content; the body
-                // mutates through it, the write-back below re-syncs.
-                let slot = ssa.cell_slot(*cid);
-                let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
-                let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
-                let cell = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(cell),
-                    callee: AbiRef::new("rt", "cell_new"),
-                    args: vec![boxed],
-                });
-                cell_writebacks.push((*cid, cell));
-                (cell, Ty::Cell)
-            }
-            ClosureCapture::Value(v, ty) => (*v, *ty),
-        };
-        let want = sig.observe_param(fidx, k, ty);
-        args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
-    }
-    // The body's return crosses the boundary boxed (`dyn_rets`, the same
-    // retriable convergence the dyn HOF family uses).
-    if !sig.dyn_rets.contains(&(fidx as u32)) {
-        sig.dyn_rets.insert(fidx as u32);
-        return Err(Unsupported::TypeMismatch { pc });
-    }
-    if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
-        return Err(Unsupported::TypeMismatch { pc });
-    }
-    let dst = ssa.new_val();
-    insts.push(Inst::TryCall {
-        dst,
-        func: FuncId(fidx as u32),
-        args,
-    });
-    for (cid, cell) in cell_writebacks {
-        let cur = ssa.new_val();
-        insts.push(Inst::Call {
-            dst: Some(cur),
-            callee: AbiRef::new("rt", "cell_get"),
-            args: vec![cell],
-        });
-        let slot = ssa.cell_slot(cid);
-        ssa.write_slot(slot, block, (cur, Ty::Dyn));
-    }
-    ssa.write(base, block, (dst, Ty::ListDyn));
     Ok(())
 }
 
@@ -283,6 +252,7 @@ pub(crate) fn lower_user_call(
     funcs: &[FunctionData],
     entry: u32,
     sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
     callee_idx: usize,
     dst_reg: u8,
     argc: usize,
@@ -302,7 +272,8 @@ pub(crate) fn lower_user_call(
             op: Opcode::CallDirect,
         });
     }
-    if captures.len() != funcs[callee_idx].capture_count as usize {
+    let capture_count = funcs[callee_idx].capture_count as usize;
+    if captures.len() != capture_count && !sig.captures_all_static(callee_idx, capture_count) {
         return Err(Unsupported::Opcode {
             pc,
             op: Opcode::CallDirect,
@@ -356,20 +327,13 @@ pub(crate) fn lower_user_call(
                     sig.conflict = true;
                     return Err(Unsupported::TypeMismatch { pc });
                 }
-                let clone = sig.param_obs.len() as u32;
                 let env_total: usize = identity.iter().flatten().map(|id| id.captures as usize).sum();
-                sig.param_obs.push(vec![
-                    None;
-                    funcs[callee_idx].param_count as usize
-                        + env_total
-                        + funcs[callee_idx].capture_count as usize
-                ]);
-                sig.ret_types.push(sig.ret_types[callee_idx]);
-                sig.ret_known
-                    .push(sig.ret_known.get(callee_idx).copied().unwrap_or(false));
-                sig.ret_closures.push(None);
-                sig.ret_closure_poisoned.push(false);
-                sig.lambda_params.push(identity.clone());
+                let arity =
+                    funcs[callee_idx].param_count as usize + env_total + funcs[callee_idx].capture_count as usize;
+                let ret_known = sig.ret_known.get(callee_idx).copied().unwrap_or(false);
+                let clone = sig.push_function(vec![None; arity], sig.ret_types[callee_idx]);
+                sig.ret_known[clone as usize] = ret_known;
+                sig.lambda_params[clone as usize] = identity.clone();
                 sig.specializations.insert(key, clone);
                 sig.pending_clones.push(callee_idx as u32);
                 clone as usize
@@ -397,7 +361,7 @@ pub(crate) fn lower_user_call(
             // Nullable shapes have no typed capture form: box to Dyn, so the
             // eventual consumer joins its parameter to Dyn like any call site.
             let (v, ty) = if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                (to_dyn_any(ssa, insts, v, ty, pc)?, Ty::Dyn)
+                (to_dyn(ssa, insts, v, ty, pc)?, Ty::Dyn)
             } else {
                 (v, ty)
             };
@@ -406,7 +370,7 @@ pub(crate) fn lower_user_call(
         if (dst_reg as usize) < ssa.reg_count {
             ssa.current_def[block][dst_reg as usize] = None;
         }
-        ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        ssa.bind_ref(block, dst_reg, GlobalRef::Closure(lf, caps));
         return Ok(());
     }
     // Tier 1 bridge call (`docs/aot/tier1-hybrid.md`): the callee runs on the
@@ -459,17 +423,24 @@ pub(crate) fn lower_user_call(
             // Erased capturing closure: its environment (resolved to current
             // cell contents at this call site) travels as hidden trailing
             // arguments, in parameter order.
-            Some(_) => {
+            Some(LambdaIdentity { fidx: lambda, .. }) => {
                 let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(arg_reg, block) else {
-                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "the callee does not resolve to a statically known function",
+                    });
                 };
-                for capture in &caps {
-                    let (v, ty) = match capture {
-                        ClosureCapture::Cell(cid) => {
+                let site = CaptureSite::new(cap_ctx, lambda, CaptureMode::Share, block, pc);
+                for (k, capture) in caps.iter().enumerate() {
+                    let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                        Some(resolved) => resolved,
+                        None => {
+                            let ClosureCapture::Cell(cid) = capture else {
+                                unreachable!("only `Cell` is left to the call site")
+                            };
                             let slot = ssa.cell_slot(*cid);
                             ssa.read_slot(slot, block, pc)?
                         }
-                        ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
                     env_args.push((v, ty));
                 }
@@ -482,8 +453,44 @@ pub(crate) fn lower_user_call(
         // nullable carriers intact: they observe as `Dyn` and box, so the
         // callee receives nil as nil (VM call semantics) instead of the
         // scalar-context unwrap abort.
-        let (aval, aty) = ssa.read(arg_reg, block, pc)?;
-        let want = sig.observe_param(callee_idx, i, aty);
+        // Through `read_value`: an argument that is a lambda the callee cannot
+        // erase — a struct constructor's field, say — becomes a closure value
+        // here. A lambda the callee *can* erase never reaches this line; the
+        // identity vector above took it.
+        let (aval, aty) = read_value(ssa, insts, sig, funcs, cap_ctx, arg_reg, block, pc)?;
+        let want = sig.observe_param(callee_idx, i, aty, ssa.struct_facts.get(&aval));
+        // A typed container reaching an erased parameter has to be built Dyn.
+        //
+        // `want` is `Dyn` here because two call sites disagreed on the
+        // carrier, so the callee sees the list only through its tag and a
+        // `push` goes to `dyn.list_push`. That push may widen — and a
+        // `Vec<i64>` cannot become a `Vec<LkDyn>` after the fact, because the
+        // caller's aliases read the old allocation. The VM widens the carrier
+        // in place, so the only representation both backends can agree on is
+        // a Dyn list from the literal onward. Same retry channel as a
+        // contradicted `[]`: the fixpoint rebuilds the literal and this call
+        // site then passes a `ListDyn`, which does not re-trigger.
+        //
+        // Two ways to learn that: `want` is `Dyn` (two call sites disagreed on
+        // the carrier, so the callee pushes through `dyn.list_push` and the
+        // widening is invisible to it at compile time), or the callee was
+        // lowered once and reported the push itself (`dyn_params`), which is
+        // the monomorphic case a single call site produces.
+        if matches!(
+            aty,
+            Ty::ListI64
+                | Ty::ListF64
+                | Ty::ListStr
+                | Ty::MapStrI64
+                | Ty::MapStrF64
+                | Ty::MapStrBool
+                | Ty::MapI64I64
+                | Ty::MapI64F64
+        ) && (want == Ty::Dyn || sig.dyn_params.contains(&(callee_idx as u32, i as u8)))
+            && let Some(unsupported) = crate::inst::container::carrier_contradicted(ssa, aval, aty)
+        {
+            return Err(unsupported);
+        }
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }
@@ -491,13 +498,13 @@ pub(crate) fn lower_user_call(
     // environment values first, then the callee's own captures. Their types
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
-        let want = sig.observe_param(callee_idx, argc + k, ety);
+        let want = sig.observe_param(callee_idx, argc + k, ety, ssa.struct_facts.get(&ev));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
-        let want = sig.observe_param(callee_idx, argc + env_total + k, cty);
+        let want = sig.observe_param(callee_idx, argc + env_total + k, cty, ssa.struct_facts.get(&cval));
         arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }
@@ -553,7 +560,369 @@ pub(crate) fn lower_user_call(
             func: FuncId(callee_idx as u32),
             args,
         });
+        seed_ret_struct(ssa, sig, callee_idx, dst);
         ssa.write(dst_reg, block, (dst, ret));
     }
+    Ok(())
+}
+
+/// `CallNamed` — a call written with `name: value` arguments.
+///
+/// The whole opcode had no native lowering, so every named call dropped its
+/// module to the VM. That became load-bearing when `module.Type { … }` started
+/// desugaring to one (`stmt::struct_ctors`), which is how a cross-module struct
+/// literal is built.
+///
+/// It devirtualizes the same way a positional call does, plus one step: the
+/// argument *order*. The window is `[base]` callee, `positional` values, then
+/// `named_count` (name, value) pairs — and every name is a string constant the
+/// compiler emitted, so the permutation into the callee's frame order is a
+/// compile-time fact. `FunctionData::param_names` is that order, and
+/// `positional_param_count` is where the named ones begin.
+///
+/// Rejects rather than guesses when anything is not statically known: a name
+/// that is not a constant, a callee with no name metadata, a missing or
+/// duplicate name, or a parameter with a default the call site omits (the
+/// default expression lives in the callee's body, which the VM evaluates on
+/// entry — there is nothing to read here).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_named_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    cap_ctx: CaptureCtx<'_>,
+    callee_idx: usize,
+    base: u8,
+    positional_count: usize,
+    named_count: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let reject = || Unsupported::Opcode {
+        pc,
+        op: Opcode::CallNamed,
+    };
+    let callee = funcs.get(callee_idx).ok_or_else(reject)?;
+    if callee_idx == entry as usize || callee.capture_count != 0 {
+        return Err(reject());
+    }
+    let param_count = callee.param_count as usize;
+    let declared_positional = callee.positional_param_count as usize;
+    if callee.param_names.len() != param_count
+        || positional_count != declared_positional
+        || positional_count + named_count != param_count
+    {
+        return Err(reject());
+    }
+
+    // Frame order: the positional prefix as written, then each named parameter
+    // filled from whichever pair carries its name.
+    let mut args: Vec<Option<(ValueId, Ty)>> = vec![None; param_count];
+    for (i, slot) in args.iter_mut().enumerate().take(positional_count) {
+        // Through `read_value`, so a lambda written as a field of a struct
+        // literal becomes a closure: `H { f: |x| x + 1 }` desugars to a named
+        // call, and this is where its arguments are read.
+        let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+        *slot = Some(read_value(ssa, insts, sig, funcs, cap_ctx, arg_reg, block, pc)?);
+    }
+    for pair in 0..named_count {
+        let name_reg = base
+            .wrapping_add(1)
+            .wrapping_add(positional_count as u8)
+            .wrapping_add((pair * 2) as u8);
+        let value_reg = name_reg.wrapping_add(1);
+        let name = ssa.const_str_at(name_reg, block, pc).ok_or_else(reject)?;
+        let slot = callee.param_names[declared_positional..]
+            .iter()
+            .position(|param| &**param == name.as_str())
+            .ok_or_else(reject)?
+            + declared_positional;
+        if args[slot].is_some() {
+            return Err(reject());
+        }
+        args[slot] = Some(read_value(ssa, insts, sig, funcs, cap_ctx, value_reg, block, pc)?);
+    }
+    let args = args.into_iter().collect::<Option<Vec<_>>>().ok_or_else(reject)?;
+
+    let (dst, ty) = emit_call_with_args(ssa, insts, funcs, entry, sig, callee_idx, args, Opcode::CallNamed, pc)?;
+    ssa.write(base, block, (dst, ty));
+    Ok(())
+}
+
+/// The runtime's closure arity switch (`lkrt::lkclosure`), counting visible
+/// parameters and captures together.
+pub(crate) const LK_CLOSURE_MAX_ARGS: usize = 8;
+
+/// Reads a register **as a value**, building a closure for it when it names a
+/// lambda.
+///
+/// The one entry point for "I need a value here". A register that names a
+/// lambda holds a compile-time reference and no SSA value, and the sites that
+/// need one — a container store, an argument, an indirect call — are exactly
+/// the sites that reported `ReferenceAsValue`. Materializing *here*, at the
+/// consumer, is what keeps a register to one meaning: binding both a reference
+/// and a value to it was tried and every mover that carried one and not the
+/// other produced a different wrong answer (`docs/aot/aot-gaps-and-lkrt.md`
+/// §30).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_value(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+) -> Result<Reg, Unsupported> {
+    if let Some(global_ref) = ssa.builtin_ref_at(reg, block)
+        && let Some(value) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &global_ref, block, pc)?
+    {
+        return Ok(value);
+    }
+    ssa.read(reg, block, pc)
+}
+
+/// Builds a lambda's runtime closure value.
+///
+/// `None` when the program has not asked for one: a closure that is only built
+/// and called stays a compile-time reference and keeps devirtualizing, which is
+/// why this is demand-driven rather than uniform.
+///
+/// The address taken is the *clone*'s (`SigInfer::value_lambdas`), whose
+/// signature is all-`Dyn`. The environment travels in the same argument block a
+/// `spawn` builds, and the runtime appends it at the call — the order the
+/// native signature already declares.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_closure(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    global_ref: &GlobalRef,
+    block: usize,
+    pc: usize,
+) -> Result<Option<Reg>, Unsupported> {
+    let (fidx, captures) = match global_ref {
+        GlobalRef::Lambda(fidx) | GlobalRef::UserFn(fidx) => (*fidx, Vec::new()),
+        GlobalRef::Closure(fidx, captures) => (*fidx, captures.clone()),
+        _ => return Ok(None),
+    };
+    let Some(&body) = sig.value_lambdas.get(&fidx) else {
+        return Ok(None);
+    };
+    let callee = funcs.get(fidx as usize).ok_or(Unsupported::BadConst { pc })?;
+    // A lambda whose environment is *entirely* static references carries
+    // nothing at run time, so `MakeClosure` recorded it as a bare `Lambda`
+    // (`captures_all_static`) — correct for a call that resolves those
+    // references statically, and wrong for a value, whose clone still has that
+    // many capture parameters and nothing to fill them with. It read past the
+    // end of an empty environment and called whatever it found:
+    //
+    //     let add = |x| x + 1;
+    //     let fs = [|y| add(y) * 10];
+    //     fs[0](2)                      // 30 interpreted, "value is not callable" compiled
+    //
+    // So the environment is rebuilt from the references themselves, which the
+    // loop below then materializes one by one.
+    let captures = if captures.is_empty() && callee.capture_count > 0 {
+        vec![ClosureCapture::StaticRef; callee.capture_count as usize]
+    } else {
+        captures
+    };
+    if callee.param_count as usize + captures.len() > LK_CLOSURE_MAX_ARGS {
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a closure value with this many parameters and captures is past the runtime's arity switch",
+        });
+    }
+    let env = if captures.is_empty() {
+        None
+    } else {
+        let block_v = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(block_v),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        // A closure outlives the frame that built it, so a cell's *content*
+        // crosses into it — the same snapshot a goroutine takes.
+        let site = CaptureSite::new(cap_ctx, body, CaptureMode::Snapshot, block, pc);
+        for (k, capture) in captures.iter().enumerate() {
+            // A capture whose whole meaning is a *callable reference* — the
+            // lambda captured another lambda, and the environment slot carries
+            // a dead `0` because the callee resolves it statically. A closure
+            // *value* cannot: nothing resolves its environment later, so the
+            // reference has to become a value too, recursively.
+            //
+            // Without this the slot really would carry the `0`, and calling the
+            // capture answered "value is not callable" for a function that
+            // exists. `fn twice(f) { return |x| f(f(x)); }` is the shape.
+            if matches!(capture, ClosureCapture::StaticRef) {
+                let Some(referenced) = sig.ref_captures.get(&(fidx, k)).cloned() else {
+                    return Err(Unsupported::CallShape {
+                        pc,
+                        reason: "a closure value captures a callable this lowering cannot name",
+                    });
+                };
+                let Some((v, ty)) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &referenced, block, pc)?
+                else {
+                    // The referenced callable is not a value lambda *yet*: ask
+                    // for it the way every other consumer does, so the fixpoint
+                    // records the demand and the next pass finds it.
+                    return Err(Unsupported::ReferenceAsValue {
+                        pc,
+                        reg: 0,
+                        what: referenced.describe(),
+                        lambda: match referenced {
+                            GlobalRef::Lambda(f) | GlobalRef::Closure(f, _) | GlobalRef::UserFn(f) => Some(f),
+                            _ => None,
+                        },
+                    });
+                };
+                let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "spawn_args_push"),
+                    args: vec![block_v, boxed],
+                });
+                continue;
+            }
+            let (v, ty) = match site.resolve(ssa, insts, sig, capture, k)? {
+                Some(resolved) => resolved,
+                None => {
+                    let ClosureCapture::Cell(cid) = capture else {
+                        unreachable!("only `Cell` is left to the call site")
+                    };
+                    ssa.read_slot(ssa.cell_slot(*cid), block, pc)?
+                }
+            };
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![block_v, boxed],
+            });
+        }
+        Some(block_v)
+    };
+    let code = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: code,
+        value: Const::FnAddr(FuncId(body)),
+    });
+    let env_is_empty = env.is_none();
+    let env_ptr = match env {
+        Some(block_v) => block_v,
+        None => {
+            let null = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: null,
+                value: Const::I64(0),
+            });
+            null
+        }
+    };
+    let params = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: params,
+        value: Const::I64(i64::from(callee.param_count)),
+    });
+    // Only so `display` prints what the interpreter prints. The *original*
+    // index, not the clone's: the clone is this pipeline's bookkeeping and no
+    // program can observe it.
+    let index = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: index,
+        value: Const::I64(i64::from(fidx)),
+    });
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", "closure_new"),
+        args: vec![code, env_ptr, params, index],
+    });
+    ssa.closure_values.insert(dst);
+    if env_is_empty {
+        ssa.closure_fidx.insert(dst, fidx);
+    }
+    Ok(Some((dst, Ty::Dyn)))
+}
+
+/// `f(args…)` where `f` is an ordinary value: a closure built by
+/// [`materialize_closure`], reached through the runtime's arity switch.
+pub(crate) fn lower_dyn_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    // Through `read_scalar`, so a carrier unwraps first: a closure that came
+    // out of a list is a `Maybe`, and handing the carrier to the runtime made
+    // it answer "value is not callable" for a value that is one.
+    let callee = read_scalar(ssa, insts, base, block, pc)?;
+    lower_dyn_call_to(ssa, insts, callee, base, argc, block, pc)
+}
+
+/// [`lower_dyn_call`] with the callee already in hand — for the sites where the
+/// register names it rather than holding it, which a capture parameter does.
+pub(crate) fn lower_dyn_call_to(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    callee: Reg,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc > LK_CLOSURE_MAX_ARGS {
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "a call through a closure value with this many arguments is past the runtime's arity switch",
+        });
+    }
+    let (callee, callee_ty) = callee;
+    let callee = if callee_ty == Ty::Dyn {
+        callee
+    } else {
+        to_dyn(ssa, insts, callee, callee_ty, pc)?
+    };
+    let args = if argc == 0 {
+        let null = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: null,
+            value: Const::I64(0),
+        });
+        null
+    } else {
+        let block_v = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(block_v),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        for i in 0..argc {
+            let (v, ty) = ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?;
+            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![block_v, boxed],
+            });
+        }
+        block_v
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", "closure_call"),
+        args: vec![callee, args],
+    });
+    ssa.write(base, block, (dst, Ty::Dyn));
     Ok(())
 }

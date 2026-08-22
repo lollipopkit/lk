@@ -1,0 +1,68 @@
+// Structures laid out in memory, with the arithmetic done by the compiler.
+//
+// Every driver in this kernel describes at least one: a task slot, a window
+// descriptor, a descriptor ring entry, an Ethernet header. They are all the same
+// shape — a base address, a field at a byte offset, a width — and until now they
+// were all written the same way:
+//
+//     const STATE_MMIO = 0;
+//     const STATE_TX_RING = 8;
+//     const STATE_RX_RING = 16;
+//     const STATE_TX_TAIL = 24;
+//     const STATE_RX_HEAD = 32;
+//     const STATE_RX_BUFFERS = 40;
+//     const STATE_SIZE = 48;
+//
+// Six numbers a person added up, and a seventh that has to agree with all of
+// them. Insert a field in the middle and every line below it changes; get one
+// wrong and the driver reads the field next to the one it meant, which on a
+// descriptor ring is a device pointed at the wrong address.
+//
+// `mmio_layout!` takes the widths and works the offsets out:
+//
+//     mmio_layout! {
+//         STATE_MMIO: 8,
+//         STATE_TX_RING: 8,
+//         STATE_RX_RING: 8,
+//         STATE_TX_TAIL: 8,
+//         STATE_RX_HEAD: 8,
+//         STATE_RX_BUFFERS: 8,
+//         => STATE_SIZE
+//     }
+//
+// The size is not optional and not separate: it is the running total after the
+// last field, so it cannot disagree with the layout it describes. A field whose
+// width is not a machine word — a MAC address, an inline buffer — is written as
+// its size in bytes, because that is what a layout is about.
+//
+// Nothing is generated but constants, deliberately. The accessors are two
+// functions per driver (`read the word at base + offset`, and its write), not
+// two per field, and generating names would need identifier concatenation the
+// macro system does not have. What is removed is the part that was arithmetic.
+
+// The recursion carries the running offset as an expression, so what each
+// constant gets is `((0) + (8)) + (8)` — folded by the compiler, and by the
+// bundler too, which is what lets this be used from a module that is merged into
+// its caller rather than run.
+//
+// `@` marks the internal rules, exactly as it does in Rust: a token that is
+// legal in a token stream and illegal everywhere a person would write one, so a
+// caller cannot reach them by accident. It had no meaning in this language until
+// this macro needed it.
+export macro_rules! mmio_layout {
+    // The end of the run: the accumulated offset *is* the size.
+    (@from $prev:expr, => $size:ident) => {
+        const $size = $prev;
+    };
+    // One field: it starts where the run has got to, and the run advances.
+    (@from $prev:expr, $name:ident : $width:expr, $($rest:tt)*) => {
+        const $name = $prev;
+        mmio_layout!(@from ($prev) + ($width), $($rest)*);
+    };
+    // The entry point. A layout begins at zero — an offset is from the base the
+    // caller supplies, so a structure that begins somewhere else is a caller
+    // that adds, not a layout that lies.
+    ($($body:tt)*) => {
+        mmio_layout!(@from 0, $($body)*);
+    };
+}

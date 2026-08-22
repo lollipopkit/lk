@@ -1,0 +1,50 @@
+// Interpolation renders its operand; it does not decide what its operand is.
+//
+// `"${x}"` turns whatever `x` is into text, so a parameter that has not been
+// annotated must not be *pinned* to `String` by appearing in one. It used to be,
+// and the effect reached a long way:
+//
+//     fn key_of(p) { table["k${p}"] = 1; return p; }
+//
+// the map's key type made the whole interpolation a `String`, the constraint
+// travelled back through it onto `p`, and the function was inferred to return a
+// String — so an `Int` caller was rejected for a program that is fine. A
+// generative fuzz run on a fresh seed produced it at case 651.
+//
+// String `+` is a different question and still constrains: `+` is overloaded, so
+// which one it is has to be decided.
+
+let table: Map<String, Int> = {};
+
+// `p` is unannotated. The only things that should decide its type are what is
+// done *to* it — here, being stored as the map's value, which makes it an Int.
+fn remember(p) {
+    table["k${p}"] = p;
+    return p;
+}
+
+let a = 0;
+a = remember(3);
+a = remember(a + 4);
+println(a);
+println(table.len());
+
+// The same shape one level further out, which is what a driver looks like: the
+// value travels through a function that never says what it is.
+fn remember_twice(p) {
+    remember(p);
+    remember(p + 1);
+    return p * 2;
+}
+
+let b = 0;
+b = remember_twice(10);
+println(b);
+println(table.len());
+
+// And interpolation still renders the scalar it is given, which is the property
+// that made the constraint wrong in the first place. A container is not one of
+// them — `"${[1, 2]}"` is refused, by both backends, which is a separate and
+// deliberate rule.
+println("int ${1} float ${2.5} bool ${true}");
+println("template-infer: ok");

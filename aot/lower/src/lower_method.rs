@@ -15,18 +15,21 @@ pub(crate) fn lower_method_call(
 ) -> Result<(), Unsupported> {
     let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
     let name_reg = base.wrapping_add(2);
-    let name = {
-        let name_v = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
-        name_v
-            .and_then(|v| ssa.const_strs.get(&v).cloned())
-            .or_else(|| ssa.reg_const_str(name_reg, block))
-    };
+    let name = { ssa.const_str_at(name_reg, block, pc) };
     let Some(name) = name else {
-        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        return Err(Unsupported::CallShape {
+            pc,
+            reason: "no native lowering for this method on this receiver type",
+        });
     };
     let args = match ssa.builtin_regs.get(&(block, base.wrapping_add(3))) {
         Some(GlobalRef::ArgList(elems)) => elems.clone(),
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        _ => {
+            return Err(Unsupported::CallShape {
+                pc,
+                reason: "no native lowering for this method on this receiver type",
+            });
+        }
     };
     let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
     ssa.write(base, block, result);
@@ -57,12 +60,49 @@ pub(crate) fn lower_method_call_k(
         .get(instr.b() as usize)
         .ok_or(Unsupported::BadConst { pc })?
         .clone();
-    let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     let argc = instr.c() as usize;
+    // A **module object** receiver is a module function call, not a method
+    // call: `encoding.json.parse(s)` compiles to `CallMethodK` with `parse` as
+    // the name and `encoding.json` as the receiver, and there was no arm for
+    // that — the receiver holds a lowering-time ref, not an SSA value, so the
+    // read below reported "register r7 is read before any definition" and the
+    // whole program fell back. Only the selective import
+    // (`use { json } from encoding;`) lowered.
+    if let Some(GlobalRef::Module(module)) = ssa.builtin_ref_at(base, block) {
+        // `lower_module_call` reads its arguments from `base + 1`, which is
+        // where a method call's arguments already sit.
+        return lower_module_call(ssa, insts, &module, &name, base, argc, block, pc);
+    }
+    // A `Maybe` receiver unwraps first, which is what the VM does: calling a
+    // method on an absent one raises (`lkrt_maybe_*_unwrap` raises too, so the
+    // two agree, including on being catchable). Without it a list's loop
+    // variable — a `Maybe`, since the element read is bounds-checked — could be
+    // printed but not asked anything: `for s in ["ab", "cde"] { s.len() }`
+    // dropped the whole program to the VM.
+    let (receiver, receiver_ty) = read_scalar(ssa, insts, base, block, pc)?;
     // A boxed Dyn receiver unwraps through the as_list guard for list-only
     // method names (a non-list tag aborts — the VM's method-on-wrong-type is
     // a loud error too). Names shared with str/map receivers stay boxed.
     let role = method_role(&name);
+    /// The methods whose answer is a list of the receiver's elements, whatever
+    /// carrier held them. See the arm below.
+    ///
+    /// `flatten` is not here: a `Bytes` and an `i64` window hold scalars, so
+    /// flattening one is a no-op and the checker declines it. `join` is not
+    /// here either — the bytecode compiler matches it by name into the fused
+    /// `ListJoin`, so no method call by that name reaches this.
+    ///
+    /// `concat` is here for a window and **not** for a `Bytes`: two byte
+    /// strings joined are a byte string, so that one keeps its carrier and has
+    /// its own arm. Taking it away would answer a `List` for a shape the
+    /// language already spells as `Bytes`.
+    fn answers_a_list_of_the_elements(receiver_ty: Ty, name: &str) -> bool {
+        match receiver_ty {
+            Ty::Bytes => matches!(name, "enumerate" | "zip" | "chain" | "chunk"),
+            Ty::SliceI64 => matches!(name, "enumerate" | "zip" | "chain" | "chunk" | "concat"),
+            _ => false,
+        }
+    }
     let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_list) {
         let unboxed = ssa.new_val();
         insts.push(Inst::Call {
@@ -71,17 +111,23 @@ pub(crate) fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
-    } else if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_map) {
-        // Map-only method names unbox through the as_map guard (a parsed
-        // json/yaml value flows as Dyn); `get` stays ambiguous (lists have
-        // it too) and keeps rejecting.
-        let unboxed = ssa.new_val();
+    } else if answers_a_list_of_the_elements(receiver_ty, &name) {
+        // The operations whose answer is a *list of the elements*: they mean
+        // the same on `Bytes` and on a window as on a `List`, and cannot keep
+        // the carrier, so they are the list's — reached by materializing once
+        // and letting the list arms run. Six arms per carrier would be six
+        // copies of `enumerate`'s pairing and `chunk`'s grouping, and the VM
+        // delegates for exactly that reason.
+        let list = ssa.new_val();
         insts.push(Inst::Call {
-            dst: Some(unboxed),
-            callee: AbiRef::new("dyn", "as_map"),
+            dst: Some(list),
+            callee: match receiver_ty {
+                Ty::Bytes => AbiRef::new("bytes_h", "to_i64_list"),
+                _ => AbiRef::new("slice_h", "i64_to_list"),
+            },
             args: vec![receiver],
         });
-        (unboxed, Ty::MapStrDyn)
+        (list, Ty::ListI64)
     } else {
         (receiver, receiver_ty)
     };
@@ -108,15 +154,52 @@ pub(crate) fn lower_method_call_k(
     // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
     // handled before the generic argument reads, because the lambda register
     // carries a `GlobalRef::Lambda`, not an SSA value.
-    if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
+    //
+    // `Bytes` joins by *becoming* an `Int` list first. Its elements are byte
+    // values, so `to_i64_list` loses nothing, and the channel below then answers
+    // the same shapes the VM does: `map` and `reduce` are already list-shaped
+    // there, and only `filter` has to come back — the VM keeps a filtered
+    // `Bytes` as `Bytes`, because filtering removes elements without changing
+    // any. Without this the three closure methods were the last of the fourteen
+    // still dropping their module to the VM.
+    //
+    // A `Slice` joins the same way and for the same reason, with one difference
+    // in the other direction: `w.filter(f)` answers a **List**, not a window
+    // (`builtin_method_sig` says so — a window is a range of its source, and a
+    // filtered window is not one), so nothing has to come back.
+    let hof_receiver =
+        if matches!(receiver_ty, Ty::Bytes | Ty::SliceI64) && matches!(name.as_str(), "map" | "filter" | "reduce") {
+            let listed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(listed),
+                callee: AbiRef::new(
+                    if receiver_ty == Ty::Bytes { "bytes_h" } else { "slice_h" },
+                    if receiver_ty == Ty::Bytes {
+                        "to_i64_list"
+                    } else {
+                        "i64_to_list"
+                    },
+                ),
+                args: vec![receiver],
+            });
+            Some(listed)
+        } else {
+            None
+        };
+    let hof_ty = if hof_receiver.is_some() {
+        Ty::ListI64
+    } else {
+        receiver_ty
+    };
+    if matches!(hof_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
         && let Some(result) = lower_list_hof_k(
             ssa,
             insts,
             funcs,
             entry,
             sig,
-            receiver,
-            receiver_ty,
+            hof_receiver.unwrap_or(receiver),
+            hof_ty,
             &name,
             base,
             argc,
@@ -124,6 +207,18 @@ pub(crate) fn lower_method_call_k(
             pc,
         )?
     {
+        let result = match (hof_receiver, name.as_str()) {
+            (Some(_), "filter") if receiver_ty == Ty::Bytes => {
+                let bytes = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(bytes),
+                    callee: AbiRef::new("bytes_h", "from_i64_list"),
+                    args: vec![result.0],
+                });
+                (bytes, Ty::Bytes)
+            }
+            _ => result,
+        };
         ssa.write(base, block, result);
         return Ok(());
     }
@@ -150,6 +245,71 @@ pub(crate) fn lower_method_call_k(
 ///    return via `dyn_rets` — both retriable discoveries).
 ///
 /// Returns `Ok(None)` when neither shape applies (generic dispatch decides).
+/// The `impl` registered for a built-in type constructor, by base name.
+///
+/// The table is keyed by the impl target's *type text*, and a container's is
+/// written out: `impl List` is recorded as `List<Any>`, `impl Map` as
+/// `Map<Any, Any>`. Matching the base name is exact rather than a guess,
+/// because the language refuses an impl that names an element type — "`List<Int>`
+/// is not distinguishable from another element type at run time — write `List`"
+/// — so a constructor has at most one impl block's worth of methods.
+///
+/// Linear, like `TraitEnv::impl_owner` beside it and for the same reason: impl
+/// blocks are counted in the dozens.
+fn builtin_impl_for<'a>(sig: &'a SigInfer, type_name: &str, method: &str) -> Option<&'a u32> {
+    sig.traits.impls.iter().find_map(|((target, name), fidx)| {
+        let base = target.split('<').next().unwrap_or(target);
+        (base == type_name && name == method).then_some(fidx)
+    })
+}
+
+/// The language's name for a built-in receiver, as an `impl` block spells it.
+///
+/// `None` for the carriers that are not a type a program can write an `impl`
+/// for — a `Maybe`, a cell, a boxed `Dyn` whose real type is only known at run
+/// time (that one dispatches through `traits.methods` instead).
+fn builtin_impl_type_name(ty: Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Nil => Some("Nil"),
+        Ty::Bool => Some("Bool"),
+        Ty::I64 => Some("Int"),
+        Ty::F64 => Some("Float"),
+        Ty::Str => Some("String"),
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => Some("List"),
+        // A window's impl target is `Slice`, not `List`: the interpreter
+        // dispatches it as `Slice<Any>`.
+        Ty::SliceI64 => Some("Slice"),
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => Some("Map"),
+        Ty::Set => Some("Set"),
+        Ty::Bytes => Some("Bytes"),
+        // `MapStrDyn` is the struct carrier as well as a map, and the struct
+        // arm above claims it first.
+        _ => None,
+    }
+}
+
+/// Whether the built-in method table declares `name` for this receiver.
+///
+/// The precedence check for the arm above, asked of `builtin_method_arity` —
+/// the same declaration `lk check` reads — so a method added to the language
+/// cannot be shadowed here by an `impl` that predates it.
+fn builtin_declares_method(ty: Ty, name: &str) -> bool {
+    use lk_core::typ::BuiltinReceiverKind;
+    let kind = match ty {
+        Ty::Str => BuiltinReceiverKind::Str,
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => BuiltinReceiverKind::List,
+        Ty::SliceI64 => BuiltinReceiverKind::Slice,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 => {
+            BuiltinReceiverKind::Map
+        }
+        Ty::Set => BuiltinReceiverKind::Set,
+        Ty::Bytes => BuiltinReceiverKind::Bytes,
+        // A scalar has no built-in method surface at all, so nothing to shadow.
+        _ => return false,
+    };
+    lk_core::typ::builtin_method_arity(kind, name).is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_trait_method_k(
     ssa: &mut Ssa,
@@ -165,8 +325,40 @@ pub(crate) fn lower_trait_method_k(
     block: usize,
     pc: usize,
 ) -> Result<Option<(ValueId, Ty)>, Unsupported> {
+    // `impl Int { fn dbl(self) … }` — a user method on a *built-in* receiver.
+    // The struct case below has always dispatched; this one had no path at all,
+    // so `(5).dbl()`, `"a".shout()` and `[1,2].second()` each dropped their
+    // whole module to the VM.
+    //
+    // Only when the built-in table declares nothing by that name for this
+    // receiver, because that is the interpreter's precedence: `impl List { fn
+    // len(self) -> Int { return 99; } }` does not shadow `len`, and
+    // `[1, 2].len()` is 2. Asked of the same table the checker asks, rather
+    // than of a list kept here.
+    if let Some(type_name) = builtin_impl_type_name(receiver_ty)
+        && !builtin_declares_method(receiver_ty, name)
+        && let Some(&fidx) = builtin_impl_for(sig, type_name, name)
+    {
+        let mut call_args = Vec::with_capacity(argc + 1);
+        call_args.push((receiver, receiver_ty));
+        for i in 0..argc {
+            call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            call_args,
+            Opcode::CallMethodK,
+            pc,
+        )
+        .map(Some);
+    }
     if receiver_ty == Ty::MapStrDyn
-        && let Some(type_name) = ssa.struct_types.get(&receiver).cloned()
+        && let Some(type_name) = ssa.struct_name(receiver).map(str::to_string)
         && let Some(&fidx) = sig.traits.impls.get(&(type_name, name.to_string()))
     {
         let mut call_args = Vec::with_capacity(argc + 1);
@@ -174,10 +366,26 @@ pub(crate) fn lower_trait_method_k(
         for i in 0..argc {
             call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
         }
-        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, call_args, pc).map(Some);
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            call_args,
+            Opcode::CallMethodK,
+            pc,
+        )
+        .map(Some);
     }
-    if receiver_ty == Ty::Dyn
-        && argc == 0
+    // Runtime dispatch. The receiver may be boxed already (`Dyn`) or a struct
+    // carrier whose type the lowering could not name — a `MapStrDyn` parameter
+    // two call sites pass different structs to, which `param_structs` poisons
+    // on purpose. Both know their type at *run time*, in the arena mark this
+    // instruction reads, so both dispatch; only the `Dyn` case used to, and the
+    // other one took the whole module to the VM instead.
+    if matches!(receiver_ty, Ty::Dyn | Ty::MapStrDyn)
         && let Some(arms) = sig.traits.methods.get(name).cloned()
         && !arms.is_empty()
     {
@@ -186,7 +394,10 @@ pub(crate) fn lower_trait_method_k(
             let f = fidx as usize;
             if f >= funcs.len()
                 || fidx == entry
-                || funcs[f].param_count != 1
+                // `self` plus the method's own arguments. Every arm is called
+                // through one rendered signature, so an arm of another arity is
+                // not a shape this can dispatch.
+                || funcs[f].param_count as usize != 1 + argc
                 || funcs[f].capture_count != 0
                 || sig.specialized.get(f).copied().unwrap_or(false)
             {
@@ -195,7 +406,11 @@ pub(crate) fn lower_trait_method_k(
             if let Some(flag) = sig.plain_called.get_mut(f) {
                 *flag = true;
             }
-            sig.observe_param(f, 0, Ty::Dyn);
+            // A runtime-dispatched arm receives `self` and every argument
+            // boxed, so its parameters are `Dyn` and carry no struct name.
+            for slot in 0..=argc {
+                sig.observe_param(f, slot, Ty::Dyn, None);
+            }
             if !sig.dyn_rets.contains(&fidx) {
                 sig.dyn_rets.insert(fidx);
                 retry = true;
@@ -209,10 +424,22 @@ pub(crate) fn lower_trait_method_k(
         if retry {
             return Err(Unsupported::TypeMismatch { pc });
         }
+        // Read the arguments *before* boxing the receiver, so a failure leaves
+        // no half-emitted boxing in the stream.
+        let mut raw_args = Vec::with_capacity(argc);
+        for i in 0..argc {
+            raw_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        let self_arg = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
+        let mut args = Vec::with_capacity(argc);
+        for (v, ty) in raw_args {
+            args.push(to_dyn(ssa, insts, v, ty, pc)?);
+        }
         let dst = ssa.new_val();
         insts.push(Inst::TraitDispatch {
             dst,
-            self_arg: receiver,
+            self_arg,
+            args,
             arms: arms.iter().map(|&(tid, f)| (tid, FuncId(f))).collect(),
         });
         return Ok(Some((dst, Ty::Dyn)));
@@ -220,10 +447,17 @@ pub(crate) fn lower_trait_method_k(
     Ok(None)
 }
 
-/// Emits a devirtualized trait-impl call (`self` is the first argument),
-/// refining the callee's signature through the shared parameter lattice.
+/// Emits a devirtualized call to `fidx` with arguments **already in frame
+/// order**, refining the callee's signature through the shared parameter
+/// lattice.
+///
+/// The window-order readers (`lower_user_call`) cannot serve a call whose
+/// arguments are not laid out in parameter order: trait dispatch puts `self`
+/// first, and a named call (`lower_named_call`) permutes by name. `label` is
+/// the opcode a rejection should name, since that is the only thing the two
+/// callers do not share.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_trait_call(
+pub(crate) fn emit_call_with_args(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     funcs: &[FunctionData],
@@ -231,6 +465,7 @@ pub(crate) fn emit_trait_call(
     sig: &mut SigInfer,
     fidx: usize,
     call_args: Vec<(ValueId, Ty)>,
+    label: Opcode,
     pc: usize,
 ) -> Result<(ValueId, Ty), Unsupported> {
     if fidx >= funcs.len()
@@ -238,10 +473,7 @@ pub(crate) fn emit_trait_call(
         || funcs[fidx].param_count as usize != call_args.len()
         || funcs[fidx].capture_count != 0
     {
-        return Err(Unsupported::Opcode {
-            pc,
-            op: Opcode::CallMethodK,
-        });
+        return Err(Unsupported::Opcode { pc, op: label });
     }
     if sig.specialized.get(fidx).copied().unwrap_or(false) {
         sig.conflict = true;
@@ -252,7 +484,7 @@ pub(crate) fn emit_trait_call(
     }
     let mut args = Vec::with_capacity(call_args.len());
     for (i, (v, ty)) in call_args.into_iter().enumerate() {
-        let want = sig.observe_param(fidx, i, ty);
+        let want = sig.observe_param(fidx, i, ty, ssa.struct_facts.get(&v));
         args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
     }
     let ret = sig.ret_types.get(fidx).copied().unwrap_or(Ty::I64);
@@ -275,7 +507,20 @@ pub(crate) fn emit_trait_call(
         func: FuncId(fidx as u32),
         args,
     });
+    seed_ret_struct(ssa, sig, fidx, dst);
     Ok((dst, ret))
+}
+
+/// Records the struct a call's result is known to be (`sig.ret_structs`).
+///
+/// The one place the callee's returned type name reaches the caller. Without it
+/// the name stopped at the function boundary and `make(3, 4).norm()` had an
+/// untyped receiver — the same missing-provenance failure as an `impl` method's
+/// `self`, one call deeper.
+pub(crate) fn seed_ret_struct(ssa: &mut Ssa, sig: &SigInfer, fidx: usize, dst: ValueId) {
+    if let Some(Some(fact)) = sig.ret_structs.get(&(fidx as u32)) {
+        ssa.struct_facts.insert(dst, fact.clone());
+    }
 }
 
 /// The VM's auto-Display (`try_runtime_display_show`): `print`/`println`
@@ -295,10 +540,23 @@ pub(crate) fn apply_display_show(
     pc: usize,
 ) -> Result<(ValueId, Ty), Unsupported> {
     if ty == Ty::MapStrDyn
-        && let Some(type_name) = ssa.struct_types.get(&v).cloned()
-        && let Some(&fidx) = sig.traits.impls.get(&(type_name, "show".to_string()))
+        && let Some(type_name) = ssa.struct_name(v).map(str::to_string)
+        && let Some(&fidx) = sig
+            .traits
+            .impls
+            .get(&(type_name, crate::trait_env::IMPLICIT_METHOD_HOOKS[0].to_string()))
     {
-        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, vec![(v, ty)], pc);
+        return emit_call_with_args(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            fidx as usize,
+            vec![(v, ty)],
+            Opcode::CallMethodK,
+            pc,
+        );
     }
     Ok((v, ty))
 }
@@ -331,9 +589,14 @@ pub(crate) fn lower_list_hof_k(
     block: usize,
     pc: usize,
 ) -> Result<Option<Reg>, Unsupported> {
+    // Either spelling of "this register names a capture-free lambda": the
+    // compile-time reference, or the closure value it becomes once the program
+    // also uses it as a value (`Ssa::closure_fidx`).
     let lambda_at = |ssa: &Ssa, reg: u8| match ssa.builtin_regs.get(&(block, reg)) {
         Some(GlobalRef::Lambda(fidx)) => Some(*fidx as usize),
-        _ => None,
+        _ => ssa
+            .peek(reg, block)
+            .and_then(|(v, _)| ssa.closure_fidx.get(&v).map(|&fidx| fidx as usize)),
     };
     let elem = match receiver_ty {
         Ty::ListI64 => Ty::I64,
@@ -344,7 +607,9 @@ pub(crate) fn lower_list_hof_k(
     };
     let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize, ty: Ty| {
         for i in 0..arity {
-            sig.observe_param(fidx, i, ty);
+            // Callback parameters seeded from the receiver's element type,
+            // which is never a struct carrier here.
+            sig.observe_param(fidx, i, ty, None);
         }
     };
     // The dyn family: convert the receiver, seed `Dyn` parameters; `map`/
@@ -353,10 +618,34 @@ pub(crate) fn lower_list_hof_k(
     let dyn_list_of = |ssa: &mut Ssa, insts: &mut Vec<Inst>, receiver: ValueId| -> Result<ValueId, Unsupported> {
         to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)
     };
+    // A callback that is an ordinary value: not a lambda the lowering can name,
+    // but a `DYN_CLOSURE` at run time — `xs.map(fs[0])`, or a callback that
+    // arrived as a parameter. Same folds, called through the closure.
+    let closure_at = |ssa: &mut Ssa, insts: &mut Vec<Inst>, reg: u8| -> Option<ValueId> {
+        match crate::convert::read_scalar(ssa, insts, reg, block, pc) {
+            Ok((v, Ty::Dyn)) => Some(v),
+            _ => None,
+        }
+    };
     match (name, argc) {
         ("map" | "filter", 1) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(1)) else {
-                return Ok(None);
+                let Some(callee) = closure_at(ssa, insts, base.wrapping_add(1)) else {
+                    return Ok(None);
+                };
+                let list = dyn_list_of(ssa, insts, receiver)?;
+                let hof = if name == "filter" {
+                    "dyn_filter_closure"
+                } else {
+                    "dyn_map_closure"
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", hof),
+                    args: vec![list, callee],
+                });
+                return Ok(Some((dst, Ty::ListDyn)));
             };
             if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 1 {
                 return Err(Unsupported::Opcode {
@@ -452,7 +741,19 @@ pub(crate) fn lower_list_hof_k(
         }
         ("reduce", 2) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(2)) else {
-                return Ok(None);
+                let Some(callee) = closure_at(ssa, insts, base.wrapping_add(2)) else {
+                    return Ok(None);
+                };
+                let (init_raw, init_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                let list = dyn_list_of(ssa, insts, receiver)?;
+                let init = to_dyn(ssa, insts, init_raw, init_ty, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", "dyn_reduce_closure"),
+                    args: vec![list, init, callee],
+                });
+                return Ok(Some((dst, Ty::Dyn)));
             };
             if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 2 {
                 return Err(Unsupported::Opcode {
@@ -512,7 +813,7 @@ pub(crate) fn lower_list_hof_k(
                 return Err(Unsupported::TypeMismatch { pc });
             }
             let list = dyn_list_of(ssa, insts, receiver)?;
-            let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
+            let init = to_dyn(ssa, insts, init_raw, init_ty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
@@ -522,6 +823,176 @@ pub(crate) fn lower_list_hof_k(
             Ok(Some((dst, Ty::Dyn)))
         }
         _ => Ok(None),
+    }
+}
+
+/// See the note at the top of [`lower_method_dispatch`].
+#[allow(clippy::too_many_arguments)]
+fn nullable_needle_in_typed_container(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    receiver: ValueId,
+    receiver_ty: Ty,
+    name: &str,
+    args: &[(ValueId, Ty)],
+    block: usize,
+    pc: usize,
+) -> Result<Option<Reg>, Unsupported> {
+    if !matches!(name, "contains" | "count" | "index_of") {
+        return Ok(None);
+    }
+    // A Dyn container holds nil, so its own arms box the carrier and answer
+    // truthfully; only the typed ones need this.
+    if matches!(receiver_ty, Ty::ListDyn | Ty::Dyn | Ty::MapStrDyn) {
+        return Ok(None);
+    }
+    let [(needle, needle_ty)] = args else {
+        return Ok(None);
+    };
+    let payload = match needle_ty {
+        Ty::MaybeI64 => Ty::I64,
+        Ty::MaybeF64 => Ty::F64,
+        Ty::MaybeStr => Ty::Str,
+        Ty::MaybeBool => Ty::Bool,
+        _ => return Ok(None),
+    };
+    let present = ssa.new_val();
+    insts.push(Inst::MaybePresent {
+        dst: present,
+        src: *needle,
+        maybe_ty: *needle_ty,
+    });
+    let value = ssa.new_val();
+    insts.push(Inst::MaybeValue {
+        dst: value,
+        src: *needle,
+        maybe_ty: *needle_ty,
+    });
+    let (found, found_ty) = lower_method_dispatch(
+        ssa,
+        insts,
+        globals,
+        receiver,
+        receiver_ty,
+        name,
+        &[(value, payload)],
+        block,
+        pc,
+    )?;
+    // What the same call answers when the needle is not there. `contains` and
+    // `count` say so with a constant; `index_of` says nil, which is a boxed
+    // value and selects component-wise like any other carrier.
+    let missing = match found_ty {
+        Ty::Bool => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(false),
+            });
+            dst
+        }
+        Ty::I64 => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::I64(0),
+            });
+            dst
+        }
+        Ty::Dyn => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(0),
+            });
+            crate::dyn_box::to_dyn(ssa, insts, raw, Ty::Nil, pc)?
+        }
+        // Some other answer shape: leave it to the ordinary arms, which will
+        // refuse rather than guess what "not found" means for it.
+        _ => return Ok(None),
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Select {
+        dst,
+        cond: present,
+        then_v: found,
+        else_v: missing,
+        ty: found_ty,
+    });
+    Ok(Some((dst, found_ty)))
+}
+
+/// Whether the receiver can be *shown* not to hold a needle of this type.
+///
+/// A byte string holds bytes, a string's members are its substrings, and a map
+/// or set is keyed by nil/Bool/Int/String. When the needle's type is outside
+/// what the container can hold, the interpreter answers "absent" — it does not
+/// refuse — and the answer is the same for every value of that type, so it is a
+/// constant rather than a call.
+///
+/// The receiver must *have* the method first. A map has `has` and `delete` and
+/// no `contains`, `index_of` or `count` at all, so folding those to "absent"
+/// answered `{}.contains(x)` where the interpreter says "a Map has no method
+/// `contains`". The pairs are listed rather than assumed for that reason.
+///
+/// `Dyn` and the nullable carriers are never "shown" anything: they may be the
+/// right kind at run time.
+fn never_matches(receiver_ty: Ty, name: &str, needle_ty: Ty) -> bool {
+    let is_map = matches!(
+        receiver_ty,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+    );
+    let has_method = match name {
+        // A sequence searches; a map does not, and a set answers `contains`
+        // only.
+        "contains" => !is_map,
+        "index_of" | "count" => !is_map && receiver_ty != Ty::Set,
+        "has" => is_map,
+        "delete" => is_map || receiver_ty == Ty::Set,
+        _ => false,
+    };
+    if !has_method {
+        return false;
+    }
+    let concrete = !matches!(
+        needle_ty,
+        Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool
+    );
+    if !concrete {
+        return false;
+    }
+    match receiver_ty {
+        Ty::Str => needle_ty != Ty::Str,
+        Ty::Bytes | Ty::SliceI64 => needle_ty != Ty::I64,
+        // A set's member type is not in the carrier, so the only thing shown
+        // here is that the value cannot be a member of *any* set.
+        Ty::Set => !matches!(needle_ty, Ty::Nil | Ty::Bool | Ty::I64 | Ty::Str),
+        // A map's key type *is* in the carrier, and it is the whole answer: a
+        // string-keyed map does not hold an Int key, whatever the Int is.
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => needle_ty != Ty::Str,
+        Ty::MapI64I64 | Ty::MapI64F64 => needle_ty != Ty::I64,
+        _ => false,
+    }
+}
+
+/// Whether a needle type reaches the carrier's own typed search helper.
+///
+/// `Int` and `Float` both fit a numeric carrier, because the language compares
+/// them as numbers — `1 in [1.0]` is true. Everything else is a value the
+/// carrier cannot hold, and the search answers "absent" rather than refusing.
+fn fits_carrier(receiver_ty: Ty, name: &str, needle_ty: Ty) -> bool {
+    match receiver_ty {
+        // `contains` has a helper for an `f64` needle against an `i64` list —
+        // `1.5 in [1, 2]` is a real question and the answer is `false` — while
+        // `index_of` and `count` have none and take the boxed route.
+        Ty::ListI64 if name == "contains" => matches!(needle_ty, Ty::I64 | Ty::F64),
+        Ty::ListI64 => needle_ty == Ty::I64,
+        // A `List<f64>` coerces an `Int` needle in its own arm.
+        Ty::ListF64 if name == "contains" => matches!(needle_ty, Ty::I64 | Ty::F64),
+        Ty::ListF64 => needle_ty == Ty::F64,
+        Ty::ListStr => needle_ty == Ty::Str,
+        _ => true,
     }
 }
 
@@ -538,52 +1009,74 @@ pub(crate) fn lower_method_dispatch(
     block: usize,
     pc: usize,
 ) -> Result<Reg, Unsupported> {
+    // A nullable needle looked for in a *typed* container.
+    //
+    // `List<Int>` cannot hold nil, so an absent needle is simply not there:
+    // `contains` is false, `count` is zero, `index_of` is nil. The typed arms
+    // below all match the needle's type exactly, so a `Maybe<Int>` matched none
+    // of them and the whole module fell back — for a question whose answer was
+    // already known.
+    //
+    // Answered by asking with the payload and *selecting*, rather than by
+    // rebuilding the receiver as a Dyn list: the receiver is not the problem,
+    // and rebuilding it would turn a lookup into an allocation. The payload of
+    // an absent carrier is a value nobody wrote, so the search's answer on that
+    // path is discarded rather than trusted.
+    if let Some(result) =
+        nullable_needle_in_typed_container(ssa, insts, globals, receiver, receiver_ty, name, args, block, pc)?
+    {
+        return Ok(result);
+    }
+    // A struct instance rides the `Map<str, Dyn>` carrier, and a map's
+    // *collection* methods are not its. The interpreter has a different heap
+    // value and refuses each of these, naming the struct — so answering for the
+    // fields is a wrong answer: `s.len()` was the field count and `s.keys()`
+    // the field names.
+    //
+    // Reading a field is not among them; that is what the carrier is for. These
+    // programs always raise, so declining to lower them costs nothing anyone
+    // runs.
+    // A `MapStrDyn` receiver has to be *proven* a map, not merely not proven a
+    // struct: a parameter one call site hands a struct and another a map has no
+    // fact at all, and that is exactly where the wrong answer was.
+    if matches!(
+        name,
+        "len" | "is_empty" | "keys" | "values" | "has" | "delete" | "contains" | "clear"
+    ) && (ssa.struct_name(receiver).is_some() || (receiver_ty == Ty::MapStrDyn && !ssa.is_plain_map(receiver)))
+    {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let receiver_is_map = matches!(
+        receiver_ty,
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64
+    );
+    let map_missing_method = receiver_is_map && matches!(name, "contains" | "index_of" | "count");
     let result: Reg = match (receiver_ty, name, args) {
         // Boxed-element list long tail (runtime-polymorphic receivers).
-        (Ty::ListDyn, "take", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_take"),
-                args: vec![receiver, *n],
-            });
-            (dst, Ty::ListDyn)
-        }
-        (Ty::ListDyn, "skip", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_skip"),
-                args: vec![receiver, *n],
-            });
-            (dst, Ty::ListDyn)
-        }
-        // `concat` with any dyn-list side: both sides normalize to dyn lists
-        // (typed sides convert element-wise, cold path) and chain.
-        (Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "concat", [(other, oty)])
-            if receiver_ty == Ty::ListDyn || *oty == Ty::ListDyn || *oty == Ty::Dyn =>
-        {
-            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
-            let rhs = match *oty {
-                Ty::Dyn => {
-                    let unboxed = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(unboxed),
-                        callee: AbiRef::new("dyn", "as_list"),
-                        args: vec![*other],
-                    });
-                    unboxed
-                }
-                oty => to_dyn_list_handle(ssa, insts, *other, oty, pc)?,
+        // `take` / `skip` over every carrier and both directions. Neither looks
+        // at the element, and they were written out per carrier — which is how
+        // `f64` and `str` ended up with neither, so `[1.5, 2.5].take(1)` dropped
+        // its whole module to the VM.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, name @ ("take" | "skip"), [(n, Ty::I64)]) => {
+            let callee = match (receiver_ty, name) {
+                (Ty::ListI64, "take") => "i64_take",
+                (Ty::ListI64, _) => "i64_skip",
+                (Ty::ListF64, "take") => "f64_take",
+                (Ty::ListF64, _) => "f64_skip",
+                (Ty::ListStr, "take") => "str_take",
+                (Ty::ListStr, _) => "str_skip",
+                (_, "take") => "dyn_take",
+                (_, _) => "dyn_skip",
             };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_chain"),
-                args: vec![lhs, rhs],
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver, *n],
             });
-            (dst, Ty::ListDyn)
+            (dst, receiver_ty)
         }
+
         (Ty::ListI64, "unique", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -595,43 +1088,221 @@ pub(crate) fn lower_method_dispatch(
         }
         // `xs.sort()` / `xs.reverse()` — fresh copies (the VM sorts/reverses
         // a snapshot; the receiver is untouched).
-        (Ty::ListI64, "sort", []) => {
+        // `sort` is per carrier because its *order* is per carrier — see
+        // `list_sort!` in lkrt, where the `f64` comparator is not a total order
+        // once a NaN is present and the answer is therefore an artifact of which
+        // sort call is used. The boxed carrier is absent on purpose: its order is
+        // `compare_runtime_values` across kinds, which is a mirror worth its own
+        // conformance test rather than a copy.
+        // `sum` on the two numeric carriers, and `min`/`max` on the three
+        // ordered ones — the same orders `sort` uses just above, from the same
+        // comparators in lkrt.
+        //
+        // The boxed carrier is out for the reason `sort` states: its order is
+        // `compare_runtime_values` across kinds, a mirror that wants its own
+        // conformance test rather than a copy. A `List<str>` has no `sum` for
+        // the reason the VM gives — summing strings is a mistake, not a join —
+        // and with no row that call falls back and raises there.
+        (Ty::ListI64 | Ty::ListF64, "sum", []) => {
+            let (callee, ty) = match receiver_ty {
+                Ty::ListI64 => ("i64_sum", Ty::I64),
+                _ => ("f64_sum", Ty::F64),
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_sort"),
+                callee: AbiRef::new("list_h", callee),
                 args: vec![receiver],
             });
-            (dst, Ty::ListI64)
+            (dst, ty)
         }
-        (Ty::ListI64, "reverse", []) => {
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "min" | "max", []) => {
+            // An `AbiRef` names a `&'static str`, so the carrier × direction
+            // pair is spelled out rather than assembled.
+            let callee = match (receiver_ty, name) {
+                (Ty::ListI64, "min") => "i64_min",
+                (Ty::ListI64, _) => "i64_max",
+                (Ty::ListF64, "min") => "f64_min",
+                (Ty::ListF64, _) => "f64_max",
+                (_, "min") => "str_min",
+                _ => "str_max",
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_reverse"),
+                callee: AbiRef::new("list_h", callee),
                 args: vec![receiver],
             });
-            (dst, Ty::ListI64)
+            // Boxed: an empty sequence answers nil, which no unboxed carrier
+            // can hold.
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "sum"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Bytes, "min" | "max", []) => {
+            let callee = if name == "min" { "min" } else { "max" };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", callee),
+                args: vec![receiver],
+            });
+            (dst, Ty::Dyn)
+        }
+        // The boxed carrier joins `sort`, `min` and `max`: its order is
+        // `dyn_compare`, the VM's `compare_runtime_values` mirrored against the
+        // VM itself rather than copied from it. What made a copy the wrong
+        // shape is what the mirror had to get right — the VM keeps two rank
+        // tables and they have to be shown to agree, a window is a list but
+        // shares a tag value with the end of the map range, and a struct is a
+        // marked map here and a distinct heap kind there.
+        (Ty::ListDyn, "sort", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_sort"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_sum"),
+                args: vec![receiver],
+            });
+            // Boxed: `Int` unless an element was a Float, which is decided per
+            // list rather than per carrier.
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListDyn, "min" | "max", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", if name == "min" { "dyn_min" } else { "dyn_max" }),
+                args: vec![receiver],
+            });
+            // Boxed: an empty sequence answers nil, which no unboxed carrier
+            // can hold.
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "sort", []) => {
+            let callee = match receiver_ty {
+                Ty::ListI64 => "i64_sort",
+                Ty::ListF64 => "f64_sort",
+                _ => "str_sort",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver],
+            });
+            (dst, receiver_ty)
+        }
+        // `reverse` does not look at the element, so it is one arm over the
+        // carriers rather than four written one at a time — which is how it came
+        // to exist for `Int` and nowhere else, dropping `[1.5, 2.5].reverse()`'s
+        // whole module to the VM.
+        (Ty::ListI64, "count", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListF64, "count", [(value, Ty::F64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "f64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListStr, "count", [(value, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        // The two carriers `count` was missing while `index_of` — the same scan
+        // in the VM, and now the same scan here — had them. A needle of any
+        // type is a question a boxed list can answer, so it boxes rather than
+        // being restricted the way the typed arms above are.
+        (Ty::ListDyn, "count", [(value, vty)]) => {
+            let boxed = to_dyn(ssa, insts, *value, *vty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_count"),
+                args: vec![receiver, boxed],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "reverse", []) => {
+            let callee = match receiver_ty {
+                Ty::ListI64 => "i64_reverse",
+                Ty::ListF64 => "f64_reverse",
+                Ty::ListStr => "str_reverse",
+                _ => "dyn_reverse",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver],
+            });
+            (dst, receiver_ty)
         }
         // `.is_empty()` — `len == 0` over the same per-type len ABI.
-        (
-            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrDyn,
-            "is_empty",
-            [],
-        ) => {
-            let (module, len_fn) = match receiver_ty {
-                Ty::ListI64 => ("list_h", "i64_len"),
-                Ty::ListF64 => ("list_h", "f64_len"),
-                Ty::ListStr => ("list_h", "str_len"),
-                Ty::ListDyn => ("list_h", "dyn_len"),
-                Ty::MapStrI64 => ("map_h", "str_i64_len"),
-                Ty::MapStrF64 => ("map_h", "str_f64_len"),
-                _ => ("map_h", "str_dyn_len"),
-            };
+        //
+        // A boxed receiver takes `dyn.len_of` rather than the method table's
+        // `unbox_list`, for the reason `contains` does: this arm serves maps
+        // too, and unboxing one to a list aborts. `len_of` is the dispatch
+        // `xs.len()` already takes on a boxed receiver, so the two spellings
+        // answer through one function.
+        // `xs.len()` written as a *method call*. Normally it is the fused `Len`
+        // opcode and never reaches this table — but the compiler cannot use the
+        // opcode when the module has a user `impl` that could shadow the name,
+        // and then every carrier without an arm here fell back. Six had one;
+        // the typed lists and the typed maps did not.
+        //
+        // The same `container_len_abi` row `Len` and `is_empty` read. `Str` is
+        // not in it (a string's length is its count of Unicode scalar values)
+        // and keeps its own arm below.
+        (_, "len", []) if container_len_abi(receiver_ty).is_some() => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: container_len_abi(receiver_ty).expect("guarded by the arm"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        //
+        // The carrier list is `container_len_abi`'s, shared with the `Len`
+        // opcode. It used to be a second table naming eight of them, and the
+        // three it left out — both integer-keyed maps and the bool map — each
+        // lowered `m.len()` and refused `m.is_empty()`.
+        (_, "is_empty", []) if container_len_abi(receiver_ty).is_some() => {
             let len = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(len),
-                callee: AbiRef::new(module, len_fn),
+                callee: container_len_abi(receiver_ty).expect("guarded by the arm"),
                 args: vec![receiver],
             });
             let zero = ssa.new_val();
@@ -649,18 +1320,505 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        // `.slice(start[, end])` — negative aborts (VM loud), end clamps.
+        // `.slice(start[, end])` — a **window** over the receiver, not a copy
+        // of it (negative aborts as the VM does; `end` clamps). This returned
+        // `Ty::ListI64` until the VM's `.slice()` became a view: the two
+        // backends then disagreed about whether a write to the source shows
+        // through, and about whether `.to_list()` existed at all.
+        // `xs.slice(start)` — the one-argument form, whose end defaults to the
+        // length. `Ty::Str` had both arities and a list had only the two-arg
+        // one, so `xs.slice(1)` dropped the program to the VM.
+        (Ty::ListI64, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("list_h", "i64_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_new"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // `clear()` returns the receiver, which is what the VM's `clear` gives
+        // back — the same handle, now empty. Every carrier at once: the
+        // operation does not look at the element type.
+        // `clear()` empties the receiver and hands *it* back — one rule for
+        // every container, stated once. It used to be three arms with three
+        // copies of the answer, and two of them (a map's and a set's) said
+        // `nil` instead: the convention was in the list arm's comment and
+        // nowhere a reader of the other two would look.
+        (_, "clear", []) if clear_helper(receiver_ty).is_some() => {
+            let (module, helper) = clear_helper(receiver_ty).expect("checked by the guard");
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new(module, helper),
+                args: vec![receiver],
+            });
+            (receiver, receiver_ty)
+        }
+        // The other element types slice through `*_slice_from`, which has been
+        // in the ABI all along — only the dispatch table stopped at `i64`. Same
+        // shape as `chain`: the runtime could do it, nothing asked.
+        //
+        // `i64` above answers a *window* (`SliceI64`); these answer a fresh
+        // list. Both are what `slice` means — the window is an optimisation the
+        // other carriers do not have, not a different result.
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "slice", [(start, Ty::I64)]) => {
+            let helper = match receiver_ty {
+                Ty::ListF64 => "f64_slice_from",
+                Ty::ListStr => "str_slice_from",
+                _ => "dyn_slice_from",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, *start],
+            });
+            (dst, receiver_ty)
+        }
+        // `contains` likewise: the helpers exist for every carrier.
+        (Ty::ListF64, "contains", [(needle, Ty::F64 | Ty::I64)]) => {
+            let needle = coerce_to_f64(ssa, insts, *needle, args[0].1);
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "f64_contains"),
+                args: vec![receiver, needle],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // A container searched for something it cannot hold at all. The
+        // interpreter answers "absent" rather than refusing, and the answer is
+        // the same for every value of that type, so it is a constant.
+        // `"abc".contains(1)`, `b.contains("a")`, `s.contains(1.5)` — each of
+        // them was a refusal on this side and an answer on the other.
+        (_, name @ ("contains" | "has" | "index_of" | "count" | "delete"), [(_, nty)])
+            if never_matches(receiver_ty, name, *nty) =>
+        {
+            let dst = ssa.new_val();
+            match name {
+                "index_of" | "delete" => {
+                    // Both answer a boxed nil when absent: `index_of` has no
+                    // position and `delete` had nothing to return.
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "from_nil"),
+                        args: vec![],
+                    });
+                    (dst, Ty::Dyn)
+                }
+                "count" => {
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::I64(0),
+                    });
+                    (dst, Ty::I64)
+                }
+                _ => {
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(false),
+                    });
+                    (dst, Ty::Bool)
+                }
+            }
+        }
+        // A typed list searched for something its carrier cannot hold. The
+        // answer is `false`/nil/`0` — the interpreter says so, and its operator
+        // spelling `v in xs` has always said so — but the typed helpers take
+        // the carrier's own element and there is nothing to hand them. Boxing
+        // the receiver reaches the helpers that compare by value, which is the
+        // same route a `ListDyn` receiver already takes below.
+        //
+        // Placed before the typed arms would shadow them, so it guards on the
+        // needle *not* fitting: `Int` and `Float` both fit a numeric carrier,
+        // because `1 in [1.0]` is true.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, name @ ("contains" | "index_of" | "count"), [(needle, nty)])
+            if !fits_carrier(receiver_ty, name, *nty) =>
+        {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let helper = match name {
+                "contains" => "dyn_contains",
+                "index_of" => "dyn_index_of",
+                _ => "dyn_count",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![handle, boxed],
+            });
+            match name {
+                "contains" => {
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    let b = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst: b,
+                        op: CmpOp::Ne,
+                        float: false,
+                        lhs: dst,
+                        rhs: zero,
+                    });
+                    (b, Ty::Bool)
+                }
+                "index_of" => (dst, Ty::Dyn),
+                _ => (dst, Ty::I64),
+            }
+        }
+        (Ty::ListDyn, "contains", [(needle, nty)]) => {
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "dyn_contains"),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Dyn, "contains", [(needle, nty)]) => {
+            // The one container name that must *not* take the method table's
+            // `unbox_list`: `contains` answers for maps, sets, strings, windows
+            // and bytes too, and unboxing to a list would abort on all of them.
+            // `dyn.seq_contains` is the `in` operator's runtime dispatch minus
+            // the map: the VM gives a map `in` and gives it no `contains`
+            // method, so the operator's own entry would answer where the VM
+            // raises.
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("dyn", "seq_contains"),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Bytes, "slice", [(from, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("bytes_h", "len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "slice"),
+                args: vec![receiver, *from, end],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let helper = match receiver_ty {
+                Ty::ListF64 => "f64_slice",
+                Ty::ListStr => "str_slice",
+                _ => "dyn_slice",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, receiver_ty)
+        }
         (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_slice_method"),
+                callee: AbiRef::new("slice_h", "i64_new"),
                 args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // `end` omitted means "to the end of the window" — its own length, not
+        // the length of the list it looks into. Every other carrier already
+        // had this form: a list's reaches a slice *opcode* rather than a
+        // `CallMethodK`, and `Bytes` has the arm above. A window was the one
+        // receiver where `xs.slice(1)` dropped the module to the VM.
+        (Ty::SliceI64, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("slice_h", "i64_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sub"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // A window on a window resolves against the original source rather
+        // than nesting, matching `dispatch_slice_builtin_method`.
+        (Ty::SliceI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sub"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // The copy, asked for by name — the operation `.slice()` used to
+        // perform silently.
+        (Ty::SliceI64, "to_list", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_to_list"),
+                args: vec![receiver],
             });
             (dst, Ty::ListI64)
         }
+        // The read half of the list surface, *through* the window: a window
+        // exists so that asking it for a sum does not build a list first, and
+        // these nine used to drop the whole module to the VM — the same
+        // "almost native receiver" shape `Bytes` had. `take`/`skip` are
+        // sub-windows for the same reason, and keep the count guard: a count is
+        // not a position, so a negative one is a refusal rather than a window
+        // measured from the end.
+        (Ty::SliceI64, "sum", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sum"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::SliceI64, "min" | "max", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", if name == "min" { "i64_min" } else { "i64_max" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::Dyn)
+        }
+        // The ABI's `I64` 0/1 becomes a `Bool` by comparing it, exactly as the
+        // `Bytes` arm does — a `Bool`-typed value that is really an i64 makes
+        // codegen emit `uextend` on something already 64 bits wide, and the
+        // Cranelift verifier rejects the function.
+        (Ty::SliceI64, "contains", [(value, Ty::I64)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("slice_h", "i64_contains"),
+                args: vec![receiver, *value],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (dst, Ty::Bool)
+        }
+        (Ty::SliceI64, "count", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_count"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::I64)
+        }
+        // A reversed window is not a window of the source, so it materializes
+        // — the same rule `map` follows here. Composed from the two symbols
+        // that already exist rather than a third that would answer the same.
+        (Ty::SliceI64, "reverse" | "sort" | "unique", []) => {
+            let list = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(list),
+                callee: AbiRef::new("slice_h", "i64_to_list"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "list_h",
+                    match name {
+                        "sort" => "i64_sort",
+                        "unique" => "i64_unique",
+                        _ => "i64_reverse",
+                    },
+                ),
+                args: vec![list],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::SliceI64, "index_of", [(value, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_index_of"),
+                args: vec![receiver, *value],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::SliceI64, "take" | "skip", [(count, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", if name == "take" { "i64_take" } else { "i64_skip" }),
+                args: vec![receiver, *count],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // `first`/`last` are `[0]` and `[-1]`, which the window's own indexed
+        // read already is — including the nil an empty window answers.
+        (Ty::SliceI64, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::SliceGetMaybe {
+                dst,
+                handle: receiver,
+                index,
+            });
+            (dst, Ty::MaybeI64)
+        }
+        // `w.get(i)` — the same read as `w[i]`, answering nil instead of
+        // failing, which is what `.get()` means on a list too.
+        (Ty::SliceI64, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::SliceGetMaybe {
+                dst,
+                handle: receiver,
+                index: *index,
+            });
+            (dst, Ty::MaybeI64)
+        }
         // Map iteration family (order = the VM's, layout mirror): keys/
         // values snapshots (Mixed → dyn lists), delete-with-removed-value.
+        // A **boxed** map receiver: the tag decides the carrier at run time, so
+        // these dispatch inside the runtime instead of unboxing first. They
+        // used to go through `dyn.as_map`, which hands back a `str_dyn` handle
+        // — fine for a boxed `Map<str, Dyn>` and a `runtime type error` for
+        // every typed carrier, on programs the VM answers.
+        (Ty::Dyn, "keys" | "values", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", if name == "keys" { "map_keys" } else { "map_values" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::Dyn, "has", [(k, Ty::Str)]) => {
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("dyn", "map_has"),
+                args: vec![receiver, *k],
+            });
+            // The ABI answers a machine-width flag; `Ty::Bool` is one bit, and
+            // handing the wide value over as-is makes codegen extend an `i64`
+            // to `i64` and the verifier reject the function.
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: present,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (present, Ty::Bool)
+        }
+        // `delete` writes, which is why the dispatch is per operation: an
+        // `as_map` that materialized a copy would answer `keys`/`values`/`has`
+        // and silently drop this one.
+        (Ty::Dyn, "delete", [(k, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "map_delete"),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::MapI64I64 | Ty::MapI64F64, "keys" | "values", []) => {
+            let abi_name: &'static str = match (receiver_ty, name) {
+                (Ty::MapI64I64, "keys") => "i64_i64_keys",
+                (Ty::MapI64I64, _) => "i64_i64_values",
+                (_, "keys") => "i64_f64_keys",
+                _ => "i64_f64_values",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {
             let family = match receiver_ty {
                 Ty::MapStrI64 => "str_i64",
@@ -686,7 +1844,12 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
-        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete" | "remove", [(k, Ty::Str)]) => {
+        // `m.clear()`, the one container method the map did not lower.
+        // `remove` is *not* a map method — the interpreter has `delete`, and
+        // says so. Accepting it here meant the compiled build answered where
+        // the VM raised, which is the worse direction: a program that cannot
+        // run at all ran, and only on one backend.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete", [(k, Ty::Str)]) => {
             let abi_name = match receiver_ty {
                 Ty::MapStrI64 => "str_i64_delete",
                 Ty::MapStrF64 => "str_f64_delete",
@@ -700,6 +1863,49 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver, *k],
             });
             (dst, Ty::Dyn)
+        }
+        (Ty::MapI64I64 | Ty::MapI64F64, "delete", [(k, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "map_h",
+                    if receiver_ty == Ty::MapI64I64 {
+                        "i64_i64_delete"
+                    } else {
+                        "i64_f64_delete"
+                    },
+                ),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `m.has(k)` on integer-keyed maps — the same present bit the string
+        // arms below take, off the integer-key lookup.
+        (Ty::MapI64I64 | Ty::MapI64F64, "has", [(k, Ty::I64)]) => {
+            let looked = ssa.new_val();
+            let maybe_ty = if receiver_ty == Ty::MapI64I64 {
+                insts.push(Inst::MapGetMaybeI64Key {
+                    dst: looked,
+                    handle: receiver,
+                    key: *k,
+                });
+                Ty::MaybeI64
+            } else {
+                insts.push(Inst::MapGetMaybeI64F64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *k,
+                });
+                Ty::MaybeF64
+            };
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty,
+            });
+            (present, Ty::Bool)
         }
         // `m.has(k)` on typed string maps — the dynamic-lookup present bit.
         (Ty::MapStrI64 | Ty::MapStrBool, "has", [(k, Ty::Str)]) => {
@@ -735,41 +1941,17 @@ pub(crate) fn lower_method_dispatch(
         // Set methods (VM `core_methods` set family): membership/mutation
         // return Bool, `len` Int, `clear` Nil. Elements box to Dyn — a Float
         // aborts inside lkrt (the VM's loud "cannot be used as a key").
-        (Ty::Set, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("set", "len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
-        (Ty::Set, "is_empty", []) => {
-            let len = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(len),
-                callee: AbiRef::new("set", "len"),
-                args: vec![receiver],
-            });
-            let zero = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: zero,
-                value: Const::I64(0),
-            });
-            let b = ssa.new_val();
-            insts.push(Inst::Cmp {
-                dst: b,
-                op: CmpOp::Eq,
-                float: false,
-                lhs: len,
-                rhs: zero,
-            });
-            (b, Ty::Bool)
-        }
-        (Ty::Set, "has" | "contains" | "add" | "delete" | "remove", [(v, vty)]) => {
-            let boxed = to_dyn_any(ssa, insts, *v, *vty, pc)?;
+        // Only the spellings the language actually has. This accepted `has` and
+        // `remove` too, and the type checker rejects both — so those two names
+        // could never reach a lowering, while a reader here would conclude
+        // `st.has(x)` works. The membership rule is `contains` wherever it is
+        // unambiguous (list, set, string) and `has` on a map, where "contains
+        // what — a key or a value?" is a real question; `in` works on all of
+        // them. See `docs/semantics.md`.
+        (Ty::Set, "contains" | "add" | "delete", [(v, vty)]) => {
+            let boxed = to_dyn(ssa, insts, *v, *vty, pc)?;
             let abi_name = match name {
-                "has" | "contains" => "has",
+                "contains" => "has",
                 "add" => "add",
                 _ => "delete",
             };
@@ -794,18 +1976,89 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        (Ty::Set, "clear", []) => {
+        // `s.values()` is the members in iteration order — the same list `for x
+        // in s` walks, which `set.iter` already builds. It was the one Set method
+        // with no arm, so a function using it dropped to the VM while the `for`
+        // loop over the same set stayed native.
+        //
+        // The order is a hash order, so this rides the mirror discipline that
+        // makes set iteration lowerable at all (`set_iteration_order_matches_the_vm`,
+        // and the single `RtKey` behind it).
+        // The set operations. The `kind` operand picks which; the numbering is
+        // `lkset::SET_OP_*` / `SET_REL_*`, and a second copy of it here would be
+        // a silent mismatch rather than an error — so it is one `match` beside
+        // the name that produced it.
+        (Ty::Set, "union" | "intersection" | "difference" | "symmetric_difference", [(other, Ty::Set)]) => {
+            let kind = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind,
+                value: Const::I64(match name {
+                    "union" => 0,
+                    "intersection" => 1,
+                    "difference" => 2,
+                    _ => 3,
+                }),
+            });
+            let dst = ssa.new_val();
             insts.push(Inst::Call {
-                dst: None,
-                callee: AbiRef::new("set", "clear"),
+                dst: Some(dst),
+                callee: AbiRef::new("set", "combine"),
+                args: vec![receiver, *other, kind],
+            });
+            (dst, Ty::Set)
+        }
+        (Ty::Set, "is_subset" | "is_superset" | "is_disjoint", [(other, Ty::Set)]) => {
+            let kind = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind,
+                value: Const::I64(match name {
+                    "is_subset" => 0,
+                    "is_superset" => 1,
+                    _ => 2,
+                }),
+            });
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("set", "relate"),
+                args: vec![receiver, *other, kind],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (dst, Ty::Bool)
+        }
+        (Ty::Set, "values", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "iter"),
                 args: vec![receiver],
             });
-            let nil = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: nil,
-                value: Const::Nil,
+            (dst, Ty::ListDyn)
+        }
+        // `s.byte_at(i)` — one byte as a number, the only string read that
+        // allocates nothing. `Pure`, so the optimizer may hoist it out of a loop
+        // that reads the same index twice; `char_at` next to it cannot be,
+        // because it builds a string.
+        (Ty::Str, "byte_at", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::StrByteAtMaybe {
+                dst,
+                handle: receiver,
+                index: *index,
             });
-            (nil, Ty::Nil)
+            (dst, Ty::MaybeI64)
         }
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
@@ -833,15 +2086,56 @@ pub(crate) fn lower_method_dispatch(
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
         // `m.has(key)` on a mixed-value map — key membership (stored-nil
         // still counts, see `str_dyn_has`).
-        // `xs.first()` / `xs.last()` — nil when empty: exactly the dynamic-
-        // index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
-        // so both reuse the existing ListGetMaybe machinery, no new ABI.
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "first", []) => {
+        // `xs.first()` / `xs.last()` / `xs.pop()` — nil when empty: exactly the
+        // dynamic-index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
+        // so all three reuse the existing ListGetMaybe machinery, no new read ABI.
+        //
+        // One arm for the three because they differ only in *which* index and
+        // whether the element is then dropped. Written apart, `first`/`last`
+        // covered three carriers and left the boxed one out, and `pop` existed
+        // nowhere at all — so a single `xs.pop()` dropped its module to the VM.
+        //
+        // The boxed carrier reads through `dyn_at`, whose out-of-range answer is
+        // already nil, so its `Maybe` is the `Dyn` itself. That also means an
+        // empty `pop` and a stored nil are the same answer — which is what the VM
+        // says too.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, name @ ("first" | "last" | "pop"), []) => {
             let idx = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: idx,
-                value: Const::I64(0),
-            });
+            if name == "first" {
+                insts.push(Inst::Const {
+                    dst: idx,
+                    value: Const::I64(0),
+                });
+            } else {
+                // `len - 1`, which is -1 for an empty list — and every carrier's
+                // read answers nil for that, so emptiness needs no branch.
+                let (len_mod, len_fn) = match receiver_ty {
+                    Ty::ListI64 => ("list_h", "i64_len"),
+                    Ty::ListF64 => ("list_h", "f64_len"),
+                    Ty::ListStr => ("list_h", "str_len"),
+                    // A boxed receiver: the tag says which carrier, here and at
+                    // each of the two steps below.
+                    Ty::Dyn => ("dyn", "len_of"),
+                    _ => ("list_h", "dyn_len"),
+                };
+                let len = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(len),
+                    callee: AbiRef::new(len_mod, len_fn),
+                    args: vec![receiver],
+                });
+                let one = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: one,
+                    value: Const::I64(1),
+                });
+                insts.push(Inst::IntBin {
+                    dst: idx,
+                    op: IntBinOp::Sub,
+                    lhs: len,
+                    rhs: one,
+                });
+            }
             let dst = ssa.new_val();
             let maybe_ty = match receiver_ty {
                 Ty::ListI64 => {
@@ -860,7 +2154,7 @@ pub(crate) fn lower_method_dispatch(
                     });
                     Ty::MaybeF64
                 }
-                _ => {
+                Ty::ListStr => {
                     insts.push(Inst::ListGetMaybeStr {
                         dst,
                         handle: receiver,
@@ -868,83 +2162,116 @@ pub(crate) fn lower_method_dispatch(
                     });
                     Ty::MaybeStr
                 }
-            };
-            (dst, maybe_ty)
-        }
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "last", []) => {
-            let (len_module, len_fn) = match receiver_ty {
-                Ty::ListI64 => ("list_h", "i64_len"),
-                Ty::ListF64 => ("list_h", "f64_len"),
-                _ => ("list_h", "str_len"),
-            };
-            let len = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(len),
-                callee: AbiRef::new(len_module, len_fn),
-                args: vec![receiver],
-            });
-            let one = ssa.new_val();
-            insts.push(Inst::Const {
-                dst: one,
-                value: Const::I64(1),
-            });
-            let idx = ssa.new_val();
-            insts.push(Inst::IntBin {
-                dst: idx,
-                op: IntBinOp::Sub,
-                lhs: len,
-                rhs: one,
-            });
-            let dst = ssa.new_val();
-            let maybe_ty = match receiver_ty {
-                Ty::ListI64 => {
-                    insts.push(Inst::ListGetMaybe {
-                        dst,
-                        handle: receiver,
-                        index: idx,
+                Ty::Dyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "index"),
+                        args: vec![receiver, idx],
                     });
-                    Ty::MaybeI64
-                }
-                Ty::ListF64 => {
-                    insts.push(Inst::ListGetMaybeF64 {
-                        dst,
-                        handle: receiver,
-                        index: idx,
-                    });
-                    Ty::MaybeF64
+                    Ty::Dyn
                 }
                 _ => {
-                    insts.push(Inst::ListGetMaybeStr {
-                        dst,
-                        handle: receiver,
-                        index: idx,
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", "dyn_at"),
+                        args: vec![receiver, idx],
                     });
-                    Ty::MaybeStr
+                    Ty::Dyn
                 }
             };
+            // `pop` is that read plus the drop. Read first: the value has to come
+            // out before the element it names is gone.
+            if name == "pop" {
+                let (drop_mod, drop_fn) = match receiver_ty {
+                    Ty::ListI64 => ("list_h", "i64_drop_last"),
+                    Ty::ListF64 => ("list_h", "f64_drop_last"),
+                    Ty::ListStr => ("list_h", "str_drop_last"),
+                    Ty::Dyn => ("dyn", "list_drop_last"),
+                    _ => ("list_h", "dyn_drop_last"),
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new(drop_mod, drop_fn),
+                    args: vec![receiver],
+                });
+            }
             (dst, maybe_ty)
         }
-        // `xs.concat(ys)` — same semantics as chain (the VM implements both
-        // as lhs ++ rhs into a fresh list).
-        (Ty::ListI64, "concat", [(other, Ty::ListI64)]) => {
+        // `xs.insert(i, v)` answers the receiver (the VM mutates in place and
+        // evaluates to the list); `xs.remove_at(i)` answers the element it took
+        // out, and raises rather than answering nil when the index is out of
+        // range — so unlike `pop` its result is the element type, not a `Maybe`.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, "insert", [(at, _), (value, vty)]) => {
+            // A nullable value has no place in a typed list, and this arm would
+            // otherwise hand the carrier straight to `i64_insert` — caught, but
+            // by an argument-count mismatch inside the ABI rather than by
+            // anything that names the problem. Reported as a contradiction of
+            // the literal instead, which is also the fixpoint's cue to rebuild
+            // the list as a Dyn one and lower after all. `push` already does
+            // this; `insert` is the same store one method along.
+            if matches!(*vty, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) && receiver_ty != Ty::ListDyn
+            {
+                return Err(crate::inst::container::carrier_contradicted(ssa, receiver, receiver_ty)
+                    .unwrap_or(Unsupported::TypeMismatch { pc }));
+            }
+            // A boxed receiver reaches the carrier behind the tag rather than
+            // unboxing: `dyn.as_list` is read-only, so the insert would land in
+            // a materialized copy. Same rule `push` follows.
+            if receiver_ty == Ty::Dyn {
+                let boxed = to_dyn(ssa, insts, *value, *vty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("dyn", "list_insert"),
+                    args: vec![receiver, *at, boxed],
+                });
+                return Ok((receiver, receiver_ty));
+            }
+            let (callee, value) = match receiver_ty {
+                Ty::ListI64 => ("i64_insert", *value),
+                Ty::ListF64 => ("f64_insert", coerce_to_f64(ssa, insts, *value, *vty)),
+                Ty::ListStr => ("str_insert", *value),
+                _ => ("dyn_insert", to_dyn(ssa, insts, *value, *vty, pc)?),
+            };
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver, *at, value],
+            });
+            (receiver, receiver_ty)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn, "remove_at", [(at, Ty::I64)]) => {
+            // See `insert`: a boxed receiver reaches the carrier by tag.
+            if receiver_ty == Ty::Dyn {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "list_remove_at"),
+                    args: vec![receiver, *at],
+                });
+                return Ok((dst, Ty::Dyn));
+            }
+            let (callee, out) = match receiver_ty {
+                Ty::ListI64 => ("i64_remove_at", Ty::I64),
+                Ty::ListF64 => ("f64_remove_at", Ty::F64),
+                Ty::ListStr => ("str_remove_at", Ty::Str),
+                _ => ("dyn_remove_at", Ty::Dyn),
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_chain"),
-                args: vec![receiver, *other],
+                callee: AbiRef::new("list_h", callee),
+                args: vec![receiver, *at],
             });
-            (dst, Ty::ListI64)
+            (dst, out)
         }
-        // `xs.join(sep)` on a string list → one string.
-        (Ty::ListStr, "join", [(sep, Ty::Str)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "str_join"),
-                args: vec![receiver, *sep],
-            });
-            (dst, Ty::Str)
-        }
+        // `xs.join(sep)` → one string, on every carrier that has one.
+        //
+        // The numeric arms were absent on purpose: the VM raised "list must
+        // contain only strings", so lowering them would have made native answer
+        // where the VM refused. That rule is gone — the VM writes each element
+        // the way it writes it everywhere else — and the helpers here render the
+        // same way the `*_display` ones do, which is what keeps the two ends
+        // agreeing about `1.0` and `-0.0`.
         // `xs.get(i)` — safe index: nil on OOB, i.e. exactly the dynamic-
         // index Maybe model (reused, no new ABI).
         (Ty::ListI64, "get", [(idx, Ty::I64)]) => {
@@ -975,32 +2302,110 @@ pub(crate) fn lower_method_dispatch(
             (dst, Ty::MaybeStr)
         }
         // `List<i64>` slicing/concat helpers (VM core_methods semantics).
-        (Ty::ListI64, "take", [(n, Ty::I64)]) => {
+        // `xs.chain(ys)` is `xs + ys`, and the operator path has always covered
+        // every list pairing: same-typed keeps its carrier, cross-typed chains
+        // boxed (the VM's result there is a Mixed list, which is what
+        // `dyn_chain` builds). The method path had one arm — `ListI64` twice —
+        // so `line.chain([byte])` with a boxed element did not lower, and in the
+        // x86 kernel that one shape was eleven of the eighteen blockers.
+        //
+        // One operation, one rule: this mirrors `inst::scalar`'s `list_chain`.
+        //
+        // `concat` is the same operation under a second name, and it used to have
+        // its own two narrower arms — one for `ListI64 ++ ListI64`, one for
+        // "either side is boxed". So `xs.chain(ys)` lowered on all four carriers
+        // while `xs.concat(ys)` lowered on two, and which spelling a program used
+        // decided whether it stayed native. Both arms were subsumed by this one;
+        // deleting them is the fix, not adding two more.
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
+            "chain" | "concat",
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn)],
+        ) => {
+            // A boxed argument is ordinary here: a callee's return type is
+            // *observed*, and a long `a.chain(b).chain(c)…` chain can see one of
+            // its operands as `Dyn` before the fixpoint has settled. The unbox
+            // itself is `to_dyn_list_handle`'s below — it used to be written out
+            // here, and `zip`, which needs the same thing, did not have a copy.
+            let other_ty = args[0].1;
+            let (helper, out_ty) = match (receiver_ty, other_ty) {
+                (Ty::ListI64, Ty::ListI64) => ("i64_chain", Ty::ListI64),
+                (Ty::ListF64, Ty::ListF64) => ("f64_chain", Ty::ListF64),
+                (Ty::ListStr, Ty::ListStr) => ("str_chain", Ty::ListStr),
+                _ => ("dyn_chain", Ty::ListDyn),
+            };
+            let (lhs, rhs) = if out_ty == Ty::ListDyn {
+                (
+                    to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?,
+                    to_dyn_list_handle(ssa, insts, *other, other_ty, pc)?,
+                )
+            } else {
+                (receiver, *other)
+            };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_take"),
-                args: vec![receiver, *n],
+                callee: AbiRef::new("list_h", helper),
+                args: vec![lhs, rhs],
             });
-            (dst, Ty::ListI64)
+            (dst, out_ty)
         }
-        (Ty::ListI64, "skip", [(n, Ty::I64)]) => {
-            let dst = ssa.new_val();
+        // A key the lowering cannot type. `m.has(k)` and `k in m` are one
+        // question — the interpreter answers both from `map_contains` — so this
+        // takes `dyn.contains`, which is the `in` operator's dispatch and asks
+        // exactly that of a map. Placed after the `Str` arms, which keep the
+        // direct `map_h` call.
+        //
+        // Both are total: a value that cannot be a key is not one the map
+        // holds, so the answer is `false` rather than a raise. Building a key
+        // still refuses — `m.set(1.5, x)` says so.
+        //
+        // The `Maybe` carriers are here because that is what iterating a typed
+        // list hands you: the element read is bounds-checked, so `for w in
+        // words { m.has(w) }` — the ordinary way to write it — arrives as
+        // `maybe<str>` and matched none of these. Boxing preserves the absent
+        // case as nil, which the map answers `false` for, exactly as the
+        // interpreter does.
+        (
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 | Ty::Dyn,
+            "has",
+            [
+                (
+                    key,
+                    kty @ (Ty::Dyn
+                    | Ty::I64
+                    | Ty::F64
+                    | Ty::Bool
+                    | Ty::Nil
+                    | Ty::MaybeI64
+                    | Ty::MaybeF64
+                    | Ty::MaybeStr
+                    | Ty::MaybeBool),
+                ),
+            ],
+        ) => {
+            let map = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed = to_dyn(ssa, insts, *key, *kty, pc)?;
+            let found = ssa.new_val();
             insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_skip"),
-                args: vec![receiver, *n],
+                dst: Some(found),
+                callee: AbiRef::new("dyn", "contains"),
+                args: vec![map, boxed],
             });
-            (dst, Ty::ListI64)
-        }
-        (Ty::ListI64, "chain", [(other, Ty::ListI64)]) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_chain"),
-                args: vec![receiver, *other],
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
             });
-            (dst, Ty::ListI64)
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
         }
         (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
             let raw = ssa.new_val();
@@ -1025,24 +2430,6 @@ pub(crate) fn lower_method_dispatch(
             (b, Ty::Bool)
         }
         // `m.len()` / `xs.len()` on Dyn containers (method form of `Len`).
-        (Ty::MapStrDyn, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("map_h", "str_dyn_len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
-        (Ty::ListDyn, "len", []) => {
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", "dyn_len"),
-                args: vec![receiver],
-            });
-            (dst, Ty::I64)
-        }
         // Methods whose VM result is a mixed list regardless of the receiver
         // (chunk/enumerate/zip pairs are nested; unique/flatten come back
         // `TypedList::Mixed`): the receiver converts to a dyn-list handle up
@@ -1070,7 +2457,7 @@ pub(crate) fn lower_method_dispatch(
         (
             Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
             "zip",
-            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)],
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::Dyn)],
         ) => {
             let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
             let rhs = to_dyn_list_handle(ssa, insts, *other, args[0].1, pc)?;
@@ -1092,6 +2479,31 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
+        // `flatten` on a carrier that cannot hold a list is a copy, and that is
+        // exactly what `slice_from(0)` is. A typed list has no nesting to undo by
+        // construction, so this needs no helper of its own — and without it a
+        // program calling `.flatten()` generically fell off a cliff depending on
+        // which carrier the list happened to have, which is not a distinction any
+        // program can see.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "flatten", []) => {
+            let helper = match receiver_ty {
+                Ty::ListI64 => "i64_slice_from",
+                Ty::ListF64 => "f64_slice_from",
+                _ => "str_slice_from",
+            };
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", helper),
+                args: vec![receiver, zero],
+            });
+            (dst, receiver_ty)
+        }
         (Ty::ListDyn, "flatten", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1100,6 +2512,20 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::ListDyn)
+        }
+        // `split` is an intrinsic in the bytecode compiler, so the *method*
+        // spelling becomes `Opcode::StringSplit` and never arrives here. The
+        // module spelling does arrive, now that `string.f(s, …)` forwards like
+        // `iter.f(xs, …)` always has — same helper as the opcode lowering, so
+        // the two spellings cannot drift.
+        (Ty::Str, "split", [(sep, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "split"),
+                args: vec![receiver, *sep],
+            });
+            (dst, Ty::ListStr)
         }
         (Ty::Str, "contains", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -1180,15 +2606,116 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        // `s.find(needle)` — byte index or -1 (the VM's `str::find`).
-        (Ty::Str, "find", [(needle, Ty::Str)]) => {
+        // The read surface every sequence shares, in *characters* — the unit
+        // `len()` counts and `[i]` indexes.
+        //
+        // Only `substring(start, length)` and `find` used to lower, and both
+        // called byte-indexed helpers while the VM counted characters, so the
+        // two backends disagreed on any text with a multi-byte character in it.
+        // Those two methods are gone; these are what replaced them, and
+        // `str.slice_chars` has had the VM's exact semantics all along.
+        (Ty::Str, "index_of", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("str", "find"),
+                callee: AbiRef::new("str", "index_of"),
                 args: vec![receiver, *needle],
             });
-            (dst, Ty::I64)
+            (dst, Ty::Dyn)
+        }
+        (Ty::Str, "slice", [(start, Ty::I64)]) => {
+            let end = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(end),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, *start, end],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "slice_chars"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::Str)
+        }
+        // Not `slice_chars(s, 0, n)`: a count is not a position, so a negative
+        // one is a refusal rather than a window measured from the tail. Written
+        // that way, `"abc".take(-1)` answered `"ab"` compiled and raised
+        // interpreted — the List and Bytes carriers had guarded helpers all
+        // along, and String is the one that reused the window.
+        (Ty::Str, "take" | "skip", [(count, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", if name == "take" { "take" } else { "skip" }),
+                args: vec![receiver, *count],
+            });
+            (dst, Ty::Str)
+        }
+        // `first`/`last` are `[0]` and `[-1]`, which `char_at` already is —
+        // `s.get(i)` — the same call `first`/`last` make with a fixed index.
+        //
+        // Written as a method it reaches an *opcode* rather than this table, so
+        // this arm has one caller: `string.get(s, i)`, which forwards here. The
+        // module spelling was the one that fell back, while the method spelling
+        // it forwards to lowered — the split `string.join` documents from the
+        // other side.
+        (Ty::Str, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "char_at"),
+                args: vec![receiver, *index],
+            });
+            (dst, Ty::Dyn)
+        }
+        // including the nil an empty string answers.
+        (Ty::Str, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "char_at"),
+                args: vec![receiver, index],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `"a {} b".format(x, …)` — the receiver is the template, which makes
+        // this the same compile-time expansion `println("a {} b", x)` already
+        // does. Both go through `format_parts`, so the placeholder rules
+        // (leftover `{}` stay literal, leftover arguments append space
+        // separated) cannot drift between the two spellings.
+        //
+        // Variadic, and its arguments' types vary — the reason it was the last
+        // `string` member lowering on neither spelling. Neither matters once
+        // the expansion is static: each argument is display-converted at its
+        // own type, exactly as a `println` argument is.
+        (Ty::Str, "format", _) => {
+            // The template has to be a constant, for the same reason `println`'s
+            // does: the pieces are decided at compile time. A computed template
+            // falls back.
+            let Some(fmt) = ssa.const_str_value(receiver) else {
+                return Err(Unsupported::CallShape {
+                    pc,
+                    reason: "format needs a constant template to expand at compile time",
+                });
+            };
+            let parts = crate::lower_module::format_parts(&fmt, args, pc)?;
+            let (value, _fresh) = crate::lower_module::fold_parts_to_str(ssa, insts, globals, parts, pc)?;
+            (value, Ty::Str)
         }
         // Fresh-string unary transforms (VM core_methods semantics: `lower`/
         // `upper` are Unicode `to_lowercase`/`to_uppercase`, `reverse` is
@@ -1217,16 +2744,76 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
-        // `s.substring(start, length)` — byte-indexed in the VM (a
-        // non-boundary index aborts loudly, like the VM's panic).
-        (Ty::Str, "substring", [(start, Ty::I64), (length, Ty::I64)]) => {
+        // The transforms that used to have only a module spelling. Each calls
+        // the same `str` symbol the `string.…` row calls, so the two spellings
+        // are one implementation here as well as in the VM.
+        (Ty::Str, "capitalize" | "title", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("str", "substring"),
-                args: vec![receiver, *start, *length],
+                callee: AbiRef::new("str", if name == "capitalize" { "capitalize" } else { "title" }),
+                args: vec![receiver],
             });
             (dst, Ty::Str)
+        }
+        (Ty::Str, "strip", [(chars, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "strip"),
+                args: vec![receiver, *chars],
+            });
+            (dst, Ty::Str)
+        }
+        // The fill is optional, and its default is a space — materialized here
+        // rather than given a second ABI symbol, so both arities reach one
+        // helper. (A row per arity is how `string.replace` ended up lowering
+        // only when `all` was left out.)
+        (Ty::Str, "pad_left" | "pad_right", [(width, Ty::I64)] | [(width, Ty::I64), (_, Ty::Str)]) => {
+            let fill = match args {
+                [_, (fill, _)] => *fill,
+                _ => {
+                    let space = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: space,
+                        value: Const::Str(GlobalId(crate::prescan::intern_global(globals, " "))),
+                    });
+                    space
+                }
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", if name == "pad_left" { "pad_left" } else { "pad_right" }),
+                args: vec![receiver, *width, fill],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "count", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "count"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        // `String?`, so the carrier is Dyn — nil when the affix was not there.
+        (Ty::Str, "strip_prefix" | "strip_suffix", [(affix, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "str",
+                    if name == "strip_prefix" {
+                        "strip_prefix"
+                    } else {
+                        "strip_suffix"
+                    },
+                ),
+                args: vec![receiver, *affix],
+            });
+            (dst, Ty::Dyn)
         }
         (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -1237,8 +2824,41 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::Str)
         }
-        // `s.chars()` — the VM returns a *Mixed* list (bare-text display),
-        // so the native carrier is a dyn list, not a typed string list.
+        // `s.replace(from, to, all)` — `all: false` replaces the first
+        // occurrence alone. The runtime entry takes a count rather than a flag
+        // (negative meaning no limit), so the same call serves both and a flag
+        // that is not a literal lowers too.
+        (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str), (all, Ty::Bool)]) => {
+            let unlimited = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: unlimited,
+                value: Const::I64(-1),
+            });
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let limit = ssa.new_val();
+            insts.push(Inst::Select {
+                dst: limit,
+                cond: *all,
+                then_v: unlimited,
+                else_v: one,
+                ty: Ty::I64,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "replace_limited"),
+                args: vec![receiver, *from, *to, limit],
+            });
+            (dst, Ty::Str)
+        }
+        // `s.chars()` — a dyn list, whose display quotes its strings exactly as
+        // the VM's `TypedList::String` does. (The VM built a *Mixed* list when
+        // this was written, which printed `[a,b]` against the module spelling's
+        // `["a","b"]`; both sides say `["a","b"]` now.)
         (Ty::Str, "chars", []) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1247,6 +2867,194 @@ pub(crate) fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::ListDyn)
+        }
+        // `s.bytes()` — the string's UTF-8 bytes as a `Bytes` handle.
+        (Ty::Str, "bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_str"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        // `xs.to_bytes()` — the inverse of `b.to_list()`, and the body behind
+        // the `bytes.from_list(xs)` spelling.
+        (Ty::ListDyn, "to_bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_dyn_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::ListI64, "to_bytes", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "from_i64_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::Bytes, "to_string_utf8" | "to_string_lossy", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", if name == "to_string_utf8" { "utf8" } else { "utf8_lossy" }),
+                args: vec![receiver],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Bytes, "concat", [(other, Ty::Bytes)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "concat"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::Bytes)
+        }
+        // The `bytes` module's members are also reachable as methods.
+        (Ty::Bytes, "is_empty", []) => {
+            // Through `len == 0`, like `Set::is_empty`: the ABI answers an `i64`
+            // and a `Bool` operand has to be an i1.
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("bytes_h", "len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Bytes, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "get"),
+                args: vec![receiver, *index],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "slice", [(from, Ty::I64), (to, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "slice"),
+                args: vec![receiver, *from, *to],
+            });
+            (dst, Ty::Bytes)
+        }
+        // The rest of `Bytes`. It had a carrier and four methods, so ten of its
+        // fourteen dropped the whole module to the VM — a receiver kind that is
+        // *almost* native is the shape a coverage number cannot show.
+        //
+        // `first`/`last` are `get(0)` / `get(-1)`: the read rule already counts a
+        // negative position from the end, so they need no helper of their own.
+        (Ty::Bytes, "first" | "last", []) => {
+            let index = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: index,
+                value: Const::I64(if name == "first" { 0 } else { -1 }),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "get"),
+                args: vec![receiver, index],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "take" | "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", if name == "take" { "take" } else { "skip" }),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::Bytes, "to_list", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "to_i64_list"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        // The two pure sequence operations `Bytes` was missing while it had
+        // every other read of the list surface. `reverse` answers a `Bytes` —
+        // shape-preserving and element-type-independent, like `take`/`slice`.
+        (Ty::Bytes, "count", [(needle, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "count"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Bytes, "reverse" | "sort" | "unique", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "bytes_h",
+                    match name {
+                        "sort" => "sort",
+                        "unique" => "unique",
+                        _ => "reverse",
+                    },
+                ),
+                args: vec![receiver],
+            });
+            (dst, Ty::Bytes)
+        }
+        (Ty::Bytes, "index_of", [(needle, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("bytes_h", "index_of"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::Bytes, "contains", [(needle, Ty::I64)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("bytes_h", "contains"),
+                args: vec![receiver, *needle],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
         }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
@@ -1279,13 +3087,122 @@ pub(crate) fn lower_method_dispatch(
             };
             (dst, maybe_ty)
         }
+        // `m.get(key, default)` — the same lookup, with the absent case
+        // answered by the caller's value rather than nil. Both halves were
+        // already here (`MaybePresent` is how `has` is lowered, `MaybeValue`
+        // is how a `Maybe` reaches a phi edge); a `Select` between them is the
+        // whole method. Without it, a map read with a fallback — an ordinary
+        // way to write one — dropped the module to the VM.
+        //
+        // The result is the plain scalar, not a `Maybe`: a default is always
+        // present, so the answer cannot be nil.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str), (fallback, fallback_ty)])
+        | (Ty::MapI64I64 | Ty::MapI64F64, "get", [(key, Ty::I64), (fallback, fallback_ty)]) => {
+            let (maybe_ty, scalar_ty) = match receiver_ty {
+                Ty::MapStrF64 | Ty::MapI64F64 => (Ty::MaybeF64, Ty::F64),
+                Ty::MapStrBool => (Ty::MaybeBool, Ty::Bool),
+                _ => (Ty::MaybeI64, Ty::I64),
+            };
+            // A default of another carrier would have to widen the answer past
+            // the map's value type; that is the boxed-map question, not this
+            // one.
+            if *fallback_ty != scalar_ty {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let looked = ssa.new_val();
+            match receiver_ty {
+                Ty::MapStrF64 => insts.push(Inst::MapGetMaybeStrF64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                Ty::MapI64F64 => insts.push(Inst::MapGetMaybeI64F64 {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                Ty::MapI64I64 => insts.push(Inst::MapGetMaybeI64Key {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+                _ => insts.push(Inst::MapGetMaybe {
+                    dst: looked,
+                    handle: receiver,
+                    key: *key,
+                }),
+            }
+            // `MaybeValue` narrows a `MaybeBool`'s word to a `Bool` itself, so
+            // the extracted value is already `scalar_ty` for all of them.
+            let value = ssa.new_val();
+            insts.push(Inst::MaybeValue {
+                dst: value,
+                src: looked,
+                maybe_ty,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Select {
+                dst,
+                cond: present,
+                then_v: value,
+                else_v: *fallback,
+                ty: scalar_ty,
+            });
+            (dst, scalar_ty)
+        }
+        // `m.get(k, default)` with a key this side cannot type, or one of
+        // another kind. The typed arm above needs the carrier's own key type;
+        // this reaches the runtime's keyed lookup, which is total for a key
+        // kind the map simply does not hold and raises — with the
+        // interpreter's own `map.get() key:` prefix — for a kind that is not a
+        // key at all. A stored nil answers the default, because the
+        // interpreter cannot tell it from an absent key either.
+        (
+            Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn | Ty::MapI64I64 | Ty::MapI64F64 | Ty::Dyn,
+            "get",
+            [(key, kty), (fallback, fty)],
+        ) if !matches!(
+            (receiver_ty, kty),
+            (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, Ty::Str) | (Ty::MapI64I64 | Ty::MapI64F64, Ty::I64)
+        ) =>
+        {
+            let map = to_dyn(ssa, insts, receiver, receiver_ty, pc)?;
+            let boxed_key = to_dyn(ssa, insts, *key, *kty, pc)?;
+            let boxed_default = to_dyn(ssa, insts, *fallback, *fty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "map_get_or"),
+                args: vec![map, boxed_key, boxed_default],
+            });
+            (dst, Ty::Dyn)
+        }
         // `m.set(key, value)` on string-keyed maps.
+        //
+        // A bool map rides the `str_i64` carrier, so its value crosses as the
+        // word — and it arrives as a `Bool`, the narrower machine type, which
+        // has to be widened. Only `Ty::I64` was accepted here, so
+        // `m.set(k, true)` on a `Map<String, Bool>` dropped the module to the
+        // VM.
         (Ty::MapStrI64, "set", [(key, Ty::Str), (value, Ty::I64)])
-        | (Ty::MapStrBool, "set", [(key, Ty::Str), (value, Ty::I64)]) => {
+        | (Ty::MapStrBool, "set", [(key, Ty::Str), (value, Ty::I64 | Ty::Bool)]) => {
+            let value = if args.get(1).map(|(_, ty)| *ty) == Some(Ty::Bool) {
+                let wide = ssa.new_val();
+                insts.push(Inst::ZextBool { dst: wide, src: *value });
+                wide
+            } else {
+                *value
+            };
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("map_h", "str_i64_set"),
-                args: vec![receiver, *key, *value],
+                args: vec![receiver, *key, value],
             });
             let nil = ssa.new_val();
             insts.push(Inst::Const {
@@ -1308,6 +3225,109 @@ pub(crate) fn lower_method_dispatch(
             (nil, Ty::Nil)
         }
         // `xs.contains(v)` on typed lists (fcmp semantics for f64, like the VM).
+        // `index_of` on an int list. The VM has it on every sequence; here it
+        // existed only on `Str`, so `[1,2,3].index_of(2)` dropped its module to
+        // the VM — same answer, just slower, which is the kind of gap neither
+        // the differential corpus nor the coverage gate can see.
+        //
+        // One arm per carrier, and each takes exactly the needle its `contains`
+        // takes — in the VM both answer through one `typed_list_position`, so a
+        // carrier that accepts a needle for `contains` and refuses it here would
+        // make `xs.contains(v)` and `xs.index_of(v) != nil` disagree about which
+        // programs lower.
+        (Ty::ListI64, "index_of", [(v, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_index_of"),
+                args: vec![receiver, *v],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListF64, "index_of", [(needle, Ty::F64 | Ty::I64)]) => {
+            let needle = coerce_to_f64(ssa, insts, *needle, args[0].1);
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "f64_index_of"),
+                args: vec![receiver, needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListStr, "index_of", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_index_of"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::Dyn)
+        }
+        (Ty::ListDyn, "index_of", [(needle, nty)]) => {
+            let boxed = to_dyn(ssa, insts, *needle, *nty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_index_of"),
+                args: vec![receiver, boxed],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `xs.contains(s)` on a string list. `str_contains` was declared in the
+        // ABI and reached only from the `in` operator, so `"a" in xs` lowered and
+        // `xs.contains("a")` did not — two spellings of one question, and the
+        // comment above these arms states the invariant that breaks: a carrier
+        // whose `index_of` lowers and whose `contains` does not makes
+        // `xs.contains(v)` and `xs.index_of(v) != nil` disagree about which
+        // programs stay native.
+        (Ty::ListStr, "contains", [(v, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_contains"),
+                args: vec![receiver, *v],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: dst,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // An `f64` needle against an `i64` list: `1.5 in [1, 2]` is false and
+        // `1.0 in [1, 2]` is true, because the two compare as numbers. The ABI
+        // has carried this helper for a while with nothing calling it — the
+        // shape was unreachable while the checker refused `[1, 2].contains(1.5)`.
+        (Ty::ListI64, "contains", [(v, Ty::F64)]) => {
+            let found = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(found),
+                callee: AbiRef::new("list_h", "i64_contains_f64"),
+                args: vec![receiver, *v],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: found,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
         (Ty::ListI64, "contains", [(v, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -1330,9 +3350,129 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        // No method of that name on that receiver — but a map's entry or a
+        // struct's field may *hold* a callable, which the interpreter calls
+        // (`CallMethodK`'s callable-property path). `m["inc"](3)` and `h.f(2)`
+        // are that, and they used to be the one spelling of a closure value
+        // that did not lower: `let f = m["inc"]; f(3);` did, so one meaning had
+        // a fast form and a slow one.
+        //
+        // Only after every real method arm has declined, so nothing here can
+        // shadow a method.
+        // A *boxed* receiver is deliberately not here. Its runtime type decides
+        // which method it is — `c.name.upper()` reads a struct field, so the
+        // receiver types `Dyn` and the interpreter dispatches `upper` on the
+        // String it holds. Taking the property path instead answered "a Map has
+        // no method `upper`" for a string that has one. The arm used to name an
+        // ABI function that does not exist, so the module failed MIR validation
+        // and every such program fell back — which hid the error and made the
+        // whole module unlowerable rather than this one call.
+        (Ty::MapStrDyn, _, _) => {
+            let key = materialize_key(ssa, insts, globals, name);
+            let property = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(property),
+                callee: AbiRef::new("map_h", "str_dyn_get"),
+                args: vec![receiver, key],
+            });
+            let block_v = if args.is_empty() {
+                let null = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: null,
+                    value: Const::I64(0),
+                });
+                null
+            } else {
+                let b = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(b),
+                    callee: AbiRef::new("rt", "spawn_args_new"),
+                    args: Vec::new(),
+                });
+                for &(v, ty) in args {
+                    let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "spawn_args_push"),
+                        args: vec![b, boxed],
+                    });
+                }
+                b
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("rt", "closure_call_property"),
+                args: vec![property, block_v, key],
+            });
+            (dst, Ty::Dyn)
+        }
+        _ if map_missing_method => {
+            // This shape reaches lowering only when the static checker cannot
+            // prove the empty/mixed map's method surface. The interpreter raises
+            // before inspecting the argument, so native code must do the same.
+            // Emitting a raise also lets an enclosing native `try` catch it;
+            // refusing the region body here made codegen see a dangling
+            // `TryRegionCall` target.
+            let text = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: text,
+                value: Const::Str(GlobalId(crate::prescan::intern_global(
+                    globals,
+                    &format!(
+                        "a Map has no method `{name}`, and this map has no key `{name}` holding a function either"
+                    ),
+                ))),
+            });
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "raise_msg"),
+                args: vec![text],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
+        }
+        _ => {
+            return Err(Unsupported::UnsupportedMethod {
+                pc,
+                method: name.to_string(),
+                receiver: lk_aot_mir::ty_name(receiver_ty),
+                args: args.iter().map(|(_, ty)| lk_aot_mir::ty_name(*ty)).collect(),
+            });
+        }
     };
     let _ = globals;
     let _ = block;
     Ok(result)
+}
+
+/// The runtime helper that empties a container of this type, when there is one.
+///
+/// The *answer* to `clear()` is not here: it is the receiver, for every
+/// container, and the single arm that calls this says so once.
+fn clear_helper(receiver_ty: Ty) -> Option<(&'static str, &'static str)> {
+    let helper = match receiver_ty {
+        Ty::ListI64 => ("list_h", "i64_clear"),
+        Ty::ListF64 => ("list_h", "f64_clear"),
+        Ty::ListStr => ("list_h", "str_clear"),
+        Ty::ListDyn => ("list_h", "dyn_clear"),
+        // `Map<str, bool>` rides the `str_i64` carrier.
+        Ty::MapStrI64 | Ty::MapStrBool => ("map_h", "str_i64_clear"),
+        Ty::MapStrF64 => ("map_h", "str_f64_clear"),
+        Ty::MapStrDyn => ("map_h", "str_dyn_clear"),
+        Ty::MapI64I64 => ("map_h", "i64_i64_clear"),
+        Ty::MapI64F64 => ("map_h", "i64_f64_clear"),
+        Ty::Set => ("set", "clear"),
+        // A boxed receiver: the tag says which carrier. Reached when the same
+        // container name meets two carriers — `fn empty(c) { c.clear(); }`
+        // called with a `Map<String, Int>` and a `Map<String, Float>` — which
+        // is a `Dyn` and had no arm at all.
+        Ty::Dyn => ("dyn", "clear"),
+        _ => return None,
+    };
+    Some(helper)
 }

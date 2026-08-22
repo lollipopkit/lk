@@ -101,12 +101,23 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
                 }
             }
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body, .. } => {
             let mut nested_bound = bound.clone();
             nested_bound.extend(params.iter().cloned());
             collect_expr_free_vars(body, &mut nested_bound, free);
         }
         Expr::Block(statements) => collect_stmt_free_vars(statements, bound, free),
+        Expr::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
+            collect_stmt_free_vars(body, &mut bound.clone(), free);
+            // The handler's error binding is its own, so it is not free there.
+            let mut handler_bound = bound.clone();
+            handler_bound.insert(catch_var.clone());
+            collect_stmt_free_vars(handler, &mut handler_bound, free);
+        }
         Expr::Match { value, arms } => {
             collect_expr_free_vars(value, bound, free);
             for arm in arms {
@@ -122,15 +133,17 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
 fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>, free: &mut Vec<String>) {
     for stmt in statements {
         match stmt.as_ref() {
-            Stmt::Attributed { item, .. } => collect_single_stmt_free_vars(item, bound, free),
-            Stmt::Expr(expr) => collect_expr_free_vars(expr, bound, free),
+            Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
+                collect_single_stmt_free_vars(item, bound, free)
+            }
+            Stmt::Expr { value: expr, .. } => collect_expr_free_vars(expr, bound, free),
             Stmt::Return { value: Some(value) } => collect_expr_free_vars(value, bound, free),
             Stmt::Return { value: None } | Stmt::Empty | Stmt::Break | Stmt::Continue => {}
             Stmt::Let { pattern, value, .. } => {
                 collect_expr_free_vars(value, bound, free);
                 collect_pattern_bound_vars(pattern, bound);
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 collect_expr_free_vars(value, bound, free);
                 bound.insert(name.clone());
             }
@@ -184,16 +197,6 @@ fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>,
                 let mut body_bound = bound.clone();
                 collect_for_pattern_bound_vars(pattern, &mut body_bound);
                 collect_single_stmt_free_vars(body, &mut body_bound, free);
-            }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                collect_stmt_free_vars(body, &mut bound.clone(), free);
-                let mut handler_bound = bound.clone();
-                handler_bound.insert(catch_var.clone());
-                collect_stmt_free_vars(handler, &mut handler_bound, free);
             }
             Stmt::Block { statements } => collect_stmt_free_vars(statements, &mut bound.clone(), free),
             Stmt::Function { name, .. } => {
@@ -328,7 +331,7 @@ pub(super) fn collect_stmt_closure_captures(stmt: &Stmt, out: &mut Vec<String>) 
             collect_expr_closure_captures(iterable, out);
             collect_stmt_closure_captures(body, out);
         }
-        Stmt::Expr(expr) => collect_expr_closure_captures(expr, out),
+        Stmt::Expr { value: expr, .. } => collect_expr_closure_captures(expr, out),
         Stmt::Return { value: Some(value) } => collect_expr_closure_captures(value, out),
         Stmt::Return { value: None } => {}
         // A nested `fn` captures nothing from locals (functions are compiled
@@ -405,6 +408,11 @@ pub(super) fn collect_expr_closure_captures(expr: &Expr, out: &mut Vec<String>) 
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_stmt_closure_captures(stmt, out);
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_stmt_closure_captures(stmt, out);
             }
         }

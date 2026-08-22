@@ -31,7 +31,7 @@ unless!(x == 9 {
 
 | kind | 匹配 |
 |------|------|
-| `expr` | 表达式 |
+| `expr` | 表达式,**包括另一个宏调用**(`twice!(twice!(1))`) |
 | `stmt` | 语句 |
 | `block` | `{ ... }` 块 |
 | `item` | 顶层项(fn/struct/…) |
@@ -41,6 +41,18 @@ unless!(x == 9 {
 | `pat` | 模式 |
 | `ty` | 类型 |
 | `path` | 路径 |
+
+`expr` 收得下宏调用是 2026-07-30 补的。展开是 token 级的,捕获那一刻内层调用
+还是 `Id ! ( … )` —— 表达式解析器不认这个形状,于是匹配器答"expected `expr`
+fragment"。而**组合**几乎就是宏存在的理由。现在它按语言自己的规则识别
+(`name!` 紧跟 `(`/`[`/`{`,与 force unwrap 的区分规则同一条),整个平衡的
+定界组当作一个 fragment 捕获,substitute 之后由后续轮次展开 —— 和其它宏输出
+一样。
+
+宏**可以定义宏**。展开是"先收集定义、再展开调用",而展开*产生*的
+`macro_rules!` 不在收集那一趟读到的输入里 —— 所以这一步会重复多轮,直到某一轮
+不再产出新定义(上限 8 层,防不终止)。不做嵌套定义的程序在第一轮就停,一分
+钱不花。
 
 fragment 之后允许跟随的 token 受 follow-set 约束
 (`core/src/macro_system/follow.rs`),非法组合在宏**定义**时报错,不会
@@ -54,12 +66,84 @@ fragment 之后允许跟随的 token 受 follow-set 约束
 - 模板中元变量的重复深度必须与 matcher 一致
   (`core/src/macro_system/validation.rs` 在定义时校验)。
 
+### 模板串里的宏
+
+模板串的 `${…}` 洞里可以写宏调用,也可以写元变量,两者还能嵌套:
+
+```lk
+macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+macro_rules! show {
+    ($label:expr, $e:expr) => { "${$label} = ${twice!($e)}" };
+}
+show!("total", 21)   // "total = 42"
+```
+
+只有 `${…}` 内部被改写。字面量部分的 `$e` 就是 `$` 和 `e` 两个字符 ——
+和宏外面的 `"$e"` 一样;洞里引用未定义的元变量是错误,不会静默留下。
+
+这曾经是个洞:模板串对 token 级展开器是**一个 token**,内部文本要到解析期
+才被重新切分。于是 `"${twice!(3)}"` 报"no macro named `twice` is defined"
+(而它就定义在上面),`"${$e}"` 报 `Unexpected token: Dollar`。切分器现在只有
+一份(`token::split_template_string`),解析器和展开器共用。
+
 ### 卫生(hygiene)
 
 宏体内引入的绑定不会捕获/污染调用点同名变量(`core/src/macro_system/
 hygiene.rs`);展开产物中的控制流、参数名、语义名各有针对性的保护面
 (见 `hygiene_tests/`)。`$crate` 锚在定义时解析为定义方的绝对包名
 (`runtime_anchor.rs`),跨包展开不会错绑。
+
+反过来的方向**没有**保护,和 Rust 的 `macro_rules!` 一样:宏体里一个自由标识符
+在**调用点**解析。
+
+```lk
+macro_rules! dbl  { ($e:expr) => { { let tmp = 100; ($e) + ($e) } }; }
+macro_rules! addx { ($e:expr) => { ($e) + x }; }
+
+let tmp = 1;  println(dbl!(tmp));    // 2  —— 实参里的 tmp 是调用方的,没被宏体遮住
+let x = 10;   println(addx!(5));     // 15 —— 宏体里的自由 x 就是调用方的 x
+```
+
+两条合起来就是这个系统的全部保证:**宏放进来的名字不会撞出去,宏用到的名字在你这边
+解析**。所以一个引用自由名字的宏是在对调用点提要求,跨文件导入时那个要求也跟着走 ——
+要么用元变量把名字接进来,要么让它是一个函数/常量(那些按定义处解析)。
+
+## 内部规则与 `@`
+
+声明宏没有累加器,只有模式匹配。要把一串宽度加成偏移,做法是一条**调用自己**的规则,
+把running 的总和放在自己的参数表里带着走 —— 而那条规则不能被调用方够到,否则
+`layout! { A: 8 }` 会匹配上它。
+
+标记它的是 `@`,和 Rust 一样,理由也一样:它在 token 流里合法,在任何一个人会手写的
+位置上都不合法。这门语言此前没给 `@` 任何含义,这正是它合适的原因。
+
+```lk
+export macro_rules! layout {
+    // 一段的结尾:累加出来的偏移*就是*大小,所以它不可能和上面的字段不一致
+    (@from $prev:expr, => $size:ident) => {
+        const $size = $prev;
+    };
+    // 一个字段从这一段走到的地方开始,然后这一段前进它的宽度
+    (@from $prev:expr, $name:ident : $width:expr, $($rest:tt)*) => {
+        const $name = $prev;
+        layout!(@from ($prev) + ($width), $($rest)*);
+    };
+    // 调用方写的形式
+    ($($body:tt)*) => {
+        layout!(@from 0, $($body)*);
+    };
+}
+
+layout! {
+    ETH_DEST: 6,
+    ETH_SOURCE: 6,
+    ETH_TYPE: 2,
+    => ETH_HEADER_SIZE      // 14,不是 3 个机器字
+}
+```
+
+宏外面的 `@` 仍然是错误 —— 一个语法错误而不是词法错误,同一个答案配一条更好的消息。
+完整例子见 `examples/syntax/macro_internal_rules.lk`。
 
 ## 宏导入与导出
 
@@ -72,11 +156,28 @@ use { pkg_macro } from some_package;            // 包导入(Lk.toml 依赖)
 use * as m from macros;                          // 命名空间导入:m::vec![1, 2]
 ```
 
-- 定义处需 `export macro_rules! name { ... }` 才可被导入;
+- 定义处需 `export macro_rules! name { ... }` 才可被导入;`export` **只**用在这里
+  (另一个含义是属性 `#[export]`,给原生链接命名符号)。顶层的 `fn` / `struct` /
+  `const` / `type` **不需要**导出,直接 `use { name } from module;` 就能拿到 ——
+  写成 `export fn` 会被点名拒绝,消息里说明这三种含义;
   `pub use { name } from "path";`(可 `as` 改名)做再导出。
 - **内建 `macros` 模块**(`core/src/macro_system/imports.rs`
   `BUILTIN_MACRO_SOURCE`)提供 8 个宏:`vec!`、`assert!`、`assert_eq!`、
   `assert_ne!`、`matches!`、`panic!`、`todo!`、`unreachable!`。
+
+## REPL 里的宏(2026-08-21)
+
+宏在**解析期**展开,而 REPL 把每次输入当作独立源文本解析。因此定义和导入
+都只在当前这一次输入内有效——`macro_rules! m { … }` 被静默接受,下一行的
+`m!()` 报 "no macro named `m` is defined";`use { vec } from macros;` 单独
+成行时,内建模块在 REPL 中完全不可用。同一次输入内(写在一行)则正常。
+`fn`、`struct`、`impl`、`let` 都是跨输入保留的,只有宏不是。
+
+现在 `ParseOptions::carried_macro_definitions` 把上一次展开收集到的定义带入
+下一次解析,REPL 在每次输入**执行成功后**记录(失败则不记录,与其他会话状态
+的"要么整体生效、要么完全不生效"一致)。重复定义同名宏时,本次输入的定义
+胜出——否则会撞上 "already defined in this macro scope",而这个名字正是上一
+行刚被告知不存在的那个。
 
 ## 属性与条件编译
 
@@ -132,3 +233,34 @@ lk macro expand FILE.lk --feature X  # 开启 cfg feature(可重复)
   `#[derive(Debug)]` 整对象插值、`#[cfg]` 函数选择)。
 - provider 协议/信任模型细节:[docs/packages.md](packages.md);
   错误文本与展开语义边界:[docs/semantics.md](semantics.md)。
+
+## 展开是一个表达式,不是一串 token(2026-08-21)
+
+声明宏的输出按 token 拼接进调用点,所以它的各部分会和**周围**结合,而不是彼此
+结合:
+
+```lk
+macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+let n = 3;
+twice!(n)          // 6      —— 没有东西可结合,对了
+twice!(n) * 2      // 修复前 9,即 `n + n * 2`
+2 * twice!(n)      // 修复前 9
+"v=" + twice!(n)   // 修复前 "v=33"
+```
+
+修复:落在**表达式位置**的展开加一层括号。两个条件缺一不可——调用点要的是表达式
+(语句位置只有 `;`、`{`、`}` 和流的开头这四种,其余都是表达式位置),并且展开本身
+是**一个**表达式(顶层出现 `;` 就说明不是,`swap_two!` 展开成三条语句,必须还是
+三条)。
+
+## `$e:expr` 停在嵌套的宏调用上(2026-08-21)
+
+`twice!(n)` 能作为 `$e:expr` 捕获,`twice!(n) * 2` 不能——报
+"matched a prefix but left unexpected `*`"。原因是捕获遇到宏调用时把**整个调用**
+当成片段直接返回,不再往下看。
+
+表达式解析器不认识 `name!(…)`(这个形式只在宏展开前存在),所以现在把每个宏调用
+折叠成一个标识符,让**真正的**解析器去决定表达式在哪里结束,再按折叠前的长度换算
+回去。捕获到的仍然是原始 token,下一轮照常展开。
+
+两条都钉在 `examples/syntax/macros.lk` 里。

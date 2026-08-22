@@ -2,6 +2,7 @@
 use crate::compat::prelude::*;
 use core::ops::Range;
 
+use alloc::borrow::Cow;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
@@ -131,7 +132,7 @@ impl Executor {
         let callee = *self
             .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
         let RuntimeVal::Obj(handle) = callee else {
-            bail!("CallNamed callee is not callable");
+            bail!("this value is not a function");
         };
         let callable = callable_target(
             known_target_kind,
@@ -139,7 +140,7 @@ impl Executor {
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-            "CallNamed callee is not callable",
+            "this value is not a function",
         )?;
         match callable {
             CallableTarget::RuntimeNative { arity, function } => {
@@ -151,7 +152,7 @@ impl Executor {
                     );
                 }
                 let native = NativeEntry {
-                    name: "<runtime-native>".to_string(),
+                    name: Cow::Borrowed("<runtime-native>"),
                     arity,
                     function,
                 };
@@ -206,12 +207,15 @@ impl Executor {
                     .functions
                     .get(function_index as usize)
                     .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-                self.push_call_frame_named(function_index, function, captures, window, named_count)?;
+                self.push_call_frame_named(function_index, function, Some(captures), window, named_count)?;
                 Ok(CallOutcome::Pushed(function_index))
             }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
+                // Same as the positional path: only the executor can say which
+                // module a function among these arguments came from.
+                let caller_module = self.shared_module.clone();
                 let result = runtime_callable::call_runtime_callable_runtime_named_stack(
                     function.as_ref(),
                     &self.state.stack[args],
@@ -219,6 +223,7 @@ impl Executor {
                     named_start,
                     named_count,
                     &mut self.state.heap,
+                    caller_module.as_ref(),
                     ctx.as_deref_mut(),
                 );
                 result

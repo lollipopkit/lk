@@ -6,9 +6,9 @@ use crate::{
     ast::Parser as ExprParser,
     expr::Expr,
     macro_system::{
-        AstMacroOrigin, MacroExpandOptions, MacroTokenOrigin, MacroTrace, ProcMacroDependency,
-        ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders, expand_ast_macros_with_metadata,
-        expand_macros,
+        AstMacroOrigin, MacroDefinitions, MacroExpandOptions, MacroTokenOrigin, MacroTrace, PackageMacroModuleResolver,
+        ProcMacroDependency, ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders,
+        expand_ast_macros_with_metadata, expand_macros,
     },
     stmt::{Program, StmtParser},
     token::{ParseError, Token, Tokenizer},
@@ -24,6 +24,16 @@ pub struct ParseOptions {
     pub base_dir: Option<PathBuf>,
     pub macro_features: Vec<String>,
     pub proc_macro_providers: ProcMacroProviders,
+    /// How a package-named macro import finds its module — see
+    /// [`PackageMacroModuleResolver`]. Defaulted to the package manager's own
+    /// lookup, which is what makes this the *only* place the two meet.
+    pub package_macro_resolver: Option<PackageMacroModuleResolver>,
+    /// `macro_rules!` definitions from an earlier parse to keep in scope.
+    ///
+    /// Empty for a single-shot compile, where a source text carries its own
+    /// definitions. A REPL parses each input separately and so must carry them
+    /// itself, or a macro stops existing at the end of the line that defined it.
+    pub carried_macro_definitions: MacroDefinitions,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +43,9 @@ pub struct SourceExpansion {
     pub origins: Vec<MacroTokenOrigin>,
     pub trace: Vec<MacroTrace>,
     pub proc_macro_dependencies: Vec<ProcMacroDependency>,
+    /// What this source defined, for a caller that parses again and wants the
+    /// definitions still in scope — see [`ParseOptions::carried_macro_definitions`].
+    pub macro_definitions: MacroDefinitions,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +66,11 @@ impl Default for ParseOptions {
             base_dir: None,
             macro_features: Vec::new(),
             proc_macro_providers: ProcMacroProviders::default(),
+            #[cfg(feature = "std")]
+            package_macro_resolver: Some(crate::package::macro_module_root),
+            #[cfg(not(feature = "std"))]
+            package_macro_resolver: None,
+            carried_macro_definitions: MacroDefinitions::default(),
         }
     }
 }
@@ -75,12 +93,26 @@ pub fn expand_program_source(source: &str, options: ParseOptions) -> Result<Prog
     let parsed_program = parser
         .parse_program_with_enhanced_errors(source)
         .map_err(|error| enrich_parse_error_with_macro_origins(error, &source_expansion))?;
-    let (program, ast_macro_origins) = if expand_ast {
+    let (mut program, ast_macro_origins) = if expand_ast {
         let expanded = expand_ast_macros_with_metadata(parsed_program.clone(), proc_macro_options)?;
         (expanded.program, expanded.origins)
     } else {
         (parsed_program.clone(), Vec::new())
     };
+    // `defer` is erased here, after macros and before everything else.
+    //
+    // After macros because a macro may expand to one; before everything else
+    // because nothing downstream should know it existed. It is a rewrite of the
+    // program's *shape*, not a runtime mechanism — see `stmt::defer`.
+    crate::stmt::defer::desugar_defers(&mut program.statements).map_err(ParseError::new)?;
+    // A trait's default method bodies are copied into the impls that left them
+    // out — here, for the same reason `defer` is erased here: after macros
+    // (which may write a trait or an impl) and before anything that dispatches.
+    crate::stmt::trait_defaults::apply_trait_defaults(&mut program.statements);
+    // A constructor beside every `struct`, so the module that owns a type is
+    // the one that builds it — see `stmt::struct_ctors` for why that is the
+    // whole trick.
+    crate::stmt::struct_ctors::add_struct_constructors(&mut program.statements).map_err(ParseError::new)?;
     Ok(ProgramExpansion {
         ast_expanded: program != parsed_program,
         source: source_expansion,
@@ -115,6 +147,7 @@ fn expand_source_with_recorder(
             origins: Vec::new(),
             trace: Vec::new(),
             proc_macro_dependencies: Vec::new(),
+            macro_definitions: MacroDefinitions::default(),
         });
     }
     let expanded = expand_macros(
@@ -124,9 +157,11 @@ fn expand_source_with_recorder(
             recursion_limit: options.recursion_limit,
             trace: options.macro_trace,
             base_dir: options.base_dir,
+            package_macro_resolver: options.package_macro_resolver,
             proc_macro_providers: options.proc_macro_providers,
             proc_macro_features: options.macro_features,
             proc_macro_dependency_recorder: dependency_recorder.clone(),
+            carried_definitions: options.carried_macro_definitions,
         },
     )?;
     Ok(SourceExpansion {
@@ -135,6 +170,7 @@ fn expand_source_with_recorder(
         origins: expanded.origins,
         trace: expanded.trace,
         proc_macro_dependencies: expanded.proc_macro_dependencies,
+        macro_definitions: expanded.definitions,
     })
 }
 
@@ -172,9 +208,19 @@ pub fn type_error_span(
     tokens: &[Token],
     spans: &[crate::token::Span],
 ) -> Option<crate::token::Span> {
-    let type_error = err.downcast_ref::<typ::TypeError>()?;
-    let expr = type_error.expr.as_ref()?;
-    span_for_expr(expr, tokens, spans)
+    typed_error_span(err.downcast_ref::<typ::TypeError>()?, tokens, spans)
+}
+
+/// The span of a type error that has already been unwrapped from `anyhow`.
+///
+/// A tool that caches type errors cannot keep the `anyhow::Error` — it is not
+/// `Clone` — but `TypeError` is, and this is all the span lookup ever needed.
+pub fn typed_error_span(
+    type_error: &typ::TypeError,
+    tokens: &[Token],
+    spans: &[crate::token::Span],
+) -> Option<crate::token::Span> {
+    span_for_expr(type_error.expr.as_ref()?, tokens, spans)
 }
 
 fn format_macro_origin_stack(origin: &MacroTokenOrigin) -> String {
@@ -210,11 +256,12 @@ fn span_for_literal(value: &LiteralVal, tokens: &[Token], spans: &[crate::token:
             spans,
             |token| matches!(token, Token::Str(lit) if Some(lit.as_str()) == value.as_str()),
         ),
-        LiteralVal::Int(expected) => find_token_span(
-            tokens,
-            spans,
-            |token| matches!(token, Token::Int(actual) if actual == expected),
-        ),
+        LiteralVal::Int(expected) => find_token_span(tokens, spans, |token| {
+            matches!(token, Token::Int(actual) if actual == expected)
+                    // The bit-pattern spelling of the same carrier: the AST kept
+                    // the `i64`, so this is the token it came from.
+                    || matches!(token, Token::UInt { value, .. } if *value as i64 == *expected)
+        }),
         LiteralVal::Float(expected) => find_token_span(
             tokens,
             spans,
@@ -251,18 +298,54 @@ fn origin_for_span<'a>(origins: &'a [MacroTokenOrigin], span: &crate::token::Spa
     })
 }
 
+/// Render a token stream back to source, one statement per line.
+///
+/// The line breaks are the point. `lk macro expand` exists to be *read* — it is
+/// the debugging tool `docs/macros.md` points at — and it used to answer with
+/// the whole program on a single line: a 78-line example came back as one
+/// 832-character line. Nothing downstream could help either, because `lk fmt`
+/// is a line re-indenter and there was one line.
+///
+/// Two breaks, both exact rather than guessed:
+///
+/// - after `;`, which ends a statement in this language and nothing else;
+/// - after a `}` whose *next* token starts a declaration. A `}` alone is not a
+///   break — `let m = {"a": 1};` would gain one before its own semicolon — so
+///   the following token decides.
 pub fn render_tokens(tokens: &[Token]) -> String {
     let mut output = String::new();
     let mut prev: Option<&Token> = None;
-    for token in tokens {
+    for (index, token) in tokens.iter().enumerate() {
         let lexeme = token_lexeme(token);
-        if should_insert_space(prev, token) {
+        if output.ends_with('\n') {
+            // A fresh line owns its indentation; `lk fmt` supplies the rest.
+        } else if breaks_line_after(prev, token, tokens.get(index + 1)) {
+            output.push('\n');
+        } else if should_insert_space(prev, token) {
             output.push(' ');
         }
         output.push_str(&lexeme);
         prev = Some(token);
     }
     output
+}
+
+/// Does a line end *before* `token`?
+fn breaks_line_after(prev: Option<&Token>, token: &Token, _next: Option<&Token>) -> bool {
+    match prev {
+        Some(Token::Semicolon) => true,
+        Some(Token::RBrace) => starts_declaration(token),
+        _ => false,
+    }
+}
+
+/// Tokens that can only begin a new top-level item, so a `}` before one is the
+/// end of the previous item rather than part of an expression.
+fn starts_declaration(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Fn | Token::Let | Token::Struct | Token::Impl | Token::Trait | Token::Use | Token::Hash
+    )
 }
 
 pub fn render_program(program: &Program) -> String {
@@ -307,4 +390,49 @@ fn should_insert_space(prev: Option<&Token>, current: &Token) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod render_test {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
+
+    use super::{ParseOptions, render_tokens, tokenize_and_expand};
+
+    /// The expansion comes back one statement per line.
+    ///
+    /// `lk macro expand` is the tool `docs/macros.md` points at for reading
+    /// what a macro produced, and it used to answer with the whole program on
+    /// one line — a 78-line example came back as a single 832-character line.
+    /// Nothing downstream could help either: `lk fmt` is a line re-indenter,
+    /// and there was one line.
+    #[test]
+    fn rendered_tokens_are_one_statement_per_line() {
+        let source = "fn a() -> Int { return 1; }\nfn b() -> Int { return a() + 1; }\nlet c = b();\n";
+        let (tokens, _) = tokenize_and_expand(source, ParseOptions::default()).expect("expand");
+        assert_eq!(
+            render_tokens(&tokens).lines().collect::<Vec<_>>(),
+            vec![
+                "fn a () -> Int {return 1;",
+                "}",
+                "fn b () -> Int {return a () + 1;",
+                "}",
+                "let c = b ();"
+            ]
+        );
+    }
+
+    /// A `}` that closes a map literal is not the end of a statement.
+    ///
+    /// Breaking on every `}` would put the `;` of `let m = {"a": 1};` on a line
+    /// of its own, which is why the *next* token decides.
+    #[test]
+    fn a_map_literals_brace_does_not_end_a_line() {
+        let source = "let m = {\"a\": 1};\nlet n = 2;\n";
+        let (tokens, _) = tokenize_and_expand(source, ParseOptions::default()).expect("expand");
+        assert_eq!(
+            render_tokens(&tokens).lines().collect::<Vec<_>>(),
+            vec!["let m = {\"a\" : 1};", "let n = 2;"]
+        );
+    }
 }

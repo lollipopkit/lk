@@ -1,0 +1,68 @@
+// A raise crossing a task boundary keeps its payload, and every map
+// representation crosses a channel.
+//
+// Same question as cross_module_raise.lk, one boundary further out. A task runs
+// against a heap of its own and its *result* travels as a value plus the heap it
+// lives in, so the awaiting side can copy it. A raise had no such carrier: the
+// error propagated with a bare handle and the task's heap was gone by the time
+// anyone read it, so `error([1, 2, 3])` inside `spawn` came back as whatever
+// object now sat at that index — `<native fn println(...)>`, with no error
+// reported at all.
+//
+// The native build failed differently and for a second reason: a map whose
+// values are all Int is a typed carrier rather than a boxed map, and the
+// channel copy only knew the boxed one. `send(c, {"code": 7})` answered "value
+// cannot cross a channel" while the interpreter sent it.
+//
+// Run from project root: lk examples/syntax/cross_task_raise.lk
+
+use task;
+
+// --- a raise out of a task, by payload representation ---
+let int_task = spawn(|| { error(42); return 0; });
+try { task.await(int_task); } catch e { assert(e == 42); }
+
+let short_task = spawn(|| { error("ab"); return 0; });
+try { task.await(short_task); } catch e { assert(e == "ab"); }
+
+let text_task = spawn(|| { error("a sufficiently long heap-allocated payload"); return 0; });
+try { task.await(text_task); } catch e { assert(e == "a sufficiently long heap-allocated payload"); }
+
+let list_task = spawn(|| { error([1, 2, 3]); return 0; });
+try { task.await(list_task); } catch e { assert(e == [1, 2, 3]); }
+
+// All-Int values: the typed map carrier, which is the case that failed twice.
+let map_task = spawn(|| { error({"code": 7, "line": 9}); return 0; });
+try { task.await(map_task); } catch e { assert(e["code"] == 7); }
+
+let mixed_task = spawn(|| { error({"code": 7, "what": "bad"}); return 0; });
+try { task.await(mixed_task); } catch e { assert(e["what"] == "bad"); }
+
+let nested_task = spawn(|| { error({"rows": [[1, 2], [3]]}); return 0; });
+try { task.await(nested_task); } catch e { assert(e["rows"][0][1] == 2); }
+
+// --- a value of every map representation, over a channel ---
+struct Point { p: Int }
+let c = chan(4);
+
+send(c, {"code": 7});
+assert(recv(c)["code"] == 7);
+
+send(c, {"name": "x"});
+assert(recv(c)["name"] == "x");
+
+send(c, {"mixed": 1, "other": "s"});
+let mixed = recv(c);
+assert(mixed["mixed"] == 1);
+assert(mixed["other"] == "s");
+
+// A struct is a map with an identity, and it has to arrive as one.
+send(c, Point { p: 3 });
+let point = recv(c);
+assert(point.p == 3);
+assert(typeof(point) == "Point");
+
+send(c, [[1, 2], [3]]);
+assert(recv(c) == [[1, 2], [3]]);
+
+println("cross-task raise: ok");

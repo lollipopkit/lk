@@ -1,0 +1,25 @@
+[package]
+name = "lk-api-cabi"
+description = "The C-ABI static library form of lk-api, for the AOT linker"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "lk_api_cabi"
+# staticlib only, and that is the whole point of the crate — the same split
+# `lkrt-cabi` made, for a different reason.
+#
+# `crate-type` is unconditional: while `lk-api` declared `["lib", "staticlib"]`,
+# *every* build of it emitted the archive too, because `lk-cli` depends on the
+# lib. That archive is the entire VM plus stdlib with debuginfo — 172MB — and
+# only a Tier 1 hybrid link ever reads it. Here nothing depends on this crate,
+# so it is built only when named.
+crate-type = ["staticlib"]
+
+[dependencies]
+# `ffi` is the reason the archive exists: without it the C entry points
+# (`lk_vm_*`, `lk_hybrid_*`) are not compiled at all.
+lk-api = { path = "../api", features = ["ffi"] }

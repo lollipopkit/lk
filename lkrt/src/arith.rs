@@ -27,21 +27,26 @@ use alloc::{
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_div_checked(lhs: i64, rhs: i64) -> i64 {
     if rhs == 0 {
-        crate::panic::raise_str("Division by zero");
+        crate::panic::raise_str("division by zero");
     }
     lhs.wrapping_div(rhs)
 }
 
 /// `lhs << rhs`, raising when the shift amount is not in `0..=63`.
 ///
-/// The message is the VM's, word for word — including the offending amount —
-/// because the two back ends have to fail the same way and a differential test
-/// compares the text. The hardware would mask the amount to 63 and produce a
-/// number; that number is not what the program asked for.
+/// The message is the VM's, word for word — including the offending amount.
+/// Cross-backend error text is not guaranteed identical in general (see
+/// `docs/semantics.md`), but a *catchable* arithmetic failure is one a program
+/// can branch on, so these few are aligned by hand. `%` by zero was not: the VM
+/// said `ModInt divisor is zero` and this side said `Division by zero` — two
+/// different strings, both wrong about which operator failed.
+///
+/// The hardware would mask the amount to 63 and produce a number; that number
+/// is not what the program asked for.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_shl_checked(lhs: i64, rhs: i64) -> i64 {
     if !(0..64).contains(&rhs) {
-        crate::panic::raise_str(&format!("__lk_shl shift amount {rhs} is out of range 0..63"));
+        crate::panic::raise_str(&format!("shift amount {rhs} is out of range 0..63"));
     }
     lhs.wrapping_shl(rhs as u32)
 }
@@ -50,9 +55,65 @@ pub extern "C" fn lkrt_i64_shl_checked(lhs: i64, rhs: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_shr_checked(lhs: i64, rhs: i64) -> i64 {
     if !(0..64).contains(&rhs) {
-        crate::panic::raise_str(&format!("__lk_shr shift amount {rhs} is out of range 0..63"));
+        crate::panic::raise_str(&format!("shift amount {rhs} is out of range 0..63"));
     }
     lhs.wrapping_shr(rhs as u32)
+}
+
+/// `lhs >> rhs`, *logical* — zeros come in at the top — with the same range rule.
+///
+/// The one shift `>>` cannot always be. Every value in this language rides an
+/// `i64` carrier, so for a `u8`, `u16` or `u32` the high bits are zero and an
+/// arithmetic shift happens to give the right answer. A `u64` fills the carrier:
+/// bit 63 *is* the sign bit, and shifting `1u64 << 63` right by 63 answered -1
+/// instead of 1 — silently, on both backends, which is what a physical address
+/// or a page-table entry is made of.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_shr_checked(lhs: i64, rhs: i64) -> i64 {
+    if !(0..64).contains(&rhs) {
+        crate::panic::raise_str(&format!("shift amount {rhs} is out of range 0..63"));
+    }
+    ((lhs as u64).wrapping_shr(rhs as u32)) as i64
+}
+
+/// `lhs < rhs`, unsigned. Answers 1 or 0.
+///
+/// The one comparison a `u64` cannot borrow from `Int`. Every value rides an
+/// `i64` carrier, so a `u64` with bit 63 set *is* a negative carrier and a
+/// signed compare puts it below 1. One primitive rather than four: `a > b` is
+/// `b < a`, and the two inclusive forms are those negated.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_lt(lhs: i64, rhs: i64) -> i64 {
+    i64::from((lhs as u64) < (rhs as u64))
+}
+
+/// `lhs / rhs`, unsigned, aborting on a zero divisor.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_div(lhs: i64, rhs: i64) -> i64 {
+    if rhs == 0 {
+        crate::panic::raise_str("division by zero");
+    }
+    ((lhs as u64) / (rhs as u64)) as i64
+}
+
+/// `lhs % rhs`, unsigned, aborting on a zero divisor.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_rem(lhs: i64, rhs: i64) -> i64 {
+    if rhs == 0 {
+        crate::panic::raise_str("modulo by zero");
+    }
+    ((lhs as u64) % (rhs as u64)) as i64
+}
+
+/// `value as Float`, reading the carrier as unsigned.
+///
+/// The last place a `u64` is read as an `i64`. A value with bit 63 set is a
+/// negative carrier, so the ordinary conversion answers a negative float — and
+/// unlike a comparison or a divide, nothing about the result *looks* wrong until
+/// it is compared with zero.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_to_f64(value: i64) -> f64 {
+    (value as u64) as f64
 }
 
 /// `lhs % rhs` for integers, aborting on a zero divisor. `i64::MIN % -1` wraps to
@@ -60,28 +121,61 @@ pub extern "C" fn lkrt_i64_shr_checked(lhs: i64, rhs: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_mod_checked(lhs: i64, rhs: i64) -> i64 {
     if rhs == 0 {
-        crate::panic::raise_str("Division by zero");
+        crate::panic::raise_str("modulo by zero");
     }
     lhs.wrapping_rem(rhs)
 }
 
-/// `lhs / rhs` for floats, aborting on a zero divisor to match the VM (which
-/// errors on float division by zero rather than producing infinity).
+/// `lhs / rhs` for floats — IEEE, so a zero divisor gives an infinity or a
+/// NaN rather than raising.
+///
+/// The name keeps `_checked` because it is the ABI symbol both backends were
+/// built against; there is nothing left to check. It used to raise, to match a
+/// VM that raised — and both were wrong about `Float`, which *is* `f64`.
+// TODO: rename to `lkrt_f64_div` once an ABI version bump is due anyway.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_div_checked(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        crate::panic::raise_str("Division by zero");
-    }
     lhs / rhs
 }
 
-/// `lhs % rhs` for floats, aborting on a zero divisor to match the VM.
+/// `lhs % rhs` for floats — IEEE, so a zero divisor gives a NaN.
+// TODO: rename to `lkrt_f64_mod` alongside `lkrt_f64_div_checked`.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_mod_checked(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        crate::panic::raise_str("Division by zero");
-    }
     lhs % rhs
+}
+
+/// `value as <machine int>` — a float narrowed to a fixed width.
+///
+/// Saturating to the *target's* range, which is what `as` means from a float.
+/// Both engines used to saturate to `i64` first and then mask, so a value out
+/// of range came back as an arbitrary bit pattern: at `i32`, `1 / 0` (which is
+/// `inf`, since `/` is float division) answered `-1` and `-1 / 0` answered `0`.
+///
+/// One implementation for both ends, called from the native lowering and
+/// mirrored by `cast_to_machine_int` in the VM — a cast is not hot enough to be
+/// worth two copies of a rule this easy to get subtly different.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_f64_to_machine_int(value: f64, bits: i64, signed: i64) -> i64 {
+    let signed = signed != 0;
+    if bits >= 64 {
+        return if signed { value as i64 } else { value as u64 as i64 };
+    }
+    if value.is_nan() {
+        return 0;
+    }
+    let (low, high) = if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0, (1i64 << bits) - 1)
+    };
+    if value <= low as f64 {
+        low
+    } else if value >= high as f64 {
+        high
+    } else {
+        value as i64
+    }
 }
 
 #[cfg(test)]

@@ -54,12 +54,24 @@ pub mod sync {
         pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, T>> {
             self.0.lock()
         }
+
+        /// The guard, or `None` if the lock is held — *including by this very
+        /// thread*, which neither backing type is re-entrant about. That case
+        /// is the reason this exists: see `RuntimeCallable::collect_garbage`.
+        pub fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> {
+            self.0.try_lock().ok()
+        }
     }
     #[cfg(not(feature = "std"))]
     impl<T: ?Sized> Mutex<T> {
         #[allow(clippy::result_unit_err)]
         pub fn lock(&self) -> Result<spin::MutexGuard<'_, T>, core::convert::Infallible> {
             Ok(self.0.lock())
+        }
+
+        /// See the std impl above.
+        pub fn try_lock(&self) -> Option<spin::MutexGuard<'_, T>> {
+            self.0.try_lock()
         }
     }
 }
@@ -133,14 +145,14 @@ pub mod prelude {
 pub(crate) mod float {
     #[cfg(feature = "std")]
     #[inline]
-    pub(crate) fn fract(x: f64) -> f64 {
-        x.fract()
+    pub(crate) fn floor(x: f64) -> f64 {
+        x.floor()
     }
 
     #[cfg(not(feature = "std"))]
     #[inline]
-    pub(crate) fn fract(x: f64) -> f64 {
-        libm::modf(x).0
+    pub(crate) fn floor(x: f64) -> f64 {
+        libm::floor(x)
     }
 
     #[cfg(feature = "std")]

@@ -57,6 +57,10 @@ impl ReplCompletion {
             trigger: lk_completion::CompletionTrigger::Invoked,
             session_source: session_source.as_deref(),
             base_dir: self.base_dir.as_deref(),
+            // The REPL has no checked document to draw on — a line being typed
+            // is usually not a program yet — so receivers fall back to the
+            // token-shape guess.
+            known_types: None,
         })
     }
 }

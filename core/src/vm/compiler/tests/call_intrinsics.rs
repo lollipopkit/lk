@@ -234,7 +234,10 @@ fn compiler_inlines_direct_function_with_while_early_return() {
             let lo = 0;
             let hi = limit - 1;
             while (lo <= hi) {
-                let mid = (lo + hi) / 2;
+                // `/` yields a Float, so an integer midpoint has to say so.
+                // (`math.floor` is the idiom; this crate's tests have no
+                // standard library, so the cast stands in for it.)
+                let mid = ((lo + hi) / 2) as Int;
                 let value = mid * 2;
                 if value == target {
                     return mid;
@@ -323,8 +326,7 @@ fn compiler_runs_direct_function_with_string_method() {
         return price("pro", 49, 8);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"]).expect("compile");
+    let module = Compiler::compile_module_with_globals(&program, ["__lk_call_method"]).expect("compile");
     let entry = module.entry_function().expect("entry");
     assert!(
         entry.code.iter().any(|instr| instr.opcode() == Opcode::CallDirect),
@@ -397,8 +399,47 @@ fn compiler_drops_set_method_nil_result_for_statement() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
+/// `set` answers the receiver, so a write chains.
+///
+/// `set` answers the thing it wrote to.
+///
+/// It used to lower the receiver expression twice — once for the write, once
+/// for the answer. On a local that is the same slot and nothing shows; on any
+/// other expression it wrote into one value and answered another, so
+/// `[1, 2, 3].set(0, 9)` was `[1, 2, 3]`. (The other half — a receiver with
+/// side effects running twice — is
+/// `set_evaluates_a_side_effecting_receiver_once` in the exec tests, which can
+/// run a program with functions in it.) `push` next door has always had the
+/// single-lowering shape.
 #[test]
-fn compiler_lowers_set_method_preserving_nil_result() {
+fn compiler_set_method_answers_the_list_it_wrote_to() {
+    let function = compile_source(
+        r#"
+        let answered = [1, 2, 3].set(0, 9);
+        return answered;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list return");
+    };
+    let Some(crate::val::HeapValue::List(crate::val::TypedList::Int(values))) = result.state.heap.get(handle) else {
+        panic!("expected an int list return");
+    };
+    assert_eq!(
+        values.as_slice(),
+        [9, 2, 3],
+        "the answer must be the list the write went into, not a second one"
+    );
+}
+
+/// It used to answer `nil`, which made writing one element the one mutating
+/// method you could not chain — `push` beside it has always answered the
+/// container. This test pinned the `nil`; it pins the receiver now.
+#[test]
+fn compiler_lowers_set_method_answering_the_receiver() {
     let function = compile_source(
         r#"
         let hist = {};
@@ -422,7 +463,15 @@ fn compiler_lowers_set_method_preserving_nil_result() {
     let Some(crate::val::HeapValue::List(crate::val::TypedList::Mixed(values))) = result.state.heap.get(handle) else {
         panic!("expected mixed list return");
     };
-    assert_eq!(values, &[crate::val::RuntimeVal::Nil, crate::val::RuntimeVal::Int(42)]);
+    // `result` is the map itself, so the pair is [the map, the value it holds].
+    let crate::val::RuntimeVal::Obj(answered) = values[0] else {
+        panic!("set should answer the receiver");
+    };
+    assert!(
+        matches!(result.state.heap.get(answered), Some(crate::val::HeapValue::Map(_))),
+        "set should answer the map it wrote to"
+    );
+    assert_eq!(values[1], crate::val::RuntimeVal::Int(42));
 }
 
 #[test]
@@ -628,8 +677,7 @@ fn compiler_lowers_map_get_module_call_to_get_index() {
         return map.get(hist, key);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -652,7 +700,7 @@ fn compiler_errors_on_map_get_missing_receiver_in_call() {
         return id(map.get("x"));
         "#,
     );
-    let err = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"])
+    let err = Compiler::compile_module_with_globals(&program, ["map"])
         .expect_err("map.get missing receiver must not lower as method get");
 
     assert!(
@@ -735,8 +783,7 @@ fn compiler_folds_const_map_get_literal_key() {
         return map.get(hist, "answer");
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -797,8 +844,7 @@ fn compiler_hoists_loop_const_map_get_folded_scalar_values() {
         return total;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
     let admin_loads = entry
         .code
@@ -870,8 +916,7 @@ fn compiler_does_not_fold_const_map_get_after_mutation() {
         return map.get(hist, "answer");
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -932,8 +977,7 @@ fn compiler_does_not_fold_loop_local_mutated_empty_map_get() {
         return total;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(
@@ -957,8 +1001,7 @@ fn compiler_lowers_math_floor_of_int_to_identity() {
         return math.floor(x + 2);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let entry = module.entry_function().expect("entry");
 
     assert!(

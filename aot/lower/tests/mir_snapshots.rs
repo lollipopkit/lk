@@ -29,18 +29,27 @@ fn assert_snapshot(source: &str, expected: &str) {
     );
 }
 
+/// `/` yields a `Float`, so two `Int`s widen and divide as `f64`.
+///
+/// This snapshot used to hold `int.div … -> i64`, pinning the one place that
+/// disagreed with the rest of the language: the checker, the constant folder
+/// and the `dyn.*` helpers all said `/` produces a `Float`, and only the typed
+/// lowering (and the VM's typed fast path) divided as integers. A native
+/// `7 / 2` answered `3` where the VM answered `3.5`.
 #[test]
 fn straightline_division() {
     assert_snapshot(
         "let x = 20;\nlet y = 4;\nreturn x / y;\n",
         r#"
 mir module (abi v1)
-fn f0() -> i64 entry {
+fn f0() -> f64 entry {
 bb0():
   v0 = const.i64 20
   v1 = const.i64 4
-  v2 = int.div v0, v1
-  ret v2
+  v2 = sitofp v0
+  v3 = sitofp v1
+  v4 = float.div v2, v3
+  ret v4
 }
 "#,
     );
@@ -124,6 +133,7 @@ fn list_literal_and_dynamic_index() {
         "let xs = [10, 20, 30];\nlet i = 0;\nlet s = 0;\nwhile (i < 3) { s = s + xs[i]; i = i + 1; }\nreturn s;\n",
         r#"
 mir module (abi v1)
+global g0 = "Add expected numbers or strings, got Int and Nil"
 fn f0() -> i64 entry {
 bb0():
   v0 = call list_h.i64_new()
@@ -144,11 +154,15 @@ bb1(v8: i64, v11: list<i64>, v13: i64):
   condbr v10, bb2(), bb3()
 bb2():
   v12 = list.i64.get_maybe v11, v8
-  v14 = maybe.i64.unwrap v12
-  v15 = int.add v13, v14
-  v16 = const.i64 1
-  v17 = int.add v8, v16
-  br bb1(v17, v11, v15)
+  v14 = maybe.present<maybe<i64>> v12
+  v15 = zext.bool v14
+  v16 = const.str g0
+  call rt.maybe_guard(v15, v16)
+  v17 = maybe.value<maybe<i64>> v12
+  v18 = int.add v13, v17
+  v19 = const.i64 1
+  v20 = int.add v8, v19
+  br bb1(v20, v11, v18)
 bb3():
   ret v13
 }
@@ -166,21 +180,17 @@ global g0 = "a"
 global g1 = "b"
 fn f0() -> maybe<i64> entry {
 bb0():
-  v0 = call map_h.lit_new()
-  v1 = const.str g0
-  v2 = call dyn.from_str(v1)
-  v4 = const.i64 1
-  v3 = call dyn.from_i64(v4)
-  call map_h.lit_set(v0, v2, v3)
-  v5 = const.str g1
-  v6 = call dyn.from_str(v5)
-  v8 = const.i64 2
-  v7 = call dyn.from_i64(v8)
-  call map_h.lit_set(v0, v6, v7)
-  v9 = call map_h.lit_finish_str_i64(v0)
-  v10 = const.str g1
-  v11 = map.str_i64.get_maybe v9, v10
-  ret v11
+  v1 = const.i64 2
+  v0 = call map_h.str_i64_new_sized(v1)
+  v2 = const.str g0
+  v3 = const.i64 1
+  call map_h.str_i64_set_const(v0, v2, v3)
+  v4 = const.str g1
+  v5 = const.i64 2
+  call map_h.str_i64_set_const(v0, v4, v5)
+  v6 = const.str g1
+  v7 = map.str_i64.get_maybe v0, v6
+  ret v7
 }
 "#,
     );

@@ -8,7 +8,7 @@ use super::{NamedParamSig, TypeChecker};
 use crate::expr::Expr;
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
-use crate::val::{FunctionNamedParamType, LiteralVal, Type};
+use crate::val::{FunctionNamedParamType, IntKind, LiteralVal, Type};
 use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
@@ -128,38 +128,142 @@ impl TypeChecker {
         Ok(target.clone())
     }
 
+    /// The one rule for what may stand as a condition.
+    ///
+    /// LK's rule is *truthiness*: every value is a condition, and only `nil`
+    /// and `false` are falsy. That is what the executor implements
+    /// (`truthy_unchecked`), what `dyn.truthy` implements for native code, and
+    /// what `examples/syntax/null_coalescing.lk` demonstrates with `if (0)`.
+    ///
+    /// There used to be a second rule: `? :` demanded exactly `Bool` and
+    /// rejected even an unresolved type variable, so
+    /// `fn g(x) { return x ? "y" : "n"; }` was a type error while
+    /// `fn g(x) { if x { … } }` was fine. With `if` now an expression, keeping
+    /// both would mean the same syntax typed differently depending on whether
+    /// its value was used. The condition is still *checked* — an ill-typed
+    /// expression is still an error — it is just not required to be `Bool`.
+    pub(crate) fn check_condition(&mut self, condition: &Expr) -> Result<()> {
+        self.check_expr(condition)?;
+        Ok(())
+    }
+
     /// Checks an `unsafe` block's contents.
     ///
-    /// `Expr::Block` on its own type-checks to `Any` without looking inside —
-    /// blocks are mostly produced by desugars, which are checked before they
-    /// are built. That is fine for those, but it would make `unsafe { … }` a
-    /// hole in the type system: precisely the construct that needs *more*
-    /// scrutiny would get none. So the statements are checked here.
+    /// Once the only place a block's contents were looked at: `Expr::Block`
+    /// itself type-checked to `Any` without looking inside, on the grounds that
+    /// blocks mostly come from desugars checked before they are built. That
+    /// made `unsafe { … }` a hole in the type system — precisely the construct
+    /// that needs *more* scrutiny getting none — and, it turned out, closure
+    /// bodies too. `Expr::Block` now checks itself, and this stays as the entry
+    /// point that also accepts a non-block `unsafe` operand.
     ///
-    /// The block's own type stays `Any` for now, matching `Expr::Block`; a
-    /// block that evaluates to a typed value is a separate change.
-    fn check_unsafe_body(&mut self, inner: &Expr) -> Result<Type> {
+    /// The block's *type* is its last statement's, when that statement is an
+    /// expression — which is not a new rule but the type catching up with one.
+    /// The executor already evaluates an `unsafe` block to exactly that value,
+    /// trailing semicolon included: `unsafe { 7; }` is 7.
+    ///
+    /// Typing it `Any` instead had a cost that shows up wherever this construct
+    /// is actually used. Every device read in a driver is one:
+    ///
+    /// ```lk
+    /// let value = unsafe { volatile_read_u32(address as *mut u32) };
+    /// return value as Int;
+    /// ```
+    ///
+    /// The binding and the cast are both laundering — there to turn `Any` back
+    /// into the `Int` the read always produced. A cast written to satisfy the
+    /// checker rather than to state something is a cast that will one day be
+    /// wrong and say nothing, which is the opposite of what `unsafe` is for.
+    ///
+    /// A last statement that is *not* an expression leaves the block `Any`, as
+    /// before. Those shapes (`unsafe { let x = …; }`) have no value the
+    /// executor promises, and inventing one here would be a claim rather than a
+    /// description.
+    pub(crate) fn check_block_value(&mut self, inner: &Expr) -> Result<Type> {
         let Expr::Block(statements) = inner else {
             return self.check_expr(inner);
         };
-        for stmt in statements {
+        self.check_statements_value(statements)
+    }
+
+    /// A statement sequence's type: its last statement's, when that statement
+    /// is an expression. Shared by `Expr::Block` and by both halves of
+    /// `Expr::Try`, which evaluate to their tails the same way.
+    pub(crate) fn check_statements_value(&mut self, statements: &[Box<crate::stmt::Stmt>]) -> Result<Type> {
+        let Some((last, leading)) = statements.split_last() else {
+            return Ok(Type::Any);
+        };
+        for stmt in leading {
             stmt.type_check(self)?;
         }
+        if let crate::stmt::Stmt::Expr { value: expr, .. } = last.as_ref() {
+            return self.check_expr(expr);
+        }
+        last.type_check(self)?;
         Ok(Type::Any)
     }
 
-    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt.
+    /// The type of a two-branch value — `if`/`else`, or `try`/`catch`.
     ///
-    /// These need `unsafe` for a different reason than pointers do — nothing
-    /// here can corrupt memory. Masking interrupts or parking the core changes
+    /// One branch `nil` and the other not makes the value *optional*, not a
+    /// contradiction: an `if` with no `else` synthesises a nil branch, and a
+    /// `catch` that only logs has no value either.
+    ///
+    /// Two branches of *different* types make a **union**, which is the rule a
+    /// function with two `return`s has always followed — `fn f() { if c {
+    /// return 1; } return "x"; }` is `Int | String`. Written as a constraint
+    /// instead, the two shapes disagreed with each other and with themselves:
+    /// `if c { xs } else { "x" }` type-checked (the constraint was recorded and
+    /// nobody solved it on that path) while `try { xs } catch e { "${e}" }` —
+    /// the most ordinary way to write a `catch`, since the caught value renders
+    /// as text — was rejected outright.
+    ///
+    /// A branch whose type is still a *variable* keeps the constraint: that is
+    /// inference in progress, not a value with two types, and unifying it is
+    /// how a lambda parameter learns what it holds.
+    pub(crate) fn unify_branch_values(&mut self, first: Type, second: Type) -> Result<Type> {
+        let nullable = |value: &Type| Type::Optional(Box::new(value.clone()));
+        let resolved_first = self.resolve_aliases(&first);
+        let resolved_second = self.resolve_aliases(&second);
+        if resolved_first == Type::Nil && resolved_second != Type::Nil {
+            return Ok(nullable(&second));
+        }
+        if resolved_second == Type::Nil && resolved_first != Type::Nil {
+            return Ok(nullable(&first));
+        }
+        if resolved_first != resolved_second
+            && !has_type_variable(&resolved_first)
+            && !has_type_variable(&resolved_second)
+        {
+            return Ok(union_of(resolved_first, resolved_second));
+        }
+        self.inference_engine.add_constraint(first.clone(), second);
+        Ok(first)
+    }
+
+    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt,
+    /// and the system-control instructions (descriptor tables, CR2/CR3, the
+    /// TLB).
+    ///
+    /// These need `unsafe` for a different reason than pointers do — a barrier
+    /// cannot corrupt memory. Masking interrupts or parking the core changes
     /// the machine's state in a way the rest of the program's correctness may
     /// depend on, and getting the nesting wrong deadlocks rather than crashes.
     /// Marking it makes the region auditable.
+    ///
+    /// The system-control half earns the same keyword far more directly: a
+    /// malformed descriptor table is not a fault the kernel gets to report,
+    /// because the CPU faults trying to report it and the machine resets.
     fn check_cpu_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         let (arity, result) = match name {
             "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
-            "cpu_irq_save" | "cpu_timestamp" => (0, Type::Int),
-            "cpu_irq_restore" => (1, Type::Nil),
+            "cpu_irq_save" | "cpu_timestamp" | "cpu_read_cr2" | "cpu_read_cr3" => (0, Type::Int),
+            "cpu_irq_restore"
+            | "cpu_load_task_register"
+            | "cpu_write_cr3"
+            | "cpu_invalidate_page"
+            | "cpu_raise_interrupt" => (1, Type::Nil),
+            "cpu_load_idt" | "cpu_load_gdt" | "cpu_reload_segments" => (2, Type::Nil),
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -171,12 +275,27 @@ impl TypeChecker {
                  program's correctness can depend on"
             ));
         }
-        if name == "cpu_irq_restore" {
-            let saved = self.check_expr(&args[0])?;
-            if !self.is_assignable(&saved, &Type::Int) {
+        // Every operand of every one of these is a machine word — a port, a
+        // selector, a physical address, a saved flag. Checked in one loop
+        // rather than per intrinsic: the arm that gets forgotten is the one
+        // whose argument is never visited by the checker at all, and the
+        // lowering then rejects it as a type mismatch with no source location.
+        for (index, arg) in args.iter().enumerate() {
+            let actual = self.check_expr(arg)?;
+            if !self.is_assignable(&actual, &Type::Int) {
+                // `cpu_irq_restore` says where the value should have come
+                // from; the nesting discipline is the thing being got wrong
+                // when this fires, and naming the type is no help.
+                if name == "cpu_irq_restore" {
+                    return Err(anyhow!(
+                        "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
+                        actual.display()
+                    ));
+                }
                 return Err(anyhow!(
-                    "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
-                    saved.display()
+                    "{name} expects Int for argument {}, got {}",
+                    index + 1,
+                    actual.display()
                 ));
             }
         }
@@ -244,11 +363,69 @@ impl TypeChecker {
     /// compiler has no access to the type checker — the width lives in the name
     /// instead. It also makes the volatile-ness explicit, which `*p` never is
     /// in any language.
+    /// `symbol_address("name")` and `call_address_2(addr, a, b)` — the two
+    /// halves of a driver table.
+    ///
+    /// They had no entry here at all, which meant a call to either produced
+    /// `Any` and neither its arity nor its arguments were checked. `Any`
+    /// spreads: subtracting two addresses to measure a stride gave something
+    /// with no `as Int` out of it, and the error named the cast rather than the
+    /// missing type. Both of those cost real time in this repository.
+    ///
+    /// The name has to be a *literal*, and saying so here is the point. A
+    /// relocation is a name resolved at link time; there is nothing to look one
+    /// up in at run time, so a variable name cannot work — and without this it
+    /// type-checked, ran under the VM (which refuses), and failed to lower
+    /// natively with a message about an unsupported opcode.
+    fn check_address_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let arity = match name {
+            "symbol_address" => 1,
+            "call_address_2" => 3,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Err(anyhow!("{name} expects {arity} argument(s), got {}", args.len()));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: a code address is a number, and nothing here \
+                 can check that the one you have is code"
+            ));
+        }
+        if name == "symbol_address" {
+            if !matches!(
+                args[0].as_ref(),
+                Expr::Literal(crate::val::LiteralVal::String(_) | crate::val::LiteralVal::ShortStr(_))
+            ) {
+                return Err(anyhow!(
+                    "symbol_address needs a literal name: it becomes a relocation, which is a name \
+                     resolved when the image is linked, and there is nothing to look one up in at \
+                     run time"
+                ));
+            }
+        } else {
+            for (index, arg) in args.iter().enumerate() {
+                let actual = self.check_expr(arg)?;
+                if !self.is_assignable(&actual, &Type::Int) {
+                    return Err(anyhow!(
+                        "call_address_2 expects Int for argument {}, got {}",
+                        index + 1,
+                        actual.display()
+                    ));
+                }
+            }
+        }
+        Ok(Some(Type::Int))
+    }
+
     fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         if let Some(result) = self.check_cpu_builtin(name, args)? {
             return Ok(Some(result));
         }
         if let Some(result) = self.check_port_builtin(name, args)? {
+            return Ok(Some(result));
+        }
+        if let Some(result) = self.check_address_builtin(name, args)? {
             return Ok(Some(result));
         }
         let Some((is_write, kind)) = parse_volatile_builtin(name) else {
@@ -321,7 +498,7 @@ impl TypeChecker {
             // unchecked operations permitted inside it.
             Expr::Unsafe(inner) => {
                 self.enter_unsafe();
-                let result = self.check_unsafe_body(inner);
+                let result = self.check_block_value(inner);
                 self.exit_unsafe();
                 result
             }
@@ -338,15 +515,88 @@ impl TypeChecker {
             Expr::List(items) => self.check_list(items),
             Expr::Map(pairs) => self.check_map(pairs),
             Expr::StructLiteral { name, fields } => {
-                // If struct is known, enforce field presence and types; otherwise, accept as named type
+                // Imported by name, so the literal builds the declaring
+                // module's type through the constructor that import bound. The
+                // rest of this arm is then the ordinary local-struct check
+                // against *that* type: its schema, and its name as the result,
+                // which is what `use { P as Q } from "m"` needs — the value is
+                // a `P`, and only the spelling here is `Q`.
+                let declared = self.registry.constructible_import_target(name).map(String::from);
+                let name = declared.as_deref().unwrap_or(name);
+                // A name nothing declares is refused rather than built.
+                //
+                // Accepting it produced a *value*: `Nope { a: 1 }` answered
+                // `Nope{a:1}`, and `P { x: 4 }` for a `P` declared in an
+                // imported module answered something that renders `P{x:4}` and
+                // reports `typeof` `P` while having none of `P`'s methods —
+                // the error then surfaced at the call site as "P has no method
+                // 'norm'", far from the construction. A struct literal carries
+                // its type's identity or it is not that type; the two spellings
+                // that *do* carry it (`geo.P { … }` and a constructor the
+                // module exports) both answer 16 for `p.norm()`.
+                if self.registry.get_struct(name).is_none() {
+                    return Err(Self::type_err(
+                        &alloc::format!(
+                            "no type named `{name}` is declared here — a struct literal names a type, \
+                             and this module declares none by that name. A type from another module \
+                             is reached through its module (`m.{name} {{ … }}`), by importing it by \
+                             name (`use {{ {name} }} from \"m\";`), or through a constructor that \
+                             module exports"
+                        ),
+                        None,
+                        None,
+                        Some(expr.clone()),
+                    ));
+                }
+                // Known, but only because another module declares it. Building
+                // it here stamps *this* module's `TypeScope`, so the result
+                // renders the same and answers the same `typeof` while having
+                // none of the type's methods — the error then surfaces at the
+                // call site ("has no method …"), far from the construction. The
+                // two spellings that carry the declaring module's identity both
+                // work, so the answer is to name one of them.
+                if self.registry.is_imported_struct(name) && declared.is_none() {
+                    return Err(Self::type_err(
+                        &alloc::format!(
+                            "`{name}` is declared in another module and this file only sees it \
+                             through its namespace, so a bare `{name} {{ … }}` here would build a \
+                             different type that happens to share the name — it would have none of \
+                             `{name}`'s methods. Write `m.{name} {{ … }}`, or import the type by \
+                             name (`use {{ {name} }} from \"m\";`), which binds the constructor \
+                             that module generates beside it"
+                        ),
+                        None,
+                        None,
+                        Some(expr.clone()),
+                    ));
+                }
                 if let Some(sd) = self.registry.get_struct(name) {
                     let schema = sd.fields.clone();
+                    // A field written twice. The second value is the one that
+                    // lands (the literal builds an ordered map, and a repeat
+                    // updates in place), so the first is a value nothing can
+                    // read — the same mistake a repeated parameter name or a
+                    // repeated binding in a pattern is, and refused for the
+                    // same reason.
+                    for (index, (fname, _)) in fields.iter().enumerate() {
+                        if fields.iter().take(index).any(|(earlier, _)| earlier == fname) {
+                            return Err(Self::type_err(
+                                &alloc::format!(
+                                    "field `{fname}` is written twice in this `{name}` literal — the second value \
+                                     replaces the first before anything can read it"
+                                ),
+                                None,
+                                None,
+                                Some(expr.clone()),
+                            ));
+                        }
+                    }
                     // Provided -> check existence and type
                     for (fname, fexpr) in fields {
                         let expected = schema.get(fname).cloned();
-                        let at = self.check_expr(fexpr)?;
+                        let at = self.check_expr_against(fexpr, expected.as_ref())?;
                         if let Some(expected) = expected {
-                            if !self.is_assignable(&at, &expected) {
+                            if !self.value_fits(fexpr, &at, &expected) {
                                 return Err(Self::type_err(
                                     &format!("Field '{}' type mismatch in struct '{}'", fname, name),
                                     Some(expected.clone()),
@@ -381,7 +631,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                Ok(Type::Named(name.clone()))
+                Ok(Type::Named(name.to_string()))
             }
 
             // Access operations
@@ -389,21 +639,16 @@ impl TypeChecker {
             Expr::NullishCoalescing(expr, default) => self.check_nullish_coalescing(expr, default),
             Expr::OptionalAccess(expr, field) => self.check_optional_chaining(expr, field),
             Expr::Conditional(cond, then_expr, else_expr) => {
-                // condition must be Bool
-                let cond_ty = self.check_expr(cond)?;
-                if cond_ty != Type::Bool {
-                    return Err(Self::type_err(
-                        "Ternary condition must be Bool",
-                        Some(Type::Bool),
-                        Some(cond_ty),
-                        Some(*cond.clone()),
-                    ));
-                }
-                let then_ty = self.check_expr(then_expr)?;
-                let else_ty = self.check_expr(else_expr)?;
-                // unify then/else types; return the unified type (prefer then_ty)
-                self.inference_engine.add_constraint(then_ty.clone(), else_ty.clone());
-                Ok(then_ty)
+                self.check_condition(cond)?;
+                // The arms are blocks when this came from `if … { … } else
+                // { … }`, and plain expressions when it came from `? :`. Both
+                // are values; `check_block_value` answers for either.
+                let then_ty = self.check_block_value(then_expr)?;
+                let else_ty = self.check_block_value(else_expr)?;
+                // `let r = if c { "a" };` used to report "Cannot unify String
+                // with Nil" — the expression form could not do what the
+                // statement form does. See `unify_branch_values`.
+                self.unify_branch_values(then_ty, else_ty)
             }
             // Functions - handle both Call (string name) and CallExpr (expression)
             Expr::Call(func, args) => {
@@ -414,6 +659,27 @@ impl TypeChecker {
                 if let Some(result) = self.check_volatile_builtin(func, args)? {
                     return Ok(result);
                 }
+                // A shift or a bitwise operation keeps the width it is given.
+                //
+                // The parser desugars `a << b` and `a & b` into calls before
+                // anything knows a type, so without this the result of masking a
+                // `u32` is an ordinary `Any` — and the next thing done with it
+                // is a width mistake. `let bits = probed & mask;` in a PCI
+                // driver was exactly that: every piece around it checked, and
+                // the whole did not.
+                //
+                // This is the *last* piece of the unsigned-`u64` work rather than
+                // the first, and the order mattered: on its own it makes
+                // `let top = one << 63; top < one;` type-check, and until the
+                // compiler rewrote that comparison to its unsigned form the
+                // answer was `true`. A rule that turns a compile error into a
+                // wrong answer is worse than the error.
+                if let Some(result) = self.check_shift_builtin(func, args)? {
+                    return Ok(result);
+                }
+                if let Some(result) = self.check_merge_fields_builtin(func, args)? {
+                    return Ok(result);
+                }
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
                 self.check_function_call(&func_expr, args)
@@ -421,14 +687,109 @@ impl TypeChecker {
             Expr::CallExpr(func_expr, args) => {
                 // Source-level calls parse to `CallExpr`; `Call` is only built
                 // by internal desugars.
-                if let Expr::Var(name) = func_expr.as_ref()
-                    && let Some(result) = self.check_volatile_builtin(name, args)?
+                if let Expr::Var(name) = func_expr.as_ref() {
+                    // `m[k] = v` arrives here as `__lk_set_index(m, k, v)`: the
+                    // parser desugars it and, until now, only the bytecode
+                    // compiler knew the name — so the *key* of an index
+                    // assignment was the one place the key rule was never asked
+                    // about, and `m[1.5] = "a"` raised at run time. Only when the
+                    // container is provably a map: a list's index is an ordinary
+                    // `Int` position, and a receiver of unknown type is nobody's
+                    // business to refuse here.
+                    if name == "__lk_set_index"
+                        && let [container, key, value] = args.as_slice()
+                    {
+                        let container_ty = self.check_expr(container)?;
+                        if matches!(self.resolve_aliases(&container_ty), Type::Map(_, _)) {
+                            let key_ty = self.check_expr(key)?;
+                            let key_ty = self.resolve_aliases(&key_ty);
+                            if crate::typ::type_checker::type_is_certainly_not_a_key(&key_ty) {
+                                return Err(Self::type_err(
+                                    &format!(
+                                        "{} cannot be a map key — only nil, Bool, Int and String can",
+                                        key_ty.display()
+                                    ),
+                                    None,
+                                    Some(key_ty),
+                                    Some(key.as_ref().clone()),
+                                ));
+                            }
+                        }
+                        self.check_container_store(&container_ty, key, value)?;
+                    }
+                    // `s.f = v` and `m.f = v` arrive as `__lk_set_field(s, "f", v)`.
+                    if name == "__lk_set_field"
+                        && let [container, key, value] = args.as_slice()
+                    {
+                        let container_ty = self.check_expr(container)?;
+                        self.check_container_store(&container_ty, key, value)?;
+                    }
+                }
+                // The third spelling of the same store: `l[0] = v` with a
+                // literal index desugars to `list.set(l, 0, v)` (the typed-list
+                // path the bytecode compiler recognizes), not to
+                // `__lk_set_index`. Three desugars, one rule.
+                if let Expr::Access(base, member) = func_expr.as_ref()
+                    && matches!(base.as_ref(), Expr::Var(v) if v == "list")
+                    && matches!(member.as_ref(), Expr::Literal(lit) if lit.as_str() == Some("set"))
+                    && let [container, key, value] = args.as_slice()
                 {
-                    return Ok(result);
+                    let container_ty = self.check_expr(container)?;
+                    self.check_container_store(&container_ty, key, value)?;
+                }
+                if let Expr::Var(name) = func_expr.as_ref() {
+                    if let Some(result) = self.check_volatile_builtin(name, args)? {
+                        return Ok(result);
+                    }
+                    // Both shapes, because name resolution rewrites a plain
+                    // call: `__lk_shl(a, b)` is a `Call` in the parser's output
+                    // and a `CallExpr(Var(…))` by the time this sees it.
+                    // Matching only the first is why the first version of this
+                    // looked correct and changed nothing — the same trap the
+                    // compiler's width inference fell into, in the same words.
+                    if let Some(result) = self.check_shift_builtin(name, args)? {
+                        return Ok(result);
+                    }
+                    if let Some(result) = self.check_merge_fields_builtin(name, args)? {
+                        return Ok(result);
+                    }
                 }
                 self.check_function_call(func_expr, args)
             }
             Expr::CallNamed(callee, pos_args, named_args) => {
+                // The struct-name this callee constructs, when it is the hidden
+                // constructor `module.Type { … }` desugars to. The desugar is
+                // meant to be invisible, so its errors have to speak *fields*
+                // — "Missing required named argument: y" described the shape the
+                // parser produced, not the one the reader wrote.
+                let constructed_struct = constructed_struct_name(callee);
+                // A builtin global takes no named arguments — none of them
+                // declares any, and each refuses at run time in these words.
+                // Saying it here is the same rule, one call earlier, with a
+                // span.
+                //
+                // It used to be *accidentally* early: the compiler bailed on any
+                // named call it had no signature for, which caught this and also
+                // caught `use { f } from "m"; f(a: 1)`, a perfectly good call.
+                // Removing that bail left this one to the run time until here.
+                //
+                // Only when nothing shadows the name: a local or a user function
+                // called `assert` is that program's own, and its rules are its
+                // own too.
+                if let Expr::Var(name) = callee.as_ref()
+                    && !named_args.is_empty()
+                    && crate::typ::stdlib_global_is_declared(name)
+                    && !self.has_local_binding(name)
+                    && self.registry.get_struct(name).is_none()
+                    && !self.has_user_function(name)
+                {
+                    return Err(Self::type_err(
+                        &format!("{name}() does not accept named arguments"),
+                        None,
+                        None,
+                        Some(callee.as_ref().clone()),
+                    ));
+                }
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
                     && let Some(sd) = self.registry.get_struct(name)
@@ -464,9 +825,9 @@ impl TypeChecker {
                                 Some(e.as_ref().clone()),
                             ));
                         }
-                        let at = self.check_expr(e)?;
+                        let at = self.check_expr_against(e, schema.get(n))?;
                         if let Some(expected) = schema.get(n)
-                            && !self.is_assignable(&at, expected)
+                            && !self.value_fits(e, &at, expected)
                         {
                             return Err(Self::type_err(
                                 &format!("Field '{}' type mismatch in struct '{}'", n, name),
@@ -513,25 +874,57 @@ impl TypeChecker {
                 }
 
                 // If callee is a variable and we have a signature, enforce named rules
+                let mut instantiated_return: Option<Type> = None;
                 if let Expr::Var(name) = callee.as_ref()
-                    && let Some(sig) = self.get_function_sig(name).cloned()
+                    && let Some(declared) = self.get_function_sig(name).cloned()
                 {
+                    // The declared signature, plus this call's own reading of
+                    // its type variables — see the note in `calls.rs`, which
+                    // this mirrors for the named-argument spelling.
+                    let sig = declared;
+                    instantiated_return = sig.return_type.clone();
                     // Check positional arity
                     if sig.positional.len() != pos_types.len() {
-                        return Err(Self::type_err(
-                            &format!(
+                        // A positional parameter passed by name is the shape
+                        // somebody arrives with from Python, Swift or Kotlin.
+                        // Reported as a count, it read as "you passed none" —
+                        // true, and no help at all. Named parameters here are
+                        // the ones declared in the trailing `{ … }` block.
+                        let by_name: Vec<&str> = named_types
+                            .iter()
+                            .map(|(n, _)| n.as_str())
+                            .filter(|n| sig.named.iter().all(|declared| declared.name != **n))
+                            .collect();
+                        let message = if by_name.is_empty() {
+                            format!(
                                 "Function '{}' expects {} positional args, got {}",
                                 name,
                                 sig.positional.len(),
                                 pos_types.len()
-                            ),
-                            None,
-                            None,
-                            None,
-                        ));
+                            )
+                        } else {
+                            format!(
+                                "Function \'{}\' has no named parameter `{}` — a positional parameter is passed by position, \
+                                and a named one is declared in a trailing `{{ … }}` block, as in `fn f(a: Int, {{ b: Int? = 1 }})`",
+                                name,
+                                by_name.join("`, `")
+                            )
+                        };
+                        return Err(Self::type_err(&message, None, None, None));
                     }
-                    // Constrain positional types
+                    // Constrain positional types, and at the same time read
+                    // this instance's variables off the arguments.
+                    //
+                    // The constraint alone is not enough to type the call:
+                    // checking is one pass, and the solver does not run again
+                    // until the enclosing function ends — long after the `let`
+                    // that reads the result has been checked. So the binding is
+                    // also computed here, structurally, which is all an
+                    // *instance* needs: the parameter side is a pattern whose
+                    // variables belong to this call and nothing else.
+                    let mut instance_bindings: HashMap<String, Type> = HashMap::new();
                     for (pt, at) in sig.positional.iter().zip(pos_types.iter()) {
+                        bind_instance_variables(pt, &self.resolve_aliases(at), &mut instance_bindings);
                         self.inference_engine.add_constraint(pt.clone(), at.clone());
                     }
 
@@ -554,7 +947,7 @@ impl TypeChecker {
                         }
                         if !sig_lookup.contains_key(key) {
                             return Err(Self::type_err(
-                                &format!("Unknown named argument: {}", n),
+                                &unknown_named_message(constructed_struct.as_deref(), n),
                                 None,
                                 None,
                                 None,
@@ -566,7 +959,39 @@ impl TypeChecker {
                         let is_optional = matches!(decl.ty, Type::Optional(_));
                         if !is_optional && !decl.has_default && !seen.contains(decl.name.as_str()) {
                             return Err(Self::type_err(
-                                &format!("Missing required named argument: {}", decl.name),
+                                &missing_named_message(constructed_struct.as_deref(), &decl.name),
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                        // A default is filled by the *compiler*, at the call
+                        // site, out of the callee's own declaration — which is
+                        // what lets it read an earlier argument
+                        // (`fn f(x: Int, {y: Int = x + 1})`). A caller in
+                        // another module does not have that declaration, and
+                        // the runtime path that places named arguments has no
+                        // notion of a default at all. So this worked within a
+                        // module and failed across one, at run time, saying
+                        // `missing required named argument` about a parameter
+                        // that is not required.
+                        //
+                        // Said here instead, where it can name the way out.
+                        // docs/semantics.md has the design that would remove
+                        // the limitation (a callee-side prologue plus a mask of
+                        // which named arguments were supplied) and the three
+                        // that were ruled out.
+                        if decl.has_default
+                            && sig.origin == crate::typ::SigOrigin::Imported
+                            && !seen.contains(decl.name.as_str())
+                        {
+                            return Err(Self::type_err(
+                                &format!(
+                                    "`{}` has a default, and a default cannot be filled across a module \
+                                     boundary yet — it is materialized where the call is written, from a \
+                                     declaration this module does not have. Pass `{}:` explicitly here",
+                                    decl.name, decl.name
+                                ),
                                 None,
                                 None,
                                 None,
@@ -580,9 +1005,19 @@ impl TypeChecker {
                     }
                     for (n, at) in &named_types {
                         if let Some(decl_ty) = name_to_ty.get(n.as_str()) {
+                            bind_instance_variables(decl_ty, &self.resolve_aliases(at), &mut instance_bindings);
                             self.inference_engine.add_constraint(decl_ty.clone(), at.clone());
                         }
                     }
+                    instantiated_return =
+                        instantiated_return.map(|ty| substitute_outside_unions(&ty, &instance_bindings));
+                }
+
+                // This call's own return type, from this call's own instance
+                // of the signature. Taking it from `callee_type` instead would
+                // hand back the shared one every call to this function has.
+                if let Some(return_type) = instantiated_return {
+                    return Ok(return_type);
                 }
 
                 // Fall back to callee function type for return
@@ -613,7 +1048,7 @@ impl TypeChecker {
                                 let key = n.as_str();
                                 if !decl_map.contains_key(key) {
                                     return Err(Self::type_err(
-                                        &format!("Unknown named argument: {}", n),
+                                        &unknown_named_message(constructed_struct.as_deref(), n),
                                         None,
                                         None,
                                         None,
@@ -627,7 +1062,7 @@ impl TypeChecker {
                                 let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
                                 if !is_optional && !provided.contains(decl.name.as_str()) {
                                     return Err(Self::type_err(
-                                        &format!("Missing required named argument: {}", decl.name),
+                                        &missing_named_message(constructed_struct.as_deref(), &decl.name),
                                         None,
                                         None,
                                         None,
@@ -668,31 +1103,12 @@ impl TypeChecker {
                 }
                 Ok(Type::List(Box::new(Type::Int)))
             }
-            Expr::Closure { params, body } => {
-                // Infer closure as a function type with param type variables and an inferred return
-                let mut param_types = Vec::with_capacity(params.len());
-                for _ in params {
-                    param_types.push(self.inference_engine.fresh_type_var());
-                }
-                // Body type is inferred by checking the body expression. Its own
-                // return frame: a `return` inside a closure body belongs to the
-                // closure, and must not be collected as a return of the enclosing
-                // function (whose declared type it would then have to satisfy).
-                self.push_return_frame();
-                // Like a named function's body: a closure runs when it is
-                // called, which is after the top level has finished, so it may
-                // read a binding declared below it.
-                let pending = self.suspend_pending_top_level();
-                let ret_type = self.check_expr(body);
-                self.restore_pending_top_level(pending);
-                let _ = self.pop_return_frame();
-                let ret_type = ret_type?;
-                Ok(Type::Function {
-                    params: param_types,
-                    named_params: Vec::new(),
-                    return_type: Box::new(ret_type),
-                })
-            }
+            Expr::Closure {
+                params,
+                param_types,
+                return_type,
+                body,
+            } => self.check_closure(params, param_types, return_type.as_deref(), body, &[]),
             Expr::Match { value, arms } => {
                 // Check the matched value type
                 let value_type = self.check_expr(value)?;
@@ -706,6 +1122,24 @@ impl TypeChecker {
                     ));
                 }
 
+                // An arm after an unguarded catch-all can never run. You wrote
+                // a case you believe happens, and it does not — silently, so
+                // nothing ever says the branch is dead. LK refuses rather than
+                // warns because it has no warning channel, and a loud refusal is
+                // what it does elsewhere for the same shape of mistake (a
+                // zero-step range, a `let` over a declared name).
+                //
+                // A *guarded* catch-all is conditional, so it dominates nothing
+                // — the same distinction the fall-through detection draws.
+                if let Some(dead) = first_arm_after_catch_all(arms) {
+                    return Err(Self::type_err(
+                        "this match arm can never run: an earlier arm matches every value",
+                        None,
+                        None,
+                        Some(dead.clone()),
+                    ));
+                }
+
                 // Check all arms have compatible types
                 let mut result_type: Option<Type> = None;
                 for arm in arms {
@@ -713,10 +1147,13 @@ impl TypeChecker {
                     self.check_pattern_against_type(&arm.pattern, &value_type)?;
 
                     // Arm body is checked in a scope with pattern bindings available
-                    let locals_snapshot = self.local_types.clone();
-                    self.add_bindings_for_pattern(&arm.pattern, &value_type)?;
-                    let arm_type = self.check_expr(&arm.body)?;
-                    self.local_types = locals_snapshot;
+                    // A scope, not a snapshot of every visible binding: the arm's
+                    // pattern bindings live in their own layer and go away with it.
+                    self.push_scope();
+                    let bound = self.add_bindings_for_pattern(&arm.pattern, &value_type);
+                    let arm_type = bound.and_then(|()| self.check_expr(&arm.body));
+                    self.pop_scope();
+                    let arm_type = arm_type?;
 
                     if let Some(existing_type) = &result_type {
                         // Add constraint that all arms should return the same type
@@ -727,11 +1164,63 @@ impl TypeChecker {
                     }
                 }
 
-                result_type
-                    .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))
+                let result_type = result_type
+                    .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))?;
+
+                // A `match` that can miss evaluates to `nil` — that is the
+                // language's rule, and it was the *type* that ignored it:
+                // `let r: String = match x { 1 => "one" };` type-checked and
+                // held nil, and `r.len()` was approved and then failed at
+                // runtime with "Len target expected string/list/map/set, got
+                // Nil". The value really can be nil, so the type says so.
+                if matches_every_value(arms, &self.resolve_aliases(&value_type)) {
+                    Ok(result_type)
+                } else {
+                    Ok(Type::Optional(Box::new(result_type)))
+                }
             }
             Expr::Paren(expr) => self.check_expr(expr),
-            Expr::Block(_) => Ok(Type::Any),
+            // Straight-line scopes, which is why this is a node rather than a
+            // rewrite into `let [ok, e] = try$call(|| { body })`: through a
+            // closure the checker saw a fresh type variable for every local
+            // assigned inside the body.
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                self.push_scope();
+                let body_ty = self.check_statements_value(body)?;
+                self.pop_scope();
+
+                self.push_scope();
+                // The caught value is the message string for a plain raise and
+                // the raised value itself for `error(v)`, so the binding is as
+                // wide as the top type (see `vm::exec::handler`).
+                self.add_local_type(catch_var.clone(), Type::Any);
+                let handler_ty = self.check_statements_value(handler)?;
+                self.pop_scope();
+
+                self.unify_branch_values(body_ty, handler_ty)
+            }
+            // A block is checked like any other expression, and evaluates to
+            // its tail (`check_statements_value`).
+            //
+            // Skipping the contents — which is what this did, on the grounds
+            // that blocks mostly come from desugars already checked before they
+            // were built — meant a **closure's** body was never checked at all,
+            // because that is a block too. `let f = |x| { let s: String = 1;
+            // return x; };` was accepted; the same `let` at top level is not.
+            // A whole class of code, invisible to the checker.
+            //
+            // Its own scope, for the reason a block is one everywhere else: an
+            // inner `let` must not be visible after the block.
+            Expr::Block(statements) => {
+                self.push_scope();
+                let ty = self.check_statements_value(statements);
+                self.pop_scope();
+                ty
+            }
         }
     }
 
@@ -739,7 +1228,12 @@ impl TypeChecker {
     pub fn infer_resolved_type(&mut self, expr: &Expr) -> Result<Type> {
         let ty = self.check_expr(expr)?;
         // Attempt to solve constraints and substitute into the resulting type
-        match self.inference_engine.solve_constraints() {
+        let Self {
+            inference_engine,
+            registry,
+            ..
+        } = self;
+        match inference_engine.solve_constraints(registry) {
             Ok(subs) => Ok(ty.substitute(&subs)),
             Err(_) => Ok(ty), // On failure, return the unsolved type to avoid hard errors in tooling
         }
@@ -758,7 +1252,7 @@ impl TypeChecker {
     /// Check identifier type
     fn check_identifier(&mut self, name: &str) -> Result<Type> {
         // Check local variables first
-        if let Some(typ) = self.local_types.get(name) {
+        if let Some(typ) = self.get_local_type(name) {
             return Ok(typ.clone());
         }
 
@@ -781,7 +1275,7 @@ impl TypeChecker {
 
         // Otherwise, assume it's a dynamic variable (type inference needed)
         let var_type = self.inference_engine.fresh_type_var();
-        self.local_types.insert(name.to_string(), var_type.clone());
+        self.add_local_type(name.to_string(), var_type.clone());
         Ok(var_type)
     }
 
@@ -800,8 +1294,29 @@ impl TypeChecker {
             BinOp::Add => {
                 let left_resolved = self.resolve_aliases(&left_type);
                 let right_resolved = self.resolve_aliases(&right_type);
-                if matches!(left_resolved, Type::List(_)) || matches!(right_resolved, Type::List(_)) {
+                // A `Tuple` is what a heterogeneous list *literal* infers to,
+                // and it is a list everywhere else — it indexes, has a `len`,
+                // iterates and is `in`-searchable. Leaving it out here did not
+                // merely refuse a program: `"" + [1, "a"]` fell through to the
+                // string path and was typed `String`, while both executors
+                // answer the list `["", 1, "a"]`. A wrong type is worse than a
+                // refusal, because it propagates — `let v: String = ...` passed
+                // `lk check` and held a list.
+                if matches!(left_resolved, Type::List(_) | Type::Tuple(_))
+                    || matches!(right_resolved, Type::List(_) | Type::Tuple(_))
+                {
                     return self.check_list_addition(left_expr, &left_type, right_expr, &right_type);
+                }
+                // Two maps merge, the right side winning. Both executors have
+                // implemented this all along — the VM's `Add` has a map arm
+                // (`merge_typed_maps`, which keeps the left's key order) and so
+                // does `lkrt_dyn_add` — and only the checker refused, so
+                // `a + b` ran when the types were erased to `Any` and was
+                // "the left operand must be numeric types" when they were not.
+                // The rule this breaks is written down: `lk check` answers the
+                // executors' question.
+                if matches!(left_resolved, Type::Map(_, _)) || matches!(right_resolved, Type::Map(_, _)) {
+                    return self.check_map_addition(left_expr, &left_type, right_expr, &right_type);
                 }
                 if self.is_string_like(&left_type) || self.is_string_like(&right_type) {
                     self.check_string_addition(left_expr, &left_type, right_expr, &right_type)
@@ -809,31 +1324,114 @@ impl TypeChecker {
                     self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
                 }
             }
-            BinOp::Mul if self.is_string_like(&left_type) || self.is_string_like(&right_type) => {
-                let left_string = self.is_string_like(&left_type);
-                let right_string = self.is_string_like(&right_type);
-                let left_int = matches!(self.resolve_aliases(&left_type), Type::Int);
-                let right_int = matches!(self.resolve_aliases(&right_type), Type::Int);
-                if (left_string && right_int) || (left_int && right_string) {
-                    Ok(Type::String)
-                } else {
-                    self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
-                }
+            // `"ab" * 3` is a type error, and says so with the operation the
+            // language actually has.
+            //
+            // This arm used to answer `String` — a string-repetition rule that
+            // **no executor implements**: `lk check` passed the program and
+            // running it raised `* expects Int or Float, got String and Int`.
+            // The checker's core promise is that it catches this before the run,
+            // so a rule for a feature that does not exist is worse than no rule.
+            //
+            // Removed rather than implemented, because the operation is already
+            // here: `"ab".repeat(3)` answers `"ababab"`. Adding the operator
+            // would give one operation two spellings.
+            BinOp::Mul
+                if (self.is_string_like(&left_type) && matches!(self.resolve_aliases(&right_type), Type::Int))
+                    || (matches!(self.resolve_aliases(&left_type), Type::Int) && self.is_string_like(&right_type)) =>
+            {
+                Err(Self::type_err(
+                    "`*` does not repeat a string — write `text.repeat(count)`",
+                    None,
+                    Some(Type::String),
+                    Some(left_expr.clone()),
+                ))
             }
-            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            // `-` removes: `xs - ys` drops every element of `ys`, `m - n` drops
+            // every key of `n`. Both executors have implemented it all along
+            // (the VM's `dynamic_sub` has list and map arms, and its own error
+            // says "expected numbers or list/map lhs"), the tutorial documents
+            // it (`[1, 2, 3] - [2]  // [1, 3]`), and only the checker refused —
+            // so it ran with the types erased to `Any` and was "the left
+            // operand must be numeric types" without. The same defect `+` had,
+            // in the operator beside it.
+            BinOp::Sub => {
+                let left_resolved = self.resolve_aliases(&left_type);
+                let right_resolved = self.resolve_aliases(&right_type);
+                // The *left* side decides, in the interpreter's own order: a
+                // list on the left removes, then a map on the left removes,
+                // and only then is the right side's kind a reason to complain.
+                // Reading either side first sent `{"a": 1} - [1]` — a map
+                // minus a key that happens to be a list — to the list rule,
+                // which then said the left operand was not a list.
+                //
+                // A `Tuple` is a list here for the reason it is one in `+`: a
+                // heterogeneous literal is still a list, and leaving it out
+                // sent `[1, "a"] - 1` to the numeric rule.
+                if matches!(left_resolved, Type::List(_) | Type::Tuple(_)) {
+                    return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(left_resolved, Type::Map(_, _)) {
+                    return self.check_map_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(right_resolved, Type::List(_) | Type::Tuple(_)) {
+                    return self.check_list_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                if matches!(right_resolved, Type::Map(_, _)) {
+                    return self.check_map_removal(left_expr, &left_type, right_expr, &right_type);
+                }
+                self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
+            }
+            BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
             }
             BinOp::Eq | BinOp::Ne => {
-                self.inference_engine
-                    .add_constraint(left_type.clone(), right_type.clone());
+                // Comparing two values of different concrete types is legal and
+                // answers false. `x == nil` is the shape this language is made
+                // of; a constraint between the operands asserts they must be
+                // the *same* type, which is not what `==` means — it made
+                // `let x = nil; x == "k"` a type conflict.
+                //
+                // Kept when either side is still undetermined: `if x == 1` is
+                // real evidence about `x`, and the checker has no other source
+                // for it.
+                // Kept when either side is still undetermined *and* neither is
+                // `nil`: `if x == 1` is real evidence about `x`, but `if x == nil`
+                // is not evidence that `x` **is** nil — it is a test for the one
+                // case where it might be. Binding it to `Nil` is how
+                // `if (val == nil) { … } return [true, val];` came to think `val`
+                // was nil on the path where it demonstrably is not.
+                let comparing_against_nil = left_type == Type::Nil || right_type == Type::Nil;
+                if (left_type.contains_variables() || right_type.contains_variables()) && !comparing_against_nil {
+                    self.inference_engine
+                        .add_constraint(left_type.clone(), right_type.clone());
+                }
                 Ok(Type::Bool)
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 self.check_ordering_operands(left_expr, &left_type, right_expr, &right_type)?;
                 Ok(Type::Bool)
             }
+            // A `Tuple` is what a heterogeneous list *literal* infers to, and a
+            // `String` contains substrings — both were containers everywhere
+            // else (indexing, `len`, method dispatch) and rejected only here.
+            // `"a" in "abc"` therefore worked as a folded literal and was a
+            // type error one line later with the same value in a variable.
+            // `Bytes` and `Slice<T>` were the last two: both index, both have a
+            // `len`, both iterate, and `Bytes` even has a `contains` method —
+            // `in` was the one place they were not containers. The VM had no
+            // arm for either either, so this is not a checker-only relaxation.
+            // `Any` is the next one in that same queue, and the last: it
+            // indexes, has a `len`, iterates, dispatches methods and takes a
+            // `push` — `in` was the one place an erased container was not a
+            // container. What `Any` means is "checked when it runs", and both
+            // executors do check it there.
             BinOp::In => match self.resolve_aliases(&right_type) {
-                Type::List(_) | Type::Map(_, _) | Type::Set(_) => Ok(Type::Bool),
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) | Type::String | Type::Any => {
+                    Ok(Type::Bool)
+                }
+                Type::Named(name) if name == "Bytes" => Ok(Type::Bool),
+                Type::Generic { name, .. } if name == "Slice" => Ok(Type::Bool),
                 other => Err(Self::type_err(
                     "'in' operator requires container type",
                     Some(Type::List(Box::new(Type::Any))),
@@ -874,6 +1472,155 @@ impl TypeChecker {
         }
     }
 
+    /// An integer literal's value, seeing through parentheses.
+    fn int_literal_operand(expr: &Expr) -> Option<i128> {
+        match expr {
+            Expr::Literal(crate::val::LiteralVal::Int(value)) => Some(i128::from(*value)),
+            Expr::Paren(inner) => Self::int_literal_operand(inner),
+            _ => None,
+        }
+    }
+
+    /// The result of a machine-int operation whose other operand was a literal.
+    ///
+    /// The range is checked here rather than left to wrap, because having one is
+    /// the whole point of asking for a fixed width — `port + 300` on a `u8` is a
+    /// mistake worth being told about where it was written.
+    fn machine_literal_result(kind: lk_values::IntKind, literal: i128, expr: &Expr) -> Result<Type> {
+        if !kind.accepts_literal(literal) {
+            return Err(Self::type_err(
+                "literal is out of range for the machine integer it is used with",
+                Some(Type::MachineInt(kind)),
+                None,
+                Some(expr.clone()),
+            ));
+        }
+        Ok(Type::MachineInt(kind))
+    }
+
+    /// `P { ..base, … }`, whose base has to be something with fields.
+    ///
+    /// The spread desugars to `__lk_merge_fields(base, overlay)`, and nothing
+    /// looked at the base: `P { ..5 }` type-checked and died at run time with
+    /// `__lk_merge_fields base must be Object, Map, or Nil, got Int` — a
+    /// sentence naming the desugaring rather than what the reader wrote.
+    ///
+    /// `Any` and an unresolved variable stay permissive, as everywhere else:
+    /// those are the dynamic and inference paths.
+    fn check_merge_fields_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        if func != "__lk_merge_fields" || args.len() != 2 {
+            return Ok(None);
+        }
+        let base = self.check_expr(&args[0])?;
+        let overlay = self.check_expr(&args[1])?;
+        let spreadable = |ty: &Type| {
+            matches!(
+                self.resolve_aliases(ty),
+                Type::Any | Type::Unknown | Type::Variable(_) | Type::Nil | Type::Map(_, _) | Type::Named(_)
+            )
+        };
+        if !spreadable(&base) {
+            return Err(Self::type_err(
+                "a `..base` spread copies another value's fields, so the base has to be a struct, \
+                 a map, or nil",
+                None,
+                Some(base),
+                Some(args[0].as_ref().clone()),
+            ));
+        }
+        let _ = overlay;
+        Ok(Some(Type::Any))
+    }
+
+    /// `a << b` / `a >> b`, whose result is `a`'s type when that is a machine
+    /// integer.    /// `a << b` / `a >> b`, whose result is `a`'s type when that is a machine
+    /// integer.
+    ///
+    /// The shift *amount* is deliberately not constrained to the same width —
+    /// `flags << 3` is what people write, and requiring `3 as u32` there is the
+    /// ceremony that gets fixed widths abandoned.
+    fn check_shift_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        /// Which argument a side names, so the error can quote the operand the
+        /// reader wrote rather than the desugared builtin call.
+        fn ty_expr_for<'a>(which: &str, args: &'a [Box<Expr>]) -> &'a Expr {
+            if which == "left" { &args[0] } else { &args[1] }
+        }
+
+        let arity = match func {
+            "__lk_shl" | "__lk_shr" | "__lk_shr_u" | "__lk_bit_and" | "__lk_bit_or" | "__lk_bit_xor" => 2,
+            "__lk_bit_not" => 1,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Ok(None);
+        }
+        let left = self.check_expr(&args[0])?;
+        let right = if arity == 2 {
+            Some(self.check_expr(&args[1])?)
+        } else {
+            None
+        };
+        let resolved = self.resolve_aliases(&left);
+        // A bit operation on a non-integer is an error, not "not my business".
+        //
+        // This used to check the left operand's *shape* and return `None` for
+        // anything that was not a machine int — and `None` means "no opinion",
+        // so the caller typed the call dynamically and said nothing. The right
+        // operand was not looked at at all (`let _ = ...`).
+        //
+        // What that let through: `(bdf / 0x800) & 0x1f`. In LK `/` always yields
+        // a `Float` (docs/semantics.md), so that is a Float meeting `&` — the VM
+        // raises at runtime (`bit_arg` requires an Int) and the AOT refuses to
+        // lower it, while `lk check` passed it in silence. Three behaviours for
+        // one program, and it had been sitting in seven functions of the x86
+        // PCI driver.
+        //
+        // `Any` and an unresolved variable stay permissive: those are the
+        // dynamic and inference paths, where the answer is not known yet.
+        for (which, ty) in [Some(("left", &left)), right.as_ref().map(|r| ("right", r))]
+            .into_iter()
+            .flatten()
+        {
+            let resolved = self.resolve_aliases(ty);
+            // `Boxed<T>` unwraps first: a boxed value is the dynamic escape hatch
+            // just as `Any` is, and `1 << 12` types as `Box<Any>` today (the
+            // shift builtin only claims a type for a *machine* int left
+            // operand). Rejecting that shape was a false positive, and the
+            // `shift/with_mask` differential is what said so.
+            let mut probe = &resolved;
+            while let Type::Boxed(inner) = probe {
+                probe = inner;
+            }
+            if !matches!(probe, Type::Int | Type::MachineInt(_) | Type::Any | Type::Variable(_)) {
+                return Err(Self::type_err(
+                    &alloc::format!("the {which} operand of a bit operation must be an Int"),
+                    Some(Type::Int),
+                    Some(probe.clone()),
+                    Some(ty_expr_for(which, args).clone()),
+                ));
+            }
+        }
+        Ok(match resolved {
+            Type::MachineInt(_) => Some(resolved),
+            _ => None,
+        })
+    }
+
+    /// `"a" + x` — a string joined to something.
+    ///
+    /// The answer is a `String` *unless the other operand might be a list*, in
+    /// which case it might be a list: a list operand wins over a string one, so
+    /// `"a" + [1, 2]` is `["a", 1, 2]`. An erased operand might be one at run
+    /// time and this used to promise `String` anyway, so
+    ///
+    /// ```lk
+    /// fn f(v: Any) -> String { return "a" + v; }
+    /// f([1, 2])                            // ["a",1,2]
+    /// ```
+    ///
+    /// passed `lk check` and answered a list. The native build read the
+    /// promise and unboxed the result as a string, which raised — one back end
+    /// answering and the other refusing, on a type the checker had invented.
     fn check_string_addition(
         &mut self,
         _left_expr: &Expr,
@@ -881,12 +1628,25 @@ impl TypeChecker {
         _right_expr: &Expr,
         right_ty: &Type,
     ) -> Result<Type> {
+        // A type *variable* is not one of these: `coerce_to_string` below binds
+        // it to `String`, so by the time this answers the operand really is a
+        // string. `Any` is a declared escape hatch and cannot be bound — that
+        // is the whole difference, and it is why `x + "!"` stays a `String`
+        // while `v + "!"` with `v: Any` does not.
+        let could_be_a_list = |ty: &Type| matches!(ty, Type::Any | Type::Union(_) | Type::Unknown);
+        let erased =
+            could_be_a_list(&self.resolve_aliases(left_ty)) || could_be_a_list(&self.resolve_aliases(right_ty));
         self.coerce_to_string(left_ty);
         self.coerce_to_string(right_ty);
-        Ok(Type::String)
+        Ok(if erased { Type::Any } else { Type::String })
     }
 
-    fn check_list_addition(
+    /// `m + n` — the two maps merged, the right side winning on a shared key.
+    ///
+    /// The answer's key and value types follow `check_list_addition`'s rule:
+    /// whichever side subsumes the other, or `Any` when neither does. A merge
+    /// can only produce keys and values the two operands already had.
+    fn check_map_addition(
         &mut self,
         left_expr: &Expr,
         left_ty: &Type,
@@ -896,36 +1656,236 @@ impl TypeChecker {
         let left_resolved = self.resolve_aliases(left_ty);
         let right_resolved = self.resolve_aliases(right_ty);
         match (left_resolved, right_resolved) {
+            (Type::Map(left_key, left_value), Type::Map(right_key, right_value)) => {
+                let key = self.wider_of(left_key.as_ref(), right_key.as_ref());
+                let value = self.wider_of(left_value.as_ref(), right_value.as_ref());
+                Ok(Type::Map(Box::new(key), Box::new(value)))
+            }
+            // One erased operand, same rule as `in` and list concatenation:
+            // `Any` is a container until it runs. Neither key nor value type
+            // is known, so the result is the widest map.
+            (Type::Map(_, _), Type::Any) | (Type::Any, Type::Map(_, _)) | (Type::Any, Type::Any) => {
+                Ok(Type::Map(Box::new(Type::Any), Box::new(Type::Any)))
+            }
+            // A string on the other side is not a failed merge, it is a
+            // *concatenation* — the map renders the way `print` renders it, the
+            // same as `"${m}"`. This refused while the executors answered, and
+            // the message named an operation the program had not written:
+            // `"v=" + {"k": 1}` was "map merge requires both operands to be
+            // maps".
+            (Type::Map(_, _), Type::String) | (Type::String, Type::Map(_, _)) => Ok(Type::String),
+            (Type::Map(_, _), other) | (other, Type::Map(_, _)) => Err(Self::type_err(
+                "map merge requires both operands to be maps",
+                Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Add,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_map_addition is only reached when a side is a map"),
+        }
+    }
+
+    /// Whether a key type can be shown never to match the map's.
+    ///
+    /// Both have to be concrete and unrelated. `Any`, a type variable and a
+    /// union stay out, because the constraint they would have added is doing
+    /// real inference — `m[k]` is how an unbound `k` learns it is a key.
+    fn definitely_not_key(&mut self, field_ty: &Type, key_ty: &Type) -> bool {
+        let concrete = |t: &Type| {
+            matches!(
+                t,
+                Type::Int | Type::Float | Type::Bool | Type::String | Type::Nil | Type::List(_) | Type::Set(_)
+            ) || matches!(t, Type::Map(_, _))
+        };
+        concrete(field_ty)
+            && concrete(key_ty)
+            && !self.is_assignable(field_ty, key_ty)
+            && !self.is_assignable(key_ty, field_ty)
+    }
+
+    /// A `Tuple` read as the list it is, everything else unchanged.
+    ///
+    /// A heterogeneous list *literal* infers to `Tuple`, and a tuple is a list
+    /// everywhere else — it indexes, has a `len`, iterates, is `in`-searchable.
+    /// The container operators are where it kept being left out.
+    fn as_list_type(&mut self, ty: &Type) -> Type {
+        match self.resolve_aliases(ty) {
+            Type::Tuple(elems) => {
+                let elem = elems
+                    .iter()
+                    .fold(None, |acc: Option<Type>, e| match acc {
+                        None => Some(e.clone()),
+                        Some(acc) => Some(self.wider_of(&acc, e)),
+                    })
+                    .unwrap_or(Type::Any);
+                Type::List(Box::new(elem))
+            }
+            other => other,
+        }
+    }
+
+    /// Whichever of the two subsumes the other, or `Any` when neither does.
+    ///
+    /// The rule `check_list_addition` uses for a concatenation's element type,
+    /// named once now that the map merge needs it for both halves of its key
+    /// and value.
+    ///
+    /// `Any` is answered before asking, because `is_assignable` reads it in the
+    /// other direction: an `Any` may be used *where any type is expected*, so
+    /// `is_assignable(Any, Int)` is true and the subsumption question comes
+    /// back "`Int` is wider". It is not — `Any` is the one that holds anything,
+    /// and taking `Int` from it is how a merged `Map<String, Any>` was typed
+    /// `Map<String, Int>` and then held a string:
+    ///
+    /// ```lk
+    /// fn f(m: Map<String, Any>) -> Int {
+    ///     let v: Int = (m + {"a": 1})["z"];   // accepted, held "not an int"
+    ///     return 0;
+    /// }
+    /// ```
+    ///
+    /// The escape hatch is for *passing* a value, not for narrowing one.
+    fn wider_of(&mut self, left: &Type, right: &Type) -> Type {
+        if matches!(left, Type::Any) || matches!(right, Type::Any) {
+            return Type::Any;
+        }
+        if self.is_assignable(left, right) {
+            right.clone()
+        } else if self.is_assignable(right, left) {
+            left.clone()
+        } else {
+            Type::Any
+        }
+    }
+
+    /// `xs - ys` — `xs` without the elements `ys` holds.
+    ///
+    /// The answer keeps the receiver's element type: removal takes elements
+    /// away and never introduces one, so nothing widens.
+    fn check_list_removal(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        let left_resolved = self.as_list_type(left_ty);
+        match (left_resolved, self.resolve_aliases(right_ty)) {
+            (Type::List(left_inner), Type::List(_) | Type::Tuple(_)) => Ok(Type::List(left_inner)),
+            // Same rule again. The known side's element type does not survive
+            // an erased operand, so the result is the widest list.
+            (Type::List(inner), Type::Any) => Ok(Type::List(inner)),
+            (Type::Any, Type::List(_) | Type::Tuple(_)) | (Type::Any, Type::Any) => Ok(Type::List(Box::new(Type::Any))),
+            // `xs - v` removes the first element equal to `v`. The VM has an
+            // arm for it (`remove_first_list_value`) beside the list-minus-list
+            // one, and so does `lkrt_dyn_sub`; only the checker refused, which
+            // is the defect `Any + Any` map merge was. Removal never introduces
+            // an element, so nothing widens — the receiver's type is kept, as
+            // this function's doc already says.
+            (Type::List(inner), _) => Ok(Type::List(inner)),
+            (other, Type::List(_) | Type::Tuple(_)) => Err(Self::type_err(
+                "list removal requires a list on the left",
+                Some(Type::List(Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Sub,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_list_removal is only reached when a side is a list"),
+        }
+    }
+
+    /// `m - n` — `m` without the keys `n` holds. Keeps `m`'s types, for the
+    /// reason [`check_list_removal`] gives.
+    fn check_map_removal(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        match (self.resolve_aliases(left_ty), self.resolve_aliases(right_ty)) {
+            (Type::Map(left_key, left_value), Type::Map(_, _)) => Ok(Type::Map(left_key, left_value)),
+            // `m - k` removes that one key, the VM's arm beside the
+            // map-minus-map one — and it takes *any* value, the way
+            // `m.delete(k)` does. A value that cannot be a key cannot be in the
+            // map, so removing it removes nothing; removal looks a key up
+            // rather than building one, which is the line `m[k]` and
+            // `m.set(k, v)` stay on the other side of.
+            (Type::Map(key, value), _) => Ok(Type::Map(key, value)),
+            // Only the right-map case is left: a map on the *left* takes
+            // anything, per the arm above.
+            (other, Type::Map(_, _)) => Err(Self::type_err(
+                "map removal requires a map on the left",
+                Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+                Some(other),
+                Some(Expr::Bin(
+                    Box::new(left_expr.clone()),
+                    BinOp::Sub,
+                    Box::new(right_expr.clone()),
+                )),
+            )),
+            _ => unreachable!("check_map_removal is only reached when a side is a map"),
+        }
+    }
+
+    fn check_list_addition(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<Type> {
+        let left_resolved = self.as_list_type(left_ty);
+        let right_resolved = self.as_list_type(right_ty);
+        match (left_resolved, right_resolved) {
             (Type::List(left_inner), Type::List(right_inner)) => {
-                let elem_ty = if self.is_assignable(left_inner.as_ref(), right_inner.as_ref()) {
-                    (*left_inner).clone()
-                } else if self.is_assignable(right_inner.as_ref(), left_inner.as_ref()) {
-                    (*right_inner).clone()
-                } else {
-                    Type::Any
-                };
+                // `wider_of`, whose doc has said all along that it is "the rule
+                // `check_list_addition` uses" — while this spelled out the
+                // opposite tie-break and picked the *narrower* side in both
+                // branches. `Int <: Float`, so `[1] + [1.5]` was typed
+                // `List<Int>` and held `1.5`:
+                //
+                //     let v: List<Int> = [1] + [1.5];   // accepted
+                //     let n: Int = v[1];                // accepted
+                //     typeof(v[1])                      // Float
+                //
+                // The map merge, which does call `wider_of`, answered
+                // `Map<String, Float>` for the same pair of types.
+                let elem_ty = self.wider_of(left_inner.as_ref(), right_inner.as_ref());
                 Ok(Type::List(Box::new(elem_ty)))
             }
-            (Type::List(_), other) => Err(Self::type_err(
-                "List concatenation requires both operands to be lists",
-                Some(Type::List(Box::new(Type::Any))),
-                Some(other),
-                Some(Expr::Bin(
-                    Box::new(left_expr.clone()),
-                    BinOp::Add,
-                    Box::new(right_expr.clone()),
-                )),
-            )),
-            (other, Type::List(_)) => Err(Self::type_err(
-                "List concatenation requires both operands to be lists",
-                Some(Type::List(Box::new(Type::Any))),
-                Some(other),
-                Some(Expr::Bin(
-                    Box::new(left_expr.clone()),
-                    BinOp::Add,
-                    Box::new(right_expr.clone()),
-                )),
-            )),
+            // One erased operand is the same rule `in` follows: `Any` is a
+            // container until it runs. The element type is unknown, so the
+            // result is the widest list rather than the known side's.
+            (Type::List(_), Type::Any) | (Type::Any, Type::List(_)) | (Type::Any, Type::Any) => {
+                Ok(Type::List(Box::new(Type::Any)))
+            }
+            // A list operand absorbs the other one, in position: the VM's
+            // `Add` prepends for `"p=" + [1, 2]` and appends for
+            // `[1, 2] + "x"`, and `lkrt_dyn_add` says the rule out loud —
+            // "a list operand wins over a string one, so `"p=" + [1, 2]` is
+            // the list `["p=", 1, 2]` and not the text `p=[1,2]`".
+            //
+            // Both executors have answered this all along and only the checker
+            // refused, and only when it could see the types — so the same
+            // expression ran with `Any` operands and was a type error with
+            // known ones. That is the defect `Any + Any` map merge was fixed
+            // for, stated the same way: `lk check` answers the executors'
+            // question, and a rule neither executor has is as much a defect as
+            // a missing one.
+            //
+            // No operand kind is excluded, because none raises: a set, a byte
+            // string, a map and a nil all land in the list beside the elements.
+            (Type::List(inner), other) | (other, Type::List(inner)) => {
+                let elem = self.wider_of(inner.as_ref(), &other);
+                Ok(Type::List(Box::new(elem)))
+            }
             _ => Err(Self::type_err(
                 "List concatenation requires both operands to be lists",
                 Some(Type::List(Box::new(Type::Any))),
@@ -969,6 +1929,37 @@ impl TypeChecker {
             // division is what the hardware does.
             return Ok(Type::MachineInt(*left_kind));
         }
+        // An integer *literal* takes the machine width of the other side.
+        //
+        // `let x: u8 = 5` already works — a literal is retyped rather than
+        // rejected, because requiring `5 as u8` there would make a fixed width
+        // unusable. `reg + 1` is the same need with more force: `reg + (1 as u32)`
+        // at every increment is what gets fixed widths abandoned in favour of
+        // `Int`, which is the opposite of what asking for a width was for.
+        //
+        // This half alone is a *miscompile*, and it was one for a round: the
+        // checker says `u8` while the compiler goes on materialising the literal
+        // as an ordinary `Int` and doing 64-bit arithmetic, so `255u8 + 1`
+        // answers 256 with the type still claiming `u8`. The other half is
+        // `adopt_machine_width_for_literal` in the compiler, which normalises the
+        // literal to that width before the operation, so the wrap that follows
+        // has two proven operands to agree about.
+        //
+        // Only a literal. A *variable* of another numeric type is still a width
+        // mistake — that is the rule this preserves — and a literal out of range
+        // says so, measured against the width it was used with.
+        if let Type::MachineInt(kind) = &resolved_left
+            && !matches!(resolved_right, Type::MachineInt(_))
+            && let Some(literal) = Self::int_literal_operand(right_expr)
+        {
+            return Self::machine_literal_result(*kind, literal, right_expr);
+        }
+        if let Type::MachineInt(kind) = &resolved_right
+            && !matches!(resolved_left, Type::MachineInt(_))
+            && let Some(literal) = Self::int_literal_operand(left_expr)
+        {
+            return Self::machine_literal_result(*kind, literal, left_expr);
+        }
         // A machine integer on one side only is a width mistake, not a promotion.
         if matches!(resolved_left, Type::MachineInt(_)) || matches!(resolved_right, Type::MachineInt(_)) {
             let (offending, expr) = if matches!(resolved_left, Type::MachineInt(_)) {
@@ -984,9 +1975,26 @@ impl TypeChecker {
             ));
         }
 
-        let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "左侧")?;
-        let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "右侧")?;
+        let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "the left operand")?;
+        let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "the right operand")?;
 
+        // `/` yields a `Float`, even for two `Int`s.
+        //
+        // That was always the design — `docs/semantics.md` states it and
+        // explains the consequence (an integer midpoint has to be written
+        // `math.floor((lo + hi) / 2)`), and `examples/syntax/operators.lk`
+        // asserts `15 / 4 > 3.7`. Only the *executor* never implemented it:
+        // both backends divided as integers, and the constant folder split the
+        // difference by keeping an `Int` when the literals happened to divide
+        // evenly. So one expression had three answers:
+        //
+        // ```text
+        // println(7 / 2);                        → 3.5   (folded)
+        // let a = 7; let b = 2; println(a / b);  → 3     (runtime)
+        // ```
+        //
+        // The runtimes moved to this rule rather than the other way around:
+        // this one is what the language says it is, in three places.
         let mut result_class = NumericHierarchy::result(left_class, right_class);
         if matches!(op, BinOp::Div) && result_class == NumericClass::Int {
             result_class = NumericClass::Float;
@@ -1010,7 +2018,7 @@ impl TypeChecker {
             return Ok(NumericClass::Int);
         }
         Err(Self::type_err(
-            &format!("{label} must by numeric types"),
+            &format!("{label} must be numeric types"),
             Some(NumericHierarchy::expected_type()),
             Some(resolved.clone()),
             Some(expr.clone()),
@@ -1048,6 +2056,18 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            // A literal takes the width of what it is compared against, the same
+            // as in arithmetic: `reg > 0` and `count < 8` are what driver code
+            // is made of, and `reg > (0 as u32)` is the ceremony that gets fixed
+            // widths abandoned. The range is still checked against that width.
+            (Type::MachineInt(kind), _) if Self::int_literal_operand(right_expr).is_some() => {
+                let literal = Self::int_literal_operand(right_expr).expect("checked");
+                Self::machine_literal_result(*kind, literal, right_expr).map(|_| ())
+            }
+            (_, Type::MachineInt(kind)) if Self::int_literal_operand(left_expr).is_some() => {
+                let literal = Self::int_literal_operand(left_expr).expect("checked");
+                Self::machine_literal_result(*kind, literal, left_expr).map(|_| ())
+            }
             (Type::MachineInt(kind), other) => Err(Self::type_err(
                 "machine integers do not mix with other numeric types; cast explicitly",
                 Some(Type::MachineInt(*kind)),
@@ -1060,17 +2080,76 @@ impl TypeChecker {
                 Some(other.clone()),
                 Some(left_expr.clone()),
             )),
+            // Strings order lexicographically, as they already did everywhere
+            // else: `list.sort()` puts them in that order, the constant folder
+            // folds `"a" < "b"`, and the executor's `number_compare` has had a
+            // string arm all along. Only this rule said no, so the one way to
+            // ask a string which came first was to sort a two-element list.
+            (Type::String, Type::String) => Ok(()),
+            // A String against something else. The fall-through below reported
+            // "the left operand must be numeric", which blames the wrong thing:
+            // a String *is* orderable, just not against a number. An ordering
+            // compares two of a kind.
+            (Type::String, other) => self.orders_against_a_string(other, right_expr),
+            (other, Type::String) => self.orders_against_a_string(other, left_expr),
             _ => {
-                self.ensure_numeric_operand(left_ty, left_expr, "左侧")?;
-                self.ensure_numeric_operand(right_ty, right_expr, "右侧")?;
+                self.ensure_orderable_operand(left_ty, left_expr)?;
+                self.ensure_orderable_operand(right_ty, right_expr)?;
                 Ok(())
             }
         }
     }
 
-    fn ensure_numeric_operand(&mut self, ty: &Type, expr: &Expr, label: &'static str) -> Result<NumericClass> {
+    /// One side of an ordering: a number or a string.
+    ///
+    /// This position used to borrow `classify_numeric_operand`, which is
+    /// *arithmetic's* rule and reports the expected set as
+    /// `Int | Float | Box<Any>` — a set that stopped being right when strings
+    /// became orderable. It also answered the wrong question about `[1,2] < [1,3]`:
+    /// the point is that a list has no ordering at all, not that it is not a
+    /// number. Arithmetic keeps that rule, which is correct there (a string
+    /// concatenates through a different arm).
+    fn ensure_orderable_operand(&mut self, ty: &Type, expr: &Expr) -> Result<()> {
         let resolved = self.resolve_aliases(ty);
-        self.classify_numeric_operand(ty, &resolved, expr, label)
+        if NumericHierarchy::classify(&resolved).is_some() || matches!(resolved, Type::String) {
+            return Ok(());
+        }
+        if ty.contains_variables() {
+            self.inference_engine.add_constraint(ty.clone(), Type::Int);
+            return Ok(());
+        }
+        if matches!(resolved, Type::Any | Type::Boxed(_)) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            "`<`, `<=`, `>` and `>=` order numbers and strings; this type has no ordering",
+            None,
+            Some(resolved),
+            Some(expr.clone()),
+        ))
+    }
+
+    /// The other side of an ordering whose one side is a `String`.
+    ///
+    /// Unresolved becomes a `String` — this is a comparison of strings, which is
+    /// the only thing a string orders against. Dynamic (`Any`, a box) is decided
+    /// at run time, as everywhere else. Anything concrete and not a string is the
+    /// mistake, and the report names the *pair* rather than accusing one side of
+    /// not being a number.
+    fn orders_against_a_string(&mut self, other: &Type, other_expr: &Expr) -> Result<()> {
+        match other {
+            Type::Variable(_) => {
+                self.inference_engine.add_constraint(other.clone(), Type::String);
+                Ok(())
+            }
+            Type::Any | Type::Boxed(_) => Ok(()),
+            _ => Err(Self::type_err(
+                "an ordering compares two of a kind: a String orders against a String, a number against a number",
+                Some(Type::String),
+                Some(other.clone()),
+                Some(other_expr.clone()),
+            )),
+        }
     }
 
     /// Check logical operation types (&&, ||)
@@ -1086,15 +2165,73 @@ impl TypeChecker {
     }
 
     /// Check unary operation types
+    /// Whether a value of this type could be a `Bool` or a `Nil` at run time.
+    ///
+    /// `Optional(Int)` counts: it is nil sometimes, and `!x` on the nil is a
+    /// program that works. Only a type with no `Bool` and no `Nil` anywhere in
+    /// it is certainly wrong.
+    fn may_be_bool_or_nil(ty: &Type) -> bool {
+        match ty {
+            Type::Bool | Type::Nil | Type::Any | Type::Unknown | Type::Variable(_) => true,
+            Type::Optional(_) => true,
+            Type::Union(members) => members.iter().any(Self::may_be_bool_or_nil),
+            _ => false,
+        }
+    }
+
     fn check_unary_op(&mut self, op: &UnaryOp, expr: &Expr) -> Result<Type> {
         let expr_type = self.check_expr(expr)?;
 
         match op {
+            // `!` takes a `Bool` or a `Nil`, which is the runtime's rule
+            // (`Not expected Bool or Nil, got Int`) — and the checker used to
+            // accept *anything*, so `!5` passed `lk check` and raised when it
+            // ran. Its sibling `&&` has always been checked; only `!` was
+            // waved through.
+            //
+            // Rejected only when the operand *cannot* be either. A variable, an
+            // `Any`, or a union with a `Bool` or a `Nil` in it may still be one
+            // at run time, and this is a language where that is the ordinary
+            // case — the check names what is certainly wrong, not everything it
+            // cannot prove right.
             UnaryOp::Not => {
-                if matches!(self.resolve_aliases(&expr_type), Type::Variable(_)) {
+                let resolved = self.resolve_aliases(&expr_type);
+                if matches!(resolved, Type::Variable(_)) {
                     self.inference_engine.add_constraint(expr_type, Type::Any);
+                } else if !Self::may_be_bool_or_nil(&resolved) {
+                    return Err(Self::type_err(
+                        "Not expected Bool or Nil",
+                        Some(Type::Bool),
+                        Some(resolved.clone()),
+                        Some(expr.clone()),
+                    ));
                 }
                 Ok(Type::Bool)
+            }
+            // Negation keeps the operand's type: an `Int` stays an `Int`, a
+            // `Float` a `Float`. Widening to a `Number` union would throw away
+            // the width the rest of the checker relies on, and `-x` never
+            // changes it.
+            //
+            // Machine integers are admitted for the signed kinds only. `-x` on
+            // a `u8` has no answer the writer could have meant: the negation
+            // does not fit the type, and wrapping to `256 - x` silently is
+            // worse than saying so.
+            UnaryOp::Neg => {
+                let resolved = self.resolve_aliases(&expr_type);
+                if let Type::MachineInt(kind) = resolved {
+                    return match kind {
+                        IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64 | IntKind::Isize => Ok(expr_type),
+                        _ => Err(Self::type_err(
+                            "cannot negate an unsigned integer",
+                            Some(Type::Int),
+                            Some(resolved.clone()),
+                            Some(expr.clone()),
+                        )),
+                    };
+                }
+                self.classify_numeric_operand(&expr_type, &resolved, expr, "negation operand")?;
+                Ok(expr_type)
             }
         }
     }
@@ -1152,6 +2289,21 @@ impl TypeChecker {
         for (k, v) in pairs {
             let kt = self.check_expr(k)?;
             let vt = self.check_expr(v)?;
+            // Same rule as a set member, because a set *is* a key set. Each key
+            // is checked on its own: a literal names its key one by one, so
+            // `{1.5: "a"}` is settled here rather than at run time.
+            let resolved_key = self.resolve_aliases(&kt);
+            if crate::typ::type_checker::type_is_certainly_not_a_key(&resolved_key) {
+                return Err(Self::type_err(
+                    &format!(
+                        "{} cannot be a map key — only nil, Bool, Int and String can",
+                        resolved_key.display()
+                    ),
+                    None,
+                    Some(resolved_key),
+                    Some(k.as_ref().clone()),
+                ));
+            }
             match kt {
                 Type::Union(ts) => key_tys.extend(ts),
                 other => key_tys.push(other),
@@ -1187,6 +2339,112 @@ impl TypeChecker {
         };
 
         Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
+    }
+
+    /// One store into a container, checked against what the container's type
+    /// declares it holds.
+    ///
+    /// Every assignment that is not a plain `name = value` reaches this: the
+    /// parser desugars `l[i] = v`, `m[k] = v` and `s.f = v` into hidden calls
+    /// (`__lk_set_index`, `__lk_set_field`, `list.set`), and until now nothing
+    /// checked the *value* against the declaration. `l.set(0, "a")` on a
+    /// `List<Int>` was refused while `l[0] = "a"` — the same operation, the
+    /// other spelling — was accepted, and `let n: Int = l[0]` then type-checked
+    /// and held a String. A struct field was the same: `s.x = "a"` on
+    /// `struct S { x: Int }`.
+    ///
+    /// `Any` on either side is the language's dynamic escape hatch and passes,
+    /// as it does everywhere else.
+    fn check_container_store(&mut self, container_ty: &Type, key: &Expr, value: &Expr) -> Result<()> {
+        let container = self.resolve_aliases(container_ty);
+        let declared = match &container {
+            Type::List(elem) => (**elem).clone(),
+            Type::Map(key_ty, val) => {
+                // The key too: a `Map<String, Int>` accepted `m[7] = 2` and
+                // then held an Int key. The rule that a Float cannot be a key
+                // *at all* was already asked; this is the declared key type.
+                let actual_key = self.check_expr(key)?;
+                if !actual_key.contains_variables()
+                    && !key_ty.contains_variables()
+                    && !self.is_assignable(&actual_key, key_ty)
+                {
+                    return Err(Self::type_err(
+                        "map key has the wrong type",
+                        Some((**key_ty).clone()),
+                        Some(actual_key),
+                        Some(key.clone()),
+                    ));
+                }
+                (**val).clone()
+            }
+            // A heterogeneous list literal infers `Tuple`, and its positions
+            // have *different* types, so a store is checked per position. With
+            // an index that is not a literal the position is unknown, so the
+            // value has to fit every one of them — the read `l[0]` is typed
+            // from position 0, and a dynamic store landing there must not
+            // break it. `let l = [1, "a"]; l[0] = 2.5;` used to be accepted,
+            // and `let n: Int = l[0]` then held 2.5.
+            Type::Tuple(elems) => match key {
+                Expr::Literal(LiteralVal::Int(index)) if (*index as usize) < elems.len() => {
+                    elems[*index as usize].clone()
+                }
+                _ => {
+                    let value_ty = self.check_expr(value)?;
+                    if value_ty.contains_variables() {
+                        return Ok(());
+                    }
+                    for elem in elems.iter() {
+                        if !elem.contains_variables() && !self.is_assignable(&value_ty, elem) {
+                            return Err(Self::type_err(
+                                "stored value has the wrong type for some position of this tuple",
+                                Some(elem.clone()),
+                                Some(value_ty),
+                                Some(value.clone()),
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+            },
+            // A struct's field names its own type. A field name that does not
+            // resolve is an error *here* rather than the field-access path's
+            // business: a store has no access expression for that path to see.
+            // `p.z = 3` desugars straight to `__lk_set_field(p, "z", 3)`, so
+            // while reading `p.z` was refused, writing it was accepted — and
+            // the two back ends then disagreed about the value, the interpreter
+            // growing the field and the compiled build dropping it.
+            //
+            // Only for a struct this checker knows and a field written as a
+            // literal. An unknown name is somebody else's to refuse, and a
+            // computed field name is not a struct store at all.
+            Type::Named(name) if self.registry.get_struct(name).is_some() => match self.struct_field_type(name, key) {
+                Ok(ty) => ty,
+                Err(_) if !matches!(key, Expr::Literal(_)) => return Ok(()),
+                Err(err) => return Err(err),
+            },
+            Type::Named(_) => return Ok(()),
+            _ => return Ok(()),
+        };
+        let value_ty = self.check_expr(value)?;
+        // Nothing settled to check against: an unannotated container's element
+        // type is still a variable, so the store *teaches* it rather than being
+        // refused by it. Same rule `check_argument` applies to an argument, and
+        // what keeps `let l = []; l.push(1); l[0] = "a";` working.
+        if declared.contains_variables() || value_ty.contains_variables() {
+            self.inference_engine.add_constraint(declared, value_ty);
+            return Ok(());
+        }
+        // `value_fits`, not bare assignability: a store is a position a value
+        // is written at, and the literal rules belong to every one of them.
+        if self.value_fits(value, &value_ty, &declared) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            "stored value has the wrong type",
+            Some(declared),
+            Some(value_ty),
+            Some(value.clone()),
+        ))
     }
 
     fn struct_field_type(&self, struct_name: &str, field: &Expr) -> Result<Type> {
@@ -1233,6 +2491,12 @@ impl TypeChecker {
         if let Some(function_type) = self.stdlib_access_function_type(expr, field) {
             return Ok(function_type);
         }
+        if let Expr::Var(namespace) = expr
+            && let Some(member) = stdlib::segment_name(field)
+            && let Some(member_type) = self.imported_member_type(namespace, member)
+        {
+            return Ok(member_type);
+        }
 
         let expr_type = self.check_expr(expr)?;
         let field_type = self.check_expr(field)?;
@@ -1255,7 +2519,55 @@ impl TypeChecker {
                 }
                 Ok((**elem_type).clone())
             }
+            // A `Bytes` indexes like any other sequence, and its elements are
+            // `Int`. Without this the index fell through to struct-field
+            // access, so `b[0]` reported "Unknown struct 'Bytes'".
+            Type::Named(name) if name == "Bytes" => {
+                // `b[a..c]` is `b.slice(a, c)` written the other way, and it
+                // answers a `Bytes` for the same reason: every element of the
+                // answer is still a byte. The two spellings used to disagree —
+                // the method worked and the range said "Bytes index must be
+                // integer".
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::Named("Bytes".to_string()));
+                }
+                if !self.is_assignable(&field_type, &Type::Int) {
+                    return Err(Self::type_err(
+                        "Bytes index must be integer",
+                        Some(Type::Int),
+                        Some(field_type),
+                        None,
+                    ));
+                }
+                Ok(Type::Int)
+            }
+            // A window indexes like the list it windows, and yields the same
+            // element type — which is the point of `Slice` carrying one.
+            Type::Generic { name, params } if name == "Slice" => {
+                // A sub-range of a window is a window, which is what
+                // `w.slice(a, c)` already answers.
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(resolved_expr_type.clone());
+                }
+                if !self.is_assignable(&field_type, &Type::Int) {
+                    return Err(Self::type_err(
+                        "Slice index must be integer",
+                        Some(Type::Int),
+                        Some(field_type),
+                        None,
+                    ));
+                }
+                Ok(params.first().cloned().unwrap_or(Type::Any))
+            }
             Type::Tuple(elems) => {
+                // `t[a..b]` is a slice, the way it is on every other sequence.
+                // Each arm above carries this guard and this one did not, so a
+                // heterogeneous literal — which is what a `Tuple` is — was the
+                // one list that could not be sliced: `[1, "a"][0..2]` said
+                // "Tuple index must be integer" while `[1, 2][0..2]` answered.
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::List(Box::new(Type::Union(elems.to_vec()))));
+                }
                 // Field must be integer index; if it's a literal index, pick that element
                 if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
@@ -1277,8 +2589,19 @@ impl TypeChecker {
                 Ok(u)
             }
             Type::Map(key_type, value_type) => {
-                // Field must match key type
-                self.inference_engine.add_constraint((**key_type).clone(), field_type);
+                // Reading a key of another type is a *miss*, not an error: the
+                // interpreter answers nil, the way it does for a key that is
+                // simply absent. Constraining the two unified them, so
+                // `{"k": 1}[0]` was "Cannot unify String with Int" — a message
+                // about the checker's own machinery, for a lookup that has an
+                // answer.
+                //
+                // Writing is the other side of the line and still refuses:
+                // `m[0] = 9` would put a key in the map that its type says is
+                // not there.
+                if !self.definitely_not_key(&field_type, key_type.as_ref()) {
+                    self.inference_engine.add_constraint((**key_type).clone(), field_type);
+                }
                 Ok((**value_type).clone())
             }
             Type::String => {
@@ -1338,6 +2661,234 @@ impl TypeChecker {
         }
     }
 
+    /// A closure's type: its parameters, and the type its body has.
+    ///
+    /// `expected_params` is what the *call site* already knows about them —
+    /// `xs.map(|x| …)` on a `List<String>` knows `x` is a `String` before the
+    /// body is read. Without that, the body is checked with `x` still a free
+    /// variable, so `x.bogus()` is unknowable rather than wrong, and the
+    /// element type only arrives afterwards as a constraint, too late to have
+    /// checked anything. Anything not supplied stays a fresh variable, which is
+    /// every closure that is not an argument to a method that knows better.
+    /// Types a closure, with `expected_params` pushed **into** it when the
+    /// context knows them.
+    ///
+    /// `pub(crate)` because two contexts supply them: a call whose callee's
+    /// parameter is a function type, and a `let` with a function-type
+    /// annotation (`crate::stmt::stmt_impl::type_check`). Without the second,
+    /// `let f: (Int) -> Int = |x| { return x + 1; };` was rejected — the
+    /// lambda was typed in isolation as `('T0) -> Any` and that does not unify
+    /// with the very annotation written for it, so a lambda could not be
+    /// annotated at all while a named `fn` assigned to the same binding fine.
+    /// One element of an aggregate, checked against the declared element type.
+    ///
+    /// The expectation flowing in is only half of it: the answer still has to be
+    /// *checked*. Returning the declared type unconditionally is a claim rather
+    /// than a description, and it let `let fs: List<(Int) -> String> = [|x| {
+    /// return x + 1; }];` through.
+    fn check_element_against(&mut self, expr: &Expr, expected: &Type, what: &str) -> Result<()> {
+        let actual = self.check_expr_against(expr, Some(expected))?;
+        if self.is_assignable(&actual, expected) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            &alloc::format!("{what} has the wrong type"),
+            Some(expected.clone()),
+            Some(actual),
+            Some(expr.clone()),
+        ))
+    }
+
+    /// Whether a lambda sits at this position (through parentheses).
+    ///
+    /// The gate on distributing an expectation into an aggregate: without a
+    /// lambda there is nothing bidirectionality can change, and the plain path
+    /// keeps its own inference (a mixed list literal is a `Tuple`, which is not
+    /// this helper's rule to overturn).
+    fn holds_closure(expr: &Expr) -> bool {
+        match expr {
+            Expr::Closure { .. } => true,
+            Expr::Paren(inner) => Self::holds_closure(inner),
+            _ => false,
+        }
+    }
+
+    /// Types `expr` **against** what the context declares, when that changes
+    /// the answer.
+    ///
+    /// Today one shape needs it: a lambda. Checked in isolation a lambda types
+    /// as `('T0) -> Any`, which does not unify with the function type written
+    /// for it — so every context that declares one had to be taught separately,
+    /// and each that was not silently rejected the lambda written for it. A
+    /// `let` was, a struct field was not.
+    ///
+    /// Everything else is plain `check_expr`: this is a narrow bidirectional
+    /// rule, not a second type checker.
+    pub(crate) fn check_expr_against(&mut self, expr: &Expr, expected: Option<&Type>) -> Result<Type> {
+        let Some(resolved) = expected.map(|ty| self.resolve_aliases(ty)) else {
+            return self.check_expr(expr);
+        };
+        match (&resolved, expr) {
+            (
+                Type::Function {
+                    params: expected_params,
+                    ..
+                },
+                Expr::Closure {
+                    params,
+                    param_types,
+                    return_type,
+                    body,
+                },
+            ) if expected_params.len() == params.len() => {
+                self.check_closure(params, param_types, return_type.as_deref(), body, expected_params)
+            }
+            // Parentheses are not a type-level construct.
+            (_, Expr::Paren(inner)) => self.check_expr_against(inner, expected),
+            // Distributed into an aggregate literal, but *only* when a lambda is
+            // actually sitting there: `[|x| …]` against `List<(Int) -> Int>`.
+            // Otherwise the plain path keeps its inference exactly — a list
+            // literal of mixed types is a `Tuple`, and that rule is not this
+            // helper's business.
+            (Type::List(elem), Expr::List(items)) if items.iter().any(|item| Self::holds_closure(item)) => {
+                for item in items {
+                    self.check_element_against(item, elem, "list element")?;
+                }
+                Ok(Type::List(elem.clone()))
+            }
+            (Type::Map(key, value), Expr::Map(pairs)) if pairs.iter().any(|(_, v)| Self::holds_closure(v)) => {
+                for (k, v) in pairs {
+                    self.check_expr(k)?;
+                    self.check_element_against(v, value, "map value")?;
+                }
+                Ok(Type::Map(key.clone(), value.clone()))
+            }
+            // An optional accepts its payload, so the payload's expectation is
+            // what a lambda written there has to meet.
+            (Type::Optional(inner), _) => self.check_expr_against(expr, Some(inner)),
+            _ => self.check_expr(expr),
+        }
+    }
+
+    pub(crate) fn check_closure(
+        &mut self,
+        params: &[String],
+        declared_param_types: &[Option<Type>],
+        declared_return: Option<&Type>,
+        body: &Expr,
+        expected_params: &[Type],
+    ) -> Result<Type> {
+        // A lambda's parameter list is a binder like a `fn`'s: a repeated name
+        // leaves an argument every call site still has to pass and nothing can
+        // read.
+        let mut seen: Vec<&str> = Vec::with_capacity(params.len());
+        for param in params {
+            if seen.contains(&param.as_str()) {
+                return Err(Self::type_err(
+                    &alloc::format!(
+                        "`{param}` is declared twice in this lambda's parameters — the second one shadows \
+                     the first, so nothing can read the argument passed for it"
+                    ),
+                    None,
+                    None,
+                    None,
+                ));
+            }
+            seen.push(param);
+        }
+        // What the closure *says* wins over what the context expects, which
+        // wins over a fresh variable. A declaration is the author stating the
+        // type; a context is an inference about it.
+        let param_types: Vec<Type> = params
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                declared_param_types
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| expected_params.get(index).cloned())
+                    .unwrap_or_else(|| self.inference_engine.fresh_type_var())
+            })
+            .collect();
+
+        // The parameters are in scope for the body — which is the point of
+        // knowing their types.
+        self.push_scope();
+        for (name, ty) in params.iter().zip(param_types.iter()) {
+            self.add_local_type(name.clone(), ty.clone());
+        }
+        // Body type is inferred by checking the body expression. Its own
+        // return frame: a `return` inside a closure body belongs to the
+        // closure, and must not be collected as a return of the enclosing
+        // function (whose declared type it would then have to satisfy).
+        self.push_return_frame(declared_return.cloned());
+        // Like a named function's body: a closure runs when it is called,
+        // which is after the top level has finished, so it may read a binding
+        // declared below it.
+        let pending = self.suspend_pending_top_level();
+        let ret_type = self.check_expr(body);
+        self.restore_pending_top_level(pending);
+        let collected_returns = self.pop_return_frame();
+        self.pop_scope();
+        let body_type = ret_type?;
+        // A `return` inside the body is what the closure returns. Discarding
+        // the frame (which is what this did) left every block-bodied closure
+        // typed `… -> Any`, and `Any` satisfies any annotation: `let s: String
+        // = (|x| { return x + 1; })(1);` type-checked. A named `fn` has always
+        // joined its collected returns — this is the same rule, not a new one.
+        //
+        // The body's own type joins in only when it says something: a block
+        // ending in a `return` statement types `Any` (there is no tail
+        // expression), and letting that in would swallow the union.
+        let inferred_return = if collected_returns.is_empty() {
+            body_type.clone()
+        } else {
+            let mut alternatives = collected_returns.clone();
+            if body_type != Type::Any {
+                alternatives.push(body_type.clone());
+            }
+            crate::typ::union_of(alternatives)
+        };
+        // A declared return type is checked against, then used: an annotation
+        // that merely renamed the inferred type would state nothing.
+        let ret_type = match declared_return {
+            Some(declared) => {
+                let declared = self.resolve_aliases(declared);
+                let mut actual = collected_returns;
+                if body_type != Type::Any {
+                    actual.push(body_type);
+                }
+                for ty in &actual {
+                    if !self.is_assignable(ty, &declared) {
+                        return Err(anyhow!(
+                            "Return type mismatch in closure: expected {}, got {}",
+                            declared.display(),
+                            ty.display()
+                        ));
+                    }
+                }
+                declared
+            }
+            None => inferred_return,
+        };
+        Ok(Type::Function {
+            params: param_types,
+            named_params: Vec::new(),
+            return_type: Box::new(ret_type),
+        })
+    }
+
+    /// Method typing that the declarative table (`BUILTIN_METHODS`) cannot
+    /// express, for receivers it is not keyed by — a `Tuple`, or a type
+    /// variable inference has not resolved yet.
+    ///
+    /// The table is consulted *first*, so an arm here that only handles
+    /// `List`/`Map`/`Set` never runs. There were four such arms (`add`, `push`,
+    /// `keys`/`values`, `clear`), and two of them disagreed with the table about
+    /// the return type — `push` and `clear` said `Nil` where the table says
+    /// `Self`. Dead code that contradicts the live rule is a trap set for
+    /// whoever adds the next receiver kind, so they are gone.
     fn check_builtin_container_method(
         &mut self,
         receiver_ty: &Type,
@@ -1575,91 +3126,6 @@ impl TypeChecker {
                     _ => Ok(None),
                 }
             }
-            "add" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::Set(elem_type) => {
-                        if args.len() != 1 {
-                            return Err(Self::type_err(
-                                "Method add expects 1 argument",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let arg_ty = self.check_expr(&args[0])?;
-                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
-                        Ok(Some(Type::Bool))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "push" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::List(elem_type) => {
-                        if args.len() != 1 {
-                            return Err(Self::type_err(
-                                "Method push expects 1 argument",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let arg_ty = self.check_expr(&args[0])?;
-                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
-                        Ok(Some(Type::Nil))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "keys" | "values" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                match resolved_receiver {
-                    Type::Map(key_type, value_type) => {
-                        if !args.is_empty() {
-                            return Err(Self::type_err(
-                                &format!("Method {method} expects 0 arguments"),
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        let elem = if method == "keys" { *key_type } else { *value_type };
-                        Ok(Some(Type::List(Box::new(elem))))
-                    }
-                    Type::Set(elem_type) if method == "values" => {
-                        if !args.is_empty() {
-                            return Err(Self::type_err(
-                                "Method values expects 0 arguments",
-                                None,
-                                None,
-                                Some(func.clone()),
-                            ));
-                        }
-                        Ok(Some(Type::List(elem_type)))
-                    }
-                    Type::Variable(_) => Ok(None),
-                    _ => Ok(None),
-                }
-            }
-            "clear" => {
-                let resolved_receiver = self.resolve_aliases(receiver_ty);
-                if matches!(&resolved_receiver, Type::Map(_, _) | Type::Set(_) | Type::List(_)) {
-                    if !args.is_empty() {
-                        return Err(Self::type_err(
-                            "Method clear expects 0 arguments",
-                            None,
-                            None,
-                            Some(func.clone()),
-                        ));
-                    }
-                    return Ok(Some(Type::Nil));
-                }
-                Ok(None)
-            }
             _ => Ok(None),
         }
     }
@@ -1704,11 +3170,18 @@ impl TypeChecker {
                         Ok(Type::Optional(elem_type))
                     }
                     Type::Map(key_type, value_type) => {
+                        // A miss, for the reason the read arm gives.
                         let field_ty = self.check_expr(field)?;
-                        self.inference_engine.add_constraint((*key_type).clone(), field_ty);
+                        if !self.definitely_not_key(&field_ty, key_type.as_ref()) {
+                            self.inference_engine.add_constraint((*key_type).clone(), field_ty);
+                        }
                         Ok(Type::Optional(value_type))
                     }
                     Type::Tuple(elems) => {
+                        // A slice, for the reason the read arm gives.
+                        if matches!(&field, Expr::Range { .. }) {
+                            return Ok(Type::List(Box::new(Type::Union(elems.to_vec()))));
+                        }
                         let field_ty = self.check_expr(field)?;
                         if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(
@@ -1792,6 +3265,24 @@ fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
 }
 
 /// Splits a `volatile_{read,write}_uN` name into its direction and width.
+/// The machine width a builtin's *name* declares, for the ones whose result is
+/// a machine int.
+///
+/// Exposed for the bytecode compiler, which needs the same answer to know when
+/// arithmetic on the result has to wrap. Derived from the name by the same
+/// parsers the checks above use, rather than a second table — a second table is
+/// one entry away from a value that wraps in the type system and not in the
+/// program.
+pub fn builtin_machine_result(name: &str) -> Option<crate::val::IntKind> {
+    if let Some((is_write, kind)) = parse_volatile_builtin(name) {
+        return (!is_write).then_some(kind);
+    }
+    if let Some((is_write, kind)) = parse_port_builtin(name) {
+        return (!is_write).then_some(kind);
+    }
+    None
+}
+
 fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
     let (is_write, rest) = match name.strip_prefix("volatile_read_") {
         Some(rest) => (false, rest),
@@ -1807,4 +3298,241 @@ fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
         _ => return None,
     };
     Some((is_write, kind))
+}
+
+/// Read a call's instance variables off its arguments.
+///
+/// `param` is a *pattern*: a variable in it simply takes whatever the argument
+/// has at that position. The map that comes out belongs to one call and is
+/// thrown away with it, which is what makes it an instantiation — two calls to
+/// the same function read the same variables to different answers without
+/// either one deciding anything for the other.
+///
+/// Deliberately structural and partial: a shape it does not recognise binds
+/// nothing, and the return type keeps the unresolved variable it had before,
+/// which is the answer this whole path used to give for every call.
+pub(super) fn bind_instance_variables(param: &Type, arg: &Type, out: &mut HashMap<String, Type>) {
+    match (param, arg) {
+        (Type::Variable(name), _) => {
+            if !matches!(arg, Type::Variable(_)) {
+                out.entry(name.clone()).or_insert_with(|| arg.clone());
+            }
+        }
+        (Type::List(p), Type::List(a))
+        | (Type::Set(p), Type::Set(a))
+        | (Type::Optional(p), Type::Optional(a))
+        | (Type::Task(p), Type::Task(a))
+        | (Type::Channel(p), Type::Channel(a))
+        | (Type::Boxed(p), Type::Boxed(a)) => bind_instance_variables(p, a, out),
+        // A heterogeneous literal is a `Tuple`, and `[1, 2]` is what a
+        // `List<'a>` parameter is most often handed. Its element type is the
+        // one every position agrees on, or nothing.
+        (Type::List(p), Type::Tuple(elems)) => {
+            if let Some(first) = elems.first()
+                && elems.iter().all(|elem| elem == first)
+            {
+                bind_instance_variables(p, first, out);
+            }
+        }
+        (Type::Map(pk, pv), Type::Map(ak, av)) => {
+            bind_instance_variables(pk, ak, out);
+            bind_instance_variables(pv, av, out);
+        }
+        (Type::Tuple(ps), Type::Tuple(as_)) if ps.len() == as_.len() => {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+        }
+        (
+            Type::Function {
+                params: ps,
+                return_type: pr,
+                ..
+            },
+            Type::Function {
+                params: as_,
+                return_type: ar,
+                ..
+            },
+        ) => {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+            bind_instance_variables(pr, ar, out);
+        }
+        (Type::Generic { name: pn, params: ps }, Type::Generic { name: an, params: as_ })
+            if pn == an && ps.len() == as_.len() =>
+        {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`Type::substitute`], except that a union is left exactly as it was.
+///
+/// A map literal's value type is the union of *every key's* value —
+/// `{"name": name, "score": 95}` is `Map<String, 'a | Int>` — so the union
+/// describes several keys at once and no single read is decided by it. Pinning
+/// the parameter's arm there does not make `u.score` any more knowable; it just
+/// turns a vague answer into a confident wrong one, and `u.score + 5` (which
+/// runs fine) starts reporting "left side must be numeric, got String | Int".
+///
+/// The honest fix is for a map literal to keep a type per key rather than one
+/// union across all of them, which the type system has no shape for yet. Until
+/// it does, this is the line between "instantiation tells you more" and
+/// "instantiation tells you something wrong".
+pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::Union(_) => ty.clone(),
+        Type::List(inner) => Type::List(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Set(inner) => Type::Set(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Optional(inner) => Type::Optional(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Boxed(inner) => Type::Boxed(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Task(inner) => Type::Task(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Channel(inner) => Type::Channel(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Map(k, v) => Type::Map(
+            Box::new(substitute_outside_unions(k, bindings)),
+            Box::new(substitute_outside_unions(v, bindings)),
+        ),
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| substitute_outside_unions(e, bindings)).collect()),
+        Type::Generic { name, params } => Type::Generic {
+            name: name.clone(),
+            params: params.iter().map(|p| substitute_outside_unions(p, bindings)).collect(),
+        },
+        Type::Variable(name) => bindings.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        other => other.clone(),
+    }
+}
+
+/// The body of the first arm that an earlier unguarded catch-all shadows.
+///
+/// Shares its notion of "catch-all" with [`matches_every_value`], through
+/// [`crate::expr::Pattern::is_unguarded_catch_all`].
+fn first_arm_after_catch_all(arms: &[crate::expr::MatchArm]) -> Option<&Expr> {
+    let mut seen_catch_all = false;
+    for arm in arms {
+        if seen_catch_all {
+            return Some(arm.body.as_ref());
+        }
+        if arm.pattern.is_unguarded_catch_all() {
+            seen_catch_all = true;
+        }
+    }
+    None
+}
+
+/// Does some arm of `arms` match every value of `value_type`?
+///
+/// Deliberately an under-approximation: it answers `true` only for the two
+/// shapes a reader would call obviously total — a catch-all arm, and a `Bool`
+/// whose two literals both appear. Anything else is treated as able to miss,
+/// which makes the match's type `T?`. Being wrong in that direction costs a
+/// `?` at the call site; being wrong the other way is what let a `String`
+/// binding hold nil.
+///
+/// A guard makes an arm conditional, so a guarded catch-all is not one.
+fn matches_every_value(arms: &[crate::expr::MatchArm], value_type: &Type) -> bool {
+    use crate::expr::Pattern;
+
+    fn is_bool_literal(pattern: &Pattern, wanted: bool) -> bool {
+        matches!(pattern, Pattern::Literal(LiteralVal::Bool(value)) if *value == wanted)
+    }
+
+    if arms.iter().any(|arm| arm.pattern.is_unguarded_catch_all()) {
+        return true;
+    }
+    if *value_type == Type::Bool {
+        let covers = |wanted: bool| arms.iter().any(|arm| is_bool_literal(&arm.pattern, wanted));
+        return covers(true) && covers(false);
+    }
+    false
+}
+
+/// The struct a callee constructs, when the callee is the hidden constructor
+/// `module.Type { … }` desugars to (`stmt::struct_ctors`).
+///
+/// The desugar is meant to be invisible, so this is what lets its diagnostics
+/// speak the source's words: fields of a struct, not named arguments of a
+/// function nobody wrote.
+fn constructed_struct_name(callee: &Expr) -> Option<String> {
+    let Expr::Access(_, field) = callee else {
+        return None;
+    };
+    let Expr::Literal(name) = field.as_ref() else {
+        return None;
+    };
+    crate::stmt::struct_ctors::constructed_struct_name(name.as_str()?).map(alloc::string::ToString::to_string)
+}
+
+fn missing_named_message(constructed: Option<&str>, name: &str) -> String {
+    match constructed {
+        Some(ty) => format!("Missing required field '{name}' for struct '{ty}'"),
+        None => format!("Missing required named argument: {name}"),
+    }
+}
+
+fn unknown_named_message(constructed: Option<&str>, name: &str) -> String {
+    match constructed {
+        Some(ty) => format!("Unknown field '{name}' for struct '{ty}'"),
+        None => format!("Unknown named argument: {name}"),
+    }
+}
+
+/// Whether inference is still running inside this type.
+///
+/// A branch whose type is a variable has not been decided yet; a union of "the
+/// answer" and "we do not know" would freeze the unknown half in place.
+fn has_type_variable(ty: &Type) -> bool {
+    match ty {
+        Type::Variable(_) => true,
+        Type::Optional(inner) | Type::List(inner) | Type::Set(inner) | Type::Task(inner) | Type::Channel(inner) => {
+            has_type_variable(inner)
+        }
+        Type::Ptr { pointee, .. } => has_type_variable(pointee),
+        Type::Map(key, value) => has_type_variable(key) || has_type_variable(value),
+        Type::Tuple(items) | Type::Union(items) => items.iter().any(has_type_variable),
+        Type::Function {
+            params,
+            named_params,
+            return_type,
+        } => {
+            params.iter().any(has_type_variable)
+                || named_params.iter().any(|param| has_type_variable(&param.ty))
+                || has_type_variable(return_type)
+        }
+        _ => false,
+    }
+}
+
+/// The two branch types as one, flattened and deduplicated.
+///
+/// `Optional(T)` stays `Optional` rather than becoming `T | Nil`: they are the
+/// same type, and `T?` is the spelling every diagnostic and every annotation
+/// uses.
+fn union_of(first: Type, second: Type) -> Type {
+    // `Any` absorbs: a branch the checker knows nothing about says nothing
+    // about the value, and `Any | String` would be a *narrower* claim than the
+    // truth. This is the case that matters in practice — `xs[i]!` desugars to a
+    // nil check whose raising half is `Any`, so without this every unwrap in a
+    // mixed list became `Any | Elem` and then failed arithmetic.
+    if first == Type::Any || second == Type::Any {
+        return Type::Any;
+    }
+    let mut items: Vec<Type> = Vec::new();
+    for ty in [first, second] {
+        match ty {
+            Type::Union(inner) => items.extend(inner),
+            other => items.push(other),
+        }
+    }
+    let mut seen = alloc::collections::BTreeSet::new();
+    items.retain(|ty| seen.insert(ty.display()));
+    if items.len() == 1 {
+        items.remove(0)
+    } else {
+        Type::Union(items)
+    }
 }

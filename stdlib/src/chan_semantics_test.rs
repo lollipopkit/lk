@@ -75,8 +75,73 @@ mod tests {
         );
     }
 
+    /// Every closed-channel refusal reads the same, whichever spelling raised
+    /// it — and the same as the native runtime's.
+    ///
+    /// A caught message is printed output, so three spellings of one operation
+    /// is three answers: `chan.try_send` decorated the runtime's error into
+    /// "Failed to send to channel: Channel is closed" while `send`, `chan.send`
+    /// and `chan.try_recv` all said the short form. `lkrt::chan` raises the
+    /// short form too, so the decorated one was also a VM/native divergence.
+    #[test]
+    fn every_closed_channel_refusal_reads_the_same() {
+        let program = r#"
+            use chan;
+            let c = chan.new(1);
+            chan.close(c);
+            let out = [];
+            out = out.push(try { "${chan.try_send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${send(c, 1)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.try_recv(c)}" } catch e { "${e}" });
+            out = out.push(try { "${chan.recv(c)}" } catch e { "${e}" });
+            out = out.push(try { "${recv(c)}" } catch e { "${e}" });
+            return out;
+        "#;
+        let result = run(program).expect("program runs");
+        let rendered = lk_core::vm::display_runtime_value(result.first_return(), result.state.heap());
+        assert_eq!(
+            rendered,
+            "[\"send on closed channel\",\"send on closed channel\",\"send on closed channel\",\
+             \"receive on closed channel\",\"receive on closed channel\",\"receive on closed channel\"]"
+        );
+    }
+
     /// `try_recv`: value when ready, nil when empty (not an error) — postfix
     /// `!` turns "must have a value" into an assertion.
+    /// The module is usable on its own: `use chan;` shadows the `chan` global,
+    /// and the blocking pair used to exist only as unqualified `send`/`recv`,
+    /// so an imported channel could only be polled.
+    #[test]
+    fn the_module_spells_the_blocking_pair_too() {
+        assert_true(
+            r#"
+            use chan;
+            let c = chan.new(2);
+            chan.send(c, 41);
+            chan.send(c, 42);
+            return chan.recv(c) == 41 && chan.recv(c) == 42 && chan.len(c) == 0;
+            "#,
+        );
+    }
+
+    /// `0` is unbuffered, not unbounded: one value fits, the second does not.
+    /// lkrt read the retired rule (`<= 0` unbounded) and answered `true` twice.
+    #[test]
+    fn capacity_zero_is_unbuffered_and_negative_raises() {
+        assert_true(
+            r#"
+            use chan;
+            let c = chan.new(0);
+            let first = chan.try_send(c, 1);
+            let second = chan.try_send(c, 2);
+            let negative = try { chan.new(-1); false } catch e { true };
+            // `capacity` reports what was asked for, not the queue's bound.
+            return first && !second && chan.len(c) == 1 && negative && chan.capacity(c) == 0;
+            "#,
+        );
+    }
+
     #[test]
     fn try_recv_yields_value_or_nil_and_pairs_with_unwrap() {
         assert_true(
@@ -119,6 +184,44 @@ mod tests {
             }
             return total == 6;
             "#,
+        );
+    }
+
+    /// Calling an imported module is a **check-time** error that says what to
+    /// do about it.
+    ///
+    /// `use chan;` binds the module over the `chan()` global — a documented
+    /// sharp edge — and a module is a map of its members, so `chan(1)` calls a
+    /// Map. Three answers for one program until now: the VM raised at run time
+    /// ("this value is not a function: it is a Map"), the native backend
+    /// ignored the import and called the builtin constructor, and `lk check`
+    /// said nothing at all. The checker knows what the import bound, so it is
+    /// the one that answers — before either engine runs.
+    #[test]
+    fn calling_an_imported_module_says_what_it_is() {
+        let error = run("use chan;\nlet c = chan(1);\n").expect_err("a module is not callable");
+        let text = format!("{error:#}");
+        assert!(text.contains("not a function"), "unexpected error: {text}");
+        assert!(text.contains("module"), "and point at how a program gets here: {text}");
+        assert!(
+            text.contains("chan.new(") && text.contains("use chan as"),
+            "and name both ways out: {text}"
+        );
+
+        // The alias form binds the alias, not the module's own name — so the
+        // global stays reachable, which is exactly what the message suggests.
+        run("use chan as ch;\nlet c = chan(1);\nch.close(c);\n").expect("the alias leaves `chan` alone");
+    }
+
+    /// Awaiting twice says so, instead of describing the task table.
+    #[test]
+    fn awaiting_twice_says_the_result_is_already_taken() {
+        let error = run("use task;\nlet h = spawn(|| 5);\nlet a = task.await(h);\nlet b = task.await(h);\n")
+            .expect_err("the second await has nothing to take");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("already been awaited"),
+            "the error should speak the language: {text}"
         );
     }
 }

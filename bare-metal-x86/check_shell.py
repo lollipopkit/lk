@@ -15,9 +15,10 @@ machine gets.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 # `x` then backspace, so the echo shows the correction; then enough newlines
 # to push the title off the top, which is what proves scrolling rather than
@@ -28,6 +29,11 @@ import time
 KEYS = (
     ["h", "e", "l", "x", "backspace", "p", "ret"]
     + ["e", "c", "h", "o", "spc", "l", "k", "ret"]
+    # Shift is a *state*, not a character: the handler tracks its press and
+    # release, and applies it to whatever key arrives between them. Upper case
+    # and shifted punctuation take different rules — caps lock affects letters
+    # only — so both are typed here.
+    + ["e", "c", "h", "o", "spc", "shift-a", "shift-1", "shift-minus", "ret"]
     + ["p", "a", "g", "e", "ret"]
     + ["p", "a", "g", "e", "ret"]
     + ["m", "e", "m", "ret"]
@@ -43,17 +49,51 @@ KEYS = (
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
+# What the *other* writers on this serial line leave behind.
+#
+# Three tasks share it: the timer prints a '.' every half-second, and the two
+# ring-3 tasks print 'A' and 'B' forever. None of them ends a line, so their
+# marks land in the middle of whatever the shell is saying — including in the
+# middle of a number. Removing them is lossless for a decimal counter, because
+# none of them is a digit.
+#
+# The 'A'/'B' half was added after this check started failing on a build that
+# only changed *timing*: a device access became an instruction instead of a
+# call, the shell got faster, and the ring-3 tasks landed a byte inside the
+# counter line for the first time. The counters agreed — `B5106885/5106885` —
+# and the check said they had not been printed at all. A check whose answer
+# depends on which task wins a race is not checking what it claims to.
+OTHER_WRITERS = ".AB"
 # Lines the shell must answer with. `help` lists the commands it knows, `echo`
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page sync yield win time disk cat run heap exit",
+    "help clear echo keys mem page sync yield win time disk cat run heap user ls exit",
     "lk",
+    "A!_",
     # Two pages handed out in order, from the range the loader reported. The
-    # addresses are what proves the allocator rather than a counter. They start
-    # past the kernel heap's sixteen pages, which startup took first.
-    "02010000",
-    "02011000",
+    # addresses are what proves the allocator rather than a counter — a counter
+    # would print two numbers just as happily.
+    #
+    # They start past what startup already took, which as of now is:
+    #
+    #   16 pages  the kernel heap
+    #    8 pages  two user address spaces, four page tables each
+    #   40 pages  five task stacks, eight pages each
+    #   ------
+    #   64 pages  = 0x40000, so the first free page is 0x02040000
+    #
+    # Spelled out because these two numbers have moved four times, once per
+    # thing that stopped being reserved somewhere fixed and started being
+    # allocated like anything else. Recomputing them should be arithmetic, not
+    # archaeology.
+    #
+    # The fifth stack is the idle task's. It is spawned before anything else so
+    # that there is somewhere to go the moment a task can block — a scheduler
+    # with every task waiting and no idle task would resume one of the waiting
+    # ones, which is running a task it has just been told is not runnable.
+    "02040000",
+    "02041000",
     # The heap allocates three blocks, frees the middle one, allocates one that
     # only fits the hole, then frees everything. All three numbers are claims:
     # the block count must come *back* to what it was (holes joined on both
@@ -71,9 +111,7 @@ EXPECTED_REPORT = f"keys {len(KEYS)} last 10"
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         serial = os.path.join(workdir, "serial.txt")
@@ -121,13 +159,20 @@ def main():
     # both bump, under one critical section. They can only differ if an
     # increment read a stale value — which is exactly what happens without the
     # section, and what nothing else in the system can cause.
-    pair = next((line for line in output.splitlines() if "/" in line and line.strip("./0123456789") == ""), None)
+    def counters(line):
+        """The line with the other tasks' marks removed, if it is a counter pair."""
+        stripped = "".join(c for c in line if c not in OTHER_WRITERS)
+        parts = stripped.split("/")
+        return parts if len(parts) == 2 and all(p.isdigit() and p for p in parts) else None
+
+    pair = next((c for c in map(counters, output.splitlines()) if c is not None), None)
     if pair is None:
         raise SystemExit("shell: `sync` printed no counter pair")
-    # Every dot, not just the ends: the timer prints one on whatever line is
-    # current, and `31.710/31712` would otherwise split into two counters that
-    # differ — a passing run reported as a lost update.
-    left, right = pair.replace(".", "").split("/")
+    # The marks are removed everywhere in the line, not just at its ends: they
+    # land wherever the writer happened to be, and `31.710/31712` would
+    # otherwise split into two counters that differ — a passing run reported as
+    # a lost update.
+    left, right = pair
     if left != right:
         raise SystemExit(f"shared counters diverged ({left} != {right}): an update was lost")
     if int(left) == 0:

@@ -5,7 +5,7 @@
 
 fn double(x) { return x * 2; }
 fn boom() { error("kaboom"); return 0; }
-fn div_zero() { return 1 / 0; }
+fn div_zero() { return 1 % 0; }
 
 // Success path: no raise, catch skipped.
 let ok = 0;

@@ -22,9 +22,10 @@ that re-draws most often.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 FRAME_FOCUSED = (0xFF, 0xC0, 0x40)
 FRAME_IDLE = (0x20, 0x30, 0x40)
@@ -57,9 +58,7 @@ def frame_pixels_on_row(path, y):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         qemu = subprocess.Popen(

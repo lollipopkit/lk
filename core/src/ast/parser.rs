@@ -3,7 +3,10 @@ use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
-    token::{ParseError, Span, Token, Tokenizer, offset_to_position},
+    token::{
+        ParseError, Span, TemplateScanError, TemplateSegment, Token, Tokenizer, offset_to_position,
+        split_template_string,
+    },
     val::{LiteralVal, Type},
 };
 use anyhow::{Result, anyhow};
@@ -12,16 +15,23 @@ mod literals;
 mod patterns;
 mod support;
 
+use support::BlockTail;
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
-    pos: usize,
-    len: usize,
+    pub(crate) pos: usize,
+    pub(crate) len: usize,
     token_spans: Option<&'a [Span]>,
     prefix_mode: bool,
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
     /// nested instances don't shadow each other's synthesized locals.
     pub(super) desugar_counter: usize,
-    /// Live nesting depth of `parse_expr`, bounded by [`MAX_EXPR_DEPTH`].
+    /// Live *left*-nesting charged by [`Parser::nest_left`] — chain links,
+    /// which cost tree depth but no parser stack. Kept apart from `depth`
+    /// because the two are bounded by different things, and summed because a
+    /// later walk recurses over both.
+    pub(crate) left: usize,
+    /// Live nesting depth of `parse_expr`, bounded by [`MAX_PARSE_DEPTH`].
     ///
     /// Expression parsing is recursive descent, so nesting depth in the source
     /// is Rust stack depth. Without a bound, `((((…1…))))` overflows the stack
@@ -29,26 +39,111 @@ pub struct Parser<'a> {
     /// host that abort is at least clean (the guard page traps); on bare metal
     /// there is no guard page, so the same input silently walks off the stack
     /// into whatever is below it.
-    pub(super) depth: usize,
+    pub(crate) depth: usize,
 }
 
-/// Cap on expression nesting depth (see [`Parser::depth`]).
+/// Cap on source nesting depth, shared by the expression and statement
+/// parsers (see [`Parser::depth`] and `StmtParser::depth`).
 ///
 /// Hand-written code does not approach this — the bound exists to turn a
 /// pathological or hostile input into a syntax error instead of an abort.
 ///
-/// The value is set from measurement, not taste. One level of *source* nesting
-/// costs about 18KiB of debug stack, because it unwinds the whole precedence
-/// chain (`conditional` → `nullish` → `or` → … → `postfix` → `primary` →
-/// `paren`) rather than one frame. A debug `lk check` (8MiB main stack) aborts
-/// somewhere between 400 and 500 levels; a libtest thread only gets 2MiB, so
-/// its ceiling is nearer 110. 64 sits under that with room to spare and is
-/// still far past anything real code nests to.
+/// One budget, not two. `if c { if c { … } }` alternates between the two
+/// parsers, so a per-parser budget bounds neither: each crossing would hand
+/// the next level a fresh allowance and the combined nesting would be
+/// unbounded. Both parsers count into the same budget and seed it across
+/// every crossing.
+///
+/// The value is set from measurement, not taste. One level of *source*
+/// nesting costs about 18KiB of debug stack in a plain expression, because it
+/// unwinds the whole precedence chain (`conditional` → `nullish` → `or` → …
+/// → `postfix` → `primary` → `paren`) rather than one frame; a level that
+/// crosses into the statement parser and back (`if`, `match`, a block) costs
+/// several times that. The smallest stack this has to survive is a libtest
+/// thread's 2MiB, which is where the cap is measured — `deeply_nested_*` in
+/// `stmt_test.rs` and `ast_test.rs` are that measurement, and they abort the
+/// whole test process rather than fail if the cap is ever raised past it.
 #[cfg(feature = "std")]
-pub(super) const MAX_EXPR_DEPTH: usize = 64;
+pub(crate) const MAX_PARSE_DEPTH: usize = 64;
+
+/// How deep the *tree* may get, counting chain links as well as recursion.
+///
+/// Recursion is bounded lower ([`MAX_PARSE_DEPTH`]) because each level is a
+/// parser stack frame. A chain link is not — it costs only tree depth — so it
+/// gets the larger allowance, and the two are summed because the walks that run
+/// afterwards recurse over the tree without caring which built it.
+///
+/// Measured: a left-nested tree overflows a debug build's stack between 700 and
+/// 900 levels, and the walks that run after the parser are what overflow — the
+/// parser itself only loops. `a_tree_at_the_bound_is_checked_not_aborted` runs
+/// a tree of exactly this depth through the whole front end on a libtest
+/// thread, which is the smallest stack any of this has to survive, so the value
+/// is pinned by measurement rather than by this comment.
+///
+/// The floor is real code: `one_expression_reuses_its_scratch_registers` sums
+/// 300 terms on purpose, so anything under about 320 refuses a program the
+/// repository itself contains. 400 clears that and keeps a two-fold margin
+/// against the measured overflow.
+///
+/// The stack it is measured against is a *main thread's* 8MiB, which is what
+/// the CLI, the LSP and the playground run the front end on. A 2MiB libtest
+/// thread takes fewer levels, so the test that pins this spawns a thread of the
+/// real size rather than pretending the default is the requirement.
+#[cfg(feature = "std")]
+pub(crate) const MAX_TREE_DEPTH: usize = 400;
+
 /// An MCU stack is kilobytes, not megabytes, so bare metal gets a tighter cap.
 #[cfg(not(feature = "std"))]
-pub(super) const MAX_EXPR_DEPTH: usize = 16;
+pub(crate) const MAX_PARSE_DEPTH: usize = 16;
+
+/// The bare-metal twin of [`MAX_TREE_DEPTH`], scaled to that stack.
+#[cfg(not(feature = "std"))]
+pub(crate) const MAX_TREE_DEPTH: usize = 64;
+
+/// Nesting-budget exhaustion, kept distinguishable from an ordinary syntax
+/// error.
+///
+/// A speculative parse treats a syntax error as "not this shape" and lets the
+/// next candidate retry the same tokens — `try { … } catch e { }` is refused
+/// by the expression parser and accepted by the statement parser, so that
+/// retry is load-bearing. Budget exhaustion is not shape information: every
+/// candidate fails it, and retrying each of them at every level doubles the
+/// work per level. 256 nested `if`s did not finish in five minutes while the
+/// two were indistinguishable.
+#[derive(Debug)]
+pub(crate) struct NestingTooDeep;
+
+impl core::fmt::Display for NestingTooDeep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "nesting too deep")
+    }
+}
+
+impl core::error::Error for NestingTooDeep {}
+
+/// What an expression's unconsumed tail means.
+///
+/// The generic wording says only that something is left over. One token gets
+/// its own sentence: `=` is the `==` slip, and it is the reason this check
+/// matters — a header that dropped its tail parsed `if a = 2 { … }` as
+/// `if a { … }`, type-checked, and ran with the assignment gone.
+fn leftover_token_message(token: &Token) -> alloc::string::String {
+    if matches!(token, Token::Assign) {
+        return alloc::string::String::from(
+            "`=` assigns, and an assignment in LK is a statement rather than an expression — a comparison is `==`",
+        );
+    }
+    // The other arrival from another language: `=>` heads a lambda in JS and
+    // an arm in Rust's `match`; here it is neither spelling.
+    if matches!(token, Token::Arrow) {
+        return alloc::string::String::from(
+            "`=>` is not an operator in LK — a lambda is `|x| x + 1`, and a `match` arm is `pattern => { … }`",
+        );
+    }
+    // Plain wording: `err` appends the token itself, so naming it here would
+    // print it twice.
+    alloc::string::String::from("Unexpected tokens at end")
+}
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
@@ -68,11 +163,64 @@ struct ParsedSelectCase {
     body: Expr,
 }
 
+/// The name a parse-time desugar binds its temporary under.
+///
+/// `$` cannot appear in a source identifier — the lexer will not produce one —
+/// which is why the internal builtins (`try$call`, `select$block`) already use
+/// it. Minting every desugar local through here keeps the two halves from
+/// drifting: the name nothing can collide with, and the name tools recognise
+/// as *not the writer's*. They used to be `__unwrap0` / `__optcall0`, which a
+/// program may legitimately spell, so no filter could tell them apart — and
+/// the editor's outline listed them beside the real variables.
+pub(crate) fn desugar_local(kind: &str, id: usize) -> String {
+    format!("{kind}${id}")
+}
+
+/// Is `name` a local a desugar minted, rather than one the writer bound?
+pub fn is_desugar_local(name: &str) -> bool {
+    name.contains('$')
+}
+
+/// Build the desugared AST for `a?.m(args)`.
+///
+/// `Vec<Box<Expr>>` is the AST's own argument type, not a boxing choice made
+/// here — see `Expr::CallExpr`.
+///
+/// `{ let t = a; t == nil ? nil : t.m(args) }` — the receiver is evaluated
+/// once, and the call does not happen at all when it is nil.
+#[allow(clippy::vec_box, reason = "the AST stores arguments as `Vec<Box<Expr>>`")]
+fn desugar_optional_call(id: usize, receiver: Expr, field: Expr, args: Vec<Box<Expr>>) -> Expr {
+    use crate::stmt::Stmt;
+
+    let name = desugar_local("optcall", id);
+    let binding = Box::new(Stmt::Let {
+        pattern: Pattern::Variable(name.clone()),
+        type_annotation: None,
+        value: Box::new(receiver),
+        span: None,
+        is_const: false,
+    });
+    let call = Expr::CallExpr(
+        Box::new(Expr::Access(Box::new(Expr::Var(name.clone())), Box::new(field))),
+        args,
+    );
+    let check = Expr::Conditional(
+        Box::new(Expr::Bin(
+            Box::new(Expr::Var(name)),
+            BinOp::Eq,
+            Box::new(Expr::Literal(LiteralVal::Nil)),
+        )),
+        Box::new(Expr::Literal(LiteralVal::Nil)),
+        Box::new(call),
+    );
+    Expr::Block(vec![binding, Box::new(Stmt::expr(Box::new(check)))])
+}
+
 /// Build the desugared AST for a postfix `!` unwrap (see `parse_postfix`).
 fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
     use crate::stmt::Stmt;
 
-    let name = format!("__unwrap{id}");
+    let name = desugar_local("unwrap", id);
     let binding = Box::new(Stmt::Let {
         pattern: Pattern::Variable(name.clone()),
         type_annotation: None,
@@ -92,7 +240,7 @@ fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
         )),
         Box::new(Expr::Var(name)),
     );
-    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
+    Expr::Block(vec![binding, Box::new(Stmt::expr(Box::new(check)))])
 }
 
 /// Build the desugared AST for a parsed `select` (see `parse_select` for the
@@ -133,7 +281,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
     // Channel operands, send values, and guards evaluate eagerly, in source
     // order (Go's rule), into synthesized locals.
     for (i, case) in cases.into_iter().enumerate() {
-        let channel_name = format!("__select{id}_ch_{i}");
+        let channel_name = format!("{}_ch_{i}", desugar_local("select", id));
         let (kind, binding) = match case.arm {
             ParsedSelectArm::Recv { binding, channel } => {
                 statements.push(let_stmt(channel_name.clone(), channel));
@@ -142,13 +290,13 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
             }
             ParsedSelectArm::Send { channel, value } => {
                 statements.push(let_stmt(channel_name.clone(), channel));
-                let value_name = format!("__select{id}_v_{i}");
+                let value_name = format!("{}_v_{i}", desugar_local("select", id));
                 statements.push(let_stmt(value_name.clone(), value));
                 values.push(Box::new(Expr::Var(value_name)));
                 (1, None)
             }
         };
-        let guard_name = format!("__select{id}_g_{i}");
+        let guard_name = format!("{}_g_{i}", desugar_local("select", id));
         // Normalize any truthy guard to a real Bool — `select$block` treats
         // non-Bool guard entries as disabled.
         let guard_value = match case.guard {
@@ -162,7 +310,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         arms.push((binding, case.body));
     }
 
-    let result_name = format!("__select{id}_r");
+    let result_name = format!("{}_r", desugar_local("select", id));
     statements.push(let_stmt(
         result_name.clone(),
         Expr::Call(
@@ -185,7 +333,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         let arm_body = match binding {
             Some(name) => Expr::Block(vec![
                 let_stmt(name, index(index(Expr::Var(result_name.clone()), 2), 1)),
-                Box::new(Stmt::Expr(Box::new(body))),
+                Box::new(Stmt::expr(Box::new(body))),
             ]),
             None => body,
         };
@@ -204,7 +352,7 @@ fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<
         Box::new(default_case.unwrap_or_else(nil_lit)),
         Box::new(dispatch),
     );
-    statements.push(Box::new(Stmt::Expr(Box::new(top))));
+    statements.push(Box::new(Stmt::expr(Box::new(top))));
     Expr::Block(statements)
 }
 
@@ -217,7 +365,8 @@ impl<'a> Parser<'a> {
         let exp = self.parse_expr()?;
 
         if !self.eof() {
-            return Err(anyhow!(self.err("Unexpected tokens at end")));
+            let msg = leftover_token_message(&self.tokens[self.pos]);
+            return Err(anyhow!(self.err(&msg)));
         }
 
         // All sub-expressions parsed, apply constant folding optimization
@@ -290,22 +439,52 @@ impl<'a> Parser<'a> {
         Ok(exp.fold_constants())
     }
 
-    /// Runs `parse` one level deeper, refusing to go past [`MAX_EXPR_DEPTH`].
+    /// Runs `parse` one level deeper, refusing to go past [`MAX_PARSE_DEPTH`].
     ///
     /// Every recursive descent that can nest without bound has to go through
     /// here, not just `parse_expr`: prefix operators recurse into themselves
     /// (`!!!…x`) and `match` arms recurse into `parse_conditional` directly,
     /// so bounding only `parse_expr` left both able to overflow the stack.
     fn deeper<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        if self.depth >= MAX_EXPR_DEPTH {
-            return Err(anyhow!(self.err("Expression nesting too deep")));
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(anyhow::Error::new(NestingTooDeep).context(self.err("Expression nesting too deep")));
         }
+        let entry = (self.depth, self.left);
         self.depth += 1;
-        // Decremented on the error path too — a bounded parse that fails must
-        // not leave the counter raised for whatever the caller tries next.
+        // Restored on the error path too — a bounded parse that fails must not
+        // leave the counter raised for whatever the caller tries next. And
+        // restored *absolutely* rather than by one, because `nest_left` charges
+        // this same counter without a matching decrement of its own: a chain's
+        // levels belong to the expression that contains it, and this is where
+        // that expression ends.
         let parsed = parse(self);
-        self.depth -= 1;
+        (self.depth, self.left) = entry;
         parsed
+    }
+
+    /// Charges one more level of *left* nesting against the same budget.
+    ///
+    /// `deeper` bounds recursive descent. These loops are the other half:
+    /// `a.b().c()…`, `a + b + c…` and every other precedence level are parsed
+    /// by iteration and build a tree exactly as deep as the chain is long, so
+    /// they spent nothing and were unbounded. A 1700-link method chain and a
+    /// 1200-term sum both parsed clean and then overflowed the stack in a later
+    /// walk — `SIGABRT`, not a diagnostic, on input the parser had accepted.
+    /// The interpreter, the LSP and the browser playground all parse text they
+    /// did not write.
+    ///
+    /// The budget is the *tree's* depth, so this shares `self.depth` rather
+    /// than keeping its own count: two chains at different precedence levels on
+    /// one path add up, and separate counters would each see only their half.
+    /// The language already says expression nesting is bounded at
+    /// [`MAX_PARSE_DEPTH`] — a chain is nesting, and this is what makes it
+    /// count.
+    fn nest_left(&mut self) -> Result<()> {
+        if self.depth + self.left >= MAX_TREE_DEPTH {
+            return Err(anyhow::Error::new(NestingTooDeep).context(self.err("Expression nesting too deep")));
+        }
+        self.left += 1;
+        Ok(())
     }
 
     /// A parser over a token sub-slice that continues *this* parser's depth
@@ -315,6 +494,7 @@ impl<'a> Parser<'a> {
     fn sub_parser<'b>(&self, tokens: &'b [Token]) -> Parser<'b> {
         let mut parser = Parser::new(tokens);
         parser.depth = self.depth;
+        parser.left = self.left;
         parser
     }
 
@@ -332,6 +512,7 @@ impl<'a> Parser<'a> {
     /// - `cond ? then : else` (ternary conditional)
     ///   Right-associative; precedence lower than nullish coalescing/or/and.
     fn parse_conditional(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_nullish_coalescing()?;
         if !self.eof() && self.tokens[self.pos] == Token::Question {
             // consume '?'
@@ -349,66 +530,93 @@ impl<'a> Parser<'a> {
             // parse else branch (allow nesting: right-associative)
             let else_expr = self.parse_expr()?;
 
+            self.nest_left()?;
             expr = Expr::Conditional(Box::new(expr), Box::new(then_expr), Box::new(else_expr));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr ?? expr` (nullish coalescing)
     fn parse_nullish_coalescing(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_or()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::NullishCoalescing => {
                     self.pos += 1;
                     let right = self.parse_or()?;
+                    self.nest_left()?;
                     expr = Expr::NullishCoalescing(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr || expr`
     fn parse_or(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_and()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::Or => {
                     self.pos += 1;
                     let right = self.parse_and()?;
+                    self.nest_left()?;
                     expr = Expr::Or(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// `expr && expr`
     fn parse_and(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_bit_or()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::And => {
                     self.pos += 1;
                     let right = self.parse_bit_or()?;
+                    self.nest_left()?;
                     expr = Expr::And(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// `expr | expr`
     fn parse_bit_or(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_bit_and()?;
+        let mut expr = self.parse_bit_xor()?;
         while !self.eof() && self.tokens[self.pos] == Token::Pipe {
             self.pos += 1;
-            let right = self.parse_bit_and()?;
+            let right = self.parse_bit_xor()?;
             expr = Self::builtin_call("__lk_bit_or", vec![expr, right]);
+        }
+        Ok(expr)
+    }
+
+    /// `expr ^ expr`
+    ///
+    /// Between `|` and `&`, as in C and Rust. It was the one bitwise operator
+    /// with no spelling: `&`, `|`, `<<`, `>>` and `~` were all there, and
+    /// `__lk_bit_xor` was already named in the type checker's arity table and
+    /// the VM compiler's builtin list — a name nothing could produce.
+    fn parse_bit_xor(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_bit_and()?;
+        while !self.eof() && self.tokens[self.pos] == Token::BitXor {
+            self.pos += 1;
+            let right = self.parse_bit_and()?;
+            expr = Self::builtin_call("__lk_bit_xor", vec![expr, right]);
         }
         Ok(expr)
     }
@@ -469,6 +677,7 @@ impl<'a> Parser<'a> {
     /// - `expr != expr`
     ///   ...
     fn parse_cmp(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_range()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -483,8 +692,10 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_range()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -542,6 +753,7 @@ impl<'a> Parser<'a> {
     /// - `expr + expr`
     /// - `expr - expr`
     fn parse_add_sub(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_mul_div()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -551,14 +763,17 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_mul_div()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `expr * expr`
     /// - `expr / expr`
     fn parse_mul_div(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_cast()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
@@ -569,8 +784,10 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let right = self.parse_cast()?;
+            self.nest_left()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
@@ -628,16 +845,20 @@ impl<'a> Parser<'a> {
     /// the same precedence Rust gives it. Left-associative: `x as u8 as u32`
     /// is `(x as u8) as u32`, which is how a double conversion is written.
     fn parse_cast(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_unary()?;
         while !self.eof() && self.tokens[self.pos] == Token::As {
             self.pos += 1;
             let ty = self.parse_cast_target()?;
+            self.nest_left()?;
             expr = Expr::Cast(Box::new(expr), ty);
         }
+        self.left = entry_left;
         Ok(expr)
     }
 
     /// - `!expr`
+    /// - `-expr`
     /// - `expr`
     fn parse_unary(&mut self) -> Result<Expr> {
         if self.eof() {
@@ -645,6 +866,25 @@ impl<'a> Parser<'a> {
         }
         let token = &self.tokens[self.pos];
         match token {
+            // `-expr`.
+            //
+            // The lexer already folds a *literal* `-5` into `Int(-5)` where it
+            // can tell an operand is expected, which is why the language got
+            // this far without a negation operator at all: `-5` worked and
+            // `-x` was a syntax error everywhere, with `0 - x` as the
+            // workaround. That lexer path stays — it is the only thing that can
+            // spell `-9223372036854775808`, whose magnitude does not fit in an
+            // `i64` — so this arm folds literals the same way to keep the two
+            // routes producing identical code.
+            Token::Sub => {
+                self.pos += 1;
+                let expr = self.deeper(Self::parse_unary)?;
+                Ok(match expr {
+                    Expr::Literal(LiteralVal::Int(value)) => Expr::Literal(LiteralVal::Int(-value)),
+                    Expr::Literal(LiteralVal::Float(value)) => Expr::Literal(LiteralVal::Float(-value)),
+                    other => Expr::Unary(UnaryOp::Neg, Box::new(other)),
+                })
+            }
             Token::Not => {
                 self.pos += 1;
                 let expr = self.deeper(Self::parse_unary)?;
@@ -666,6 +906,7 @@ impl<'a> Parser<'a> {
     /// - `func_name(args)`
     /// - `TypeName { field: expr, ... }` (struct literal)
     fn parse_postfix(&mut self) -> Result<Expr> {
+        let entry_left = self.left;
         let mut expr = self.parse_primary()?;
 
         loop {
@@ -709,9 +950,29 @@ impl<'a> Parser<'a> {
                 }
                 self.pos += 1; // skip ')'
 
-                if saw_named {
+                // `a?.m(args)` is a *call*, and `OptionalAccess` is a read:
+                // the compiler lowers it as an index, so `s?.len()` indexed the
+                // string with the string `"len"` and failed at runtime with
+                // "String index must be Int" — on the one operator that exists
+                // for values which may be nil.
+                //
+                // Rewritten here into the conditional it means, the way postfix
+                // `!` is. The checker and the compiler then see ordinary
+                // constructs, and the result is `T?` because one branch is nil
+                // — the rule every other maybe-missing branch follows.
+                let optional_receiver = matches!((&expr, saw_named), (Expr::OptionalAccess(_, _), false));
+                if optional_receiver {
+                    let Expr::OptionalAccess(receiver, field) = expr else {
+                        unreachable!("checked just above");
+                    };
+                    let id = self.desugar_counter;
+                    self.desugar_counter += 1;
+                    expr = desugar_optional_call(id, *receiver, *field, pos_args);
+                } else if saw_named {
+                    self.nest_left()?;
                     expr = Expr::CallNamed(Box::new(expr), pos_args, named_args);
                 } else {
+                    self.nest_left()?;
                     expr = Expr::CallExpr(Box::new(expr), pos_args);
                 }
             } else if !self.eof() && self.tokens[self.pos] == Token::LBrace {
@@ -720,6 +981,8 @@ impl<'a> Parser<'a> {
                     expr = self.parse_struct_literal_after_name(name.clone())?;
                 } else if self.prefix_mode {
                     break;
+                } else if let Some(literal) = self.parse_qualified_struct_literal(&expr)? {
+                    expr = literal;
                 } else {
                     // If not a simple Var before '{', treat as error to avoid ambiguity with blocks
                     return Err(anyhow!(self.err(
@@ -735,6 +998,7 @@ impl<'a> Parser<'a> {
                 }
 
                 let field = self.parse_field_name()?;
+                self.nest_left()?;
                 expr = Expr::Access(Box::new(expr), Box::new(field));
             } else if !self.eof() && self.tokens[self.pos] == Token::OptionalDot {
                 // Optional dot access (?.)
@@ -743,7 +1007,18 @@ impl<'a> Parser<'a> {
                     return Err(anyhow!(self.err("Expecting field after '?.'")));
                 }
                 let field = self.parse_field_name()?;
+                // `a?.m(args)` is a *call*, and `OptionalAccess` is a read: the
+                // compiler lowers it as an index, so `s?.len()` indexed the
+                // string with the string `"len"` and failed at runtime with
+                // "String index must be Int" — on the one operator that exists
+                // for values which may be nil.
+                //
+                // Desugared here, the way postfix `!` is, into the conditional
+                // it means. Both the checker and the compiler then see ordinary
+                // constructs: the result is `T?` because one branch is nil,
+                // which is the rule every other maybe-missing branch follows.
                 // Optional access is only supported on regular expressions, not @ expressions
+                self.nest_left()?;
                 expr = Expr::OptionalAccess(Box::new(expr), Box::new(field));
             } else if !self.eof()
                 && self.tokens[self.pos] == Token::Question
@@ -782,6 +1057,7 @@ impl<'a> Parser<'a> {
                 }
                 self.pos += 1; // skip ']'
 
+                self.nest_left()?;
                 expr = Expr::OptionalAccess(Box::new(expr), index_expr);
             } else if !self.eof() && self.tokens[self.pos] == Token::LBracket {
                 // Bracket indexing: expr[expr]
@@ -817,33 +1093,65 @@ impl<'a> Parser<'a> {
                 self.pos += 1; // skip ']'
 
                 // Build bracket Access
+                self.nest_left()?;
                 expr = Expr::Access(Box::new(expr), index_expr);
-            } else if !self.eof()
-                && self.tokens[self.pos] == Token::Not
-                && !matches!(
-                    self.tokens.get(self.pos + 1),
-                    Some(Token::LParen | Token::LBracket | Token::LBrace)
-                )
-            {
+            } else if !self.eof() && self.tokens[self.pos] == Token::Not && !self.macro_invocation_follows(&expr) {
                 // Postfix `!` — Swift-style force unwrap, parse-time sugar:
                 // `expr!` ⇒ `{ let __unwrap{n} = expr;
                 //              __unwrap{n} == nil ? error("unwrap of nil value")
                 //                                 : __unwrap{n} }`
                 // Raises a catchable error on nil, evaluates to the value
-                // otherwise. Two boundaries: `!` immediately followed by an
-                // open delimiter stays a *macro invocation* (`name!(...)` /
-                // `name![...]` / `name!{...}` — parenthesize as `(x!)(...)`
-                // to call an unwrapped value), and the lexer greedily takes
-                // `!=` as Ne, so `x!== 1` is a parse error — write `x! == 1`.
+                // otherwise. Two boundaries: a `!` that continues a *macro
+                // name* is a macro invocation, not an unwrap (see
+                // [`Parser::macro_invocation_follows`]), and the lexer greedily
+                // takes `!=` as Ne, so `x!== 1` is a parse error — write
+                // `x! == 1`.
                 self.pos += 1;
                 self.desugar_counter += 1;
                 expr = desugar_unwrap(self.desugar_counter, expr);
+            } else if !self.eof() && self.tokens[self.pos] == Token::Not && self.macro_invocation_follows(&expr) {
+                // A macro invocation that reached the parser is one macro
+                // expansion left alone, and expansion runs first — so no macro
+                // of this name is defined. Saying that beats what the fall
+                // through said: `nope!()` left the `!` unconsumed and reported
+                // "Unexpected tokens at end (found Not)", which names a token
+                // the program does not contain and no macro at all.
+                let Expr::Var(name) = &expr else {
+                    unreachable!("macro_invocation_follows only answers true for a bare name");
+                };
+                let msg = alloc::format!(
+                    "no macro named `{name}` is defined — `{name}!(…)` is a macro invocation, \
+                     and to call an unwrapped value write `({name}!)(…)`"
+                );
+                return Err(anyhow!(self.err(&msg)));
             } else {
                 break; // No more postfix operations
             }
         }
 
+        self.left = entry_left;
         Ok(expr)
+    }
+
+    /// Whether the `!` at the cursor continues a **macro invocation** rather
+    /// than being a postfix unwrap.
+    ///
+    /// A macro name is an identifier, so only a bare name can be one:
+    /// `name!(…)`, `name![…]`, `name!{…}`. The test used to be the open
+    /// delimiter alone, which made `m["a"]![0]` — unwrap a map read, then index
+    /// it — a "macro invocation reached the parser" error, for a spelling no
+    /// macro could ever have. `xs[0]![0]` likewise. The workaround was to
+    /// parenthesise or split the line, for an expression with no ambiguity in
+    /// it at all.
+    ///
+    /// To *call* an unwrapped value bound to a bare name, parenthesise:
+    /// `(f!)(…)`. That one really is ambiguous, and the name goes to the macro.
+    fn macro_invocation_follows(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Var(_))
+            && matches!(
+                self.tokens.get(self.pos + 1),
+                Some(Token::LParen | Token::LBracket | Token::LBrace)
+            )
     }
 
     /// Parse struct fields: '{ id: expr, ... }'
@@ -870,6 +1178,53 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `module.Type { field: value, … }` — the constructor call it desugars to.
+    ///
+    /// The object has to be built *by the module that declares the type*: a
+    /// type's identity carries its defining module (`val::TypeScope`), and one
+    /// built here would not be the type `impl … for Type` was registered
+    /// against. So this becomes `module.Type$new(field: value, …)`, the
+    /// constructor `stmt::struct_ctors` puts beside every `struct` — an
+    /// ordinary cross-module call, which runs *there*.
+    ///
+    /// Named arguments, so the call site needs to know nothing about the
+    /// declaration: the same `field: value` pairs the literal is written with,
+    /// and a missing or misspelled one is the constructor's own arity error.
+    ///
+    /// `None` when the receiver is not a qualified name (`m.f() { … }`, a map
+    /// field followed by a block) — the caller then reports its own error.
+    fn parse_qualified_struct_literal(&mut self, expr: &Expr) -> Result<Option<Expr>> {
+        let Expr::Access(module, field) = expr else {
+            return Ok(None);
+        };
+        let Expr::Var(_) = module.as_ref() else {
+            return Ok(None);
+        };
+        let Expr::Literal(name) = field.as_ref() else {
+            return Ok(None);
+        };
+        let Some(type_name) = name.as_str() else {
+            return Ok(None);
+        };
+        // A type, by the same spelling rule the rest of the language uses.
+        if !type_name.starts_with(char::is_uppercase) {
+            return Ok(None);
+        }
+        let parts = self.parse_struct_fields()?;
+        if parts.update_base.is_some() {
+            return Err(anyhow!(self.err(
+                "`..base` update syntax needs the type's own module: build the value there and update it here"
+            )));
+        }
+        let callee = Expr::Access(
+            module.clone(),
+            Box::new(Expr::Literal(LiteralVal::from_str(
+                &crate::stmt::struct_ctors::constructor_name(type_name),
+            ))),
+        );
+        Ok(Some(Expr::CallNamed(Box::new(callee), Vec::new(), parts.fields)))
+    }
+
     fn parse_struct_fields(&mut self) -> Result<StructLiteralParts> {
         if self.eof() || self.tokens[self.pos] != Token::LBrace {
             return Err(anyhow!(self.err("Expecting '{' to start struct literal")));
@@ -886,6 +1241,13 @@ impl<'a> Parser<'a> {
         }
 
         loop {
+            // The token stream can end here — a struct literal inside a string
+            // interpolation is cut at the first `}`, so `"${R {}}"` arrives as
+            // `R {` and nothing more. Reading past the end panicked the parser;
+            // an unterminated literal is a syntax error like any other.
+            if self.eof() {
+                return Err(anyhow!(self.err("Unexpected end in struct literal fields")));
+            }
             if self.tokens[self.pos] == Token::Range {
                 if update_base.is_some() {
                     return Err(anyhow!(self.err("Duplicate struct update base")));
@@ -918,11 +1280,15 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // Field name must be identifier
+            // Field name. A keyword names one unambiguously here — a struct
+            // literal's `{ … }` holds `name: value` pairs and nothing else.
             let key = if let Token::Id(id) = &self.tokens[self.pos] {
                 let k = id.clone();
                 self.pos += 1;
                 k
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected identifier as struct field name")));
             };
@@ -992,6 +1358,22 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(Expr::Literal(LiteralVal::Int(*i)))
             }
+            // A radix literal that needs all 64 bits *is* a `u64`, so it is
+            // parsed as one — the same expression `0x8000_0000_0000_0000 as u64`
+            // builds, which already worked and is what the error used to tell
+            // people to write.
+            //
+            // Saying it here rather than relaxing the range check is what keeps
+            // `let y: u8 = -1` refused: the carrier cannot tell those two apart,
+            // and by this point the token still can.
+            Token::UInt { value, .. } => {
+                let value = *value;
+                self.pos += 1;
+                Ok(Expr::Cast(
+                    Box::new(Expr::Literal(LiteralVal::Int(value as i64))),
+                    crate::val::Type::MachineInt(crate::val::IntKind::U64),
+                ))
+            }
             Token::Float(f) => {
                 self.pos += 1;
                 Ok(Expr::Literal(LiteralVal::Float(*f)))
@@ -1005,10 +1387,14 @@ impl<'a> Parser<'a> {
                 self.parse_template_string_content(content)
             }
             Token::LBracket => self.parse_list(),
+            // `{` opens a map *or* a block — see `brace_opens_a_block`.
+            Token::LBrace if self.brace_opens_a_block() => self.parse_brace_block(BlockTail::Value),
             Token::LBrace => self.parse_map(),
             Token::Select => self.parse_select(),
             Token::Unsafe => self.parse_unsafe_block(),
             Token::Match => self.parse_match(),
+            Token::If => self.parse_if_expr(),
+            Token::Try => self.parse_try_expr(),
             Token::LParen => self.parse_paren(),
             Token::Fn => self.parse_fn_closure(),
             Token::Pipe => self.parse_closure(),
@@ -1117,15 +1503,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse match expression: match value { pattern => expr, ... }
-    fn parse_match(&mut self) -> Result<Expr> {
-        if self.tokens[self.pos] != Token::Match {
-            let msg = format!("Expecting 'match', found {:?}", self.tokens[self.pos]);
-            return Err(anyhow!(self.err(&msg)));
-        }
-        self.pos += 1;
-
-        // Parse the value to match against, stopping before the opening '{'
-        // to avoid consuming it as a struct literal in postfix parsing.
+    /// The expression between a keyword and its `{ … }` — a `match` scrutinee
+    /// or an `if` condition.
+    ///
+    /// Parsed from a token slice that stops at the first *top-level* `{`,
+    /// because postfix parsing would otherwise read `match x {` as the struct
+    /// literal `x { … }`. Leaves `self.pos` on that brace; the caller consumes
+    /// it. The cost is that a struct literal cannot be written bare in this
+    /// position — `if Point { x: 1 } == p` needs parentheses — which is the
+    /// same trade Rust makes, for the same reason.
+    fn parse_header_expr_before_brace(&mut self, keyword: &str) -> Result<Box<Expr>> {
         let start_pos = self.pos;
         let mut i = self.pos;
         let mut paren: i32 = 0;
@@ -1152,15 +1539,20 @@ impl<'a> Parser<'a> {
                     }
                     i += 1;
                 }
-                Token::LBrace if paren == 0 && bracket == 0 => {
-                    break; // stop before '{' that begins match arms
-                }
+                Token::LBrace if paren == 0 && bracket == 0 => break,
                 _ => i += 1,
             }
         }
 
         if i == start_pos {
-            return Err(anyhow!(self.err("Expected value before '{' in match expression")));
+            // The only expression that can start with `{` is a map literal, and
+            // here `{` is the body's — so say which way out there is rather
+            // than only that this is wrong.
+            let msg = alloc::format!(
+                "Expected an expression before '{{' in {keyword}: a `{{` here opens the body, \
+                 so a map literal must be parenthesised — `{keyword} ({{…}}) {{ … }}`"
+            );
+            return Err(anyhow!(self.err(&msg)));
         }
 
         let value_tokens = &self.tokens[start_pos..i];
@@ -1171,11 +1563,115 @@ impl<'a> Parser<'a> {
             self.sub_parser(value_tokens)
         };
         let value = Box::new(sub.parse_expr()?);
+        // Everything up to the `{` has to *be* the expression. The sub-parser
+        // stops at the first token it cannot continue with, and its leftovers
+        // used to be dropped without a word: `if a = 2 { … }` parsed as
+        // `if a { … }`, type-checked, and ran with the assignment gone —
+        // exactly the `=`-for-`==` slip, turned into a silent wrong answer.
+        //
+        // Statement position never had this: it parses the condition through
+        // the ordinary path, which does check what it did not consume. Only a
+        // *tail* `if`/`match` reaches here, so the shape was accepted at the
+        // end of a file and rejected one line earlier.
+        if sub.pos < sub.len {
+            self.pos = start_pos + sub.pos;
+            let msg = leftover_token_message(&sub.tokens[sub.pos]);
+            return Err(anyhow!(self.err(&msg)));
+        }
         self.pos = i;
 
         if self.eof() || self.tokens[self.pos] != Token::LBrace {
-            return Err(anyhow!(self.err("Expecting '{' after match value")));
+            let msg = alloc::format!("Expecting '{{' after the {keyword} expression");
+            return Err(anyhow!(self.err(&msg)));
         }
+        Ok(value)
+    }
+
+    /// `try { … } catch e { … }`, which is an expression like `if` and `match`.
+    ///
+    /// The value is the body's trailing expression, or the handler's when the
+    /// body raised — the same rule `if` uses for its two branches, including
+    /// "a branch that ends in a statement yields nil". `let r = try { … }
+    /// catch e { … };` used to be a syntax error, so the way to get a value out
+    /// was to declare a `nil` first and assign into it from both halves, or to
+    /// wrap the whole thing in a function and `return` twice.
+    ///
+    /// Statement position parses through here too (`StmtParser::parse_try_stmt`
+    /// wraps the result in `Stmt::Expr`), so there is one node, one type rule
+    /// and one lowering — as with `if`, whose statement form is not a second
+    /// implementation either.
+    fn parse_try_expr(&mut self) -> Result<Expr> {
+        self.pos += 1; // 'try'
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expected '{' after `try`")));
+        }
+        let Expr::Block(body) = self.parse_brace_block(BlockTail::Value)? else {
+            return Err(anyhow!(self.err("`try` body must be a block")));
+        };
+        if self.eof() || self.tokens[self.pos] != Token::Catch {
+            return Err(anyhow!(self.err("Expected `catch` after the `try` block")));
+        }
+        self.pos += 1;
+        let catch_var = match self.tokens.get(self.pos) {
+            Some(Token::Id(name)) => {
+                let name = name.clone();
+                self.pos += 1;
+                name
+            }
+            _ => return Err(anyhow!(self.err("Expected an identifier after `catch`"))),
+        };
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expected '{' after the `catch` binding")));
+        }
+        let Expr::Block(handler) = self.parse_brace_block(BlockTail::Value)? else {
+            return Err(anyhow!(self.err("`catch` body must be a block")));
+        };
+        Ok(Expr::Try {
+            body,
+            catch_var,
+            handler,
+        })
+    }
+
+    /// `if cond { … } else { … }` in *expression* position.
+    ///
+    /// `match` has always been an expression here; `if` was not, so
+    /// `let a = match c { … };` worked and `let a = if c { … } else { … };`
+    /// was a syntax error, with the C-style ternary as the only way to choose
+    /// a value — the very operator a language whose `if` is an expression does
+    /// not need. Both now lower through the same node: `Expr::Conditional`
+    /// over two `Expr::Block`s, each evaluating to its last expression.
+    ///
+    /// A missing `else` yields `nil`, as does a branch whose block ends in a
+    /// statement rather than an expression.
+    fn parse_if_expr(&mut self) -> Result<Expr> {
+        self.pos += 1; // 'if'
+        let condition = self.parse_header_expr_before_brace("if")?;
+        let then_block = self.parse_brace_block(BlockTail::Value)?;
+        let else_expr = if !self.eof() && self.tokens[self.pos] == Token::Else {
+            self.pos += 1;
+            if self.eof() {
+                return Err(anyhow!(self.err("Expected a block or 'if' after 'else'")));
+            }
+            match self.tokens[self.pos] {
+                Token::If => self.deeper(Self::parse_if_expr)?,
+                Token::LBrace => self.parse_brace_block(BlockTail::Value)?,
+                _ => return Err(anyhow!(self.err("Expected a block or 'if' after 'else'"))),
+            }
+        } else {
+            Expr::Literal(LiteralVal::Nil)
+        };
+        Ok(Expr::Conditional(condition, Box::new(then_block), Box::new(else_expr)))
+    }
+
+    fn parse_match(&mut self) -> Result<Expr> {
+        if self.tokens[self.pos] != Token::Match {
+            let msg = format!("Expecting 'match', found {:?}", self.tokens[self.pos]);
+            return Err(anyhow!(self.err(&msg)));
+        }
+        self.pos += 1;
+
+        let value = self.parse_header_expr_before_brace("match")?;
         self.pos += 1;
 
         let mut arms = Vec::new();
@@ -1192,7 +1688,18 @@ impl<'a> Parser<'a> {
             // Parse body expression. Through `parse_expr`, not
             // `parse_conditional`: the arm body is where `match` nests into
             // itself, so it has to be counted.
-            let body = Box::new(self.parse_expr()?);
+            //
+            // A `{` here opens a *block*, as it does after a closure's
+            // parameters — `1 => { work(); }` was a syntax error before,
+            // because postfix parsing read the brace as a map literal and then
+            // found statements inside it. The cost is that an arm whose value
+            // really is a map needs parentheses (`_ => ({"k": 1})`), which is
+            // the trade Rust makes for the same reason.
+            let body = Box::new(if !self.eof() && self.tokens[self.pos] == Token::LBrace {
+                self.parse_brace_block(BlockTail::Value)?
+            } else {
+                self.parse_expr()?
+            });
 
             arms.push(MatchArm { pattern, body });
 
@@ -1215,75 +1722,35 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse template string content from a TemplateString token
+    ///
+    /// Where the `${…}` boundaries are is [`split_template_string`]'s answer, not
+    /// this function's: the scan used to live here as a second copy of the
+    /// lexer's, and the two disagreed about nested braces (`"${R {}}"` cut at the
+    /// first `}` and the struct-literal parser then read past the end of its
+    /// stream). The macro expander now needs the same answer, which makes a
+    /// shared scanner the only way to keep three readers of one syntax honest.
     fn parse_template_string_content(&mut self, content: &str) -> Result<Expr> {
+        let segments = split_template_string(content)
+            .map_err(|TemplateScanError::Unclosed| anyhow!(self.err("Unclosed template expression")))?;
         let mut parts = Vec::new();
-        let mut current_literal = String::new();
-        let mut in_expr = false;
-        let mut expr_start = 0usize; // byte offset into `content`
-
-        // Use char_indices so `byte_pos` is always a valid byte boundary for slicing.
-        let chars: Vec<(usize, char)> = content.char_indices().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            let (byte_pos, c) = chars[i];
-
-            if in_expr {
-                if c == '}' {
-                    // End of ${...} expression — byte_pos is the correct slice bound.
-                    let expr_content = &content[expr_start..byte_pos];
-                    if !expr_content.is_empty() {
-                        let expr_tokens = match Tokenizer::tokenize_enhanced(expr_content) {
-                            Ok(tokens) => tokens,
-                            Err(e) => {
-                                return Err(anyhow!(
-                                    self.err(&format!("Failed to parse template expression: {}", e))
-                                ));
-                            }
-                        };
-
-                        if !expr_tokens.is_empty() {
-                            let mut expr_parser = self.sub_parser(&expr_tokens);
-                            match expr_parser.parse_expr() {
-                                Ok(expr) => parts.push(TemplateStringPart::Expr(Box::new(expr))),
-                                Err(e) => {
-                                    return Err(anyhow!(
-                                        self.err(&format!("Failed to parse template expression: {}", e))
-                                    ));
-                                }
-                            }
-                        }
+        for segment in segments {
+            match segment {
+                TemplateSegment::Literal(text) => parts.push(TemplateStringPart::Literal(text.to_string())),
+                TemplateSegment::Expr("") => {}
+                TemplateSegment::Expr(text) => {
+                    let expr_tokens = Tokenizer::tokenize_enhanced(text)
+                        .map_err(|e| anyhow!(self.err(&format!("Failed to parse template expression: {e}"))))?;
+                    if expr_tokens.is_empty() {
+                        continue;
                     }
-                    in_expr = false;
+                    let mut expr_parser = self.sub_parser(&expr_tokens);
+                    let expr = expr_parser
+                        .parse_expr()
+                        .map_err(|e| anyhow!(self.err(&format!("Failed to parse template expression: {e}"))))?;
+                    parts.push(TemplateStringPart::Expr(Box::new(expr)));
                 }
-                i += 1;
-            } else if c == '$' && i + 1 < chars.len() && chars[i + 1].1 == '{' {
-                // Start of ${expr} syntax — skip both '$' and '{'.
-                i += 2;
-
-                if !current_literal.is_empty() {
-                    parts.push(TemplateStringPart::Literal(core::mem::take(&mut current_literal)));
-                }
-
-                in_expr = true;
-                // expr_start is the byte offset of the first char inside the braces.
-                expr_start = if i < chars.len() { chars[i].0 } else { content.len() };
-            } else {
-                current_literal.push(c);
-                i += 1;
             }
         }
-
-        // Push any remaining literal content
-        if !current_literal.is_empty() {
-            parts.push(TemplateStringPart::Literal(current_literal));
-        }
-
-        // If we're still in an expression, it's an error
-        if in_expr {
-            return Err(anyhow!(self.err("Unclosed template expression")));
-        }
-
         Ok(Expr::TemplateString(parts))
     }
 
@@ -1294,14 +1761,24 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let expr = self.parse_expr()?;
             if self.eof() || self.tokens[self.pos] != Token::RParen {
-                let msg = format!(
-                    "Expecting ')', found {:?}",
-                    if self.eof() {
-                        &Token::Nil
-                    } else {
-                        &self.tokens[self.pos]
-                    }
-                );
+                // A comma here is almost always somebody writing a tuple. The
+                // language has none — `Tuple<A, B>` is a *type*, and the value
+                // it describes is a list — so "Expecting ')'" left the reader
+                // to guess what to write instead.
+                let msg = if !self.eof() && self.tokens[self.pos] == Token::Comma {
+                    "there is no tuple literal — a value with several elements is a list, written `[a, b]`. \
+                     (`Tuple<A, B>` is a type for exactly that, not a second kind of value)"
+                        .to_string()
+                } else {
+                    format!(
+                        "Expecting ')', found {:?}",
+                        if self.eof() {
+                            &Token::Nil
+                        } else {
+                            &self.tokens[self.pos]
+                        }
+                    )
+                };
                 return Err(anyhow!(self.err(&msg)));
             }
             self.pos += 1;

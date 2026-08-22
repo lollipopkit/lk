@@ -2,7 +2,7 @@
 use crate::compat::prelude::*;
 use alloc::sync::Arc;
 
-use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap};
+use super::{CallableValue, HeapValue, RuntimeVal, TypedList, TypedMap};
 use crate::vm::RuntimeCallable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,6 +20,22 @@ impl HeapRef {
     }
 }
 
+/// The imported callables a single collection cycle has already walked.
+///
+/// Empty for a collection that reaches no imported function, which is every
+/// collection in a single-module program.
+#[derive(Debug, Default)]
+pub struct CollectedModules {
+    seen: crate::compat::collections::HashSet<usize>,
+}
+
+impl CollectedModules {
+    /// Records `callable` and answers whether it is new to this cycle.
+    pub fn first_visit(&mut self, callable: usize) -> bool {
+        self.seen.insert(callable)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HeapStore {
     slots: Vec<Option<HeapValue>>,
@@ -29,6 +45,10 @@ pub struct HeapStore {
     live_len: usize,
     alloc_since_gc: u32,
     gc_threshold: u32,
+    /// An embedder asked for a specific threshold, so the live-set scaling in
+    /// [`Self::should_collect`] is off: a number given by name means that
+    /// number, not a floor under a policy the caller did not ask for.
+    pinned_threshold: bool,
 }
 
 impl HeapStore {
@@ -46,6 +66,7 @@ impl HeapStore {
             live_len: 0,
             alloc_since_gc: 0,
             gc_threshold: Self::DEFAULT_GC_THRESHOLD,
+            pinned_threshold: false,
         }
     }
 
@@ -61,7 +82,15 @@ impl HeapStore {
             assert!(u32::try_from(index).is_ok(), "heap object index overflow");
             self.slots.push(Some(value));
             self.marks.push(Self::WHITE);
-            self.generations.push(0);
+            // A slot the table grew back into after `release_dead_tail` cut it
+            // is a *re-used* slot, not a fresh one: its generation carries on
+            // from where it left off, so a handle from before the cut still
+            // fails to match. Only an index the heap has never reached starts
+            // at zero.
+            match self.generations.get_mut(index) {
+                Some(generation) => *generation = generation.wrapping_add(1),
+                None => self.generations.push(0),
+            }
             index as u32
         };
         self.live_len += 1;
@@ -98,14 +127,48 @@ impl HeapStore {
         self.live_len
     }
 
+    /// How many slots the table holds, live or not — what a sweep walks, and
+    /// what [`Self::should_collect`] paces itself against.
+    #[inline]
+    pub fn slot_capacity(&self) -> usize {
+        self.slots.len()
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.live_len == 0
     }
 
+    /// Whether enough has been allocated since the last collection to be worth
+    /// another one.
+    ///
+    /// The bound is the size of the **slot table**, floored at
+    /// [`Self::gc_threshold`]. A mark and sweep walks every slot whatever
+    /// triggered it, so collecting every fixed number of allocations makes the
+    /// collector's share of a program grow with the table: a heap of a hundred
+    /// thousand slots paid a hundred-thousand-slot walk every thousand
+    /// allocations. Waiting for it to grow by half its size instead keeps the
+    /// amortized cost per allocation constant.
+    ///
+    /// The table and not the *live set*, because the sweep's cost is the table:
+    /// one object allocated after a large burst is released pins the whole
+    /// thing (see [`Self::release_dead_tail`]), and a live-set bound would then
+    /// collect as if the heap were empty while each collection still walked the
+    /// peak. Measured: four hundred thousand allocations released and four
+    /// hundred thousand more made took 0.61s on a fixed threshold, 0.45s on a
+    /// live-set bound, and 0.07s on this one.
+    ///
+    /// `gc_threshold` is the *floor* on how often this can fire, so a small
+    /// heap keeps the old behaviour exactly. A threshold set by name turns the
+    /// scaling off entirely (`pinned_threshold`): an embedder that asks to
+    /// collect every allocation is asking for a policy, not for a floor under
+    /// one.
     #[inline]
     pub fn should_collect(&self) -> bool {
-        self.alloc_since_gc >= self.gc_threshold
+        if self.pinned_threshold {
+            return self.alloc_since_gc >= self.gc_threshold;
+        }
+        self.alloc_since_gc as usize >= (self.gc_threshold as usize).max(self.slots.len() / 2)
     }
 
     #[inline]
@@ -116,41 +179,80 @@ impl HeapStore {
     #[inline]
     pub fn set_gc_threshold(&mut self, threshold: u32) {
         self.gc_threshold = threshold.max(1);
+        self.pinned_threshold = true;
     }
 
+    /// Mark and sweep.
+    ///
+    /// Marking walks an explicit worklist rather than recursing. Recursion put
+    /// the object graph's *depth* on the Rust stack, so a chain a program can
+    /// build in a loop —
+    ///
+    /// ```lk
+    /// let node: Any = [1];
+    /// for i in 0..200000 { node = [node]; }
+    /// ```
+    ///
+    /// — aborted the process with `fatal runtime error: stack overflow` at the
+    /// next collection, with no way for a script to catch it and no line to
+    /// blame: the allocation that tripped the threshold, not the one at fault.
+    /// The worklist also lets edges land straight in it, so marking no longer
+    /// allocates a fresh `Vec` per object visited.
     pub fn collect(&mut self, roots: impl IntoIterator<Item = HeapRef>) {
-        for mark in &mut self.marks {
-            *mark = Self::WHITE;
+        self.collect_with_visited(roots, &mut CollectedModules::default());
+    }
+
+    /// The same, told which module heaps this collection cycle has already
+    /// walked.
+    ///
+    /// A heap holding an imported function reaches *another* module's heap
+    /// through it (see the deferred `runtime_callables` below), and that heap
+    /// reaches further ones the same way. The module graph is a DAG, and
+    /// without remembering where it has been the walk treats it as a tree: a
+    /// module reached by K paths is collected K times, each of those repeating
+    /// the walk beneath it. Measured, with N closures accumulated in a REPL
+    /// session (each input is its own module, and each holds a callable for
+    /// every earlier one), cross-module collections went 8 -> ~1_000,
+    /// 12 -> ~20_000, 16 -> ~327_000 — exponential in N.
+    pub fn collect_with_visited(&mut self, roots: impl IntoIterator<Item = HeapRef>, visited: &mut CollectedModules) {
+        // No whitening pass. Every mark is already `WHITE` when a collection
+        // starts, and the three places that could say otherwise all maintain
+        // it: `sweep` turns each surviving `BLACK` back, a swept slot was never
+        // marked in the first place, and both `alloc` paths write `WHITE`. The
+        // loop that used to be here walked every slot the heap had *ever* held
+        // to write a value each of them already had — the same O(slots) the
+        // sweep costs, spent twice.
+        debug_assert!(
+            self.marks.iter().all(|mark| *mark == Self::WHITE),
+            "a collection starts from an all-white heap"
+        );
+        let mut worklist: Vec<HeapRef> = roots.into_iter().collect();
+        let mut runtime_callables = Vec::new();
+        while let Some(reference) = worklist.pop() {
+            let index = reference.index() as usize;
+            if index >= self.slots.len() || self.slots[index].is_none() || self.marks[index] == Self::BLACK {
+                continue;
+            }
+            self.marks[index] = Self::BLACK;
+            let value = self.slots[index].as_ref().expect("checked live slot");
+            collect_heap_value_edges(value, &mut worklist, &mut runtime_callables);
         }
-        for root in roots {
-            self.mark_ref(root);
+        // Deferred to here rather than done mid-walk: each of these collects a
+        // *different* heap (the callable's own module state), so the order
+        // relative to this heap's marking cannot matter.
+        for function in runtime_callables {
+            // Keyed on the *callable*, not on the module it belongs to. Two
+            // callables into one module carry different captures, and a
+            // callable's captures live in that module's heap — so skipping the
+            // second because the first had been there would leave its captures
+            // unrooted while the heap they live in is swept. Per callable, the
+            // work skipped is work already done with exactly these roots.
+            if visited.first_visit(Arc::as_ptr(&function) as *const () as usize) {
+                let _ = function.collect_garbage_with_visited(visited);
+            }
         }
         self.sweep();
         self.alloc_since_gc = 0;
-    }
-
-    fn mark_ref(&mut self, reference: HeapRef) {
-        let index = reference.index() as usize;
-        let Some(slot) = self.slots.get(index) else {
-            return;
-        };
-        if slot.is_none() || self.marks.get(index).copied() == Some(Self::BLACK) {
-            return;
-        }
-        self.marks[index] = Self::BLACK;
-        let mut refs = Vec::new();
-        let mut runtime_callables = Vec::new();
-        collect_heap_value_edges(
-            slot.as_ref().expect("checked live slot"),
-            &mut refs,
-            &mut runtime_callables,
-        );
-        for reference in refs {
-            self.mark_ref(reference);
-        }
-        for function in runtime_callables {
-            let _ = function.collect_garbage();
-        }
     }
 }
 
@@ -178,7 +280,11 @@ fn collect_heap_value_edges(
         HeapValue::Slice(slice) => collect_runtime_value_edge(&slice.source, refs),
         HeapValue::List(values) => collect_typed_list_edges(values, refs),
         HeapValue::Map(values) => collect_typed_map_edges(values, refs),
-        HeapValue::Set(values) => collect_runtime_set_edges(values, refs),
+        // A set's members are `RuntimeMapKey`s, and none of those is a heap
+        // handle any more: a long string key is an `Arc<str>` held inline, and
+        // a container cannot be a key at all (see `RuntimeMapKey::from_value`).
+        // So a set has no outgoing edges, like a string or a byte buffer.
+        HeapValue::Set(_) => {}
         HeapValue::Object(object) => {
             for value in object.fields.values() {
                 collect_runtime_value_edge(value, refs);
@@ -202,12 +308,6 @@ fn collect_heap_value_edges(
     }
 }
 
-fn collect_runtime_set_edges(values: &RuntimeSet, refs: &mut Vec<HeapRef>) {
-    for key in values.entries() {
-        collect_runtime_map_key_edge(key, refs);
-    }
-}
-
 fn collect_typed_list_edges(values: &TypedList, refs: &mut Vec<HeapRef>) {
     if let TypedList::Mixed(values) = values {
         for value in values {
@@ -219,8 +319,8 @@ fn collect_typed_list_edges(values: &TypedList, refs: &mut Vec<HeapRef>) {
 fn collect_typed_map_edges(values: &TypedMap, refs: &mut Vec<HeapRef>) {
     match values {
         TypedMap::Mixed(values) => {
-            for (key, value) in values {
-                collect_runtime_map_key_edge(key, refs);
+            // Keys hold no handles — see the `Set` arm above.
+            for value in values.values() {
                 collect_runtime_value_edge(value, refs);
             }
         }
@@ -230,12 +330,6 @@ fn collect_typed_map_edges(values: &TypedMap, refs: &mut Vec<HeapRef>) {
             }
         }
         TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
-    }
-}
-
-fn collect_runtime_map_key_edge(key: &RuntimeMapKey, refs: &mut Vec<HeapRef>) {
-    if let RuntimeMapKey::Obj(reference) = key {
-        refs.push(*reference);
     }
 }
 
@@ -249,6 +343,7 @@ impl HeapStore {
     fn sweep(&mut self) {
         self.free_list.clear();
         let mut live_len = 0;
+        let mut last_live = 0usize;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.is_none() {
                 self.free_list.push(index as u32);
@@ -257,12 +352,44 @@ impl HeapStore {
             if self.marks[index] == Self::BLACK {
                 self.marks[index] = Self::WHITE;
                 live_len += 1;
+                last_live = index + 1;
             } else {
                 *slot = None;
                 self.free_list.push(index as u32);
             }
         }
         self.live_len = live_len;
+        self.release_dead_tail(last_live);
+    }
+
+    /// Gives back the empty tail of the slot table.
+    ///
+    /// A sweep costs O(slots), not O(live), and `slots` only ever grew — so a
+    /// program that allocated a lot once and then dropped it kept paying for the
+    /// peak at every later collection. Four hundred thousand allocations
+    /// released, then four hundred thousand small ones, spent most of their time
+    /// walking a table whose live count was near zero.
+    ///
+    /// Only the *tail*, because a `HeapRef` is an index: moving a live slot would
+    /// need every reference to it rewritten, and there is no such list. Cutting
+    /// the empty end moves nothing. A reference into the cut region is a
+    /// reference to something already collected, and `get` answers `None` for it
+    /// exactly as it did when the slot was `None` — the same dangling-ref
+    /// behaviour, one branch earlier.
+    ///
+    /// `generations` is **not** cut with them. That vector is what tells a
+    /// re-used slot from the one it replaced, so an inline cache holding
+    /// `(index, generation)` invalidates instead of matching a different object
+    /// at the same index. Cutting it would restart the counter at zero and let
+    /// exactly that stale match happen; eight bytes per slot the heap once held
+    /// is what the invariant costs.
+    fn release_dead_tail(&mut self, live_end: usize) {
+        if live_end == self.slots.len() {
+            return;
+        }
+        self.slots.truncate(live_end);
+        self.marks.truncate(live_end);
+        self.free_list.retain(|index| (*index as usize) < live_end);
     }
 }
 
@@ -275,7 +402,6 @@ impl Default for HeapStore {
 #[cfg(test)]
 mod tests {
     use crate::compat::sync::Mutex;
-    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
     use alloc::sync::Arc;
 
     use super::*;
@@ -283,6 +409,84 @@ mod tests {
         val::{ErrorVal, StreamCursorValue, StreamValue, Type},
         vm::RuntimeModuleState,
     };
+
+    /// The collector's share of a program must not grow with the data it holds.
+    ///
+    /// A mark and sweep costs O(live) whatever triggered it, so a *fixed*
+    /// allocation threshold makes total GC work O(allocations x live) — a
+    /// program with a large live set paid a full walk every thousand
+    /// allocations. Scaling the trigger with the live set makes it O(1)
+    /// amortized per allocation, which is what this measures: ten times the
+    /// live set must not mean ten times the collections per allocation.
+    ///
+    /// Counted rather than timed, so it says the same thing on any machine.
+    #[test]
+    fn collections_do_not_multiply_with_the_heap() {
+        fn collections_for(live: usize, allocations: usize) -> usize {
+            let mut heap = HeapStore::new();
+            let roots: Vec<HeapRef> = (0..live)
+                .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("live{i}")))))
+                .collect();
+            let mut collections = 0;
+            for i in 0..allocations {
+                heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("tmp{i}"))));
+                if heap.should_collect() {
+                    heap.collect(roots.iter().copied());
+                    collections += 1;
+                }
+            }
+            collections
+        }
+        // Ten times the live set, the same number of allocations. With a fixed
+        // threshold both answers are the same and the *work* is ten times as
+        // much; scaling the trigger trades that for a tenth of the collections.
+        let small = collections_for(2_000, 20_000);
+        let large = collections_for(20_000, 20_000);
+        assert!(small > 0, "the small heap has to collect at all, got {small}");
+        assert!(
+            large * 5 <= small,
+            "ten times the live set should collect far less often per allocation, \
+             got {large} collections against {small}"
+        );
+    }
+
+    /// A burst that is released gives its slots back, and a handle from before
+    /// the release still does not match whatever lands there next.
+    ///
+    /// The two halves are one test because the second is the price of the
+    /// first: the tail is cut, so the table can grow back into indices it has
+    /// used before, and `generations` is what keeps those apart. Cutting the
+    /// generations with the slots would restart the counter and let a stale
+    /// `(index, generation)` pair match a different object.
+    #[test]
+    fn a_released_burst_gives_its_slots_back_without_reusing_a_generation() {
+        let mut heap = HeapStore::new();
+        let keep = heap.alloc(HeapValue::String(Arc::<str>::from("keep")));
+        let doomed: Vec<HeapRef> = (0..500)
+            .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("burst{i}")))))
+            .collect();
+        let stale = doomed[100];
+        let stale_generation = heap.shape_generation(stale).expect("live before the collection");
+
+        heap.collect([keep]);
+        assert_eq!(heap.len(), 1, "only the kept object survives");
+        assert!(
+            heap.slot_capacity() <= 8,
+            "the released tail should be given back, table still holds {}",
+            heap.slot_capacity()
+        );
+
+        // Grow back over the same indices; the old handle must not match.
+        let reborn: Vec<HeapRef> = (0..300)
+            .map(|i| heap.alloc(HeapValue::String(Arc::<str>::from(alloc::format!("again{i}")))))
+            .collect();
+        assert!(reborn.iter().any(|r| r.index() == stale.index()), "an index came back");
+        assert_ne!(
+            heap.shape_generation(stale),
+            Some(stale_generation),
+            "a re-used slot must not answer the generation the old object had"
+        );
+    }
 
     #[test]
     fn heap_store_returns_stable_refs() {
@@ -324,7 +528,9 @@ mod tests {
         heap.collect([]);
         assert_eq!(heap.shape_generation(handle), None);
 
-        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_new())));
+        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_new(),
+        )));
         assert_eq!(reused.index(), handle.index());
         assert_eq!(heap.shape_generation(reused), Some(initial.wrapping_add(2)));
     }
@@ -353,16 +559,15 @@ mod tests {
         let mut heap = HeapStore::new();
         let leaf = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
         let list = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(leaf)])));
-        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([(
-            Arc::<str>::from("list"),
-            RuntimeVal::Obj(list),
-        )]))));
+        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("list"), RuntimeVal::Obj(list))]),
+        )));
         let object = heap.alloc(HeapValue::Object(crate::val::RuntimeObject::new(
-            Arc::new(crate::vm::DeclaredType::new(
-                crate::vm::TypeScope::anonymous(),
+            Arc::new(crate::val::DeclaredType::new(
+                crate::val::TypeScope::anonymous(),
                 Arc::<str>::from("Box"),
             )),
-            fast_hash_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
         )));
         let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index: 7,
@@ -388,21 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn heap_store_gc_marks_mixed_map_object_keys() {
-        let mut heap = HeapStore::new();
-        let key_object = heap.alloc(HeapValue::String(Arc::<str>::from("key-object")));
-        let map = heap.alloc(HeapValue::Map(TypedMap::Mixed(fast_hash_map_from_iter([(
-            RuntimeMapKey::Obj(key_object),
-            RuntimeVal::Int(1),
-        )]))));
-
-        heap.collect([map]);
-
-        assert!(heap.get(map).is_some());
-        assert!(heap.get(key_object).is_some());
-    }
-
-    #[test]
     fn heap_store_gc_marks_stream_and_cursor_roots() {
         let mut heap = HeapStore::new();
         let stream_root = heap.alloc(HeapValue::String(Arc::<str>::from("stream-root")));
@@ -425,6 +615,26 @@ mod tests {
         assert!(heap.get(cursor).is_some());
         assert!(heap.get(stream_root).is_some());
         assert!(heap.get(cursor_root).is_some());
+        assert!(heap.get(garbage).is_none());
+    }
+
+    /// Marking used to recurse, so the *depth* of the object graph sat on the
+    /// Rust stack and a chain a loop can build aborted the process at the next
+    /// collection. There is no depth bound here on purpose: a collection cannot
+    /// be allowed to fail.
+    #[test]
+    fn heap_store_gc_marks_a_chain_far_deeper_than_the_rust_stack() {
+        let mut heap = HeapStore::new();
+        let mut node = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
+        for _ in 0..200_000 {
+            node = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(node)])));
+        }
+        let garbage = heap.alloc(HeapValue::String(Arc::<str>::from("garbage")));
+
+        heap.collect([node]);
+
+        assert_eq!(heap.len(), 200_001);
+        assert!(heap.get(node).is_some());
         assert!(heap.get(garbage).is_none());
     }
 

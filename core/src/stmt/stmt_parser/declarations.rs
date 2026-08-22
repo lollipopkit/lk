@@ -25,7 +25,6 @@ impl<'a> StmtParser<'a> {
     pub fn parse_struct_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Struct)?;
 
-        // 名称
         let name = if let Token::Id(id) = &self.tokens[self.pos] {
             let n = id.clone();
             self.pos += 1;
@@ -34,31 +33,34 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected struct name after 'struct'")));
         };
 
-        // 字段块
         self.expect_token(Token::LBrace)?;
         let mut fields: Vec<(String, Option<Type>)> = Vec::new();
 
-        // 允许空结构体
+        // An empty struct is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(Stmt::Struct { name, fields });
         }
 
         loop {
-            // 字段名
+            // A field is only ever reached through `.` or a struct literal, so
+            // a keyword names one unambiguously (`struct Row { type: String }`).
             let field_name = if let Token::Id(id) = &self.tokens[self.pos] {
                 let s = id.clone();
                 self.pos += 1;
                 s
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected field name in struct")));
             };
 
-            // ':' 类型（可选；未注解视为 Any）
+            // The annotation is optional; an unannotated field is `Any`.
             let mut ty: Option<Type> = None;
             if !self.eof() && self.tokens[self.pos] == Token::Colon {
                 self.pos += 1; // consume ':'
-                // 复用具名参数的类型解析（直至 ',' 或 '}'）
+                // The named-parameter type parser, which stops at ',' or '}'.
                 let parsed = self.parse_inline_type_until_named_delim()?;
                 ty = Some(parsed);
             }
@@ -71,7 +73,7 @@ impl<'a> StmtParser<'a> {
             match &self.tokens[self.pos] {
                 Token::Comma => {
                     self.pos += 1;
-                    // 允许尾随逗号
+                    // A trailing comma is allowed.
                     if !self.eof() && self.tokens[self.pos] == Token::RBrace {
                         self.pos += 1;
                         break;
@@ -88,11 +90,10 @@ impl<'a> StmtParser<'a> {
         Ok(Stmt::Struct { name, fields })
     }
 
-    /// 解析 trait 语句：trait Name { fn method(params[: type]...) [-> type]; ... }
+    /// Parses `trait Name { fn method(params[: type]…) [-> type]; … }`.
     pub fn parse_trait_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Trait)?;
 
-        // trait 名称
         let name = if let Token::Id(id) = &self.tokens[self.pos] {
             let n = id.clone();
             self.pos += 1;
@@ -104,44 +105,81 @@ impl<'a> StmtParser<'a> {
         self.expect_token(Token::LBrace)?;
 
         let mut methods: Vec<(String, Type)> = Vec::new();
+        let mut default_methods: Vec<Stmt> = Vec::new();
 
-        // 允许空 trait
+        // An empty trait is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
-            return Ok(Stmt::Trait { name, methods });
+            return Ok(Stmt::Trait {
+                name,
+                methods,
+                default_methods,
+            });
         }
 
         while !self.eof() && self.tokens[self.pos] != Token::RBrace {
-            // 每个方法声明以 fn 开始
+            // A method with a body is a **default**: implementors that do not
+            // write it get this one. It parses as the ordinary function an
+            // `impl` block would hold, so the signature below is read back off
+            // the parsed node rather than parsed twice.
+            if let Some(method) = self.try_parse_trait_default_method()? {
+                let Stmt::Function {
+                    name: mname,
+                    param_types,
+                    named_params,
+                    return_type,
+                    ..
+                } = &method
+                else {
+                    return Err(anyhow!(self.err("Expected a method in trait")));
+                };
+                methods.push((
+                    mname.clone(),
+                    Type::Function {
+                        params: param_types.iter().map(|ty| ty.clone().unwrap_or(Type::Any)).collect(),
+                        named_params: named_params
+                            .iter()
+                            .map(|named| crate::val::FunctionNamedParamType {
+                                name: named.name.clone(),
+                                ty: named.type_annotation.clone().unwrap_or(Type::Any),
+                                has_default: named.default.is_some(),
+                            })
+                            .collect(),
+                        return_type: Box::new(return_type.clone().unwrap_or(Type::Any)),
+                    },
+                ));
+                default_methods.push(method);
+                continue;
+            }
             self.expect_token(Token::Fn)?;
 
-            // 方法名
             let mname = if let Token::Id(id) = &self.tokens[self.pos] {
                 let m = id.clone();
                 self.pos += 1;
                 m
+            } else if let Some(word) = crate::token::keyword_as_name(&self.tokens[self.pos]) {
+                // A trait method is reached through `.` like any other member.
+                self.pos += 1;
+                word.to_string()
             } else {
                 return Err(anyhow!(self.err("Expected method name in trait")));
             };
 
-            // 参数列表（仅用于签名）
+            // The parameter list is the signature; there is no body.
             self.expect_token(Token::LParen)?;
             let mut param_types: Vec<Type> = Vec::new();
             while !self.eof() && self.tokens[self.pos] != Token::RParen {
-                // 参数名
                 if let Token::Id(_param_name) = &self.tokens[self.pos] {
                     self.pos += 1; // consume name
                 } else {
                     return Err(anyhow!(self.err("Expected parameter name in trait method")));
                 }
-                // 可选类型注解
                 let mut pty: Type = Type::Any;
                 if !self.eof() && self.tokens[self.pos] == Token::Colon {
                     self.pos += 1; // ':'
                     pty = self.parse_inline_type_until_param_delim()?;
                 }
                 param_types.push(pty);
-                // 分隔符
                 if !self.eof() && self.tokens[self.pos] == Token::Comma {
                     self.pos += 1;
                 } else if !self.eof() && self.tokens[self.pos] == Token::RParen {
@@ -154,7 +192,6 @@ impl<'a> StmtParser<'a> {
             }
             self.expect_token(Token::RParen)?;
 
-            // 可选返回类型
             let mut ret_ty: Type = Type::Any;
             if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
                 self.pos += 1; // '->'
@@ -162,7 +199,6 @@ impl<'a> StmtParser<'a> {
                 // parse_inline_type_until_semicolon stops before ';'
                 self.expect_token(Token::Semicolon)?;
             } else {
-                // 末尾分号（无返回类型时）
                 self.expect_token(Token::Semicolon)?;
             }
 
@@ -175,36 +211,120 @@ impl<'a> StmtParser<'a> {
         }
 
         self.expect_token(Token::RBrace)?;
-        Ok(Stmt::Trait { name, methods })
+        Ok(Stmt::Trait {
+            name,
+            methods,
+            default_methods,
+        })
     }
 
-    /// 解析 impl 语句：impl Trait for Type { fn method(...) { ... } }
+    /// A trait method written with a body, or `None` when the next declaration
+    /// is a bare signature.
+    ///
+    /// Deciding needs a look-ahead: the signature and the default start
+    /// identically and only diverge at the `;` or `{` after the return type.
+    /// Scanning for it is cheaper than parsing twice, and it keeps the two
+    /// forms from having two parsers.
+    fn try_parse_trait_default_method(&mut self) -> Result<Option<Stmt>> {
+        if self.eof() || self.tokens[self.pos] != Token::Fn {
+            return Ok(None);
+        }
+        if !self.trait_method_has_body() {
+            return Ok(None);
+        }
+        let previous = core::mem::replace(&mut self.in_member_body, true);
+        let parsed = self.parse_function_stmt();
+        self.in_member_body = previous;
+        Ok(Some(parsed?))
+    }
+
+    /// Whether the `fn` at the cursor is followed by a body rather than a `;`.
+    ///
+    /// Walks to the end of the parameter list by paren depth, then past an
+    /// optional return type, and reports which of `{` / `;` comes first. A
+    /// return type may itself contain braces (`Map<String, Int>` does not, but
+    /// a closure type can), so the scan tracks every bracket kind.
+    fn trait_method_has_body(&self) -> bool {
+        let mut index = self.pos + 1; // past `fn`
+        // method name
+        if index < self.tokens.len() && matches!(self.tokens[index], Token::Id(_)) {
+            index += 1;
+        }
+        if index >= self.tokens.len() || self.tokens[index] != Token::LParen {
+            return false;
+        }
+        let mut depth = 0usize;
+        while index < self.tokens.len() {
+            match self.tokens[index] {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        // Past the parameter list: whichever of `{` and `;` comes first decides.
+        let mut nesting = 0usize;
+        while index < self.tokens.len() {
+            match self.tokens[index] {
+                Token::LBracket | Token::LParen => nesting += 1,
+                Token::RBracket | Token::RParen => nesting = nesting.saturating_sub(1),
+                Token::LBrace if nesting == 0 => return true,
+                Token::Semicolon if nesting == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// `impl Trait for Type { … }`, or `impl Type { … }` for methods that
+    /// belong to the type itself.
+    ///
+    /// The inherent form used to be a syntax error ("Expected 'for' in impl
+    /// statement"), and there is no UFCS either — so the only way to give a
+    /// struct a method was to declare an *empty* trait and implement that:
+    ///
+    /// ```lk
+    /// trait Methods { }
+    /// impl Methods for Point { fn norm(self) -> Int { … } }
+    /// ```
+    ///
+    /// Everything else was already in place; the machinery registers methods
+    /// per type and dispatches on the type, not on the trait. Only this
+    /// spelling was missing.
     pub fn parse_impl_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Impl)?;
 
-        // trait 名称
-        let trait_name = if let Token::Id(id) = &self.tokens[self.pos] {
-            let n = id.clone();
+        let first_name = if let Token::Id(id) = &self.tokens[self.pos] {
+            let name = id.clone();
             self.pos += 1;
-            n
+            name
         } else {
-            return Err(anyhow!(self.err("Expected trait name after 'impl'")));
+            return Err(anyhow!(self.err("Expected a trait or type name after 'impl'")));
         };
 
-        // 'for'
-        if self.eof() || self.tokens[self.pos] != Token::For {
-            return Err(anyhow!(self.err("Expected 'for' in impl statement")));
-        }
-        self.pos += 1;
-
-        // 目标类型（直到 '{'）
-        let target_type = self.parse_inline_type_until_block_start()?;
+        // `impl Trait for Type` names two things; `impl Type` names one.
+        let (trait_name, target_type) = if !self.eof() && self.tokens[self.pos] == Token::For {
+            self.pos += 1;
+            (Some(first_name), self.parse_inline_type_until_block_start()?)
+        } else {
+            // The name already read *is* the target type, and it may carry
+            // generic arguments — so it is re-parsed from where it started.
+            self.pos -= 1;
+            (None, self.parse_inline_type_until_block_start()?)
+        };
 
         self.expect_token(Token::LBrace)?;
 
         let mut methods: Vec<Stmt> = Vec::new();
 
-        // 允许空 impl
+        // An empty impl is allowed.
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
             return Ok(Stmt::Impl {
@@ -220,11 +340,32 @@ impl<'a> StmtParser<'a> {
             } else {
                 Vec::new()
             };
-            // 只允许方法定义（fn），可带属性
+            // Only `fn` items, optionally attributed.
             if self.tokens[self.pos] != Token::Fn {
                 return Err(anyhow!(self.err("Expected 'fn' in impl block")));
             }
-            let m = self.parse_function_stmt()?;
+            let previous = core::mem::replace(&mut self.in_member_body, true);
+            let parsed = self.parse_function_stmt();
+            self.in_member_body = previous;
+            let m = parsed?;
+            // Two methods of one name in one block: the second silently won,
+            // and the first was compiled and never reachable. Nothing else in
+            // the language lets a declaration be shadowed by a sibling.
+            if let Stmt::Function { name, .. } = &m {
+                let name = name.clone();
+                let already = methods.iter().any(|existing| {
+                    let item = match existing {
+                        Stmt::Attributed { item, .. } => item.as_ref(),
+                        other => other,
+                    };
+                    matches!(item, Stmt::Function { name: existing, .. } if *existing == name)
+                });
+                if already {
+                    return Err(anyhow!(
+                        self.err(&alloc::format!("method `{name}` is defined twice in this impl block"))
+                    ));
+                }
+            }
             if attributes.is_empty() {
                 methods.push(m);
             } else {

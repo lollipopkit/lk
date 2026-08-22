@@ -499,11 +499,11 @@ mod tests {
     fn generic_dependency_path_fingerprint_changes_when_content_changes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("module.lk");
-        fs::write(&path, "export fn value() { return 1; }").expect("write module");
+        fs::write(&path, "fn value() { return 1; }").expect("write module");
         let deps = vec![PathBuf::from("module.lk")];
 
         let first = fingerprint_dependency_paths(&deps, Some(dir.path()));
-        fs::write(&path, "export fn value() { return 2; }").expect("rewrite module");
+        fs::write(&path, "fn value() { return 2; }").expect("rewrite module");
 
         assert_ne!(first, fingerprint_dependency_paths(&deps, Some(dir.path())));
     }
@@ -514,7 +514,7 @@ mod tests {
         let deps = vec![PathBuf::from("module.lk")];
         let missing = fingerprint_dependency_paths(&deps, Some(dir.path()));
 
-        fs::write(dir.path().join("module.lk"), "export fn value() {}").expect("create module");
+        fs::write(dir.path().join("module.lk"), "fn value() {}").expect("create module");
 
         assert_ne!(missing, fingerprint_dependency_paths(&deps, Some(dir.path())));
     }
@@ -578,7 +578,7 @@ mod tests {
     fn dependency_graph_accepts_generic_project_dependency_paths() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::create_dir_all(dir.path().join("modules")).expect("create modules dir");
-        fs::write(dir.path().join("modules/math.lk"), "export fn add() {}").expect("write module");
+        fs::write(dir.path().join("modules/math.lk"), "fn add() {}").expect("write module");
         let mut graph = ProcMacroDependencyGraph::default();
 
         graph.insert_paths("main.lk", &["modules"], dir.path());
@@ -594,7 +594,7 @@ mod tests {
     fn dependency_graph_accepts_absolute_project_dependency_paths() {
         let dir = tempfile::tempdir().expect("temp dir");
         let dependency_path = dir.path().join("generated.lk");
-        fs::write(&dependency_path, "export fn generated() {}").expect("write dependency");
+        fs::write(&dependency_path, "fn generated() {}").expect("write dependency");
         let mut graph = ProcMacroDependencyGraph::default();
 
         graph.insert_paths("main.lk", &[dependency_path.as_path()], dir.path());

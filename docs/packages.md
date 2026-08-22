@@ -2,6 +2,99 @@
 
 LK packages use `Lk.toml` and `Lk.lock`, modelled after Cargo manifests.
 
+
+## `lk pkg add` 按形状认来源,认不出就当场拒绝
+
+```sh
+lk pkg add dep owner/repo                  # GitHub
+lk pkg add dep https://gitlab.com/a/b.git  # 任意 git 主机
+lk pkg add dep ../dep                      # 本地包
+```
+
+`<SOURCE>` 此前被原样写成 GitHub 仓库名,于是 `lk pkg add dep ../dep` 写出
+`dep = "../dep"`,失败在很久以后才由 git 报出来:
+`repository 'https://github.com/../dep.git/' not found`。清单从一开始就有 `path`
+和 `git` 两种写法,只是 `add` 拼不出来。
+
+判据:含 `://` 或 `git@` 开头 → git URL;`./`、`../`、`/`、`~` 开头 → 本地路径;
+恰好一个 `/` 且两边非空且无空白 → GitHub `owner/repo`;其余**当场拒绝**并列出这
+三种写法。`--branch/--tag/--rev` 用在本地路径上也拒绝 —— 本地包没有 revision 可
+钉,清单里留着它只会让人以为钉住了。
+
+## 未解析的依赖要说清是哪一种
+
+`lk pkg check` / `lk pkg tree` 此前对所有未解析依赖都印
+"`<missing; run lk pkg fetch>`"。对 `path` 依赖那是**做不到的建议** —— 目录就在
+那儿。现在分三种:
+
+- `not fetched; run lk pkg fetch` —— git/GitHub 依赖还没取下来。
+- `the path points at a directory that does not exist` —— `path` 指向的目录不存在,
+  fetch 造不出来。
+- `found, but the package has no library entry; add src/mod.lk (or src/<name>.lk)`
+  —— 目录在,缺的是**库入口**。注意 `lk pkg init` 生成的是 `src/main.lk`,那是
+  *应用*入口;一个要被别人依赖的包需要 `src/mod.lk` 或 `src/<name>.lk`。
+
+`lk pkg add` 写出的清单也不再带 `workspace = false` —— `Lk.toml` 是给人读和改的
+文件,每条依赖上挂一个什么都没说的字段是噪声。
+
+## `lk compile` 在有依赖的包里会失败,而且是在编译期说清楚
+
+`lk compile` 先试原生降低;降不下来就回落到 **Tier 0 打包**(把程序源码和 VM 一
+起塞进一个可执行文件)。而 Tier 0 只塞**一个文件**:被 `use` 进来的模块源码从来
+没被打进去。于是一个有依赖的包"编译成功",跑起来是
+
+    lk: execution failed
+
+现在两件事都修了:
+
+- **打包前就拒绝**:程序里只要有 `use "路径"` 或非 stdlib 的 `use 名字`,
+  `lk compile` 当场报错,说明 Tier 0 只带一个文件、建议 `lk 文件` 直接跑或把程序
+  写成一个文件。stdlib 的 `use math;` 不受影响 —— 打进去的 VM 自带整个标准库。
+- **打包出来的二进制会说原因**:`lk_vm_eval` 出错时只返回 NULL,消息被丢掉,所以
+  wrapper 只能印 "execution failed"。C ABI 新增 `lk_vm_last_error(vm)`(借用 VM
+  里的字符串,不用 free),wrapper 改印真实原因,例如 `lk: Module 'dep' not found`。
+
+顺带一条语言事实:**LK 没有 `pub`**,模块里定义的东西默认全部导出。写
+`pub fn f()` 是语法错误。
+
+## 在成员目录里,`lk pkg check` 说的是**这个成员**的话
+
+```sh
+cd my-ws/crates/b && lk pkg check    # 说 b 的依赖齐不齐,不是工作区的
+```
+
+`PackageGraph::discover` 沿祖先找清单时**优先取带 `[workspace]` 的那个**,于是在
+成员目录里 `check` / `tree` 描述的是工作区,成员自己的 `[dependencies]` 一条都不
+读。一个依赖了工作区之外的包的成员,把那个包删掉之后仍然得到 "package check ok",
+而程序跑起来是 `Module 'outside' not found` —— check 存在的全部意义就是在跑之前
+回答这个问题。
+
+现在:图以**最近的清单**为主体,外层 workspace 作为**上下文**另外记着 —— 它仍然
+提供兄弟成员模块和 `workspace = true` 的继承表。在工作区根目录跑,行为和以前逐字
+一样。
+
+**`lk pkg check` 现在会失败(退出码非 0)** —— 有未解析依赖时。此前它印
+"package check ok (1 dependencies unresolved)" 还退出 0:一行里说了两件相反的
+事,而 CI 里的 `lk pkg check` 会在一个跑不起来的包上通过。
+
+## 构建产物放在包根,不放进 `src/`
+
+```sh
+cd my-pkg
+lk compile            # -> my-pkg/my-pkg
+lk compile bytecode   # -> my-pkg/my-pkg.lkm
+```
+
+`lk compile` 不带 FILE 时会把入口解析成 `<包>/src/main.lk`,而输出路径此前是"入
+口去掉扩展名" —— 于是一个几十 MB 的可执行文件(以及 `.lkm`)被丢进**源码目录**,
+就躺在它编译自的那个文件旁边,下一次 `git add .` 顺手就提交了。
+
+现在:**由清单解析出入口的构建**(即包构建),产物放在包根,名字取包目录名 ——
+和 `go build` 把二进制放进模块目录而不是 `src` 下面是同一个规矩。**用户点名了文
+件**的构建保持原样(`lk compile foo.lk` → `foo`),点名一个文件本来就意味着"就放
+它旁边";`./main.lk` 这种散文件同理。`--output` 永远优先。
+
+
 ## Package Manifest
 
 ```toml
@@ -146,3 +239,35 @@ return util.answer();
 - `lk pkg update [name]` re-resolves one or all dependencies.
 - `lk pkg check` validates package graph and macro provider distribution metadata.
 - `lk pkg tree` prints resolved package modules.
+
+## `[package]` 的三个字段是被校验的,缓存目录不会被 `..` 走出去(2026-08-06 裁决)
+
+`lk pkg check` 之前对 `[package]` 一句话都不说:
+
+| 写法 | 改前 | 改后 |
+| --- | --- | --- |
+| `edition = "1999"` / `"banana"` | package check ok | 拒绝 |
+| `version = "not-a-version"` | package check ok | 拒绝 |
+| `name = "../evil"` / `""` / `"9pk"` | package check ok | 拒绝 |
+
+`edition` 由 `lk pkg init` 写出来,而**没有任何代码读它**;`version` 同样没有
+读者。名字则是 `use <name>;` 要拼出来的东西,所以它必须是个标识符(字母、
+数字、`_`、`-`,不以数字开头)。校验放在 `pkg check` 而不是加载时:这条命令的
+职责就是回答"这个包是否规整",而一个没人读的装饰字段写错了,不该拦住一个不读
+它的程序运行。
+
+版本按 `major.minor.patch` 判,允许 `-pre` 和 `+build` 尾巴;不引 semver 依赖,
+因为这里要分辨的只是"写了个版本"还是"写了句话"。
+
+### 缓存目录
+
+`~/.lk/git/` 之下按 source URL 的形状分层,而那个字符串来自 `Lk.toml`(更糟的
+是也可能来自 `Lk.lock`)。逐段 `push` 且不过滤 `..`,于是
+
+    git = "https://example.com/../../../../../../tmp/x"
+
+让 git 报 `Cloning into '/home/…/.lk/git/example.com/../../../../../../tmp/x'`
+—— 已经在缓存根之外。远端只要可克隆(本地路径或 `file://`)就落地。
+
+`..` **拒绝**而不是丢弃:丢弃会让两个不同的 source 塌到同一个缓存目录上。空段
+和 `.` 照旧丢弃 —— 那两个本来就是同一个路径。

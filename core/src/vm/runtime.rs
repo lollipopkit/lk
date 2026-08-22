@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::sync::{Mutex, MutexGuard};
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -42,12 +43,39 @@ pub struct RuntimeModuleState {
     /// deterministically). Hosts push via `host_root_push`/`host_roots_extend`
     /// and restore their `host_roots_mark` on every exit path.
     pub(crate) host_roots: Vec<RuntimeVal>,
+    /// This module's own exported value — the map of its top-level names.
+    ///
+    /// It lives in *this* heap, and nothing else here points at it: the globals
+    /// hold the individual values, not the map that collects them. So a
+    /// collection of this heap driven from anywhere other than
+    /// [`collect_runtime_export`] freed it, and the next import read a handle
+    /// past the end of a heap that had shrunk under it —
+    /// `heap object 82 out of bounds` from `runtime_export_field`. Reproduced by
+    /// importing one module transitively and then directly, under
+    /// `LK_GC_STRESS=1`.
+    pub(crate) export_root: Option<RuntimeVal>,
     /// Live LK call depth. Lives in the shared state (not the executor) so it
     /// keeps accumulating across native→VM re-entries (pcall, stdlib HOFs, the
     /// Tier 1 bridge), which each construct a fresh executor: the runaway-
     /// recursion cap (see `Executor::max_call_depth`) cannot be reset by
     /// routing recursion through a native boundary.
     pub(crate) call_depth: usize,
+    /// Set on the placeholder that [`super::exec::take_runtime_callable_state`]
+    /// leaves in the mutex while the real state is out on a call.
+    ///
+    /// A module's state is *moved out* of its `Arc<Mutex<…>>` for the duration
+    /// of a call and put back on return, so nothing can enter that module again
+    /// in the meantime — and a method calling another method on `self`, or
+    /// module A calling B which calls back into A, does exactly that. What the
+    /// re-entering call found was `Default::default()`, which is
+    /// indistinguishable from a real state that happens to be empty, so the
+    /// failure surfaced far away as "module expected 83 globals, got 0" — a
+    /// sentence about globals for programs that mention none.
+    ///
+    /// This flag makes "in use" a thing the shell says about itself. It is never
+    /// true of a state a program is running against: `take` clears it on the
+    /// value it hands out and sets it only on what it leaves behind.
+    pub(crate) borrowed_for_call: bool,
 }
 
 impl RuntimeModuleState {
@@ -62,8 +90,15 @@ impl RuntimeModuleState {
             inline_caches: InlineCaches::default(),
             pending_raise_root: None,
             host_roots: Vec::new(),
+            export_root: None,
             call_depth: 0,
+            borrowed_for_call: false,
         }
+    }
+
+    /// Record this state's own module export as a root of its heap.
+    pub(crate) fn set_export_root(&mut self, value: RuntimeVal) {
+        self.export_root = Some(value);
     }
 
     /// Pin (or clear) the first-class error value currently unwinding so it is
@@ -106,6 +141,16 @@ impl RuntimeModuleState {
 
     pub fn collect_garbage<'a>(&mut self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) {
         self.heap.collect(self.root_refs(extra_roots));
+    }
+
+    /// The same, carrying the set of module heaps this cycle has walked.
+    pub fn collect_garbage_with_visited<'a>(
+        &mut self,
+        extra_roots: impl IntoIterator<Item = &'a RuntimeVal>,
+        visited: &mut crate::val::CollectedModules,
+    ) {
+        let roots = self.root_refs(extra_roots);
+        self.heap.collect_with_visited(roots, visited);
     }
 
     pub fn heap(&self) -> &HeapStore {
@@ -457,6 +502,25 @@ impl<'a> NativeArgs<'a> {
         }
     }
 
+    /// The same call, with its positional arguments replaced.
+    ///
+    /// The named arguments come along unchanged, which is the point: the
+    /// stdlib export macro merges named arguments into the positional slots so
+    /// a body can read them by index, and a body that reads them *by name* must
+    /// still find them. `string.replace` does both — its `all` default depends
+    /// on whether `pattern`/`with` arrived by name — so dropping them here
+    /// would quietly change what a call means.
+    #[inline]
+    pub fn with_values<'b>(&self, values: &'b [RuntimeVal]) -> NativeArgs<'b>
+    where
+        'a: 'b,
+    {
+        NativeArgs {
+            values,
+            named: self.named,
+        }
+    }
+
     #[inline]
     pub const fn new_with_named_stack(
         values: &'a [RuntimeVal],
@@ -641,7 +705,15 @@ impl NativeFunction {
 
 #[derive(Clone, Debug)]
 pub struct NativeEntry {
-    pub name: String,
+    /// Borrowed for the names that are compile-time constants.
+    ///
+    /// This field is read only by `bail!` — it names the native in an arity or
+    /// window error. It was a `String`, and calling a native *through a value*
+    /// (`let f = typeof; f(x)`, or any bare stdlib global) builds an entry per
+    /// call to carry the function and arity to the helper that runs it, so a
+    /// two-million-iteration loop allocated and freed the literal
+    /// `"<runtime-native>"` two million times for a message it never printed.
+    pub name: Cow<'static, str>,
     pub arity: u16,
     pub function: NativeFunction,
 }
@@ -657,7 +729,6 @@ impl NativeEntry {
 
 #[cfg(test)]
 mod tests {
-    use crate::util::fast_map::fast_hash_map_from_iter;
     use alloc::sync::Arc;
 
     use crate::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
@@ -727,10 +798,9 @@ mod tests {
         assert_eq!(seen, vec![("flag".to_string(), RuntimeVal::Bool(false))]);
 
         let mut heap = HeapStore::new();
-        let named_handle = heap.alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-            Arc::<str>::from("limit"),
-            7,
-        )]))));
+        let named_handle = heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            crate::util::value_map::value_map_from_iter([(Arc::<str>::from("limit"), 7)]),
+        )));
         let native_args = NativeArgs::new_with_named_map_handle(&args, named_handle, 1);
         assert_eq!(native_args.named_len(), 1);
         let mut seen = Vec::new();

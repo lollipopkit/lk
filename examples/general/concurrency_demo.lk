@@ -51,4 +51,27 @@ assert(task.await(iso) == 1);
 assert(counter == 0);
 println("Isolation confirmed: counter still {}", counter);
 
+// The module spelling. `use chan;` would shadow the `chan(…)` global this file
+// opened with, so it is aliased — but the members are the same operations under
+// a prefix, blocking pair included.
+use chan as chans;
+let mod_ch = chans.new(2);
+chans.send(mod_ch, 41);
+assert(chans.try_send(mod_ch, 42));
+assert(!chans.try_send(mod_ch, 43));      // full is `false`, not an error
+assert(chans.recv(mod_ch) == 41);
+assert(chans.try_recv(mod_ch)! == 42);
+assert(chans.len(mod_ch) == 0);
+assert(chans.capacity(mod_ch) == 2);
+assert(!chans.is_closed(mod_ch));
+chans.close(mod_ch);
+assert(chans.is_closed(mod_ch));
+
+// `0` is unbuffered, not unbounded: one value fits, the next does not.
+let tight = chans.new(0);
+assert(chans.try_send(tight, 1));
+assert(!chans.try_send(tight, 2));
+assert(chans.capacity(tight) == 0);       // what was asked for, not the bound
+println("Module spelling confirmed");
+
 println("concurrency_demo: completed");

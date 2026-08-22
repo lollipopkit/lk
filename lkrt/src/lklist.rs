@@ -110,38 +110,245 @@ pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, in
     crate::state::arena_handle(out)
 }
 
-/// `xs.take(n)` — a fresh list of the first `n` elements. VM edge exactness:
-/// the count casts through `usize` (`take_prefix(n as usize)`), so a negative
-/// `n` wraps huge and takes everything.
+/// `xs.take(n)` / `xs.skip(n)` — a fresh prefix / suffix. A negative count
+/// raises, as in the VM: a count has no negative meaning, and the cast this
+/// used to perform (`-1 as usize`) took the whole list instead.
 ///
-/// # Safety
-/// `handle` must be a live `List<i64>` handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        unsafe { &*(handle as *mut Vec<i64>) }
+/// One macro over both directions and every carrier. Neither operation looks at
+/// the element, and the four hand-written copies (`i64` and boxed, take and
+/// skip) spelled that raise message four times while `f64` and `str` had no copy
+/// at all — so `[1.5, 2.5].take(1)` dropped its module to the VM.
+macro_rules! list_window {
+    ($name:ident, $elem:ty, $method:literal, $window:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, n: i64) -> *mut c_void {
+            if n < 0 {
+                crate::panic::raise_str(&format!(
+                    concat!("list.", $method, "() count must be non-negative, got {}"),
+                    n
+                ));
+            }
+            let values: &[$elem] = if handle.is_null() {
+                &[]
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { &*(handle as *mut Vec<$elem>) }
+            };
+            // Clamped once, so both directions see an in-range cut.
+            let cut = (n as usize).min(values.len());
+            let window: fn(&[$elem], usize) -> &[$elem] = $window;
+            crate::state::arena_handle(window(values, cut).to_vec())
+        }
     };
-    let count = (n as usize).min(values.len());
-    crate::state::arena_handle(values[..count].to_vec())
 }
 
-/// `xs.skip(n)` — a fresh list without the first `n` elements. The VM only
-/// drains for `n > 0` (zero/negative copies everything).
+list_window!(
+    lkrt_lklist_i64_take,
+    i64,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<i64>`."
+);
+list_window!(
+    lkrt_lklist_f64_take,
+    f64,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<f64>`."
+);
+list_window!(
+    lkrt_lklist_str_take,
+    *const c_char,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a `List<str>`."
+);
+list_window!(
+    lkrt_lklist_dyn_take,
+    crate::lkdyn::LkDyn,
+    "take",
+    |v, cut| &v[..cut],
+    "`take(n)` on a boxed-element list."
+);
+list_window!(
+    lkrt_lklist_i64_skip,
+    i64,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<i64>`."
+);
+list_window!(
+    lkrt_lklist_f64_skip,
+    f64,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<f64>`."
+);
+list_window!(
+    lkrt_lklist_str_skip,
+    *const c_char,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a `List<str>`."
+);
+list_window!(
+    lkrt_lklist_dyn_skip,
+    crate::lkdyn::LkDyn,
+    "skip",
+    |v, cut| &v[cut..],
+    "`skip(n)` on a boxed-element list."
+);
+
+/// The write position a list *method* names, in the VM's exact wording.
 ///
-/// # Safety
-/// `handle` must be a live `List<i64>` handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
-    crate::state::arena_handle(values[start..].to_vec())
+/// Deliberately not [`store_index_or_raise`]: that is the index-*assignment*
+/// path (`xs[i] = v`, "list index N out of bounds"), and the method path words
+/// the same range failure differently — `list.insert() index N out of bounds
+/// (len=N)`. Which index appears also differs between the two messages: the
+/// before-the-start one names the index *as written* (so a reader sees the `-9`
+/// they typed), the out-of-bounds one names the *resolved* position. A caught
+/// error is printed output, so each wording is part of an answer.
+///
+/// `allow_len` is the caller's upper bound: `insert` accepts `len`, because that
+/// is where an append goes; `remove_at` does not. A null handle is a list of
+/// zero, which makes every index a range failure without a special case.
+fn method_index_or_raise(method: &str, index: i64, len: usize, allow_len: bool) -> usize {
+    let resolved = if index < 0 { len as i64 + index } else { index };
+    if resolved < 0 {
+        crate::panic::raise_str(&alloc::format!(
+            "list.{method}() index {index} is before the start of a list of {len}"
+        ));
+    }
+    let resolved = resolved as usize;
+    if if allow_len { resolved > len } else { resolved >= len } {
+        crate::panic::raise_str(&alloc::format!(
+            "list.{method}() index {resolved} out of bounds (len={len})"
+        ));
+    }
+    resolved
 }
+
+/// `xs.pop()`'s mutation half: drops the last element, answering nothing.
+///
+/// `pop` is a read *and* a drop, and the read already exists — `xs.last()`
+/// lowers to the carrier's `Maybe` machinery, which is verified and, for `f64`,
+/// the only portable shape available: a by-value `{double, i64}` return is a
+/// mixed-class aggregate whose registers differ across targets, so Cranelift's
+/// scalar signatures cannot model it (hence lkrt's `_get_out` shims). A
+/// `*_pop -> LkMaybeF64` would have needed a fifth mechanism for one carrier.
+/// So the lowering reads the last element the way `last()` does and then calls
+/// this, and the empty case needs no special agreement: reading past the end is
+/// already nil, and dropping from empty is already nothing.
+macro_rules! list_drop_last {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            unsafe { (*(handle as *mut Vec<$elem>)).pop() };
+        }
+    };
+}
+
+list_drop_last!(lkrt_lklist_i64_drop_last, i64, "`pop()`'s drop half on a `List<i64>`.");
+list_drop_last!(lkrt_lklist_f64_drop_last, f64, "`pop()`'s drop half on a `List<f64>`.");
+list_drop_last!(
+    lkrt_lklist_str_drop_last,
+    *const c_char,
+    "`pop()`'s drop half on a `List<str>`. The element pointer is arena-owned, so \
+     the value the lowering already read stays valid."
+);
+list_drop_last!(
+    lkrt_lklist_dyn_drop_last,
+    crate::lkdyn::LkDyn,
+    "`pop()`'s drop half on a boxed-element list."
+);
+
+/// `xs.insert(i, v)` — in place, like `push` and `set`. Answers nothing: the VM
+/// evaluates it to the list itself, which the lowering supplies from the
+/// receiver it already holds (see `list_clear!` for why returning the handle
+/// would be wrong).
+macro_rules! list_insert {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, index: i64, value: $elem) {
+            if handle.is_null() {
+                // Still range-checked, so a bad index raises the same message it
+                // would for a real empty list.
+                method_index_or_raise("insert", index, 0, true);
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values = unsafe { &mut *(handle as *mut Vec<$elem>) };
+            let at = method_index_or_raise("insert", index, values.len(), true);
+            values.insert(at, value);
+        }
+    };
+}
+
+list_insert!(lkrt_lklist_i64_insert, i64, "`insert(i, v)` on a `List<i64>`.");
+list_insert!(lkrt_lklist_f64_insert, f64, "`insert(i, v)` on a `List<f64>`.");
+list_insert!(
+    lkrt_lklist_str_insert,
+    *const c_char,
+    "`insert(i, v)` on a `List<str>`."
+);
+list_insert!(
+    lkrt_lklist_dyn_insert,
+    crate::lkdyn::LkDyn,
+    "`insert(i, v)` on a boxed-element list."
+);
+
+/// `xs.remove_at(i)` — removes the element at `i` and answers it. Unlike `pop`
+/// the answer is never nil: an out-of-range index raises first, so there is
+/// always an element to hand back.
+macro_rules! list_remove_at {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, index: i64) -> $elem {
+            if handle.is_null() {
+                // A list of zero: every index is out of range, and this raises
+                // rather than returning.
+                method_index_or_raise("remove_at", index, 0, false);
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values = unsafe { &mut *(handle as *mut Vec<$elem>) };
+            let at = method_index_or_raise("remove_at", index, values.len(), false);
+            values.remove(at)
+        }
+    };
+}
+
+list_remove_at!(lkrt_lklist_i64_remove_at, i64, "`remove_at(i)` on a `List<i64>`.");
+list_remove_at!(lkrt_lklist_f64_remove_at, f64, "`remove_at(i)` on a `List<f64>`.");
+list_remove_at!(
+    lkrt_lklist_str_remove_at,
+    *const c_char,
+    "`remove_at(i)` on a `List<str>`."
+);
+list_remove_at!(
+    lkrt_lklist_dyn_remove_at,
+    crate::lkdyn::LkDyn,
+    "`remove_at(i)` on a boxed-element list."
+);
 
 /// `words.map(f)` over a `str` list (`fn(*const c_char) -> *const c_char`
 /// callback returning an arena-owned string).
@@ -588,6 +795,54 @@ fn display_joined(parts: impl Iterator<Item = String>) -> *mut c_char {
     crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
 }
 
+/// `xs.clear()` — empties the list in place, and answers nothing.
+///
+/// The VM's `clear` evaluates to the list, but the *helper* does not hand it
+/// back: a pointer-returning ABI entry has to be `Constructs` (a fresh handle
+/// the scope-drop pass may release) or `Retained`, and this is neither — it
+/// would be the caller's own list, which that pass would then free. The lowering
+/// already holds the receiver and uses it as the expression's value, so there is
+/// nothing to return. `pointer_returning_entries_are_not_marked_borrowed` is
+/// the test that says so.
+///
+/// One macro over every carrier rather than one function per element type: the
+/// operation does not depend on the element at all, and writing it four times is
+/// how three of the four end up missing. (`pop` / `insert` / `remove_at` do
+/// depend on the element — they are the next piece of work, tracked separately.)
+macro_rules! list_clear {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            unsafe { (*(handle as *mut Vec<$elem>)).clear() };
+        }
+    };
+}
+
+list_clear!(lkrt_lklist_i64_clear, i64, "`clear()` on a `List<i64>`.");
+list_clear!(lkrt_lklist_f64_clear, f64, "`clear()` on a `List<f64>`.");
+list_clear!(
+    lkrt_lklist_str_clear,
+    *const c_char,
+    "`clear()` on a `List<str>`. The element pointers are arena-owned, so \
+     dropping them is not a leak this crate can do anything about (see the \
+     module header's ownership note)."
+);
+list_clear!(
+    lkrt_lklist_dyn_clear,
+    crate::lkdyn::LkDyn,
+    "`clear()` on a boxed-element list. This was a hand-written copy in \
+     `lkdyn.rs` — so the macro above claimed to cover every carrier while \
+     covering three, which is the shape it was written to prevent."
+);
+
 /// Appends `value` to the list.
 ///
 /// # Safety
@@ -655,11 +910,43 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get(handle: *mut c_void, index: i64, pr
     }
 }
 
+/// A store index resolved against `len`: a negative one counts from the end,
+/// exactly as the read does. `None` means it is out of range even after that,
+/// which is a *halt* for a store — unlike a read, which answers nil.
+fn store_index(index: i64, len: usize) -> Option<usize> {
+    let len = len as i64;
+    let resolved = if index < 0 { len + index } else { index };
+    (resolved >= 0 && resolved < len).then_some(resolved as usize)
+}
+
+/// The same, raising in the VM's exact wording when it is out of range.
+///
+/// One message, because the VM has one: out of range at either end is
+/// `list index N out of bounds`. A caught error is printed output, so the text
+/// is part of the answer and has to match the VM's to the character.
+///
+/// It used to be two, the negative end saying `list index must be
+/// non-negative` — a rule the language does not have, `xs[-1]` being the last
+/// element. The two builds agreed only by being wrong the same way.
+///
+/// `N` is the index **as written**, at both ends. The VM briefly reported the
+/// resolved one for a negative index — `-6` for `xs.set(-9, v)` on a
+/// three-element list, a number the program never wrote — because it resolved
+/// when the key was built and raised several steps later. It now raises at the
+/// resolution point, where the original is still in hand, so this side does not
+/// have to mirror a worse message to agree.
+pub(crate) fn store_index_or_raise(index: i64, len: usize) -> usize {
+    match store_index(index, len) {
+        Some(resolved) => resolved,
+        None => crate::panic::raise_str(&alloc::format!("list index {index} out of bounds")),
+    }
+}
+
 /// Stores `value` at `index`. Unlike indexing (`get`), the VM treats an
-/// out-of-range or **negative** store index as a fatal error (`list index N out of
-/// bounds` / `list index must be non-negative`), not a nil/grow — so this
-/// `abort()`s on an invalid index, matching the VM's *halt* (a loud failure, never
-/// a silent wrong write). An in-range store is the only non-aborting path.
+/// out-of-range store index as a fatal error (`list index N out of bounds`),
+/// not a nil/grow — so this raises, matching the VM's *halt* (a loud failure,
+/// never a silent wrong write). A negative index counts from the end, as
+/// `xs[-1] = v` does in the VM.
 ///
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
@@ -670,10 +957,30 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<i64>) };
-    if index < 0 || index as usize >= values.len() {
+    let index = store_index_or_raise(index, values.len());
+    values[index] = value;
+}
+
+/// Stores `value` at `index` in a `str` list; the same index rule as
+/// [`lkrt_lklist_i64_set`].
+///
+/// The carrier had `at` but no `set`, so `xs[i] = s` and `xs.set(i, s)` on a
+/// string list dropped the whole module to the VM while the same two lines on an
+/// `Int` list stayed native — a difference in the list's internal representation
+/// deciding the fate of a program that cannot see it.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_str_new`], or null;
+/// `value` a valid string-constant pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_set(handle: *mut c_void, index: i64, value: *const c_char) {
+    if handle.is_null() {
         crate::panic::raise_str("runtime error");
     }
-    values[index as usize] = value;
+    // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+    let values = unsafe { &mut *(handle as *mut Vec<*const c_char>) };
+    let index = store_index_or_raise(index, values.len());
+    values[index] = value;
 }
 
 /// Stores `value` at `index` in an `f64` list; aborts on an invalid index (see
@@ -688,10 +995,8 @@ pub unsafe extern "C" fn lkrt_lklist_f64_set(handle: *mut c_void, index: i64, va
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<f64>) };
-    if index < 0 || index as usize >= values.len() {
-        crate::panic::raise_str("runtime error");
-    }
-    values[index as usize] = value;
+    let index = store_index_or_raise(index, values.len());
+    values[index] = value;
 }
 
 /// A `Maybe<i64>` returned by value: `present == 0` means the element was absent
@@ -819,12 +1124,19 @@ pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
     value
 }
 
-/// Unwraps a `Maybe<i64>` in a scalar (arithmetic/comparison) context: returns
-/// `value` when `present != 0`, otherwise `abort()`s. This matches the VM, which
-/// *halts* when a `nil` (out-of-range) element is used numerically (e.g.
-/// `xs[oob] + 1`) — so an out-of-range index in arithmetic is a loud abort, never a
-/// silent wrong value. In a `for x in xs` loop the index is always in range, so the
-/// guard never fires.
+/// Unwraps a `Maybe<i64>` in a scalar context: returns `value` when
+/// `present != 0`, otherwise raises.
+///
+/// The interpreter does **not** halt here, which this used to say: it raises a
+/// catchable error naming the operator and both operand types, so
+/// `try { xs[9] + 1 } catch e { e }` is a string a program can read. This helper
+/// is handed a value and a bit and can only say `"runtime error"`, which is a
+/// different string — so arithmetic and comparison now go through
+/// `lkrt_rt_maybe_guard` instead, which is handed the sentence itself, built
+/// where the operator and the operand types are still known. What is left
+/// reaching here is the contexts that have no operator to name.
+///
+/// In a `for x in xs` loop the index is always in range, so neither fires.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_i64_unwrap(value: i64, present: i64) -> i64 {
     if present == 0 {
@@ -888,6 +1200,40 @@ pub unsafe extern "C" fn lkrt_lklist_f64_contains(handle: *mut c_void, needle: f
     i64::from(values.contains(&needle))
 }
 
+/// `x in xs` where the list holds `i64` and the needle is an `f64`.
+///
+/// Numeric comparison, the same rule `==` uses: the element is widened, not
+/// the needle narrowed, so `1 in [1.0]` and `1.0 in [1, 2]` answer the same
+/// way `1 == 1.0` does. The VM spells it `*value as f64 == *needle`; this is
+/// that expression.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_contains_f64(handle: *mut c_void, needle: f64) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+    let values = unsafe { &*(handle as *mut Vec<i64>) };
+    i64::from(values.iter().any(|value| *value as f64 == needle))
+}
+
+/// `x in xs` where the list holds `f64` and the needle is an `i64` (see
+/// [`lkrt_lklist_i64_contains_f64`]).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_f64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_contains_i64(handle: *mut c_void, needle: i64) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
+    let values = unsafe { &*(handle as *mut Vec<f64>) };
+    i64::from(values.contains(&(needle as f64)))
+}
+
 /// Linear membership test for a string list — by *content*, matching the
 /// VM's `TypedList::String` contains (which stringifies and compares text,
 /// for short and long strings alike).
@@ -910,79 +1256,495 @@ pub unsafe extern "C" fn lkrt_lklist_str_contains(handle: *mut c_void, needle: *
     )
 }
 
-/// Range slice of an `i64` list (`xs[1..5]`), exactly the VM's list slice:
-/// negative indices count from the tail, everything clamps.
+/// The half-open range `[start, end)` a two-argument `slice` names, resolved
+/// against a list of `len` elements.
 ///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let len = values.len() as i64;
-    let start = if start < 0 { (len + start).max(0) } else { start } as usize;
-    let end = (if end < 0 { (len + end).max(0) } else { end } as usize).min(values.len());
-    let start = start.min(end);
-    crate::state::arena_handle(values[start..end].to_vec())
+/// One function because it is one rule (see the negative-position rule the VM
+/// and this crate share): negative counts from the tail, everything clamps, and
+/// an inverted range is empty rather than a panic. Writing it out per carrier is
+/// how four implementations of one rule start.
+pub(crate) fn slice_bounds(len: usize, start: i64, end: i64) -> (usize, usize) {
+    let signed_len = len as i64;
+    let start = if start < 0 { (signed_len + start).max(0) } else { start } as usize;
+    let end = (if end < 0 { (signed_len + end).max(0) } else { end } as usize).min(len);
+    (start.min(end), end)
 }
 
-/// `.slice(start, end)` method: negative indexes abort (the VM's loud
-/// non-negative error), `end` clamps to len, `start >= end` yields empty.
+/// Range slice of a list carrier (`xs[1..5]` / `xs.slice(1, 5)`), exactly the
+/// VM's: negative indices count from the tail, everything clamps.
+macro_rules! list_slice {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+            let values: &[$elem] = if handle.is_null() {
+                &[]
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { &*(handle as *mut Vec<$elem>) }
+            };
+            let (start, end) = slice_bounds(values.len(), start, end);
+            crate::state::arena_handle(values[start..end].to_vec())
+        }
+    };
+}
+
+list_slice!(lkrt_lklist_i64_slice, i64, "`i64` list range slice.");
+list_slice!(lkrt_lklist_f64_slice, f64, "`f64` list range slice.");
+list_slice!(
+    lkrt_lklist_str_slice,
+    *const c_char,
+    "`str` list range slice (elements are interned string-constant pointers)."
+);
+
+/// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the receiver
+/// is untouched).
 ///
-/// # Safety
-/// `handle` must be a live `i64` list handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_slice_method(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    if start < 0 || end < 0 {
-        crate::panic::raise_str("runtime error");
+/// Unlike `reverse`, this *is* about the element, and each carrier's order has
+/// to be the one `typed_list_sorted` uses — not merely "ascending":
+///
+/// * `i64`: `sort_unstable`, which is what the VM calls. `compare_runtime_values`
+///   on two `Int`s *is* `i64`'s `Ord`, and equal integers are indistinguishable,
+///   so the algorithm cannot show.
+/// * `f64`: [`compare_floats`], which is a *total* order. The obvious mirror of
+///   the VM — `partial_cmp().unwrap_or(Equal)` — is not one, and Rust's `sort_by`
+///   detects that and panics; writing this arm is what found it, on both
+///   backends. See [`compare_floats`].
+/// * `str`: `sort_by` on the bytes, which is what `Arc<str>`'s `Ord` does in the
+///   VM. LK strings hold no interior NUL, so the C representation compares the
+///   same bytes.
+///
+/// The boxed carrier is deliberately absent: its order is
+/// `compare_runtime_values` across *kinds*, which needs two rank tables, a
+/// depth-limited recursive list comparison, and the slice view — a mirror of
+/// that size wants its own conformance test (see `vm_mirror`), not a copy.
+/// The VM's `val::compare_floats`, mirrored: a *total* ascending order over
+/// floats.
+///
+/// `partial_cmp(..).unwrap_or(Equal)` is not one — a NaN reads equal to every
+/// value while those values stay ordered — and Rust's `sort_by` detects that and
+/// panics ("user-provided comparison function does not correctly implement a
+/// total order"). In lkrt a panic is an abort, so `[NaN, 5.0, 1.0, …].sort()`
+/// killed the process; in the VM it killed the interpreter. Both sides now order
+/// NaN instead: all NaNs equal, every NaN greater than every number, `-0.0` and
+/// `0.0` still equal (which is what `==` says).
+pub(crate) fn compare_floats(left: f64, right: f64) -> core::cmp::Ordering {
+    match left.partial_cmp(&right) {
+        Some(ordering) => ordering,
+        None => match (left.is_nan(), right.is_nan()) {
+            (true, true) => core::cmp::Ordering::Equal,
+            (true, false) => core::cmp::Ordering::Greater,
+            (false, true) => core::cmp::Ordering::Less,
+            (false, false) => core::cmp::Ordering::Equal,
+        },
     }
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let end = (end as usize).min(values.len());
-    let start = (start as usize).min(end);
-    crate::state::arena_handle(values[start..end].to_vec())
 }
 
-/// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the
-/// receiver is untouched; integer order equals `compare_runtime_values`).
+macro_rules! list_sort {
+    ($name:ident, $elem:ty, $sort:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            let mut values: Vec<$elem> = if handle.is_null() {
+                Vec::new()
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { (*(handle as *mut Vec<$elem>)).clone() }
+            };
+            let sort: fn(&mut Vec<$elem>) = $sort;
+            sort(&mut values);
+            crate::state::arena_handle(values)
+        }
+    };
+}
+
+/// `sum()` / `min()` / `max()` on a typed list.
+///
+/// The empty answers are the VM's: `sum` is `0` (the identity a fold would
+/// start from) and `min`/`max` are nil — so those two box their result, the way
+/// `first`/`last` already do.
+///
+/// The orders are the same ones `list_sort!` uses on each carrier, which is
+/// what keeps `xs.sort().first()` and `xs.min()` from disagreeing here as well.
 ///
 /// # Safety
-/// `handle` must be a live `i64` list handle, or null.
+/// `handle` must be a live list handle of the carrier named by the entry point.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_sort(handle: *mut c_void) -> *mut c_void {
-    let mut values: Vec<i64> = if handle.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { (*(handle as *mut Vec<i64>)).clone() }
-    };
-    values.sort_unstable();
-    crate::state::arena_handle(values)
+pub unsafe extern "C" fn lkrt_lklist_i64_sum(handle: *mut c_void) -> i64 {
+    // SAFETY: a live `List<i64>` handle, as the ABI declares.
+    let values: &Vec<i64> = unsafe { &*(handle as *mut Vec<i64>) };
+    // Wrapping, because `+` wraps: one rule for adding integers.
+    values.iter().fold(0i64, |total, value| total.wrapping_add(*value))
 }
+
+/// # Safety
+/// `handle` must be a live `List<f64>` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_sum(handle: *mut c_void) -> f64 {
+    // SAFETY: as above.
+    let values: &Vec<f64> = unsafe { &*(handle as *mut Vec<f64>) };
+    values.iter().sum()
+}
+
+macro_rules! list_extreme {
+    ($name:ident, $elem:ty, $box_value:expr, $order:expr, $want_max:expr, $doc:literal) => {
+        #[doc = $doc]
+        ///
+        /// # Safety
+        /// `handle` must be a live list handle of this carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+            // SAFETY: a live list handle of this carrier, as the ABI declares.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let mut best: Option<&$elem> = None;
+            for value in values.iter() {
+                best = Some(match best {
+                    None => value,
+                    // Ties keep the earlier element, as the VM's does: `min`
+                    // names a *value*, and the first element that has it is the
+                    // one a reader would point at.
+                    Some(current) => {
+                        #[allow(clippy::redundant_closure_call)]
+                        let ordering = ($order)(current, value);
+                        let keep = match ordering {
+                            core::cmp::Ordering::Less => !$want_max,
+                            core::cmp::Ordering::Equal => true,
+                            core::cmp::Ordering::Greater => $want_max,
+                        };
+                        if keep { current } else { value }
+                    }
+                });
+            }
+            match best {
+                #[allow(clippy::redundant_closure_call)]
+                Some(value) => ($box_value)(value),
+                None => crate::lkdyn::lkrt_dyn_from_nil(),
+            }
+        }
+    };
+}
+
+list_extreme!(
+    lkrt_lklist_i64_min,
+    i64,
+    |value: &i64| crate::lkdyn::lkrt_dyn_from_i64(*value),
+    |a: &i64, b: &i64| a.cmp(b),
+    false,
+    "`min()` on a `List<i64>`."
+);
+list_extreme!(
+    lkrt_lklist_i64_max,
+    i64,
+    |value: &i64| crate::lkdyn::lkrt_dyn_from_i64(*value),
+    |a: &i64, b: &i64| a.cmp(b),
+    true,
+    "`max()` on a `List<i64>`."
+);
+list_extreme!(
+    lkrt_lklist_f64_min,
+    f64,
+    |value: &f64| crate::lkdyn::lkrt_dyn_from_f64(*value),
+    |a: &f64, b: &f64| compare_floats(*a, *b),
+    false,
+    "`min()` on a `List<f64>` — the same total order `f64_sort` uses."
+);
+list_extreme!(
+    lkrt_lklist_f64_max,
+    f64,
+    |value: &f64| crate::lkdyn::lkrt_dyn_from_f64(*value),
+    |a: &f64, b: &f64| compare_floats(*a, *b),
+    true,
+    "`max()` on a `List<f64>`."
+);
+list_extreme!(
+    lkrt_lklist_str_min,
+    *const c_char,
+    |value: &*const c_char| crate::lkdyn::lkrt_dyn_from_str(*value),
+    |a: &*const c_char, b: &*const c_char| str_order(*a, *b),
+    false,
+    "`min()` on a `List<str>`."
+);
+list_extreme!(
+    lkrt_lklist_str_max,
+    *const c_char,
+    |value: &*const c_char| crate::lkdyn::lkrt_dyn_from_str(*value),
+    |a: &*const c_char, b: &*const c_char| str_order(*a, *b),
+    true,
+    "`max()` on a `List<str>`."
+);
+
+/// The `str_sort` comparator, as a function so `min`/`max` order strings the
+/// same way rather than by a second copy of it.
+fn str_order(left: *const c_char, right: *const c_char) -> core::cmp::Ordering {
+    match (left.is_null(), right.is_null()) {
+        (true, true) => core::cmp::Ordering::Equal,
+        (true, false) => core::cmp::Ordering::Less,
+        (false, true) => core::cmp::Ordering::Greater,
+        // SAFETY: a non-null element of a live `str` list is a NUL-terminated
+        // arena string.
+        (false, false) => unsafe { CStr::from_ptr(left).to_bytes().cmp(CStr::from_ptr(right).to_bytes()) },
+    }
+}
+
+list_sort!(
+    lkrt_lklist_i64_sort,
+    i64,
+    |values| values.sort_unstable(),
+    "`sort()` on a `List<i64>`."
+);
+list_sort!(
+    lkrt_lklist_f64_sort,
+    f64,
+    |values| values.sort_by(|left, right| compare_floats(*left, *right)),
+    "`sort()` on a `List<f64>`."
+);
+list_sort!(
+    lkrt_lklist_str_sort,
+    *const c_char,
+    |values| values.sort_by(|left, right| {
+        // A null element cannot occur in a live `str` list; ordering it first
+        // keeps the comparator total rather than reaching for `CStr` on null.
+        match (left.is_null(), right.is_null()) {
+            (true, true) => core::cmp::Ordering::Equal,
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            (false, false) => unsafe { CStr::from_ptr(*left).to_bytes().cmp(CStr::from_ptr(*right).to_bytes()) },
+        }
+    }),
+    "`sort()` on a `List<str>`."
+);
+
+/// `xs.sum()` on a boxed-element list.
+///
+/// Two accumulators rather than one, and that is the VM's, not a convenience:
+/// an `Int` element advances *both* the wrapping integer total and the float
+/// one, so the float sum is over every element in written order. Promoting on
+/// the first float instead would fold a different sequence, and float addition
+/// is not associative — `[1e308, 1.0, -1e308]` is where the two disagree.
+///
+/// # Safety
+/// `handle` must be a live boxed list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_sum(handle: *mut c_void) -> crate::lkdyn::LkDyn {
+    use crate::lkdyn::{DYN_F64, DYN_I64};
+    if handle.is_null() {
+        return crate::lkdyn::lkrt_dyn_from_i64(0);
+    }
+    // SAFETY: `handle` addresses a `Vec<LkDyn>` from the boxed constructor.
+    let values: &Vec<crate::lkdyn::LkDyn> = unsafe { &*(handle as *mut Vec<crate::lkdyn::LkDyn>) };
+    let mut total_int: i64 = 0;
+    let mut total_float = 0.0f64;
+    let mut saw_float = false;
+    for value in values {
+        match value.tag {
+            DYN_I64 => {
+                total_int = total_int.wrapping_add(value.payload);
+                total_float += value.payload as f64;
+            }
+            DYN_F64 => {
+                saw_float = true;
+                total_float += value.f64_value();
+            }
+            _ => crate::lkdyn::raise_sum_wants_numbers(*value),
+        }
+    }
+    if saw_float {
+        crate::lkdyn::lkrt_dyn_from_f64(total_float)
+    } else {
+        crate::lkdyn::lkrt_dyn_from_i64(total_int)
+    }
+}
+
+list_sort!(
+    lkrt_lklist_dyn_sort,
+    crate::lkdyn::LkDyn,
+    |values| values.sort_by(|left, right| crate::lkdyn::dyn_compare(*left, *right)),
+    "`sort()` on a boxed-element list — the VM's cross-kind order."
+);
+list_extreme!(
+    lkrt_lklist_dyn_min,
+    crate::lkdyn::LkDyn,
+    |value: &crate::lkdyn::LkDyn| *value,
+    |a: &crate::lkdyn::LkDyn, b: &crate::lkdyn::LkDyn| crate::lkdyn::dyn_compare(*a, *b),
+    false,
+    "`min()` on a boxed-element list."
+);
+list_extreme!(
+    lkrt_lklist_dyn_max,
+    crate::lkdyn::LkDyn,
+    |value: &crate::lkdyn::LkDyn| *value,
+    |a: &crate::lkdyn::LkDyn, b: &crate::lkdyn::LkDyn| crate::lkdyn::dyn_compare(*a, *b),
+    true,
+    "`max()` on a boxed-element list."
+);
 
 /// `xs.reverse()` — a fresh reversed copy (non-mutating, like the VM).
 ///
-/// # Safety
-/// `handle` must be a live `i64` list handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_reverse(handle: *mut c_void) -> *mut c_void {
-    let mut values: Vec<i64> = if handle.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { (*(handle as *mut Vec<i64>)).clone() }
+/// Like [`list_clear`], the operation does not look at the element, so it is one
+/// macro over every carrier. It was written for `i64` alone, which is why
+/// `[1.5, 2.5].reverse()` dropped its whole module to the VM.
+macro_rules! list_reverse {
+    ($name:ident, $elem:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            let mut values: Vec<$elem> = if handle.is_null() {
+                Vec::new()
+            } else {
+                // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+                // constructor.
+                unsafe { (*(handle as *mut Vec<$elem>)).clone() }
+            };
+            values.reverse();
+            crate::state::arena_handle(values)
+        }
     };
-    values.reverse();
-    crate::state::arena_handle(values)
 }
+
+list_reverse!(lkrt_lklist_i64_reverse, i64, "`reverse()` on a `List<i64>`.");
+list_reverse!(lkrt_lklist_f64_reverse, f64, "`reverse()` on a `List<f64>`.");
+list_reverse!(
+    lkrt_lklist_str_reverse,
+    *const c_char,
+    "`reverse()` on a `List<str>`. The element pointers are arena-owned and \
+     shared with the source list, which is what makes copying them sound."
+);
+list_reverse!(
+    lkrt_lklist_dyn_reverse,
+    crate::lkdyn::LkDyn,
+    "`reverse()` on a boxed-element list."
+);
+
+/// `xs.index_of(v)` and `xs.count(v)` — one scan per carrier, two accumulators.
+///
+/// The VM writes them as a single `typed_list_scan` and says why above it:
+/// "`index_of` and `count` are the same scan with different accumulators, and
+/// writing them apart is how two spellings of one operation come to disagree".
+/// They were apart here — two macros — and had already diverged, not in the
+/// comparison but in *which carriers exist*: `index_of` had four and `count`
+/// had two, so `["a", "b"].count("a")` had nothing to lower to while
+/// `["a", "b"].index_of("a")` did. Generating both from one scan makes a
+/// carrier that answers one question answer the other by construction.
+///
+/// The scan owns the loop rather than taking an element predicate, which is
+/// what lets the string carrier walk to the needle's NUL once instead of once
+/// per element.
+macro_rules! list_scan {
+    ($index_of:ident, $count:ident, $elem:ty, $needle:ty, $scan:expr, $what:literal) => {
+        #[doc = concat!("`index_of` on ", $what, " — the first position holding the needle, or nil.")]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $index_of(handle: *mut c_void, needle: $needle) -> crate::lkdyn::LkDyn {
+            if handle.is_null() {
+                return crate::lkdyn::LkDyn::NIL;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let scan: fn(&[$elem], $needle, &mut dyn FnMut(usize) -> bool) = $scan;
+            let mut found = None;
+            scan(values.as_slice(), needle, &mut |index| {
+                found = Some(index);
+                false
+            });
+            match found {
+                Some(index) => crate::lkdyn::lkrt_dyn_from_i64(index as i64),
+                None => crate::lkdyn::LkDyn::NIL,
+            }
+        }
+
+        #[doc = concat!("`count` on ", $what, " — how many elements equal the needle.")]
+        /// # Safety
+        /// `handle` must be a live list handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $count(handle: *mut c_void, needle: $needle) -> i64 {
+            if handle.is_null() {
+                return 0;
+            }
+            // SAFETY: `handle` addresses a `Vec<$elem>` from the matching
+            // constructor.
+            let values: &Vec<$elem> = unsafe { &*(handle as *mut Vec<$elem>) };
+            let scan: fn(&[$elem], $needle, &mut dyn FnMut(usize) -> bool) = $scan;
+            let mut found = 0i64;
+            scan(values.as_slice(), needle, &mut |_| {
+                found += 1;
+                true
+            });
+            found
+        }
+    };
+}
+
+list_scan!(
+    lkrt_lklist_i64_index_of,
+    lkrt_lklist_i64_count,
+    i64,
+    i64,
+    |values, needle, on_match| {
+        for (index, value) in values.iter().enumerate() {
+            if *value == needle && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a `List<i64>`"
+);
+list_scan!(
+    lkrt_lklist_f64_index_of,
+    lkrt_lklist_f64_count,
+    f64,
+    f64,
+    |values, needle, on_match| {
+        for (index, value) in values.iter().enumerate() {
+            if *value == needle && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a `List<f64>` (an `Int` needle is coerced by the lowering, the way `contains` takes one)"
+);
+list_scan!(
+    lkrt_lklist_str_index_of,
+    lkrt_lklist_str_count,
+    *const c_char,
+    *const c_char,
+    |values, needle, on_match| {
+        if needle.is_null() {
+            return;
+        }
+        // Once, not per element: `CStr::from_ptr` walks to the NUL.
+        let needle = unsafe { CStr::from_ptr(needle) };
+        for (index, &p) in values.iter().enumerate() {
+            if !p.is_null() && unsafe { CStr::from_ptr(p) } == needle && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a `List<str>`"
+);
+list_scan!(
+    lkrt_lklist_dyn_index_of,
+    lkrt_lklist_dyn_count,
+    crate::lkdyn::LkDyn,
+    crate::lkdyn::LkDyn,
+    |values, needle, on_match| {
+        for (index, &value) in values.iter().enumerate() {
+            if crate::lkdyn::dyn_eq_inner(value, needle) && !on_match(index) {
+                return;
+            }
+        }
+    },
+    "a boxed-element list"
+);
 
 /// Creates a fresh, empty `f64` list handle.
 #[unsafe(no_mangle)]
@@ -1114,6 +1876,58 @@ pub unsafe extern "C" fn lkrt_lklist_str_join(handle: *mut c_void, separator: *c
     crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
 }
 
+/// Joins an `i64` list with `separator`, elements written as the VM writes them.
+///
+/// `[1, 2].join("-")` used to raise in the VM ("list must contain only strings")
+/// and was therefore left unlowered here on purpose — one arbitrary rule turning
+/// into a second one in another back end. The VM renders every element now, so
+/// this renders them the same way: `i64::to_string`, exactly what
+/// `lkrt_lklist_i64_display` puts between its brackets.
+///
+/// # Safety
+/// See [`lkrt_lklist_str_join`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    use alloc::ffi::CString;
+    let sep = join_separator(separator);
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let parts: Vec<String> = values.iter().map(i64::to_string).collect();
+    crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
+}
+
+/// Joins an `f64` list with `separator`; see [`lkrt_lklist_i64_join`].
+///
+/// # Safety
+/// See [`lkrt_lklist_str_join`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    use alloc::ffi::CString;
+    let sep = join_separator(separator);
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<f64>` created by `lkrt_lklist_f64_new`.
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    let parts: Vec<String> = values.iter().map(f64::to_string).collect();
+    crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
+}
+
+/// The separator a `join` was handed; null and invalid UTF-8 both mean empty,
+/// matching the three `*_join` entry points that share it.
+fn join_separator<'a>(separator: *const c_char) -> &'a str {
+    if separator.is_null() {
+        return "";
+    }
+    // SAFETY: caller guarantees a valid C string.
+    unsafe { CStr::from_ptr(separator) }.to_str().unwrap_or("")
+}
+
 /// Structural equality for two `i64` lists (1 = equal), the VM's typed-list
 /// `==`: same length and element-wise `==`. Null handles compare as empty.
 ///
@@ -1208,6 +2022,183 @@ pub unsafe extern "C" fn lkrt_lklist_str_eq(a: *mut c_void, b: *mut c_void) -> i
     };
     let equal = lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(&l, &r)| bytes(l) == bytes(r));
     i64::from(equal)
+}
+
+/// A typed list's elements, boxed — the carrier read behind every `DYN_TLIST_*`
+/// consumer.
+///
+/// A copy, and only reads use it: `lkdyn::dyn_list_values` documents why, and
+/// [`lkrt_dyn_list_push`](crate::lkrt_dyn_list_push) is the write that does not.
+pub(crate) fn typed_list_boxed(kind: i64, handle: *mut c_void) -> alloc::vec::Vec<crate::lkdyn::LkDyn> {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR, lkrt_dyn_from_f64, lkrt_dyn_from_i64, lkrt_dyn_from_str};
+    if handle.is_null() {
+        return alloc::vec::Vec::new();
+    }
+    // SAFETY: `kind` names the carrier the caller tagged this handle with.
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_i64(v))
+                .collect(),
+            TLIST_F64 => (*(handle as *mut Vec<f64>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_f64(v))
+                .collect(),
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>))
+                .iter()
+                .map(|&v| lkrt_dyn_from_str(v))
+                .collect(),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// Element count without boxing anything.
+pub(crate) fn typed_list_len(kind: i64, handle: *mut c_void) -> i64 {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: as in [`typed_list_boxed`].
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>)).len() as i64,
+            TLIST_F64 => (*(handle as *mut Vec<f64>)).len() as i64,
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>)).len() as i64,
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `xs.push(v)` on a **boxed** typed list: appends to the carrier itself, so
+/// the box and the original stay one list.
+///
+/// The element is unboxed back to the carrier's type. A value the carrier
+/// cannot hold is the VM's loud failure — the same one the unboxed spelling
+/// gives, because the static types would have rejected it there.
+/// `xs.insert(i, v)` / `xs.remove_at(i)` / `pop`'s drop half on a **typed**
+/// list handle, by carrier kind.
+///
+/// The siblings of [`typed_list_push`], and there for the same reason it is: a
+/// boxed list has no static carrier, and unboxing one through `dyn.as_list`
+/// materializes a copy for three of the four — so a write through that guard
+/// lands on the copy and the original never changes.
+pub(crate) fn typed_list_insert(kind: i64, handle: *mut c_void, index: i64, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: `handle` addresses a list of the carrier `kind` names; the
+    // per-carrier entry points range-check the index themselves.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_insert(handle, index, crate::lkdyn::lkrt_dyn_as_i64(value)),
+            TLIST_F64 => lkrt_lklist_f64_insert(handle, index, crate::lkdyn::lkrt_dyn_as_f64(value)),
+            TLIST_STR => lkrt_lklist_str_insert(handle, index, crate::lkdyn::lkrt_dyn_as_str(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_remove_at(kind: i64, handle: *mut c_void, index: i64) -> crate::lkdyn::LkDyn {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: as above.
+    unsafe {
+        match kind {
+            TLIST_I64 => crate::lkdyn::lkrt_dyn_from_i64(lkrt_lklist_i64_remove_at(handle, index)),
+            TLIST_F64 => crate::lkdyn::lkrt_dyn_from_f64(lkrt_lklist_f64_remove_at(handle, index)),
+            TLIST_STR => crate::lkdyn::lkrt_dyn_from_str(lkrt_lklist_str_remove_at(handle, index)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_drop_last(kind: i64, handle: *mut c_void) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    // SAFETY: as above.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_drop_last(handle),
+            TLIST_F64 => lkrt_lklist_f64_drop_last(handle),
+            TLIST_STR => lkrt_lklist_str_drop_last(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_push(kind: i64, handle: *mut c_void, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    // SAFETY: as in [`typed_list_boxed`], and the handle is uniquely reachable
+    // through this call for its duration.
+    unsafe {
+        match kind {
+            TLIST_I64 => (*(handle as *mut Vec<i64>)).push(crate::lkdyn::lkrt_dyn_as_i64(value)),
+            TLIST_F64 => (*(handle as *mut Vec<f64>)).push(crate::lkdyn::lkrt_dyn_as_f64(value)),
+            TLIST_STR => (*(handle as *mut Vec<*const c_char>)).push(crate::lkdyn::lkrt_dyn_as_str(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `xs[i] = v` on a **boxed** typed list: stores into the carrier itself, so
+/// the box and the original stay one list.
+///
+/// The index rule is [`store_index_or_raise`]'s, the same one the unboxed
+/// spelling uses — out of range is the VM's halt, and a negative index counts
+/// from the end. The element unboxes back to the carrier's type, like
+/// [`typed_list_push`].
+/// `xs.clear()` on a **typed** list handle, by carrier kind.
+///
+/// The sibling of [`typed_list_set`]: a boxed list has no static carrier and
+/// the tag is the only thing that says which.
+pub(crate) fn typed_list_clear(kind: i64, handle: *mut c_void) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: `handle` addresses a list of the carrier `kind` names.
+    unsafe {
+        match kind {
+            TLIST_I64 => lkrt_lklist_i64_clear(handle),
+            TLIST_F64 => lkrt_lklist_f64_clear(handle),
+            TLIST_STR => lkrt_lklist_str_clear(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_list_set(kind: i64, handle: *mut c_void, index: i64, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{TLIST_F64, TLIST_I64, TLIST_STR};
+    if handle.is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    // SAFETY: as in [`typed_list_push`].
+    unsafe {
+        match kind {
+            TLIST_I64 => {
+                let values = &mut *(handle as *mut Vec<i64>);
+                // Unboxed *before* the index is resolved, because both can
+                // raise and the VM reports the type first.
+                let v = crate::lkdyn::lkrt_dyn_as_i64(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            TLIST_F64 => {
+                let values = &mut *(handle as *mut Vec<f64>);
+                let v = crate::lkdyn::lkrt_dyn_as_f64(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            TLIST_STR => {
+                let values = &mut *(handle as *mut Vec<*const c_char>);
+                let v = crate::lkdyn::lkrt_dyn_as_str(value);
+                let idx = store_index_or_raise(index, values.len());
+                values[idx] = v;
+            }
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
 }
 
 #[cfg(test)]

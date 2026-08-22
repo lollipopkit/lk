@@ -73,6 +73,7 @@ mod bench_tests {
             trigger: lk_completion::CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         };
 
         let start = Instant::now();

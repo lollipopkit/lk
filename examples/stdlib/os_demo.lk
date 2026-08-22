@@ -19,7 +19,9 @@ assert(os_name != nil);
 let path_val = env.get_or("PATH", "");
 assert(path_val != "");
 
-// env.set/unset disabled in VM runtime - skip
+// The language has no env.set/env.unset: an environment variable is read-only
+// from LK. (Rust 2024 makes mutating it process-wide unsafe, and a script that
+// changed its own environment could not be run twice for the same answer.)
 
 // 3. Clock / time
 let t1 = os.clock();
@@ -35,8 +37,10 @@ assert(epoch > 0);
 let cwd = process.cwd();
 assert(cwd != nil);
 
-let tmp = fs.temp_dir();
-assert(tmp != nil);
+// `temp_dir()` is declared `String?`, and `read_dir` wants a `String`. `??`
+// is what bridges them — the checker does not narrow a type from a `!= nil`
+// assertion, so asserting it is not enough.
+let tmp = fs.temp_dir() ?? "/tmp";
 
 let listing = fs.read_dir(tmp);
 assert(listing != nil);

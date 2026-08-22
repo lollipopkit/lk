@@ -628,4 +628,46 @@ mod tests {
         assert!(stmt.type_check(&mut checker).is_ok());
         Ok(())
     }
+
+    /// A Rust-shaped function type is rejected with the rule, from every
+    /// position a type can appear in.
+    ///
+    /// `fn(Int) -> Int` is what somebody writes first in a language where `fn`
+    /// introduces every declaration, and before this it produced two different
+    /// unhelpful reports depending on which of the five type collectors ran:
+    /// `Invalid type: Fn ( Int) -> Int` (a spelling the program does not
+    /// contain) for a parameter, and `Expected type annotation` for a `let`.
+    /// Neither said `(Int) -> Int`.
+    ///
+    /// The position matters as much as the text: the collector stops at
+    /// whatever *ended* the annotation, so the report used to point at the `,`
+    /// or the `)`.
+    #[test]
+    fn a_rust_shaped_function_type_is_rejected_with_the_rule() {
+        for source in [
+            "fn a(f: fn(Int) -> Int) -> Int { return f(1); }",
+            "fn a(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }",
+            "let g: fn(Int) -> Int = |x| x;",
+            "struct S { f: fn(Int) -> Int }",
+            "fn mk() -> fn(Int) -> Int { return |x| x; }",
+            "type T = fn(Int) -> Int;",
+        ] {
+            let tokens = Tokenizer::tokenize(source).expect("tokens");
+            let mut parser = StmtParser::new(&tokens);
+            let error = parser
+                .parse_statement()
+                .expect_err(&alloc::format!("`{source}` must not parse"))
+                .to_string();
+            assert!(
+                error.contains("`(Int) -> Int`, not `fn(Int) -> Int`"),
+                "`{source}` reported `{error}` instead of the spelling rule"
+            );
+            // The token is named the way it was typed — `fn`, not the variant
+            // `Fn`, which is what every parser message used to print.
+            assert!(
+                error.contains("found `fn`"),
+                "`{source}` reported `{error}`, pointing at something other than the `fn`"
+            );
+        }
+    }
 }

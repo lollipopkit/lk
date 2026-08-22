@@ -77,15 +77,34 @@ pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
     f(&mut RUNTIME.lock())
 }
 
+/// Whether this thread is *inside* a [`with_runtime`] call.
+///
+/// Asked on the raise path, which is the one place the answer has to be no: a
+/// raise `_longjmp`s past every Rust frame between here and the handler, so a
+/// live borrow's `RefMut` never drops and the flag stays set. What follows is
+/// not a crash but a puzzle — the *next* runtime operation, arbitrarily far
+/// away and in unrelated code, panics with "already mutably borrowed".
+///
+/// Every lkrt entry that can raise is written to avoid this: the `raising` /
+/// `status` wrappers make the closure return a `Result`, so ordinary Rust drops
+/// run before the raise happens outside it, and the handful of direct
+/// `raise_str` calls drop their guard explicitly first. That is a rule enforced
+/// by reading, which is why it is also checked here — cheaply, since a raise is
+/// already doing a `CString` allocation and a `longjmp`.
+#[cfg(feature = "std")]
+pub(crate) fn runtime_borrow_is_live() -> bool {
+    RUNTIME.with(|state| state.try_borrow_mut().is_err())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandleKind {
-    Bytes,
     #[cfg(feature = "std")]
     TcpStream,
 }
 
 pub(crate) struct RuntimeState {
     next_handle: i64,
+    #[cfg(feature = "std")]
     resources: HashMap<i64, Resource, FxBuildHasher>,
     owned_strings: HashSet<usize, FxBuildHasher>,
     /// Container handles (lists/maps) with their typed drop functions — the
@@ -100,6 +119,7 @@ impl RuntimeState {
     const fn new() -> Self {
         Self {
             next_handle: 0,
+            #[cfg(feature = "std")]
             resources: HashMap::with_hasher(FxBuildHasher),
             owned_strings: HashSet::with_hasher(FxBuildHasher),
             owned_containers: HashMap::with_hasher(FxBuildHasher),
@@ -107,17 +127,27 @@ impl RuntimeState {
     }
 }
 
+/// A host resource behind an `i64` handle.
+///
+/// `TcpStream` is the only kind left, so the whole family is `std`-only: without
+/// an OS there is no host resource to hold. It is still an enum rather than the
+/// stream itself because the *handle* machinery (`close_any`, `close_kind`) is
+/// about "a resource of some kind", and a second kind is a plausible addition.
+///
+/// `Bytes` used to be one of these — a *one-shot* value, read with `take_bytes`,
+/// which removed it. Every producer now answers the arena `Bytes` handle
+/// ([`crate::lkbytes`]) instead, because a `Bytes` in the language is an
+/// ordinary value you may read twice; the one-shot kind, its two accessors and
+/// the `bytes.to_string_utf8`/`bytes.free` ABI entries over it are gone with it.
+#[cfg(feature = "std")]
 enum Resource {
-    Bytes(Vec<u8>),
-    #[cfg(feature = "std")]
     TcpStream(TcpStream),
 }
 
+#[cfg(feature = "std")]
 impl Resource {
     fn kind(&self) -> HandleKind {
         match self {
-            Resource::Bytes(_) => HandleKind::Bytes,
-            #[cfg(feature = "std")]
             Resource::TcpStream(_) => HandleKind::TcpStream,
         }
     }
@@ -135,37 +165,16 @@ impl RuntimeState {
     pub(crate) fn stream(&self, handle: i64) -> Result<&TcpStream, String> {
         match self.resources.get(&handle) {
             Some(Resource::TcpStream(stream)) => Ok(stream),
-            Some(resource) => Err(wrong_kind_error(handle, HandleKind::TcpStream, resource.kind())),
             None => Err(format!("tcp stream handle {handle} is closed or invalid")),
         }
     }
 
-    pub(crate) fn insert_bytes(&mut self, bytes: Vec<u8>) -> i64 {
-        let handle = self.next_handle();
-        self.resources.insert(handle, Resource::Bytes(bytes));
-        handle
-    }
-
-    pub(crate) fn take_bytes(&mut self, handle: i64) -> Result<Vec<u8>, String> {
-        let Some(resource) = self.resources.remove(&handle) else {
-            return Err(format!("bytes handle {handle} is closed or invalid"));
-        };
-        match resource {
-            Resource::Bytes(bytes) => Ok(bytes),
-            // Unreachable without `std`: `Bytes` is the only variant there.
-            #[cfg(feature = "std")]
-            other => {
-                let actual = other.kind();
-                self.resources.insert(handle, other);
-                Err(wrong_kind_error(handle, HandleKind::Bytes, actual))
-            }
-        }
-    }
-
+    #[cfg(feature = "std")]
     pub(crate) fn close_any(&mut self, handle: i64) -> bool {
         self.resources.remove(&handle).is_some()
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn close_kind(&mut self, handle: i64, expected: HandleKind) -> Result<bool, String> {
         let Some(resource) = self.resources.get(&handle) else {
             return Ok(false);
@@ -234,6 +243,7 @@ impl RuntimeState {
     }
 
     pub(crate) fn cleanup(&mut self) {
+        #[cfg(feature = "std")]
         self.resources.clear();
         for ptr in self.owned_strings.drain() {
             // SAFETY: All entries are pointers produced by CString::into_raw
@@ -307,4 +317,24 @@ pub(crate) fn arena_handle_owning_strings<T>(value: T, collect: ContainerOwnedSt
 
 fn wrong_kind_error(handle: i64, expected: HandleKind, actual: HandleKind) -> String {
     format!("handle {handle} has kind {actual:?}, expected {expected:?}")
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    /// The raise-path guard has to be able to say "yes".
+    ///
+    /// A predicate that is always `false` costs nothing, breaks nothing, and
+    /// silently stops being a check — which is the only way this one can fail,
+    /// since the thing it protects against is not reachable from a test (a raise
+    /// under a live borrow aborts the process by design).
+    #[test]
+    fn a_live_runtime_borrow_is_visible_to_the_raise_path() {
+        assert!(!runtime_borrow_is_live(), "no borrow outside `with_runtime`");
+        with_runtime(|_| {
+            assert!(runtime_borrow_is_live(), "the borrow `with_runtime` holds is its own");
+        });
+        assert!(!runtime_borrow_is_live(), "and it is released on the way out");
+    }
 }

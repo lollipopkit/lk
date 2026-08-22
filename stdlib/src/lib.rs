@@ -15,7 +15,6 @@ pub use lk_stdlib_path as path;
 pub use lk_stdlib_process as process;
 pub use lk_stdlib_random as random;
 pub use lk_stdlib_regex as regex;
-pub use lk_stdlib_slice as slice;
 pub use lk_stdlib_stream as stream;
 pub use lk_stdlib_string as string;
 pub use lk_stdlib_task as concurrency_task;
@@ -36,9 +35,13 @@ mod gc_stress_test;
 #[cfg(test)]
 mod globals_test;
 #[cfg(test)]
+mod host_parity_test;
+#[cfg(test)]
 mod math_test;
 #[cfg(test)]
 mod os_test;
+#[cfg(test)]
+mod platform_surface_test;
 #[cfg(test)]
 mod select_test;
 #[cfg(test)]
@@ -57,13 +60,10 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{
-        CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TaskValue,
-        Type, TypedList, TypedMap,
-    },
+    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, copy_runtime_value_same_module,
+        copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -155,7 +155,6 @@ define_stdlib_modules!(
     "uuid" => uuid::register as register_stdlib_module_uuid,
     "http" => http::register as register_stdlib_module_http,
     "net" => net::register as register_stdlib_module_net,
-    "slice" => slice::register as register_stdlib_module_slice,
     "stream" => stream::register as register_stdlib_module_stream,
     "task" => concurrency_task::register as register_stdlib_module_task,
     "chan" => concurrency_chan::register as register_stdlib_module_chan,
@@ -190,7 +189,7 @@ fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> 
     Ok(())
 }
 
-fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
+pub(crate) fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
     STDLIB_MODULES.iter().map(|entry| entry.name)
 }
 
@@ -392,11 +391,6 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
     register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
     register_full_state_builtin!(registry, error => error / NativeEntry::VARIADIC => core.error: Nil);
-    // `try$call` is the hidden protected-call primitive behind try/catch's
-    // parse-time desugar (`$` names are untokenizable, so user code can't
-    // reach it) — the former user-facing `pcall` global, removed in v2:
-    // try/catch is the only error-handling surface.
-    register_runtime_builtin_full_state(registry, "try$call", pcall, NativeEntry::VARIADIC, None);
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
@@ -419,6 +413,7 @@ fn register_runtime_builtin(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_name(name, arity);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::Plain(function), arity);
 }
@@ -430,9 +425,54 @@ fn register_runtime_builtin_full_state(
     arity: u16,
     metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_name(name, arity);
     register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
 }
+
+/// Tells the type checker this name is a builtin global, and how many
+/// arguments it takes.
+///
+/// The count comes from the registry arity the call sites already state, so
+/// there is nothing new to keep in sync — except for the handful whose real
+/// range the registry could not express (`assert` is 1 or 2, not "any"), which
+/// now state it through [`ARITY_RANGES`] and use the same constant in their
+/// own check.
+fn register_global_name(name: &'static str, arity: u16) {
+    let (min, max) = match ARITY_RANGES.iter().find(|(global, _, _)| *global == name) {
+        Some((_, min, max)) => (*min, Some(*max)),
+        None if arity == NativeEntry::VARIADIC => (0, None),
+        None => (arity, Some(arity)),
+    };
+    lk_core::typ::register_stdlib_global(name, min, max);
+}
+
+/// The globals whose argument count is a *range*, which the registry's single
+/// `arity` cannot say.
+///
+/// Registered as `VARIADIC` because the call machinery only knows "exactly N or
+/// anything", and then checked again inside each body — so the real bound lived
+/// only there, and `lk check` passed `assert(true, "a", "b")`. The numbers are
+/// the ones those bodies use; `assert_arity_ranges_match_the_native_checks`
+/// keeps the two together.
+pub(crate) const ARITY_RANGES: &[(&str, u16, u16)] = &[
+    (
+        "assert",
+        lk_stdlib_common::language::ASSERT_ARITY.0,
+        lk_stdlib_common::language::ASSERT_ARITY.1,
+    ),
+    (
+        "assert_eq",
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.0,
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.1,
+    ),
+    (
+        "assert_ne",
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.0,
+        lk_stdlib_common::language::ASSERT_PAIR_ARITY.1,
+    ),
+    ("chan", lk_stdlib_chan::CHAN_ARITY.0, lk_stdlib_chan::CHAN_ARITY.1),
+];
 
 fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMetadata>) {
     let Some(metadata) = metadata else {
@@ -443,25 +483,34 @@ fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMet
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    print!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
+    print!(
+        "{}",
+        lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?
+    );
     Ok(RuntimeVal::Nil)
 }
 
 fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    println!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
+    println!(
+        "{}",
+        lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?
+    );
     Ok(RuntimeVal::Nil)
 }
 
+/// `panic(msg...)` — stop, and do not let `catch` intervene.
+///
+/// A `LkPanic`, not Rust's `panic!`. The old implementation unwound the *host*,
+/// which works on a desktop, is an unrecoverable trap in wasm, and has no
+/// unwinder at all on bare metal — so the two alternative hosts each wrote
+/// their own, and each made `panic` an ordinary catchable error, which is the
+/// opposite of what it means. One raise type, refused by the unwinder, means
+/// the same program stops the same way everywhere.
+///
+/// The Rust backtrace went with it: it named frames of the interpreter, not of
+/// the program, which is the wrong stack to show whoever wrote the `panic`.
 fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut msg = if args.is_empty() {
-        "panic".to_string()
-    } else {
-        join_runtime_display(args.as_slice(), runtime)?
-    };
-    let bt = std::backtrace::Backtrace::force_capture();
-    msg.push_str("\nBacktrace:\n");
-    msg.push_str(&format!("{}", bt));
-    panic!("{}", msg);
+    lk_stdlib_common::language::panic(args, runtime)
 }
 
 /// `error(value...)` — raise a recoverable error. Unlike `panic`, it propagates
@@ -471,158 +520,23 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 /// a stringified message is raised (heap-object first-class values need GC
 /// rooting across unwinding — deferred).
 fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if let [value] = args.as_slice() {
-        let value = *value;
-        // Capture the display up-front: an uncaught heap error can't be rendered
-        // later (the heap is gone once execution unwinds out) (plan M2.2).
-        let rendered = join_runtime_display(args.as_slice(), runtime)?;
-        // A heap object must be pinned as a GC root so it survives collection at
-        // the native-call safepoints hit while the error unwinds to its `pcall`
-        // (plan M2.2). Primitives are Copy and need no pinning. If full VM state
-        // is unavailable we can't pin, so fall back to a stringified message.
-        let carry_first_class = if matches!(value, RuntimeVal::Obj(_)) {
-            match runtime.state_ctx_module_mut() {
-                Some((state, _, _)) => {
-                    state.set_pending_raise_root(Some(value));
-                    true
-                }
-                None => false,
-            }
-        } else {
-            true
-        };
-        if carry_first_class {
-            return Err(anyhow!(lk_core::vm::LkRaisedValue {
-                value,
-                rendered: Arc::<str>::from(rendered.as_str()),
-            }));
-        }
-        return Err(anyhow!("{rendered}"));
-    }
-    let msg = if args.is_empty() {
-        "error".to_string()
-    } else {
-        join_runtime_display(args.as_slice(), runtime)?
-    };
-    Err(anyhow!("{msg}"))
+    lk_stdlib_common::language::error(args, runtime)
 }
 
-/// `pcall(f, args...) -> [ok, result_or_error]` — a protected call. Invokes `f`
-/// with `args`; on success returns `[true, result]`, on any raised error returns
-/// `[false, message]` instead of propagating. This is the recoverable-error
-/// primitive (plan M2.1); it catches both `error(...)` and other runtime errors.
-fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some((&callee, call_args)) = values.split_first() else {
-        return Err(anyhow!("pcall expects at least 1 argument: the function to call"));
-    };
-    let call_args = call_args.to_vec();
-    let outcome = {
-        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-            return Err(anyhow!("pcall requires full VM state"));
-        };
-        call_runtime_value_runtime(callee, &call_args, state, module, ctx)
-    };
-    if outcome.is_err()
-        && let Some((state, ctx, _)) = runtime.state_ctx_module_mut()
-    {
-        // The error is caught here: release the GC-root pin on any first-class
-        // heap error value now that it's about to be handed back (plan M2.2).
-        // The value stays valid — the following `pcall` allocations use the raw
-        // heap (no collection) — but it no longer needs to survive as a stray
-        // root once execution resumes normally.
-        state.set_pending_raise_root(None);
-        // Discard the traceback frames the errored call accumulated — a later
-        // uncaught error should report a clean call stack (plan M2.2). try/catch
-        // desugars to pcall, so this also covers caught language errors.
-        if let Some(ctx) = ctx {
-            ctx.truncate_call_stack(0);
-        }
-    }
-    let (ok, value) = match outcome {
-        Ok(result) => (true, result),
-        Err(err) => {
-            // The call machinery wraps errors with context, so inspect the
-            // deepest cause. A first-class primitive error value round-trips as
-            // itself (M2.2); otherwise the message string is returned.
-            let root = err.root_cause();
-            if let Some(raised) = root.downcast_ref::<lk_core::vm::LkRaisedValue>() {
-                (false, raised.value)
-            } else {
-                let message = root.to_string();
-                let handle = runtime
-                    .heap_mut()
-                    .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
-                (false, RuntimeVal::Obj(handle))
-            }
-        }
-    };
-    let list = runtime
-        .heap_mut()
-        .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
-    Ok(RuntimeVal::Obj(list))
-}
-
+// `assert`/`assert_eq`/`assert_ne`/`panic` are the same on every host — an
+// assertion is arithmetic on values, and only `print` needs to know where
+// output goes. They were written out three times and had drifted three ways;
+// see `lk_stdlib_common::language`.
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 1, 2, "assert")?;
-    let values = args.as_slice();
-    if assert_truthy(&values[0]) {
-        return Ok(RuntimeVal::Nil);
-    }
-    let message = if let Some(message) = values.get(1) {
-        format!("assertion failed: {}", runtime_display(message, runtime)?)
-    } else {
-        "assertion failed".to_string()
-    };
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert(args, runtime)
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_eq")?;
-    let values = args.as_slice();
-    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let actual = runtime_display(&values[0], runtime)?;
-    let expected = runtime_display(&values[1], runtime)?;
-    let mut message = format!("assertion failed: expected {expected}, got {actual}");
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
+    lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_assert_args(args, 2, 3, "assert_ne")?;
-    let values = args.as_slice();
-    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
-        return Ok(RuntimeVal::Nil);
-    }
-    let mut message = "assertion failed: values should not be equal".to_string();
-    if let Some(extra) = values.get(2) {
-        message.push_str(" - ");
-        message.push_str(&runtime_display(extra, runtime)?);
-    }
-    Err(anyhow!("{message}"))
-}
-
-fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
-    if args.has_named() {
-        return Err(anyhow!("{name}() does not accept named arguments"));
-    }
-    let len = args.len();
-    if (min..=max).contains(&len) {
-        Ok(())
-    } else if min == max {
-        Err(anyhow!("{name}() expects exactly {min} arguments"))
-    } else {
-        Err(anyhow!("{name}() expects {min} or {max} arguments"))
-    }
-}
-
-fn assert_truthy(value: &RuntimeVal) -> bool {
-    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+    lk_stdlib_common::language::assert_ne(args, runtime)
 }
 
 /// `spawn(f) -> Task` — run `f` as a goroutine: true parallelism on the
@@ -643,7 +557,12 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<RuntimePayload>> + Send>> =
         Box::pin(async move {
             let mut heap = HeapStore::new();
-            let result = call_runtime_callable_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))?;
+            // The raise leaves with its payload, while this heap is still here
+            // to copy it out of — `heap` is dropped the moment this block
+            // returns, and a first-class raise carries a handle into it. See
+            // `RaisedPayload`.
+            let result = call_runtime_callable_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))
+                .map_err(|error| lk_core::rt::RaisedPayload::detach(error, &heap))?;
             Ok(RuntimePayload::new(result, heap))
         });
 
@@ -659,83 +578,24 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     )))))
 }
 
+/// `chan(capacity[, type])` — the bare global, beside `send`/`recv`/`go`.
+///
+/// One implementation with `chan.new(…)`: importing the module shadows this
+/// name, so after `use chan;` the module spelling is the only one there is.
 fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.is_empty() || args.len() > 2 {
-        return Err(anyhow!("chan() expects 1 or 2 arguments: capacity[, type_str]"));
-    }
-    let values = args.as_slice();
-    let capacity = match &values[0] {
-        RuntimeVal::Int(value) => *value,
-        RuntimeVal::Float(value) => *value as i64,
-        other => {
-            return Err(anyhow!(
-                "chan() capacity must be numeric, got {}",
-                runtime_type_name(other, runtime.heap())
-            ));
-        }
-    };
-    let inner_type = if values.len() == 2 {
-        match &values[1] {
-            RuntimeVal::Nil => val::Type::Nil,
-            value => {
-                let text = runtime_string(value, runtime.heap(), "chan() type")?;
-                val::Type::parse(text.as_ref()).unwrap_or(val::Type::Nil)
-            }
-        }
-    } else {
-        val::Type::Nil
-    };
-    let cap_opt = if capacity <= 0 { None } else { Some(capacity as usize) };
-    let channel_id = runtime
-        .async_runtime()
-        .with(|runtime| runtime.create_channel(cap_opt))
-        .map_err(|error| anyhow!("Failed to create channel: {}", error))?;
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(
-        ChannelValue {
-            id: channel_id,
-            capacity: Some(capacity),
-            inner_type,
-        },
-    )))))
+    lk_stdlib_chan::create_channel_value(args, runtime)
 }
 
-/// `send(c, v)` — blocking send. Returns Nil on delivery; raises a
-/// catchable error once the channel is closed (v2 error model: failures
-/// raise, they don't return status values — Go's panic-on-closed-send).
+/// `send(c, v)` — the bare global, one implementation with `chan.send`.
 fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
-    let values = args.as_slice();
-    let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
-    let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = runtime
-        .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.guard_blocking("send", runtime.send_async(channel_id, value))))
-        .map_err(|error| anyhow!("Send operation failed: {}", error))?;
-    if !sent {
-        return Err(anyhow!("send on closed channel"));
-    }
-    Ok(RuntimeVal::Nil)
+    lk_stdlib_chan::blocking_send_value(args, runtime, "send")
 }
 
-/// `recv(c)` — blocking receive. Returns the value; raises a catchable
-/// error once the channel is closed and drained (v2 error model: no
-/// `[ok, value]` pairs — consume-until-closed loops wrap the loop in
-/// try/catch, or poll `chan.is_closed`/`chan.try_recv`).
+/// `recv(c)` — the bare global, one implementation with `chan.recv`.
 fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "recv")?;
-    let channel_id = channel_id_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "recv first argument",
-    )?;
-    let (ok, value) = runtime
-        .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.guard_blocking("recv", runtime.recv_async(channel_id))))
-        .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
-    if !ok {
-        return Err(anyhow!("receive on closed channel"));
-    }
-    value.into_value(runtime.heap_mut())
+    lk_stdlib_chan::blocking_recv_value(args, runtime, "recv")
 }
 
 /// Non-blocking send: `true` delivered, `false` full (not an error);
@@ -745,10 +605,11 @@ fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
+    // See `chan.try_send`: the closed-channel wording is the language's, so it
+    // is propagated rather than decorated.
     let sent = runtime
         .async_runtime()
-        .with(|runtime| runtime.try_send(channel_id, value))
-        .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
+        .with(|runtime| runtime.try_send(channel_id, value))?;
     Ok(RuntimeVal::Bool(sent))
 }
 
@@ -835,325 +696,6 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
         vec![RuntimeVal::Bool(false), RuntimeVal::Int(index), payload],
         runtime.heap_mut(),
     )
-}
-
-fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    if args.is_empty() {
-        return Ok(String::new());
-    }
-    let Some(format) = runtime_string_maybe(&args[0], runtime.heap())? else {
-        return join_runtime_display(args, runtime);
-    };
-    let rest = &args[1..];
-    let mut out = String::with_capacity(format.len() + rest.len() * 8);
-    let mut chars = format.chars().peekable();
-    let mut arg_index = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            if let Some(value) = rest.get(arg_index) {
-                out.push_str(&runtime_display(value, runtime)?);
-                arg_index += 1;
-            } else {
-                out.push_str("{}");
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    if arg_index < rest.len() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&join_runtime_display(&rest[arg_index..], runtime)?);
-    }
-    Ok(out)
-}
-
-fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let mut out = String::new();
-    for (index, value) in args.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&runtime_display(value, runtime)?);
-    }
-    Ok(out)
-}
-
-fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    if let Some(value) = runtime_display_show(value, runtime)? {
-        return Ok(value);
-    }
-    runtime_display_value(value, runtime.heap())
-}
-
-fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
-    Ok(match (left, right) {
-        (RuntimeVal::Nil, RuntimeVal::Nil) => true,
-        (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left == right,
-        (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left == right,
-        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left == right,
-        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => *left as f64 == *right,
-        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => *left == *right as f64,
-        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) if left == right => true,
-        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) => {
-            let left = heap
-                .get(*left)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", left.index()))?;
-            let right = heap
-                .get(*right)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", right.index()))?;
-            heap_values_equal(left, right, heap)?
-        }
-        _ => match (
-            runtime_value_to_string(left, heap)?,
-            runtime_value_to_string(right, heap)?,
-        ) {
-            (Some(left), Some(right)) => left == right,
-            _ => false,
-        },
-    })
-}
-
-fn heap_values_equal(left: &HeapValue, right: &HeapValue, heap: &HeapStore) -> Result<bool> {
-    Ok(match (left, right) {
-        (HeapValue::String(left), HeapValue::String(right)) => left == right,
-        (HeapValue::List(left), HeapValue::List(right)) => typed_lists_equal(left, right, heap)?,
-        (HeapValue::Map(left), HeapValue::Map(right)) => typed_maps_equal(left, right, heap)?,
-        (HeapValue::Set(left), HeapValue::Set(right)) => runtime_sets_equal(left, right),
-        _ => false,
-    })
-}
-
-fn runtime_sets_equal(left: &RuntimeSet, right: &RuntimeSet) -> bool {
-    left.len() == right.len() && left.entries().all(|key| right.contains(key))
-}
-
-fn runtime_value_to_string(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
-    match value {
-        RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
-        RuntimeVal::Obj(handle) => match heap
-            .get(*handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        {
-            HeapValue::String(value) => Ok(Some(value.clone())),
-            _ => Ok(None),
-        },
-        _ => Ok(None),
-    }
-}
-
-fn typed_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> Result<bool> {
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    match (left, right) {
-        (TypedList::Int(left), TypedList::Int(right)) => return Ok(left == right),
-        (TypedList::Float(left), TypedList::Float(right)) => return Ok(left == right),
-        (TypedList::Bool(left), TypedList::Bool(right)) => return Ok(left == right),
-        (TypedList::String(left), TypedList::String(right)) => return Ok(left == right),
-        _ => {}
-    }
-    for index in 0..left.len() {
-        if !typed_list_items_equal(left, index, right, index, heap)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn typed_list_items_equal(
-    left: &TypedList,
-    left_index: usize,
-    right: &TypedList,
-    right_index: usize,
-    heap: &HeapStore,
-) -> Result<bool> {
-    match (left, right) {
-        (TypedList::Mixed(left), TypedList::Mixed(right)) => {
-            runtime_values_equal(&left[left_index], &right[right_index], heap)
-        }
-        (TypedList::Mixed(left), TypedList::String(right)) => {
-            runtime_value_equals_string(&left[left_index], &right[right_index], heap)
-        }
-        (TypedList::String(left), TypedList::Mixed(right)) => {
-            runtime_value_equals_string(&right[right_index], &left[left_index], heap)
-        }
-        (TypedList::Int(left), _) => {
-            typed_list_runtime_item_equal(RuntimeVal::Int(left[left_index]), right, right_index, heap)
-        }
-        (TypedList::Float(left), _) => {
-            typed_list_runtime_item_equal(RuntimeVal::Float(left[left_index]), right, right_index, heap)
-        }
-        (TypedList::Bool(left), _) => {
-            typed_list_runtime_item_equal(RuntimeVal::Bool(left[left_index]), right, right_index, heap)
-        }
-        (TypedList::String(left), _) => typed_list_string_item_equal(&left[left_index], right, right_index, heap),
-        (TypedList::Mixed(left), _) => typed_list_runtime_item_equal(left[left_index], right, right_index, heap),
-    }
-}
-
-fn typed_list_runtime_item_equal(
-    value: RuntimeVal,
-    right: &TypedList,
-    right_index: usize,
-    heap: &HeapStore,
-) -> Result<bool> {
-    match right {
-        TypedList::Mixed(right) => runtime_values_equal(&value, &right[right_index], heap),
-        TypedList::Int(right) => runtime_values_equal(&value, &RuntimeVal::Int(right[right_index]), heap),
-        TypedList::Float(right) => runtime_values_equal(&value, &RuntimeVal::Float(right[right_index]), heap),
-        TypedList::Bool(right) => runtime_values_equal(&value, &RuntimeVal::Bool(right[right_index]), heap),
-        TypedList::String(right) => runtime_value_equals_string(&value, &right[right_index], heap),
-    }
-}
-
-fn typed_list_string_item_equal(
-    left: &Arc<str>,
-    right: &TypedList,
-    right_index: usize,
-    heap: &HeapStore,
-) -> Result<bool> {
-    match right {
-        TypedList::Mixed(right) => runtime_value_equals_string(&right[right_index], left, heap),
-        TypedList::String(right) => Ok(left == &right[right_index]),
-        _ => Ok(false),
-    }
-}
-
-fn runtime_value_equals_string(value: &RuntimeVal, expected: &str, heap: &HeapStore) -> Result<bool> {
-    Ok(match value {
-        RuntimeVal::ShortStr(value) => value.as_str() == expected,
-        RuntimeVal::Obj(handle) => matches!(
-            heap.get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-            HeapValue::String(value) if value.as_ref() == expected
-        ),
-        _ => false,
-    })
-}
-
-fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Result<bool> {
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    match left {
-        TypedMap::Mixed(entries) => {
-            for (key, value) in entries {
-                if !typed_map_value_equal(right, key, value, heap)? {
-                    return Ok(false);
-                }
-            }
-        }
-        TypedMap::StringMixed(entries) => {
-            for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
-                if !typed_map_value_equal(right, &key, value, heap)? {
-                    return Ok(false);
-                }
-            }
-        }
-        TypedMap::StringInt(entries) => {
-            for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
-                if !typed_map_value_equal(right, &key, &RuntimeVal::Int(*value), heap)? {
-                    return Ok(false);
-                }
-            }
-        }
-        TypedMap::StringFloat(entries) => {
-            for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
-                if !typed_map_value_equal(right, &key, &RuntimeVal::Float(*value), heap)? {
-                    return Ok(false);
-                }
-            }
-        }
-        TypedMap::StringBool(entries) => {
-            for (key, value) in entries {
-                let key = RuntimeMapKey::String(key.clone());
-                if !typed_map_value_equal(right, &key, &RuntimeVal::Bool(*value), heap)? {
-                    return Ok(false);
-                }
-            }
-        }
-    }
-    Ok(true)
-}
-
-fn typed_map_value_equal(
-    right: &TypedMap,
-    key: &RuntimeMapKey,
-    left_value: &RuntimeVal,
-    heap: &HeapStore,
-) -> Result<bool> {
-    let Some(right_value) = right.get(key) else {
-        return Ok(false);
-    };
-    runtime_values_equal(left_value, &right_value, heap)
-}
-
-fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
-    let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
-        return Ok(None);
-    };
-    // The declaring module is the other half of the receiver's type identity;
-    // read it before `state_ctx_module_mut` takes the heap mutably.
-    let receiver_scope = lk_core::vm::receiver_type_scope(value, runtime.heap());
-    let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-        return Ok(None);
-    };
-    let Some(ctx) = ctx else {
-        return Ok(None);
-    };
-    let Type::Named(receiver_type_name) = &receiver_type else {
-        return Ok(None);
-    };
-    let Some(impl_ref) = ctx.trait_method(&receiver_scope, receiver_type_name, "show").cloned() else {
-        return Ok(None);
-    };
-    let result = lk_core::vm::call_trait_method(
-        &impl_ref,
-        lk_core::vm::TraitMethodRef {
-            type_name: receiver_type_name,
-            method: "show",
-        },
-        value,
-        None,
-        state,
-        module,
-        Some(ctx),
-    )?;
-    runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
-}
-
-fn runtime_display_receiver_type(value: &RuntimeVal, heap: &HeapStore) -> Option<Type> {
-    let RuntimeVal::Obj(handle) = value else {
-        return None;
-    };
-    let Some(HeapValue::Object(object)) = heap.get(*handle) else {
-        return None;
-    };
-    Some(Type::Named(object.type_name().to_string()))
-}
-
-fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {
-    runtime_string_maybe(value, heap)?.ok_or_else(|| anyhow!("{context} must be a string"))
-}
-
-fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
-    match value {
-        RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
-        RuntimeVal::Obj(handle) => match heap
-            .get(*handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        {
-            HeapValue::String(value) => Ok(Some(value.clone())),
-            _ => Ok(None),
-        },
-        _ => Ok(None),
-    }
 }
 
 /// Resolve a spawn target to a self-contained `RuntimeCallable`. A
@@ -1370,17 +912,6 @@ fn expect_runtime_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Re
     }
 }
 
-fn runtime_type_name(value: &RuntimeVal, heap: &HeapStore) -> &'static str {
-    match value {
-        RuntimeVal::Nil => "Nil",
-        RuntimeVal::Bool(_) => "Bool",
-        RuntimeVal::Int(_) => "Int",
-        RuntimeVal::Float(_) => "Float",
-        RuntimeVal::ShortStr(_) => "String",
-        RuntimeVal::Obj(handle) => heap.get(*handle).map(HeapValue::type_name).unwrap_or("Obj"),
-    }
-}
-
 pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
     register_stdlib_core_globals(registry);
     register_stdlib_concurrency_globals(registry);
@@ -1389,7 +920,10 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
 #[cfg(test)]
 mod runtime_registration_tests {
     use super::*;
-    use lk_core::{val::Type, vm::RuntimeModuleState};
+    use lk_core::{
+        val::{ChannelValue, Type},
+        vm::RuntimeModuleState,
+    };
 
     #[test]
     fn named_registration_includes_only_requested_modules() {

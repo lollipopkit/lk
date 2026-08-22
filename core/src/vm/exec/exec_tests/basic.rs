@@ -6,7 +6,6 @@ use crate::vm::{
         PerfContainerBuildFact, PerfIndexFact, PerfIndexTargetKind, PerfKeyFact, PerfRegisterCopyFact, PerfValueKind,
         PerformanceFacts,
     },
-    vm_runtime_metrics_reset,
 };
 #[test]
 fn execute_returns_int_arithmetic_result() {
@@ -66,7 +65,7 @@ fn execute_branches_with_test_and_jump() {
 fn execute_not_rejects_string_operand() {
     let function = Function {
         consts: ConstPool {
-            strings: vec!["ok".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("ok")],
             ..ConstPool::default()
         },
         code: vec![
@@ -88,7 +87,16 @@ fn execute_not_rejects_string_operand() {
 }
 
 #[test]
-fn execute_tostring_rejects_list_operand() {
+fn execute_tostring_renders_a_list_like_print_does() {
+    // This asserted the *error* a list used to raise here. Three ways to print
+    // one value, two of which worked:
+    //
+    //     println(xs)          → [1,2]
+    //     println("{}", xs)    → [1,2]
+    //     println("${xs}")     → "object cannot be converted to string"
+    //
+    // …and the third failed at run time, after the type checker had approved
+    // it. A container renders the way `print` renders it now.
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
@@ -108,9 +116,13 @@ fn execute_tostring_rejects_list_operand() {
         ..Function::default()
     };
 
-    let err = execute(&function).expect_err("list tostring operand must be rejected");
-
-    assert!(err.to_string().contains("object cannot be converted to string"));
+    let result = execute(&function).expect("a list renders");
+    // Through the renderer rather than by unwrapping a handle: `"[1]"` is
+    // three bytes, so it arrives inline as a `ShortStr` rather than on the heap.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1]"
+    );
 }
 
 #[test]
@@ -176,9 +188,12 @@ fn execute_load_heap_const_list_preserves_typed_string_backing() {
 }
 
 #[test]
-fn execute_records_move_heap_clone_as_register_copy_metric() {
-    // RuntimeVal is Copy, so Move just copies the value without clone/move distinction.
-    // The copy policy metrics are no longer tracked by the Move handler.
+fn move_under_a_register_copy_fact_carries_the_heap_value_through() {
+    // Named for what it checks. The old name — `..._records_move_heap_clone_as_
+    // register_copy_metric` — described a recording that stopped happening when
+    // `RuntimeVal` became `Copy`: a register move copies the value, so there is no
+    // clone to count. The counters it named were removed; what is left worth
+    // asserting is that the copy *fact* doesn't corrupt the value it describes.
     let mut performance = PerformanceFacts::default();
     performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
     let function = Function {
@@ -200,17 +215,18 @@ fn execute_records_move_heap_clone_as_register_copy_metric() {
         ..Function::default()
     };
 
-    vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
 
-    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
-    // Move no longer tracks copy policy metrics since RuntimeVal is Copy.
+    // `kind() == Obj` alone would pass even if Move delivered a different string.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "longer-than-seven"
+    );
 }
 
 #[test]
-fn execute_records_move_heap_clone_as_local_store_metric() {
-    // RuntimeVal is Copy, so Move just copies the value.
-    // The local copy/store metrics are tracked by the local store handler, not Move.
+fn move_under_a_local_copy_fact_carries_the_heap_value_through() {
+    // The local-slot counterpart of the test above; same reason for the rename.
     let mut performance = PerformanceFacts::default();
     performance.mark_local_slot(1);
     performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
@@ -234,11 +250,12 @@ fn execute_records_move_heap_clone_as_local_store_metric() {
         ..Function::default()
     };
 
-    vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
 
-    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
-    // Move no longer tracks copy policy metrics since RuntimeVal is Copy.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "longer-than-seven"
+    );
 }
 
 #[test]
@@ -246,7 +263,7 @@ fn execute_allocates_mixed_list_on_heap() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["x".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("x")],
             ..ConstPool::default()
         },
         code: vec![
@@ -414,7 +431,7 @@ fn execute_reads_len_for_typed_list_and_short_string() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["abc".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("abc")],
             ..ConstPool::default()
         },
         code: vec![
@@ -445,7 +462,7 @@ fn execute_to_iter_materializes_map_entries_as_pairs() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2, 0, 1],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -534,7 +551,10 @@ fn execute_allocates_object_and_reads_string_field() {
     let function = Function {
         consts: ConstPool {
             ints: vec![42],
-            strings: vec!["User".to_string(), "score".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("User"),
+                alloc::sync::Arc::<str>::from("score"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -557,13 +577,10 @@ fn execute_allocates_object_and_reads_string_field() {
     let result = execute(&function).expect("execute");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    let cache = result
-        .state
-        .inline_caches
-        .index_cache_for_tests(4)
-        .expect("index cache");
-    assert_eq!(cache.fact.target_kind, PerfIndexTargetKind::Object);
-    assert_eq!(cache.object_field_slot, Some(0));
+    // No inline cache: a read whose target the heap can name outright is
+    // answered on the fast path, and the cache exists to spare the *cold* one.
+    // It used to be filled here because every object read went cold.
+    assert!(result.state.inline_caches.index_cache_for_tests(4).is_none());
 }
 
 #[test]
@@ -571,7 +588,7 @@ fn execute_allocates_typed_string_int_map_and_reads_string_key() {
     let function = Function {
         consts: ConstPool {
             ints: vec![42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -600,9 +617,9 @@ fn execute_allocates_typed_string_int_map_and_reads_string_key() {
         panic!("expected typed string-int map");
     };
     assert_eq!(values.get("answer"), Some(&42));
-    let cache = result.state.inline_caches.index_fact_for_tests(4).expect("index cache");
-    assert_eq!(cache.target_kind, PerfIndexTargetKind::Map);
-    assert_eq!(cache.value_kind, PerfValueKind::Int);
+    // As above: a map the heap names outright is read on the fast path, so
+    // nothing is cached for it.
+    assert!(result.state.inline_caches.index_fact_for_tests(4).is_none());
 }
 
 #[test]
@@ -610,7 +627,7 @@ fn execute_new_map_without_build_fact_clones_source_registers() {
     let function = Function {
         consts: ConstPool {
             heap_values: vec![ConstHeapValue::LongString(Arc::<str>::from("longer-than-seven"))],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -647,7 +664,7 @@ fn execute_new_map_build_fact_consumes_source_registers() {
     let function = Function {
         consts: ConstPool {
             heap_values: vec![ConstHeapValue::LongString(Arc::<str>::from("longer-than-seven"))],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -683,7 +700,7 @@ fn execute_writes_mixed_map_by_string_key() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -714,7 +731,7 @@ fn execute_updates_typed_string_int_map_without_materializing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 42],
-            strings: vec!["answer".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("answer")],
             ..ConstPool::default()
         },
         code: vec![
@@ -750,7 +767,11 @@ fn execute_materializes_typed_string_int_map_to_string_mixed_on_value_pollution(
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
-            strings: vec!["answer".to_string(), "label".to_string(), "ok".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("answer"),
+                alloc::sync::Arc::<str>::from("label"),
+                alloc::sync::Arc::<str>::from("ok"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -787,7 +808,11 @@ fn execute_adds_and_subtracts_typed_string_int_maps_without_runtime_entry_materi
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2, 3],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -841,7 +866,7 @@ fn execute_subtracts_string_key_from_typed_string_int_map_without_cloning_remove
     let function = Function {
         consts: ConstPool {
             ints: vec![1, 2],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -937,7 +962,7 @@ fn execute_pollutes_typed_int_list_by_string_write_without_reclassifying() {
     let function = Function {
         consts: ConstPool {
             ints: vec![7, 8, 1],
-            strings: vec!["nine".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("nine")],
             ..ConstPool::default()
         },
         code: vec![
@@ -974,7 +999,11 @@ fn execute_updates_typed_string_list_without_materializing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -1189,7 +1218,10 @@ fn execute_materializes_typed_string_list_on_non_string_write() {
     let function = Function {
         consts: ConstPool {
             ints: vec![0, 42],
-            strings: vec!["short".to_string(), "longer-than-seven".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("short"),
+                alloc::sync::Arc::<str>::from("longer-than-seven"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -1218,4 +1250,116 @@ fn execute_materializes_typed_string_list_on_non_string_write() {
     };
 
     assert_eq!(values[0], RuntimeVal::Int(42));
+}
+
+/// Auto-display looks up **one** method name, and the user-facing docs said
+/// three.
+///
+/// `LEARN.md` promised "implement `show`, `display`, or `to_string` and
+/// `println` will use it"; the VM hard-codes `"show"`
+/// (`try_runtime_display_show`), so the other two names did nothing — a reader
+/// who wrote `display` saw the default struct rendering and no error.
+///
+/// One name rather than three is the choice: a second spelling of one hook is
+/// what this codebase keeps removing, and `#[derive(Show)]` already generates
+/// `show`. This pins it so the docs and the lookup cannot drift apart again.
+#[test]
+fn auto_display_uses_show_and_only_show() {
+    let shown = execute_source(
+        "struct S { x: Int }\nimpl S { fn show(self) -> String { return \"via-show\"; } }\nreturn \"${S { x: 1 }}\";\n",
+    )
+    .expect("runs");
+    let display = crate::vm::display_runtime_value(&shown.returns[0], &shown.state.heap);
+    assert!(display.contains("via-show"), "{display}");
+
+    for name in ["display", "to_string", "str", "fmt"] {
+        let program = format!(
+            "struct S {{ x: Int }}\nimpl S {{ fn {name}(self) -> String {{ return \"via-{name}\"; }} }}\nreturn \"${{S {{ x: 1 }}}}\";\n"
+        );
+        let result = execute_source(&program).expect("runs");
+        let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+        assert!(
+            !display.contains(&format!("via-{name}")),
+            "`{name}` must not be an auto-display hook, or the docs have to say it is: {display}"
+        );
+        assert!(display.contains("S{x:1}"), "the default rendering: {display}");
+    }
+}
+
+/// Every arm's `return` is that arm's own, and returns from the function.
+///
+/// `emitted_return` — the "what follows is dead code" flag — was read
+/// *between* arms, so the first arm's `return` skipped the lowering of every
+/// later arm's body: the test for those arms was emitted with nothing behind
+/// it. `g(1)` therefore fell out of the match, off the end of a function
+/// declared `-> Int`, and answered nil. The decisive shape is the last one
+/// here: a `return` after the match still ran, so control had not stopped at
+/// the arm's `return` at all.
+#[test]
+fn every_match_arm_return_returns() {
+    let source = "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        1 => { return 8; }\n        _ => { return 9; }\n    }\n}\nreturn [g(0), g(1), g(2)];\n";
+    let result = execute_source(source).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[7,8,9]"
+    );
+
+    let after = "fn g(n: Int) -> Int {\n    match n {\n        0 => { return 7; }\n        _ => { return 9; }\n    }\n    return 99;\n}\nreturn [g(0), g(5)];\n";
+    let result = execute_source(after).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[7,9]"
+    );
+}
+
+/// A binding arm catches every value, nil included.
+///
+/// `lower_pattern_match` is shared with `if let`, where a binding pattern
+/// means "the value is not nil". A `match` arm means no such thing, so
+/// `match nil { x => 1 }` answered nil while `match nil { _ => 1 }` answered
+/// 1 — and the type checker called both of them total, which is what made the
+/// difference silent.
+#[test]
+fn a_binding_arm_catches_nil_like_the_wildcard_does() {
+    for arm in ["x", "_"] {
+        let source = format!("return match nil {{ {arm} => 1 }};\n");
+        let result = execute_source(&source).expect("runs");
+        assert_eq!(result.returns[0], RuntimeVal::Int(1), "arm `{arm}`");
+    }
+}
+
+/// A match with no catch-all still answers nil when nothing matches — the
+/// path that makes the checker type it `T?` rather than `T`.
+#[test]
+fn a_match_with_no_catch_all_falls_through_to_nil() {
+    let result = execute_source("return [match 5 { 1 => 10 2 => 20 }, match 2 { 1 => 10 2 => 20 }];\n").expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[nil,20]"
+    );
+}
+
+/// A `return` in one branch of a conditional expression is that branch's own.
+///
+/// `lower_conditional` never touched `emitted_return`, so a branch whose block
+/// returned left the "what follows is dead code" flag set: every statement
+/// after the conditional was dropped, and the function fell off its end.
+/// `if`/`else` as a statement, `try`/`catch` and `match` all save and restore
+/// the flag per branch; the conditional expression was the one that did not.
+#[test]
+fn a_return_in_one_conditional_branch_does_not_kill_the_code_after_it() {
+    let source = "fn f(n: Int) -> Int {\n    let a = if n > 0 { return 1; } else { 2 };\n    return a + 10;\n}\nreturn [f(5), f(-5)];\n";
+    let result = execute_source(source).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1,12]"
+    );
+
+    let ternary =
+        "fn f(n: Int) -> Int {\n    let a = n > 0 ? { return 1; } : 2;\n    return a + 10;\n}\nreturn [f(5), f(-5)];\n";
+    let result = execute_source(ternary).expect("runs");
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1,12]"
+    );
 }

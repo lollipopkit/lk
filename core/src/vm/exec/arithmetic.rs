@@ -1,11 +1,11 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
+use crate::util::value_map::value_map_new;
 use alloc::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
 use crate::vm::{Instr, Opcode};
 
 use super::Executor;
@@ -115,6 +115,59 @@ fn compare_string_values(opcode: Opcode, lhs: &str, rhs: &str) -> Result<bool> {
     })
 }
 
+/// The operator a program wrote, for an arithmetic opcode — `None` when the
+/// opcode is not one a source operator maps to.
+///
+/// These messages used to print the opcode's own name: a program that wrote `%`
+/// was told `ModInt expected Int or Float, got String and Int`. The opcode says
+/// which *fused* form the compiler picked; nothing in the source says `ModInt`,
+/// and the choice can change without the program changing.
+fn operator_symbol(opcode: Opcode) -> Option<&'static str> {
+    Some(match opcode {
+        Opcode::AddInt | Opcode::AddIntI | Opcode::AddFloat => "+",
+        Opcode::SubInt | Opcode::SubFloat => "-",
+        Opcode::MulInt | Opcode::MulIntI | Opcode::MulFloat => "*",
+        Opcode::DivInt | Opcode::DivFloat => "/",
+        Opcode::ModInt | Opcode::ModIntI => "%",
+        // Not an operator: `//` is a *comment* in LK. Both are fused forms of
+        // `math.floor(a / b)`, so that is what the program wrote.
+        Opcode::MidInt | Opcode::FloorDivInt => "math.floor",
+        // The comparisons had the same problem and never got the same fix:
+        // `1 < "a"` reported `CmpLtInt expected Int, Float, or String`, naming
+        // the compiler's typed guess. A program only ever writes the operator.
+        Opcode::CmpInt => "==",
+        Opcode::CmpNeInt => "!=",
+        Opcode::CmpLtInt => "<",
+        Opcode::CmpLeInt => "<=",
+        Opcode::CmpGtInt => ">",
+        Opcode::CmpGeInt => ">=",
+        _ => return None,
+    })
+}
+
+impl Executor {
+    /// "`%` expects Int or Float, got String and Int" — or, for an opcode with
+    /// no source spelling, the opcode, because then it is a compiler/executor
+    /// mismatch and the variant name is the useful one.
+    ///
+    /// A method rather than a free function because the operand *type* name
+    /// needs the heap (see [`Executor::value_type_name`]).
+    #[cold]
+    fn arith_operand_error(&self, opcode: Opcode, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
+        self.operand_error(opcode, "expects Int or Float", lhs, rhs)
+    }
+
+    /// The same, with the operation's own list of what it accepts.
+    #[cold]
+    fn operand_error(&self, opcode: Opcode, accepts: &str, lhs: &RuntimeVal, rhs: &RuntimeVal) -> anyhow::Error {
+        let (lhs, rhs) = (self.value_type_name(lhs), self.value_type_name(rhs));
+        match operator_symbol(opcode) {
+            Some(symbol) => anyhow::anyhow!("{symbol} {accepts}, got {lhs} and {rhs}"),
+            None => anyhow::anyhow!("{opcode:?} {accepts}, got {lhs} and {rhs}"),
+        }
+    }
+}
+
 impl Executor {
     #[cold]
     pub(super) fn dynamic_add(&mut self, instr: Instr) -> Result<()> {
@@ -150,15 +203,37 @@ impl Executor {
                 let list = self.add_list_values(lhs, rhs)?;
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(list)))
             }
+            // Two strings — the shape a loop that builds one is made of, and
+            // the shape that used to copy the accumulator *three times* per
+            // step: once for each side's `display_string`, once more into the
+            // `format!`, and once again into the `Arc`. Plus a fourth
+            // allocation the guard threw away, because asking "is this a
+            // string?" through `runtime_value_to_string` builds an `Arc` for a
+            // short one.
+            //
+            // Here it is one buffer of the exact size, filled once. The
+            // concatenation is still O(n) per step and so a loop is still
+            // quadratic — that is what a `String` is, and `join` is the answer
+            // to it.
+            //
+            // Measured, because the reasoning oversells it: interleaved
+            // min-of-nine on a 20k/40k/80k build gives 1.12x / 1.03x / 1.07x.
+            // Most of the time is the *allocator*, not the copying — ~70% of
+            // this loop is in libc — so removing two of three copies moves
+            // less than the count suggests. Making it linear needs a growable
+            // representation, which `HeapValue::String(Arc<str>)` is matched
+            // against in 125 places and mirrored in lkrt besides; that is a
+            // round of its own, not a line here.
+            _ if let Some(joined) = self.concat_string_operands(&lhs, &rhs) => self.runtime_value_from_string(joined),
             _ if self.runtime_value_to_string(&lhs)?.is_some() || self.runtime_value_to_string(&rhs)?.is_some() => {
                 let lhs = self.runtime_value_display_string(&lhs)?;
                 let rhs = self.runtime_value_display_string(&rhs)?;
                 self.runtime_value_from_string(Arc::<str>::from(format!("{lhs}{rhs}")))
             }
             _ => bail!(
-                "Add expected numbers or strings, got {:?} and {:?}",
-                lhs.kind(),
-                rhs.kind()
+                "Add expected numbers or strings, got {} and {}",
+                self.value_type_name(&lhs),
+                self.value_type_name(&rhs)
             ),
         };
         self.write(instr.a(), value)?;
@@ -206,15 +281,22 @@ impl Executor {
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ if self.runtime_value_is_map(&lhs)? => {
-                let key = self.runtime_map_key_from_value(&rhs)?;
-                let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
-                let map = typed_map_without_key(lhs, &key);
+                // A value that cannot be a key cannot be *in* the map, so
+                // removing it removes nothing. Same answer as `m.delete(k)`,
+                // which is the other spelling of this — and removal is a
+                // lookup-and-drop, not a key construction, which is the line
+                // `m[k]`/`m.set(k, v)`/`s.add(v)` stay on the other side of.
+                let lhs_map = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
+                let map = match self.runtime_map_key_from_value(&rhs) {
+                    Ok(key) => typed_map_without_key(lhs_map, &key),
+                    Err(_) => lhs_map.clone(),
+                };
                 RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ => bail!(
-                "Sub expected numbers or list/map lhs, got {:?} and {:?}",
-                lhs.kind(),
-                rhs.kind()
+                "Sub expected numbers or list/map lhs, got {} and {}",
+                self.value_type_name(&lhs),
+                self.value_type_name(&rhs)
             ),
         };
         self.write(instr.a(), value)?;
@@ -235,12 +317,7 @@ impl Executor {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs as f64, *rhs)),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs as f64)),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs)),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -252,28 +329,16 @@ impl Executor {
     pub(super) fn dynamic_div(&mut self, instr: Instr) -> Result<()> {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
-            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("DivInt divisor is zero"),
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs / rhs),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
-                if *rhs == 0.0 {
-                    bail!("DivInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs as f64 / *rhs)
-            }
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
-                if *rhs == 0 {
-                    bail!("DivInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs / *rhs as f64)
-            }
-            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("DivInt divisor is zero"),
+            // Every combination divides as `f64` — `/` yields a `Float` — so a
+            // zero divisor is an infinity or a NaN, both of which LK already
+            // has (`math.inf`, `math.nan`). This path used to raise for all
+            // four, with a message naming `DivInt` even when neither operand
+            // was one, *and* to divide two `Int`s as integers.
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs as f64),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 / *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs / *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs / *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -285,28 +350,14 @@ impl Executor {
     pub(super) fn dynamic_mod(&mut self, instr: Instr) -> Result<()> {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
         let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
-            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs % rhs),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
-                if *rhs == 0.0 {
-                    bail!("ModInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs as f64 % *rhs)
-            }
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
-                if *rhs == 0 {
-                    bail!("ModInt divisor is zero");
-                }
-                RuntimeVal::Float(*lhs % *rhs as f64)
-            }
-            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("ModInt divisor is zero"),
+            // As `dynamic_div`: only `Int % Int` has no answer.
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
+            // Wrapping: `i64::MIN % -1` panics with `%` (see `ModIntI`).
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.wrapping_rem(*rhs)),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 % *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs % *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => return Err(self.arith_operand_error(instr.opcode(), lhs, rhs)),
         };
         self.write_stack_index(dst, value);
         self.pc += 1;
@@ -314,12 +365,50 @@ impl Executor {
     }
 
     #[inline]
+    /// The float family's fast path, falling back to the dynamic form the way
+    /// the int family already does.
+    ///
+    /// The compiler picks `AddFloat` when it can see a `Float` operand, and it
+    /// does not check what the *other* one is: `"" + (1.0 + 2.0)` folds the
+    /// parenthesised half to a float constant and then adds a string to it. The
+    /// int twin has always dispatched — `AddInt` on a non-int pair calls
+    /// `dynamic_add` — so `"" + (1 + 2)` was fine and the float spelling of the
+    /// same program raised `register 3 expected Int or Float: got String`, at
+    /// run time, past a `lk check` that said nothing.
+    ///
+    /// Falling back rather than fixing the selection, because the selection is
+    /// a *guess about types* and this is the place that knows: the guard is
+    /// already here (it is what raised), so the cold arm costs nothing the
+    /// error did not.
     pub(super) fn float_binary(&mut self, instr: Instr, op: impl FnOnce(f64, f64) -> f64) -> Result<()> {
-        let lhs = self.read_number(instr.b())?;
-        let rhs = self.read_number(instr.c())?;
-        self.write(instr.a(), RuntimeVal::Float(op(lhs, rhs)))?;
+        let (dst, lhs_idx, rhs_idx) = self.stack_abc_indices(instr)?;
+        let pair = (
+            self.number_value(&self.state.stack[lhs_idx]).ok(),
+            self.number_value(&self.state.stack[rhs_idx]).ok(),
+        );
+        let (Some(lhs), Some(rhs)) = pair else {
+            return self.dynamic_float_fallback(instr);
+        };
+        self.state.stack[dst] = RuntimeVal::Float(op(lhs, rhs));
         self.pc += 1;
         Ok(())
+    }
+
+    /// What a float opcode means when its operands are not both numbers: the
+    /// same thing its int twin means, which is the dynamic operation.
+    #[cold]
+    fn dynamic_float_fallback(&mut self, instr: Instr) -> Result<()> {
+        match instr.opcode() {
+            Opcode::AddFloat => self.dynamic_add(instr),
+            Opcode::SubFloat => self.dynamic_sub(instr),
+            // `*` has no `dynamic_mul` of its own; the numeric form is what
+            // `MulInt` falls back to, and a non-numeric operand raises there
+            // with the same wording the interpreter gives everywhere else.
+            Opcode::MulFloat => self.dynamic_numeric_binary(instr, |l, r| l.wrapping_mul(r), |l, r| l * r),
+            Opcode::DivFloat => self.dynamic_div(instr),
+            Opcode::ModFloat => self.dynamic_mod(instr),
+            other => bail!("{other:?} is not a float arithmetic opcode"),
+        }
     }
 
     #[inline]
@@ -340,12 +429,7 @@ impl Executor {
                 if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
                     compare_string_values(instr.opcode(), &lhs, &rhs)?
                 } else {
-                    bail!(
-                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
-                        instr.opcode(),
-                        lhs.kind(),
-                        rhs.kind()
-                    )
+                    return Err(self.operand_error(instr.opcode(), "expected Int, Float, or String", lhs, rhs));
                 }
             }
         };
@@ -367,12 +451,7 @@ impl Executor {
                 if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
                     compare_string_values(opcode, &lhs, &rhs)
                 } else {
-                    bail!(
-                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
-                        opcode,
-                        lhs.kind(),
-                        rhs.kind()
-                    )
+                    Err(self.operand_error(opcode, "expected Int, Float, or String", lhs, rhs))
                 }
             }
         }
@@ -384,33 +463,10 @@ impl Executor {
         self.runtime_values_equal(&self.state.stack[lhs], &self.state.stack[rhs])
     }
 
-    fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {
-        Ok(match (lhs, rhs) {
-            (RuntimeVal::Nil, RuntimeVal::Nil) => true,
-            (RuntimeVal::Bool(lhs), RuntimeVal::Bool(rhs)) => lhs == rhs,
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs == rhs,
-            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => lhs == rhs,
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => *lhs as f64 == *rhs,
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => *lhs == *rhs as f64,
-            (RuntimeVal::Obj(lhs), RuntimeVal::Obj(rhs)) if lhs == rhs => true,
-            (RuntimeVal::Obj(lhs), RuntimeVal::Obj(rhs)) => {
-                let lhs = self
-                    .state
-                    .heap
-                    .get(*lhs)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", lhs.index()))?;
-                let rhs = self
-                    .state
-                    .heap
-                    .get(*rhs)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", rhs.index()))?;
-                self.heap_values_equal(lhs, rhs)?
-            }
-            _ => match (self.runtime_value_to_string(lhs)?, self.runtime_value_to_string(rhs)?) {
-                (Some(lhs), Some(rhs)) => lhs == rhs,
-                _ => false,
-            },
-        })
+    /// `==`. One implementation, shared with the container methods and living
+    /// with the value model — see [`crate::val::runtime_values_equal`].
+    pub(in crate::vm::exec) fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {
+        crate::val::runtime_values_equal(lhs, rhs, &self.state.heap)
     }
 
     fn runtime_value_to_list_snapshot(&self, value: &RuntimeVal) -> Result<Option<RuntimeListSnapshot>> {
@@ -833,7 +889,9 @@ impl Executor {
             RuntimeListSnapshot::Int(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Int(rhs[rhs_index])),
             RuntimeListSnapshot::Float(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Float(rhs[rhs_index])),
             RuntimeListSnapshot::Bool(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Bool(rhs[rhs_index])),
-            RuntimeListSnapshot::String(rhs) => self.runtime_value_equals_string(&lhs, &rhs[rhs_index]),
+            RuntimeListSnapshot::String(rhs) => {
+                crate::val::runtime_value_equals_str(&lhs, &rhs[rhs_index], &self.state.heap)
+            }
         }
     }
 
@@ -844,9 +902,39 @@ impl Executor {
         rhs_index: usize,
     ) -> Result<bool> {
         match rhs {
-            RuntimeListSnapshot::Mixed(rhs) => self.runtime_value_equals_string(&rhs[rhs_index], lhs),
+            RuntimeListSnapshot::Mixed(rhs) => {
+                crate::val::runtime_value_equals_str(&rhs[rhs_index], lhs, &self.state.heap)
+            }
             RuntimeListSnapshot::String(rhs) => Ok(lhs == &rhs[rhs_index]),
             _ => Ok(false),
+        }
+    }
+
+    /// Both operands as `&str` when both *are* strings, joined into one
+    /// exactly-sized buffer. `None` when either is not a string, which sends the
+    /// caller to the general display-concatenation path.
+    ///
+    /// Borrowed rather than cloned: a heap string reached through `Arc::clone`
+    /// costs a refcount, and a short one costs an allocation that is then thrown
+    /// away. Neither is needed to read a string's bytes.
+    fn concat_string_operands(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Option<Arc<str>> {
+        let (left, right) = (self.borrowed_str(lhs)?, self.borrowed_str(rhs)?);
+        let mut joined = String::with_capacity(left.len() + right.len());
+        joined.push_str(left);
+        joined.push_str(right);
+        Some(Arc::from(joined))
+    }
+
+    /// A string operand's bytes without copying them: the inline short form
+    /// borrows from the value, the heap form from the slot.
+    fn borrowed_str<'a>(&'a self, value: &'a RuntimeVal) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match self.state.heap.get(*handle)? {
+                HeapValue::String(value) => Some(value),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -866,154 +954,6 @@ impl Executor {
         }
     }
 
-    fn heap_values_equal(&self, lhs: &HeapValue, rhs: &HeapValue) -> Result<bool> {
-        Ok(match (lhs, rhs) {
-            (HeapValue::String(lhs), HeapValue::String(rhs)) => lhs == rhs,
-            (HeapValue::Bytes(lhs), HeapValue::Bytes(rhs)) => lhs == rhs,
-            (HeapValue::List(lhs), HeapValue::List(rhs)) => self.typed_lists_equal(lhs, rhs)?,
-            (HeapValue::Map(lhs), HeapValue::Map(rhs)) => self.typed_maps_equal(lhs, rhs)?,
-            (HeapValue::Set(lhs), HeapValue::Set(rhs)) => runtime_sets_equal(lhs, rhs),
-            _ => false,
-        })
-    }
-
-    fn typed_lists_equal(&self, lhs: &TypedList, rhs: &TypedList) -> Result<bool> {
-        if lhs.len() != rhs.len() {
-            return Ok(false);
-        }
-        match (lhs, rhs) {
-            (TypedList::Int(lhs), TypedList::Int(rhs)) => return Ok(lhs == rhs),
-            (TypedList::Float(lhs), TypedList::Float(rhs)) => return Ok(lhs == rhs),
-            (TypedList::Bool(lhs), TypedList::Bool(rhs)) => return Ok(lhs == rhs),
-            (TypedList::String(lhs), TypedList::String(rhs)) => return Ok(lhs == rhs),
-            _ => {}
-        }
-        for index in 0..lhs.len() {
-            if !self.typed_list_items_equal(lhs, index, rhs, index)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    fn typed_list_items_equal(
-        &self,
-        lhs: &TypedList,
-        lhs_index: usize,
-        rhs: &TypedList,
-        rhs_index: usize,
-    ) -> Result<bool> {
-        match (lhs, rhs) {
-            (TypedList::Mixed(lhs), TypedList::Mixed(rhs)) => {
-                self.runtime_values_equal(&lhs[lhs_index], &rhs[rhs_index])
-            }
-            (TypedList::Mixed(lhs), TypedList::String(rhs)) => {
-                self.runtime_value_equals_string(&lhs[lhs_index], &rhs[rhs_index])
-            }
-            (TypedList::String(lhs), TypedList::Mixed(rhs)) => {
-                self.runtime_value_equals_string(&rhs[rhs_index], &lhs[lhs_index])
-            }
-            (TypedList::Int(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Int(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::Float(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Float(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::Bool(lhs), _) => {
-                self.typed_list_runtime_item_equal(RuntimeVal::Bool(lhs[lhs_index]), rhs, rhs_index)
-            }
-            (TypedList::String(lhs), _) => self.typed_list_string_item_equal(&lhs[lhs_index], rhs, rhs_index),
-            (TypedList::Mixed(lhs), _) => self.typed_list_runtime_item_equal(lhs[lhs_index], rhs, rhs_index),
-        }
-    }
-
-    fn typed_list_runtime_item_equal(&self, lhs: RuntimeVal, rhs: &TypedList, rhs_index: usize) -> Result<bool> {
-        match rhs {
-            TypedList::Mixed(rhs) => self.runtime_values_equal(&lhs, &rhs[rhs_index]),
-            TypedList::Int(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Int(rhs[rhs_index])),
-            TypedList::Float(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Float(rhs[rhs_index])),
-            TypedList::Bool(rhs) => self.runtime_values_equal(&lhs, &RuntimeVal::Bool(rhs[rhs_index])),
-            TypedList::String(rhs) => self.runtime_value_equals_string(&lhs, &rhs[rhs_index]),
-        }
-    }
-
-    fn typed_list_string_item_equal(&self, lhs: &Arc<str>, rhs: &TypedList, rhs_index: usize) -> Result<bool> {
-        match rhs {
-            TypedList::Mixed(rhs) => self.runtime_value_equals_string(&rhs[rhs_index], lhs),
-            TypedList::String(rhs) => Ok(lhs == &rhs[rhs_index]),
-            _ => Ok(false),
-        }
-    }
-
-    fn runtime_value_equals_string(&self, value: &RuntimeVal, expected: &str) -> Result<bool> {
-        Ok(match value {
-            RuntimeVal::ShortStr(value) => value.as_str() == expected,
-            RuntimeVal::Obj(handle) => matches!(
-                self.state
-                    .heap
-                    .get(*handle)
-                    .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", handle.index()))?,
-                HeapValue::String(value) if value.as_ref() == expected
-            ),
-            _ => false,
-        })
-    }
-
-    fn typed_maps_equal(&self, lhs: &TypedMap, rhs: &TypedMap) -> Result<bool> {
-        if lhs.len() != rhs.len() {
-            return Ok(false);
-        }
-        match lhs {
-            TypedMap::Mixed(entries) => {
-                for (key, value) in entries {
-                    if !self.typed_map_value_equal(rhs, key, value)? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringMixed(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, value)? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringInt(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Int(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringFloat(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Float(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-            TypedMap::StringBool(entries) => {
-                for (key, value) in entries {
-                    let key = RuntimeMapKey::String(key.clone());
-                    if !self.typed_map_value_equal(rhs, &key, &RuntimeVal::Bool(*value))? {
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    fn typed_map_value_equal(&self, rhs: &TypedMap, key: &RuntimeMapKey, lhs_value: &RuntimeVal) -> Result<bool> {
-        let Some(rhs_value) = rhs.get(key) else {
-            return Ok(false);
-        };
-        self.runtime_values_equal(lhs_value, &rhs_value)
-    }
-
     fn runtime_value_to_typed_map(&self, value: &RuntimeVal) -> Result<Option<&TypedMap>> {
         let RuntimeVal::Obj(handle) = value else {
             return Ok(None);
@@ -1023,10 +963,6 @@ impl Executor {
         };
         Ok(Some(map))
     }
-}
-
-fn runtime_sets_equal(lhs: &RuntimeSet, rhs: &RuntimeSet) -> bool {
-    lhs.len() == rhs.len() && lhs.entries().all(|key| rhs.contains(key))
 }
 
 fn merge_typed_maps(lhs: &TypedMap, rhs: &TypedMap) -> TypedMap {
@@ -1052,22 +988,22 @@ fn for_each_typed_map_entry(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey,
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), *value);
+                visit(RuntimeMapKey::from_shared(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Int(*value));
             }
         }
         TypedMap::StringFloat(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Float(*value));
             }
         }
         TypedMap::StringBool(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value));
+                visit(RuntimeMapKey::from_shared(key.clone()), RuntimeVal::Bool(*value));
             }
         }
     }
@@ -1082,22 +1018,22 @@ fn for_each_typed_map_key(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey)) 
         }
         TypedMap::StringMixed(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringInt(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringFloat(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
         TypedMap::StringBool(entries) => {
             for key in entries.keys() {
-                visit(RuntimeMapKey::String(key.clone()));
+                visit(RuntimeMapKey::from_shared(key.clone()));
             }
         }
     }
@@ -1110,7 +1046,7 @@ fn typed_map_without_key(map: &TypedMap, removed_key: &RuntimeMapKey) -> TypedMa
 fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !replaced_keys.contains(key) {
                     out.insert(key.clone(), *value);
@@ -1119,7 +1055,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -1128,7 +1064,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -1137,7 +1073,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -1146,7 +1082,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
                     out.insert(key.clone(), *value);
@@ -1160,7 +1096,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !runtime_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1169,7 +1105,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1178,7 +1114,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1187,7 +1123,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1196,7 +1132,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);

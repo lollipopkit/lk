@@ -6,7 +6,7 @@ use super::*;
 /// `v` itself, a `raise`/message raise binds the message string, and **any other
 /// runtime error** also binds its message. That last case is not an extra: the
 /// parse-time desugar ran the body under `pcall`, which catches every `Err`, so
-/// `try { 1 / 0 } catch e` has always been caught even though `DivInt divisor is
+/// `try { 1 % 0 } catch e` has always been caught even though `ModInt divisor is
 /// zero` is a plain `bail!` and not a raise at all.
 enum RaiseKind {
     Message(alloc::sync::Arc<str>),
@@ -152,7 +152,7 @@ impl Executor {
         }
         let saved_top = state.stack_top();
         self.state = state;
-        self.captures = captures;
+        self.captures = Some(captures);
         self.shared_module = shared_module;
         self.reset_entry_frame(function.register_count);
         let arg_count = match seed_args(&mut self) {
@@ -258,6 +258,7 @@ impl Executor {
             && !self.type_scope.is_same(&module.type_scope)
         {
             self.type_scope = module.type_scope.clone();
+            self.struct_decls = module.type_info.structs.clone();
         }
         let base_frame_depth = self.frames.len();
         self.current_function_index = function_index;
@@ -327,9 +328,16 @@ impl Executor {
         base_frame_depth: usize,
     ) -> Result<u32> {
         let mut errored_function = errored_function;
+        // A panic is not catchable, on any host. Checked before the handler
+        // stack rather than inside the classification below, so that both the
+        // same-frame case here and the unwinding loop underneath get it from
+        // one place.
+        if error.downcast_ref::<super::handler::LkPanic>().is_some() {
+            return Err(error);
+        }
         // First: a handler installed in the frame that actually faulted. Nothing
         // is popped in that case, so the loop below would never see it — this is
-        // the `try { 1 / 0 } catch e` shape, where the error is a plain `bail!`
+        // the `try { 1 % 0 } catch e` shape, where the error is a plain `bail!`
         // from the arithmetic opcode rather than a raise.
         if let Some(index) = self
             .handler_stack

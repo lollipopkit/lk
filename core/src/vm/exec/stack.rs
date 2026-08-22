@@ -1,17 +1,11 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use core::ops::Range;
 
 use anyhow::{Result, bail};
 
-use alloc::sync::Arc;
-
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    val::{RuntimeVal, TypedList},
     vm::CallWindow,
 };
-
-use crate::vm::analysis::record_register_write_known_enabled;
 
 use super::{Executor, ReturnValues};
 
@@ -44,9 +38,6 @@ impl Executor {
     #[inline]
     pub(super) fn write_stack_index(&mut self, index: usize, value: RuntimeVal) {
         self.state.stack[index] = value;
-        if self.collect_metrics {
-            record_register_write_known_enabled();
-        }
     }
 
     #[inline]
@@ -130,7 +121,7 @@ impl Executor {
 
     pub(super) fn read_register_list(&self, base: u8, count: u8) -> Result<TypedList> {
         let range = self.register_range(base, count, "register range")?;
-        Ok(typed_list_from_runtime_slots(
+        Ok(TypedList::from_runtime_values(
             &self.state.stack[range],
             &self.state.heap,
         ))
@@ -138,10 +129,12 @@ impl Executor {
 
     pub(super) fn take_register_list(&mut self, base: u8, count: u8) -> Result<TypedList> {
         let range = self.register_range(base, count, "register range")?;
-        Ok(take_typed_list_from_runtime_slots(
-            &mut self.state.stack[range],
-            &self.state.heap,
-        ))
+        // Building and clearing are separate steps: the narrowing rule lives
+        // on `TypedList`, and emptying the registers afterwards is this
+        // caller's business, not the list constructor's.
+        let list = TypedList::from_runtime_values(&self.state.stack[range.clone()], &self.state.heap);
+        self.state.stack[range].fill(RuntimeVal::Nil);
+        Ok(list)
     }
 
     pub(super) fn take_return_values(&mut self, base: u8, count: u8) -> Result<ReturnValues> {
@@ -159,6 +152,17 @@ impl Executor {
         Ok(range_start..range_start + count)
     }
 
+    /// Deliver a returned value into the caller's result window.
+    ///
+    /// One pass, not two: a callee that returns fewer values than the window
+    /// asks for leaves the rest nil, which is what a separate `fill` used to
+    /// provide — at the price of writing every slot twice on the overwhelmingly
+    /// common `ret_count == 1` path, which is every ordinary call.
+    ///
+    /// Not `#[inline]`: measured, inlining these two into `finish_return` cost
+    /// the empty-call benchmark 29ms → 50-90ms. Same lesson as the `#[cold]` on
+    /// `call_direct_function` — growing the code the dispatch loop has to hold
+    /// beats any instruction saved.
     pub(super) fn write_returns(
         &mut self,
         window: CallWindow,
@@ -170,17 +174,25 @@ impl Executor {
             bail!("return range {}..{} out of bounds", start, start + count);
         }
         let range_start = self.frame_base + start;
-        let range_end = range_start + count;
-        self.state.stack[range_start..range_end].fill(RuntimeVal::Nil);
-        for (slot, value) in self.state.stack[range_start..range_end].iter_mut().zip(values) {
-            *slot = value;
+        let mut values = values.into_iter();
+        for slot in &mut self.state.stack[range_start..range_start + count] {
+            *slot = values.next().unwrap_or(RuntimeVal::Nil);
         }
         Ok(())
     }
 
+    /// Drop the argument registers of a completed call, so the values they held
+    /// stop being GC roots.
+    ///
+    /// A zero-argument call has nothing to clear, and that is the shape the
+    /// call benchmark is made of; the bounds check and the empty `fill` were
+    /// its whole cost.
     pub(super) fn clear_call_window_temps(&mut self, window: CallWindow, named_count: u16) -> Result<()> {
-        let start = window.arg_base().as_usize();
         let count = window.arg_count as usize + named_count as usize * 2;
+        if count == 0 {
+            return Ok(());
+        }
+        let start = window.arg_base().as_usize();
         if start + count > self.register_count as usize {
             bail!("call temp range {}..{} out of bounds", start, start + count);
         }
@@ -189,154 +201,4 @@ impl Executor {
         self.state.stack[range_start..range_end].fill(RuntimeVal::Nil);
         Ok(())
     }
-}
-
-fn typed_list_from_runtime_slots(values: &[RuntimeVal], heap: &HeapStore) -> TypedList {
-    match runtime_slot_list_shape(values, heap) {
-        RuntimeSlotListShape::Mixed => {
-            let mut out = Vec::with_capacity(values.len());
-            out.extend_from_slice(values);
-            TypedList::Mixed(out)
-        }
-        RuntimeSlotListShape::Int => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let RuntimeVal::Int(value) = value else {
-                    unreachable!("shape scan only returns Int for int slots");
-                };
-                out.push(*value);
-            }
-            TypedList::Int(out)
-        }
-        RuntimeSlotListShape::Float => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let RuntimeVal::Float(value) = value else {
-                    unreachable!("shape scan only returns Float for float slots");
-                };
-                out.push(*value);
-            }
-            TypedList::Float(out)
-        }
-        RuntimeSlotListShape::Bool => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let RuntimeVal::Bool(value) = value else {
-                    unreachable!("shape scan only returns Bool for bool slots");
-                };
-                out.push(*value);
-            }
-            TypedList::Bool(out)
-        }
-        RuntimeSlotListShape::String => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                match value {
-                    RuntimeVal::ShortStr(value) => out.push(Arc::<str>::from(value.as_str())),
-                    RuntimeVal::Obj(handle) => match heap.get(*handle) {
-                        Some(HeapValue::String(value)) => out.push(Arc::clone(value)),
-                        _ => unreachable!("shape scan only returns String for string slots"),
-                    },
-                    _ => unreachable!("shape scan only returns String for string slots"),
-                }
-            }
-            TypedList::String(out)
-        }
-    }
-}
-
-fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStore) -> TypedList {
-    match runtime_slot_list_shape(values, heap) {
-        RuntimeSlotListShape::Mixed => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                out.push(core::mem::take(value));
-            }
-            TypedList::Mixed(out)
-        }
-        RuntimeSlotListShape::Int => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let value = match core::mem::take(value) {
-                    RuntimeVal::Int(value) => value,
-                    _ => unreachable!("shape scan only returns Int for int slots"),
-                };
-                out.push(value);
-            }
-            TypedList::Int(out)
-        }
-        RuntimeSlotListShape::Float => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let value = match core::mem::take(value) {
-                    RuntimeVal::Float(value) => value,
-                    _ => unreachable!("shape scan only returns Float for float slots"),
-                };
-                out.push(value);
-            }
-            TypedList::Float(out)
-        }
-        RuntimeSlotListShape::Bool => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let value = match core::mem::take(value) {
-                    RuntimeVal::Bool(value) => value,
-                    _ => unreachable!("shape scan only returns Bool for bool slots"),
-                };
-                out.push(value);
-            }
-            TypedList::Bool(out)
-        }
-        RuntimeSlotListShape::String => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                let value = match core::mem::take(value) {
-                    RuntimeVal::ShortStr(value) => Arc::<str>::from(value.as_str()),
-                    RuntimeVal::Obj(handle) => match heap.get(handle) {
-                        Some(HeapValue::String(value)) => Arc::clone(value),
-                        _ => unreachable!("shape scan only returns String for string slots"),
-                    },
-                    _ => unreachable!("shape scan only returns String for string slots"),
-                };
-                out.push(value);
-            }
-            TypedList::String(out)
-        }
-    }
-}
-
-enum RuntimeSlotListShape {
-    Mixed,
-    Int,
-    Float,
-    Bool,
-    String,
-}
-
-fn runtime_slot_list_shape(values: &[RuntimeVal], heap: &HeapStore) -> RuntimeSlotListShape {
-    if values.is_empty() {
-        return RuntimeSlotListShape::Mixed;
-    }
-    let mut shape: Option<RuntimeSlotListShape> = None;
-    for value in values {
-        let next = match value {
-            RuntimeVal::Int(_) => RuntimeSlotListShape::Int,
-            RuntimeVal::Float(_) => RuntimeSlotListShape::Float,
-            RuntimeVal::Bool(_) => RuntimeSlotListShape::Bool,
-            RuntimeVal::ShortStr(_) => RuntimeSlotListShape::String,
-            RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::String(_))) => {
-                RuntimeSlotListShape::String
-            }
-            _ => return RuntimeSlotListShape::Mixed,
-        };
-        match (&shape, next) {
-            (None, next) => shape = Some(next),
-            (Some(RuntimeSlotListShape::Int), RuntimeSlotListShape::Int)
-            | (Some(RuntimeSlotListShape::Float), RuntimeSlotListShape::Float)
-            | (Some(RuntimeSlotListShape::Bool), RuntimeSlotListShape::Bool)
-            | (Some(RuntimeSlotListShape::String), RuntimeSlotListShape::String) => {}
-            _ => return RuntimeSlotListShape::Mixed,
-        }
-    }
-    shape.unwrap_or(RuntimeSlotListShape::Mixed)
 }

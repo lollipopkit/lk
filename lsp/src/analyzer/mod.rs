@@ -15,7 +15,7 @@ use lk_core::{
     token,
     token::{Span, Tokenizer},
     typ,
-    typ::TypeChecker,
+    typ::{ObservedBinding, TypeChecker},
     val,
 };
 use lk_core::{stmt::NamedParamDecl, util::fast_map::FastHashMap};
@@ -60,9 +60,89 @@ pub(crate) struct TokenCacheEntry {
     project_dependencies: Arc<Vec<PathBuf>>,
     project_dependency_fingerprint: macro_system::ProcMacroDependencyFingerprint,
     named_param_decls: OnceCell<Arc<HashMap<String, Vec<NamedParamDecl>>>>,
+    document_types: OnceCell<Arc<DocumentTypes>>,
     program_expansion: OnceCell<CachedProgramExpansion>,
     program_ast: OnceCell<Arc<Program>>,
     expr_ast: OnceCell<Arc<Expr>>,
+}
+
+/// A type as the reader should see it, or `None` when there is nothing to say.
+///
+/// The checker's unresolved type variables are internal numbering — `'T0`,
+/// `'T14`. Showing them is worse than showing nothing: `let double : ('T0) -> Int`
+/// asks the reader to decode a solver detail, and two unrelated bindings can
+/// even display the *same* `'T14` because the variable is shared, which reads as
+/// a relationship that is not there.
+///
+/// So a variable renders as `_` — `(_) -> Int` still says the return type — and
+/// a type that is nothing *but* a variable produces no hint at all.
+pub(crate) fn readable_type(ty: &val::Type) -> Option<String> {
+    if matches!(ty, val::Type::Variable(_)) {
+        return None;
+    }
+    let rendered = ty.display();
+    if !rendered.contains('\'') {
+        return Some(rendered);
+    }
+    // `Type::display` writes a variable as `'name`, and no other type spelling
+    // contains an apostrophe.
+    //
+    // The substitute is `_`, which is now also how `Type::Unknown` — the
+    // read-only container view, `List<_>` — is written. Deliberately the same:
+    // a hint is read, not parsed, and both say the one thing the reader needs,
+    // that nothing here pins this type. Dropping the hint instead was tried
+    // (2026-08-06) and is worse — `test_hints_never_show_solver_type_variables`
+    // pins the case it loses, a lambda whose parameter is open and whose return
+    // is known (`(_) -> Int`), which is most of what these hints are for.
+    static TYPE_VARIABLE: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"'[A-Za-z_][A-Za-z0-9_]*").expect("valid regex"));
+    Some(TYPE_VARIABLE.replace_all(&rendered, "_").into_owned())
+}
+
+/// What one program-wide type check yields, cached per document revision.
+#[derive(Debug, Default)]
+pub(crate) struct DocumentTypes {
+    /// Every binding, with the type it was bound to and where it was written.
+    pub(crate) bindings: Vec<ObservedBinding>,
+    /// Each top-level function's inferred return type, by name.
+    pub(crate) function_returns: HashMap<String, val::Type>,
+    pub(crate) errors: Vec<RecordedTypeError>,
+}
+
+/// A type error, kept in a form that outlives the check that produced it.
+///
+/// `anyhow::Error` is not `Clone`, so it cannot live in a shared cache; the
+/// parts a diagnostic is built from can. `TypeError` carries the expression and
+/// the expected/actual pair that decide where the squiggle goes.
+#[derive(Debug, Clone)]
+pub(crate) struct RecordedTypeError {
+    pub(crate) typed: Option<typ::TypeError>,
+    /// The span of an error raised as a `ParseError` rather than a `TypeError`.
+    ///
+    /// A `let` whose annotation disagrees with its value is reported that way,
+    /// and it already carries the statement's position — the diagnostic just
+    /// never read it, and fell back to highlighting the first line of the file.
+    pub(crate) span: Option<Span>,
+    pub(crate) message: String,
+}
+
+impl RecordedTypeError {
+    fn from_error(error: &anyhow::Error) -> Self {
+        let typed = error.downcast_ref::<typ::TypeError>().cloned();
+        let span = typed
+            .as_ref()
+            .and_then(|type_error| type_error.span.clone())
+            .or_else(|| {
+                error
+                    .downcast_ref::<lk_core::token::ParseError>()
+                    .and_then(|parse_error| parse_error.span.clone())
+            });
+        Self {
+            typed,
+            span,
+            message: error.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +167,7 @@ impl TokenCacheEntry {
             project_dependencies: Arc::new(project_dependencies),
             project_dependency_fingerprint,
             named_param_decls: OnceCell::new(),
+            document_types: OnceCell::new(),
             program_expansion: OnceCell::new(),
             program_ast: OnceCell::new(),
             expr_ast: OnceCell::new(),
@@ -102,6 +183,43 @@ impl TokenCacheEntry {
         self.program_ast
             .get_or_try_init(|| parse_program_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
+    }
+
+    /// Everything one program-wide type check produces, for this revision.
+    ///
+    /// One check per document, shared by every feature that wants a type —
+    /// diagnostics, inlay hints, hover, completion. They used to run their own:
+    /// the same file was checked twice per analysis, which is the thing
+    /// `analyze` was cleaned up for one commit before this cache existed.
+    ///
+    /// `type_check_collecting` rather than `type_check`, so one bad statement
+    /// takes neither the diagnostics nor the types of the rest of the file.
+    fn document_types(&self, content: &str) -> Arc<DocumentTypes> {
+        self.document_types
+            .get_or_init(|| {
+                let Ok(program) = self.parse_program_arc(content) else {
+                    return Arc::new(DocumentTypes::default());
+                };
+                let mut checker = TypeChecker::new_strict();
+                checker.observe_bindings();
+                // The same seeding `lk check` does. Without it the editor knows
+                // strictly less about the file than the compiler does: every
+                // name from `use { f } from "lib";` reads as `Any`.
+                if let Some(base_dir) = self.parse_options.base_dir.as_deref() {
+                    typ::seed_imported_signatures(&program, base_dir, &mut checker);
+                }
+                let errors = program
+                    .type_check_collecting(&mut checker)
+                    .iter()
+                    .map(RecordedTypeError::from_error)
+                    .collect();
+                Arc::new(DocumentTypes {
+                    bindings: checker.take_observations(),
+                    function_returns: checker.function_return_types().into_iter().collect(),
+                    errors,
+                })
+            })
+            .clone()
     }
 
     fn parse_program_expansion_arc(

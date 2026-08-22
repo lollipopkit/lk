@@ -198,6 +198,7 @@ fn record_builtin_show_ast_origin(
 
 fn builtin_show_trait() -> Stmt {
     Stmt::Trait {
+        default_methods: Vec::new(),
         name: BUILTIN_SHOW_TRAIT.to_string(),
         methods: vec![(
             "show".to_string(),
@@ -212,7 +213,7 @@ fn builtin_show_trait() -> Stmt {
 
 fn derive_show_impl(name: &str, fields: &[(String, Option<Type>)]) -> Stmt {
     Stmt::Impl {
-        trait_name: BUILTIN_SHOW_TRAIT.to_string(),
+        trait_name: Some(BUILTIN_SHOW_TRAIT.to_string()),
         target_type: Type::Named(name.to_string()),
         methods: vec![Stmt::Function {
             name: "show".to_string(),

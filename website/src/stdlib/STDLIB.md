@@ -62,24 +62,36 @@ String meta-methods — no import needed, call via `value.method()`.
 | Method | Description |
 |--------|-------------|
 | `len()` | Character count |
-| `lower()` | Lowercase |
-| `upper()` | Uppercase |
-| `trim()` | Trim whitespace |
+| `is_empty()` | Whether it has no characters |
+| `lower()` | Lowercased |
+| `upper()` | Uppercased |
+| `trim()` | Without leading or trailing whitespace |
+| `reverse()` | Characters in reverse order |
+| `repeat(count)` | Repeated `count` times |
 | `starts_with(prefix)` | Prefix check |
 | `ends_with(suffix)` | Suffix check |
-| `contains(sub)` | Contains substring |
-| `replace(old, new)` | Replace substring |
-| `substring(start[, end])` | Extract substring |
-| `split(sep)` | Split to list |
-| `join(list)` | Join list with this string |
-| `reverse()` | Reverse string |
-| `repeat(n)` | Repeat n times |
-| `chars()` | Split to character list |
-| `char_at(index)` | Character at index |
-| `byte_at(index)` | Byte at index |
-| `find(sub)` | Find substring position, nil if not found |
-| `is_empty()` | Is empty |
-| `format(args...)` | Format string |
+| `contains(needle)` | Substring check |
+| `count(needle)` | How many non-overlapping occurrences |
+| `index_of(needle)` | Character position of the first occurrence, or nil |
+| `slice(start, end)` | Characters in `[start, end)`, clamped; `end` optional |
+| `get(index)` | Character at `index`, or nil; negative counts from the end |
+| `first()` | First character, or nil |
+| `last()` | Last character, or nil |
+| `take(count)` | The first `count` characters |
+| `skip(count)` | Everything after the first `count` characters |
+| `replace(from, to, all)` | Occurrences replaced; `all: false` replaces only the first |
+| `split(delimiter)` | Split to a list |
+| `chars()` | One string per character |
+| `bytes()` | The UTF-8 bytes |
+| `byte_at(index)` | Byte at a *byte* offset, or nil |
+| `capitalize()` | First character upper, the rest lower |
+| `title()` | First character of each word upper, the rest lower |
+| `strip(chars)` | Without leading/trailing characters that are in `chars` |
+| `strip_prefix(prefix)` | Without `prefix`, or nil |
+| `strip_suffix(suffix)` | Without `suffix`, or nil |
+| `pad_left(width, fill)` | Widened to `width` characters on the left; `fill` optional |
+| `pad_right(width, fill)` | Widened to `width` characters on the right; `fill` optional |
+| `format(values...)` | The receiver as a template: each `{}` takes the next value |
 
 ```lk
 "Hello, {}!".format("LK")    // "Hello, LK!"
@@ -93,17 +105,25 @@ Binary data operations.
 
 | Function | Description |
 |----------|-------------|
-| `from_list(list)` | Create from integer list |
-| `from_string(str)` | Create from UTF-8 string |
+| `from_list(list)` | Create from an integer list — the method spelling is `list.to_bytes()` |
+| `from_string(str)` | Create from a UTF-8 string — the method spelling is `str.bytes()` |
 | `len(bytes)` | Byte length |
 | `is_empty(bytes)` | Is empty |
-| `get(bytes, index)` | Byte at index |
-| `slice(bytes, start[, end])` | Slice |
-| `to_list(bytes)` | Convert to integer list |
-| `to_string_utf8(bytes)` | Convert to UTF-8 string |
-| `to_string_lossy(bytes)` | Convert to UTF-8 (replace invalid bytes) |
+| `get(bytes, index)` | Byte at index, or nil; negative counts from the end |
+| `first(bytes)` | First byte, or nil |
+| `last(bytes)` | Last byte, or nil |
+| `contains(bytes, byte)` | Whether the byte occurs |
+| `index_of(bytes, byte)` | Position of the first occurrence, or nil |
+| `sum(bytes)` | Sum of the bytes |
+| `min(bytes)` | Smallest byte, or nil |
+| `max(bytes)` | Largest byte, or nil |
+| `take(bytes, count)` | The first `count` bytes |
+| `skip(bytes, count)` | Everything after the first `count` bytes |
+| `slice(bytes, start, end)` | Bytes in `[start, end)`, clamped; `end` optional |
+| `to_list(bytes)` | Convert to an integer list |
+| `to_string_utf8(bytes)` | Decode as UTF-8; raises when invalid |
+| `to_string_lossy(bytes)` | Decode as UTF-8, replacing invalid sequences |
 | `concat(a, b)` | Concatenate |
-| `eq(a, b)` | Equality check |
 
 ```lk
 use bytes;
@@ -477,18 +497,18 @@ Regular expressions.
 
 | Function | Description |
 |----------|-------------|
-| `is_match(pattern, text)` | Match check |
-| `find(pattern, text)` | Find first match |
-| `find_all(pattern, text)` | Find all matches |
-| `captures(pattern, text)` | Capture groups |
-| `replace(pattern, text, replacement)` | Replace |
-| `split(pattern, text)` | Split by regex |
+| `is_match(text, pattern)` | Match check |
+| `find(text, pattern)` | Find first match |
+| `find_all(text, pattern)` | Find all matches |
+| `captures(text, pattern)` | Capture groups |
+| `replace(text, pattern, replacement)` | Replace |
+| `split(text, pattern)` | Split by regex |
 
 ```lk
 use regex;
-regex.is_match(r"\d+", "abc123")     // true
-regex.find(r"\d+", "abc123")          // "123"
-regex.split(r"[,;]", "a,b;c")         // ["a", "b", "c"]
+regex.is_match("abc123", r"\d+")     // true
+regex.find("abc123", r"\d+")          // "123"
+regex.split("a,b;c", r"[,;]")         // ["a", "b", "c"]
 ```
 
 ## random

@@ -60,6 +60,28 @@ See `docs/concurrency.md` and `docs/semantics.md` for the full semantics.
 
 Details: [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
+## On bare metal
+
+LK compiles to a kernel. `bare-metal-x86/` boots on QEMU with no OS underneath
+and no `std` in the graph: long mode, interrupts, preemptive tasks whose
+*scheduling policy is LK*, PCI, a framebuffer with a font this repository wrote,
+PS/2 keyboard and mouse, an ATA disk, a read-only tar filesystem, a free-list
+allocator, a window manager with dragging and stacking — and ring 3, with
+checked syscalls and an address space per user task.
+
+The drivers are LK modules (`drivers/*.lk`), and so is the interrupt table
+itself — LK builds all 256 gates and loads them with `lidt`. What is Rust is the
+part a language should not own: the linker script, the boot path, and the
+interrupt trampolines, because an interrupt is not a call and the code it lands
+in has to have every register spilled before a compiled handler can run.
+
+Eleven QEMU checks run in CI, and each asserts what the machine *scanned out* or
+what the disk image holds afterwards — not what the program believes it did.
+`bare-metal-x86/README.md` is the long version, including the mistakes: a
+soft-float ABI that computed wrong numbers in silence, a shared-page constant
+that overlapped a window descriptor, a mouse packet misframed into permanent
+stillness.
+
 ## Installation
 
 Install the latest GitHub release:
@@ -122,20 +144,24 @@ assert_eq!(result.display_first_return(), "true");
 
 - Run REPL: `lk`
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
-- Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
+- Type-check without executing: `lk check FILE` (the same check the executors run; `--strict` also requires every signature to resolve to something other than `Any`)
 - Format sources in place: `lk fmt [PATH...]` (no path = the whole project; `--check` reports instead of writing, for CI)
 - Compile to a native executable: `lk compile [FILE]` (Cranelift backend; omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; shapes outside the native slice fall back to the Tier 0 VM bundle)
 - Compile to a bytecode module artifact: `lk compile bytecode [FILE]` → `FILE.lkm`
+- Bundle a self-contained executable that embeds the program *and* the VM: `lk bundle FILE` (AOT Tier 0 — every program bundles, at VM speed)
+- Report which instructions a file exercises: `lk coverage FILE` (`--disassemble` prints the bytecode)
+- Inspect macro expansion: `lk macro expand FILE` (`--trace`, `--deps`, `--origins`; see [docs/macros.md](docs/macros.md))
 - Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
-Note: command-line argument paths must be sanitized relative paths.
 
 ### Editor Support
 
 Editor integrations live under `ecosystem/`.
 
-- VS Code support is a single merged extension under `ecosystem/vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, repeated string argument values, and common receiver methods. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
+- VS Code support is a single merged extension under `ecosystem/vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, repeated string argument values, and common receiver methods. Use `make install` to install the CLI, `lk-lsp` and the extension into every VS Code-family editor found (VS Code / Insiders / VSCodium / Cursor / Windsurf, remote windows included), `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to only build the VSIX.
 - Zed support lives under `ecosystem/zed-ext`. It uses `ecosystem/tree-sitter-lk` for Tree-sitter highlighting and starts `lk-lsp` for diagnostics, completion, hover, goto definition, document symbols, semantic tokens, and inlay hints. Use `make zed-ext-check` to validate the extension crate.
+
+Working on LK itself: [docs/testing.md](docs/testing.md) lists the gates and what each one is the only thing that catches — several are outside `cargo test --workspace`.
 
 ## License
 

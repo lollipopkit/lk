@@ -93,6 +93,27 @@ pub fn compile_native_executable_from_object_hybrid(
     // wrapper references `lk_hybrid_register`, the object references
     // `lk_hybrid_call_*`, which pull the objects in.
     command.arg(hybrid.lk_api_staticlib);
+    // Two archives, one set of crates underneath.
+    //
+    // A hybrid binary links `lkrt` and `lk-api` side by side, and they share
+    // dependencies that neither can drop: `unsafe_libyaml` arrives in `lkrt`
+    // through its YAML parser — which the *pure native* path needs, since
+    // `encoding.yaml_parse` lowers to `lkrt_yaml_parse` — and in `lk-api`
+    // through the stdlib's `encoding` module. Both archives therefore carry the
+    // same crate's objects, and a link that reads both dies on four hundred
+    // multiple definitions.
+    //
+    // `lk-api` already declares `lkrt` a *dev*-dependency so the two do not
+    // collide directly. What collides is the layer under both, which no
+    // dependency edge separates: the objects are the same crate at the same
+    // version out of the same workspace build, so the definitions are identical
+    // and whichever the linker keeps is the same program.
+    //
+    // Only here. The pure-native link reads one archive, where a duplicate
+    // symbol would mean something is actually wrong.
+    if !cfg!(target_os = "macos") {
+        command.arg("-Wl,--allow-multiple-definition");
+    }
     // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
     if !cfg!(target_os = "windows") {
         command.args(["-lpthread", "-ldl"]);
@@ -134,18 +155,20 @@ fn hybrid_wrapper_c(module_artifact_json: &str) -> String {
                                            void (*list_dyn_push)(void *, LkDyn),\n\
                                            void *(*map_str_dyn_new)(void),\n\
                                            void (*map_str_dyn_set)(void *, const char *, LkDyn),\n\
+                                           long long (*obj_mark_by_name)(void *, const char *),\n\
                                            void (*raise_dyn)(LkDyn));\n\
          extern void *lkrt_lklist_dyn_new(void);\n\
          extern void lkrt_lklist_dyn_push(void *, LkDyn);\n\
          extern void *lkrt_lkmap_str_dyn_new(void);\n\
          extern void lkrt_lkmap_str_dyn_set(void *, const char *, LkDyn);\n\
+         extern long long lkrt_lkmap_obj_mark_by_name(void *, const char *);\n\
          extern void lkrt_rt_raise_dyn(LkDyn);\n\
          static const char *LK_HYBRID_ARTIFACT = \"{escaped}\";\n\
          __attribute__((constructor)) static void lk_hybrid_setup(void) {{\n\
              lk_hybrid_register(LK_HYBRID_ARTIFACT);\n\
              lk_hybrid_register_rt(lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,\n\
                                    lkrt_lkmap_str_dyn_new, lkrt_lkmap_str_dyn_set,\n\
-                                   lkrt_rt_raise_dyn);\n\
+                                   lkrt_lkmap_obj_mark_by_name, lkrt_rt_raise_dyn);\n\
          }}\n"
     )
 }
@@ -191,15 +214,24 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     } else {
         "liblkrt_cabi.a"
     };
-    // Refresh before searching. A *stale* archive is worse than a missing one:
-    // it links partially, or — as happened the day the toolchain moved — brings
-    // a second copy of libstd built by another rustc and collides on
-    // `rust_eh_personality`, with a message that names neither archive as the
-    // old one. Under cargo's fingerprinting a rebuild is a sub-second no-op;
-    // where there is no workspace to build in (an installed `lk`), it fails and
-    // the search below still finds whatever was shipped. Same rule the CLI
-    // already follows for `lk-api`.
-    let _ = build_lkrt_staticlib();
+    // Refresh before searching, *in the profile this binary will link from*. A
+    // stale archive is worse than a missing one: it links partially, or — as
+    // happened the day the toolchain moved — brings a second copy of libstd
+    // built by another rustc and collides on `rust_eh_personality`, with a
+    // message that names neither archive as the old one. Under cargo's
+    // fingerprinting a rebuild is a sub-second no-op; where there is no
+    // workspace to build in (an installed `lk`), it fails and the search below
+    // still finds whatever was shipped. Same rule the CLI already follows for
+    // `lk-api`.
+    //
+    // The profile is the point. This used to refresh the *debug* archive
+    // unconditionally while the search below picks the one sitting beside this
+    // binary — so for a `--release` or `--profile dist` `lk`, the one thing the
+    // refresh exists to prevent was exactly what happened: the archive it linked
+    // was never rebuilt. A `dist` build linked an lkrt from a day earlier, whose
+    // `lkrt_rt_try_region` still had the old signature, and every `try` program
+    // it compiled died on `SIGILL`.
+    let _ = build_lkrt_staticlib(cargo_profile_of(dir));
     let mut candidates = vec![dir.join(file)];
     // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
     // hashed `liblkrt_cabi-<hash>.a`; a `cargo test` binary runs from
@@ -210,7 +242,28 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
             candidates.push(path);
         }
     }
-    newest_existing_path(candidates).or_else(build_lkrt_staticlib)
+    newest_existing_path(candidates).or_else(|| build_lkrt_staticlib(cargo_profile_of(dir)))
+}
+
+/// The cargo profile whose output directory is `dir` — what a rebuild has to
+/// name for its archive to land where the link will look.
+///
+/// Cargo's one irregularity: the `dev` profile writes to `target/debug`. A test
+/// binary runs from `target/<profile>/deps`, so that one step up is taken here
+/// too. Anything else (an installed `lk` in `~/.cargo/bin`) yields a name cargo
+/// will reject, and the rebuild fails the same way it already does when there is
+/// no workspace to build in — silently, leaving the search to find whatever was
+/// shipped.
+fn cargo_profile_of(dir: &Path) -> String {
+    let name = |path: &Path| path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    let directory = match name(dir).as_deref() {
+        Some("deps") => dir.parent().and_then(name),
+        other => other.map(str::to_owned),
+    };
+    match directory.as_deref() {
+        Some("debug") | None => "dev".to_string(),
+        Some(profile) => profile.to_string(),
+    }
 }
 
 /// Builds `lkrt-cabi`, whether or not an archive is already on disk.
@@ -228,12 +281,12 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
 ///
 /// Both are the rule the CLI already follows for `lk-api`: an archive the link
 /// needs is the link's business to produce, every time.
-fn build_lkrt_staticlib() -> Option<PathBuf> {
+fn build_lkrt_staticlib(profile: String) -> Option<PathBuf> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
-    eprintln!("building lkrt staticlib (one-time)…");
+    eprintln!("building lkrt staticlib ({profile})…");
     let status = std::process::Command::new("cargo")
         .current_dir(workspace)
-        .args(["build", "-p", "lkrt-cabi"])
+        .args(["build", "-p", "lkrt-cabi", "--profile", &profile])
         .status()
         .ok()?;
     if !status.success() {
@@ -244,7 +297,10 @@ fn build_lkrt_staticlib() -> Option<PathBuf> {
     } else {
         "liblkrt_cabi.a"
     };
-    let built = workspace.join("target/debug").join(file);
+    // `dev` is the profile whose directory is not its name; every other profile
+    // writes to a directory called after itself.
+    let directory = if profile == "dev" { "debug" } else { profile.as_str() };
+    let built = workspace.join("target").join(directory).join(file);
     built.exists().then_some(built)
 }
 

@@ -1,7 +1,6 @@
 use crate::compat::collections::{HashMap, HashSet};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -16,7 +15,7 @@ use crate::{
 
 use alloc::sync::Arc;
 
-use super::{ConstHeapValue, GlobalSlot, NativeEntry, free_vars::collect_function_free_vars};
+use super::{ConstHeapValue, GlobalSlot, free_vars::collect_function_free_vars};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortCircuitKind {
@@ -35,6 +34,10 @@ pub(super) enum NumericFlavor {
 pub(super) enum RangeStepSign {
     Positive,
     Negative,
+    /// A step that is literally `0` — a loop that cannot advance. Kept apart
+    /// from `Dynamic` so it is refused while compiling instead of being lowered
+    /// into a comparison that happens to be false on the first turn.
+    Zero,
     Dynamic,
 }
 
@@ -108,6 +111,116 @@ pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {
         Stmt::Attributed { item, .. } => item_without_attributes(item),
         stmt => stmt,
     }
+}
+
+/// Top-level functions whose declared return type is a machine int.
+///
+/// The compiler needs this to know when arithmetic on a call's result has to
+/// wrap: `fn read() -> u32` makes `let a = read(); a + b` `u32` arithmetic, and
+/// before this the width was simply lost unless somebody wrote it down again at
+/// the binding.
+pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<String, super::RegisterWidth> {
+    let mut widths = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Function {
+            name,
+            return_type: Some(declared),
+            ..
+        } = item_without_attributes(stmt)
+            && let Some(width) = super::register_width_of(declared)
+        {
+            widths.insert(name.clone(), width);
+        }
+    }
+    widths
+}
+
+/// Struct fields whose declared type is a machine int, by struct then field.
+///
+/// The compiler has no type checker to ask, so a field's width has to be
+/// carried the same way a function's return width is: collected once from the
+/// declarations, and looked up by name. Without it `r.value + 1` on a `u32`
+/// field added at 64 bits — the register holding the field has no width, so
+/// nothing wraps.
+/// Every method name any `impl` block in this program declares.
+///
+/// The compiler lowers `x.len()`, `x.push(v)`, `x.set(k, v)`, `x.split(s)` and
+/// `x.join(s)` to dedicated opcodes on the method *name* alone — it has no type
+/// for the receiver there. That is right for a list or a string and wrong for a
+/// struct with a method of that name: `impl S { fn len(self) -> Int { … } }`
+/// made `s.len()` answer "Len target object is not sized", and the four with
+/// arguments failed at *compile* time on arity ("Compiler method push expects 1
+/// arg, got 0"), so the method could not even be written.
+///
+/// A name declared by an impl is therefore never assumed builtin: those calls
+/// go through the ordinary dynamic dispatch, which asks the receiver. The cost
+/// falls only on programs that name a method after a builtin one, and only for
+/// that name.
+pub(super) fn collect_impl_method_names(program: &Program) -> HashSet<String> {
+    fn visit(stmt: &Stmt, names: &mut HashSet<String>) {
+        match item_without_attributes(stmt) {
+            Stmt::Impl { methods, .. } => {
+                for method in methods {
+                    if let Stmt::Function { name, .. } = item_without_attributes(method) {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+            Stmt::Block { statements } => {
+                for inner in statements {
+                    visit(inner, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut names = HashSet::new();
+    for stmt in &program.statements {
+        visit(stmt, &mut names);
+    }
+    names
+}
+
+pub(super) fn collect_struct_field_machine_widths(
+    program: &Program,
+) -> HashMap<String, HashMap<String, super::RegisterWidth>> {
+    let mut structs: HashMap<String, HashMap<String, super::RegisterWidth>> = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Struct { name, fields } = item_without_attributes(stmt) {
+            let mut widths = HashMap::new();
+            for (field, declared) in fields {
+                if let Some(width) = declared.as_ref().and_then(super::register_width_of) {
+                    widths.insert(field.clone(), width);
+                }
+            }
+            if !widths.is_empty() {
+                structs.insert(name.clone(), widths);
+            }
+        }
+    }
+    structs
+}
+
+/// Top-level bindings whose declared type is a machine int.
+///
+/// `const RAH_VALID: u32 = 0x80000000;` is the shape a driver is made of —
+/// `drivers/e1000.lk` alone has two dozen — and a read of one lands in a fresh
+/// register through `GetGlobal`, which carries no width. Without this every use
+/// of a register constant computed at 64 bits.
+pub(super) fn collect_top_level_machine_widths(program: &Program) -> HashMap<String, super::RegisterWidth> {
+    let mut widths = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Let {
+            pattern: crate::expr::Pattern::Variable(name),
+            type_annotation: Some(declared),
+            ..
+        } = item_without_attributes(stmt)
+            && let Some(width) = super::register_width_of(declared)
+        {
+            widths.insert(name.clone(), width);
+        }
+    }
+    widths
 }
 
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
@@ -187,7 +300,25 @@ pub(super) fn range_step_sign(step: Option<&Expr>) -> RangeStepSign {
     match const_int_expr_value(step) {
         Some(value) if value > 0 => RangeStepSign::Positive,
         Some(value) if value < 0 => RangeStepSign::Negative,
-        _ => RangeStepSign::Dynamic,
+        Some(_) => RangeStepSign::Zero,
+        None => RangeStepSign::Dynamic,
+    }
+}
+
+/// The member name an `Expr::Access` spells, when it spells one.
+///
+/// `a.f` parses to `Access(a, Literal("f"))` — the member is a *string
+/// literal*, always. `a[i]` parses to `Access(a, Var("i"))`, and that is an
+/// index, not a member: the value of `i` picks the element.
+///
+/// Reading a bare `Var` as a member name is what made `fs[i]()` mean `fs.i()`,
+/// so calling a closure out of a list by a variable index raised
+/// `List has no method 'i'` — while `fs[0]()`, whose index is not an
+/// identifier, worked.
+pub(super) fn access_member_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Literal(value) => value.as_str(),
+        _ => None,
     }
 }
 
@@ -220,12 +351,7 @@ pub(super) fn pattern_binds_scrutinee_directly(pattern: &Pattern) -> bool {
 
 fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_mutated_names(item, names),
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_mutated_names(stmt, names);
-            }
-        }
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => collect_mutated_names(item, names),
         Stmt::If {
             condition,
             then_stmt,
@@ -279,7 +405,7 @@ fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_mutated_names(method, names);
             }
         }
-        Stmt::Expr(expr) => collect_mutated_names_in_expr(expr, names),
+        Stmt::Expr { value: expr, .. } => collect_mutated_names_in_expr(expr, names),
         Stmt::Return { value } => {
             if let Some(value) = value {
                 collect_mutated_names_in_expr(value, names);
@@ -364,6 +490,11 @@ fn collect_mutated_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_mutated_names(stmt, names);
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_mutated_names(stmt, names);
             }
         }
@@ -468,6 +599,41 @@ fn collect_global_name_from_top_level_stmt(
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// Every top-level name this program binds to *user data* — `let`, `const` and
+/// `:=` alike.
+///
+/// Deliberately not folded into [`collect_function_visible_let_names`]: that
+/// set also decides whether a top-level global may be cached in a register
+/// (`Compiler::can_cache_global`), so widening it would slow down every
+/// `:=` script. This set answers a different question — "is this name a value
+/// this program declared, or an imported module object?" — which is all
+/// method dispatch needs (`is_external_global_access_target`). Getting the two
+/// confused is why `xs := [1,2]` followed by `fn h() { xs.len() }` compiled
+/// `xs.len` into an *index* read with the string `"len"` as the key.
+pub(super) fn collect_top_level_data_global_names(program: &Program) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in &program.statements {
+        collect_top_level_data_global_name(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_top_level_data_global_name(stmt: &Stmt, names: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Attributed { item, .. } => collect_top_level_data_global_name(item, names),
+        Stmt::Define { name, .. } => {
+            names.insert(name.clone());
+        }
+        Stmt::Let {
+            pattern: Pattern::Variable(name),
+            ..
+        } => {
+            names.insert(name.clone());
+        }
+        _ => {}
     }
 }
 
@@ -584,19 +750,23 @@ pub(super) fn global_slots_from_names(names: &HashMap<String, u32>) -> Vec<Globa
     out
 }
 
-pub(super) fn collect_native_names(natives: &[NativeEntry]) -> Result<HashMap<String, u32>> {
-    let mut names = HashMap::new();
-    for (index, native) in natives.iter().enumerate() {
-        let index = u32::try_from(index).map_err(|_| anyhow!("Compiler native index overflow"))?;
-        if names.insert(native.name.clone(), index).is_some() {
-            bail!("Compiler duplicate native `{}`", native.name);
-        }
-    }
-    Ok(names)
-}
-
+/// Narrow a register number to the 8 bits an instruction has for it.
+///
+/// This is the one place 301 call sites funnel through, and all a program could
+/// ever see from it was `Compiler dst register 256 exceeds u8 encoding` — an
+/// encoding detail, with nothing about the limit being *per function* or what to
+/// do about it. A body with 300 `let`s is a real thing to write; being told the
+/// operand width is not an answer to it. (Lua, with the same design, says "too
+/// many local variables".)
 pub(super) fn checked_u8(name: &str, value: u16) -> Result<u8> {
-    u8::try_from(value).map_err(|_| anyhow!("Compiler {name} register {} exceeds u8 encoding", value))
+    u8::try_from(value).map_err(|_| {
+        anyhow!(
+            "this function needs more than {} registers (it reached {value} for a {name}): \
+             every instruction names its registers in 8 bits, and a function's locals and \
+             temporaries share that one set — split the body into smaller functions",
+            u8::MAX as u16 + 1,
+        )
+    })
 }
 
 #[inline]
@@ -689,7 +859,7 @@ pub(super) fn const_heap_list_from_expr_literals(values: &[Box<Expr>]) -> Result
 }
 
 pub(super) fn const_heap_map_from_expr_literals(entries: &[(Box<Expr>, Box<Expr>)]) -> Result<Option<ConstHeapValue>> {
-    let mut const_entries = fast_hash_map_new();
+    let mut const_entries = crate::util::value_map::value_map_new();
     for (key, value) in entries {
         let Expr::Literal(key) = &**key else {
             return Ok(None);
@@ -777,5 +947,18 @@ pub(super) fn pattern_kind(pattern: &Pattern) -> &'static str {
         Pattern::Or(_) => "Or",
         Pattern::Guard { .. } => "Guard",
         Pattern::Range { .. } => "Range",
+    }
+}
+
+/// Whether an expression is written as an integer literal, through parentheses.
+///
+/// Used to decide that a literal beside a machine integer should take its width:
+/// a *variable* of another numeric type is a width mistake, and only a literal
+/// is retyped.
+pub(super) fn is_int_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => is_int_literal(inner),
+        Expr::Literal(LiteralVal::Int(_)) => true,
+        _ => false,
     }
 }

@@ -9,7 +9,9 @@ mod cell;
 mod const_load;
 mod container;
 mod dispatch;
-mod format;
+mod display;
+
+pub use display::runtime_display_value;
 mod frame;
 mod gc;
 mod globals;
@@ -32,7 +34,8 @@ pub use imports::import_runtime_export;
 pub use program::test_support;
 pub use program::{
     ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, ProgramExec, call_module_function_with_ctx,
-    call_module_function_with_ctx_keep_state, compile_program_module_with_ctx, execute_compiled_module_with_ctx,
+    call_module_function_with_ctx_keep_state, compile_program_module_with_ctx,
+    compile_program_module_with_ctx_and_data_globals, execute_compiled_module_with_ctx,
     execute_module_artifact_with_ctx, execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
     execute_program_with_ctx_and_gc_threshold, execute_program_with_ctx_and_limits, execute_source,
 };
@@ -45,28 +48,25 @@ pub use runtime_callable::{
     copy_runtime_value, copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{
-    HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap, typed_map_from_entries,
-};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
+#[cfg(test)]
+use super::GlobalSlot;
 use super::{
-    CallWindow, Function, Module, NativeEntry, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
+    CallWindow, Function, Module, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
     analysis::{
         PerfIndexTargetKind, VmCallMetric, VmContainerMetric, VmRegisterWriteSource, record_call_op_known_enabled,
         record_container_op_known_enabled, vm_runtime_metrics_enabled,
     },
 };
-#[cfg(test)]
-use super::{Compiler, GlobalSlot};
 use call::push_traceback_frame;
 use frame::{CallFrame, FrameOutcome};
-pub use handler::LkRaisedValue;
 use handler::{ErrorHandler, LanguageRaise};
+pub use handler::{LkPanic, LkRaisedValue};
 use profile::{RuntimeProfileFrame, index_metric_kind};
 use return_values::ReturnValues;
 use support::*;
@@ -92,8 +92,15 @@ pub(crate) struct ExecFailure {
 #[derive(Debug)]
 pub struct Executor {
     state: RuntimeModuleState,
-    captures: Arc<Vec<RuntimeVal>>,
-    empty_captures: Arc<Vec<RuntimeVal>>,
+    /// The current frame's captures — `None` when the running function has
+    /// none, which is every plain `fn`.
+    ///
+    /// Not an `Arc` to a shared empty vector: that spelling put a refcount
+    /// increment on every call and a decrement on every return, and the
+    /// decrement alone was 41% of `finish_return` — about a tenth of the whole
+    /// program in a call-heavy loop. A closure still shares its captures by
+    /// `Arc`; a function without any now says so.
+    captures: Option<Arc<Vec<RuntimeVal>>>,
     handler_stack: Vec<ErrorHandler>,
     frame_base: usize,
     register_count: u16,
@@ -123,12 +130,18 @@ pub struct Executor {
     /// executor constructs (`NewObject`). Tracked here rather than read off
     /// `shared_module` because the plain `run_module*` entries pass the module
     /// by reference and never populate the shared handle.
-    type_scope: crate::vm::TypeScope,
+    type_scope: crate::val::TypeScope,
+    /// Field order for each `struct` the executing module declares — what
+    /// `display` prints an instance's fields in. Tracked here for the same
+    /// reason as `type_scope`: the plain `run_module*` entries never populate
+    /// `shared_module`. Cloned once per module run, and a module has a handful
+    /// of structs.
+    struct_decls: Vec<crate::vm::StructDecl>,
     /// The identity `NewObject` built last. A loop constructing the same struct
     /// hits this every iteration, so the shared `Arc` is allocated once instead
     /// of per object — which also removes the per-object `Arc<str>` the type
     /// name used to cost.
-    last_declared_type: Option<Arc<crate::vm::DeclaredType>>,
+    last_declared_type: Option<Arc<crate::val::DeclaredType>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
@@ -192,8 +205,7 @@ impl Executor {
     pub fn new(register_count: u16) -> Self {
         let mut this = Self {
             state: RuntimeModuleState::default(),
-            captures: Arc::new(Vec::new()),
-            empty_captures: Arc::new(Vec::new()),
+            captures: None,
             handler_stack: Vec::new(),
             frame_base: 0,
             register_count,
@@ -204,7 +216,8 @@ impl Executor {
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
             shared_module: None,
-            type_scope: crate::vm::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
+            struct_decls: Vec::new(),
             last_declared_type: None,
             instruction_budget: None,
             instruction_count: 0,
@@ -339,10 +352,26 @@ impl Executor {
                     let instr = code[self.pc];
                     let value = *self.read_unchecked(instr.b());
                     self.write_unchecked(instr.a(), value);
+                    // `Move` was the one common opcode whose register write went
+                    // into no bucket at all: `VmRegisterWriteSource::Move` had a
+                    // slot and no site constructing it, so the write-source
+                    // breakdown silently omitted the second most executed
+                    // instruction — and `bench/README.md` reasons about the
+                    // *proportions* in that breakdown. Recorded per move, inside
+                    // the batching loop, because that is how many writes happen.
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
                     self.pc += 1;
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
+                    // The dispatch loop records one opcode per *dispatch*, and
+                    // this arm consumes a whole run of moves inside one — so a
+                    // run of five counted as one. `bench/README.md` states the
+                    // batching "preserves per-instruction profile accounting";
+                    // it did not, and the histogram it reasons from undercounted
+                    // the second most executed instruction by the batch factor.
+                    // The first move of the run was recorded before the match.
+                    profile.record_opcode(Opcode::Move, collect_metrics);
                     if BUDGETED {
                         self.consume_instruction()?;
                     }
@@ -352,6 +381,9 @@ impl Executor {
                     self.write_unchecked(instr.a(), first);
                     let second = *self.read_unchecked(instr.c());
                     self.write_unchecked(instr.b(), second);
+                    // Two writes, two records.
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
+                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
                     self.pc += 1;
                 }
                 Opcode::LoadCapture => {
@@ -371,10 +403,6 @@ impl Executor {
                 }
                 Opcode::MakeClosure => {
                     self.dispatch_cold(Opcode::MakeClosure, function, module, instr, ctx, collect_metrics)?;
-                    let _ = &profile; // suppress unused warning
-                }
-                Opcode::LoadNative => {
-                    self.dispatch_cold(Opcode::LoadNative, function, module, instr, ctx, collect_metrics)?;
                     let _ = &profile; // suppress unused warning
                 }
                 Opcode::AddInt => {
@@ -402,7 +430,7 @@ impl Executor {
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
-                        lhs => bail!("AddIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("AddIntI expected Int lhs, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::MulIntI => {
@@ -414,7 +442,7 @@ impl Executor {
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
-                        lhs => bail!("MulIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("MulIntI expected Int lhs, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::ModIntI => {
@@ -422,18 +450,26 @@ impl Executor {
                     let lhs_idx = self.frame_base + instr.b() as usize;
                     let rhs = instr.sc() as i64;
                     if rhs == 0 {
-                        bail!("ModIntI divisor is zero");
+                        bail!("modulo by zero");
                     }
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
-                            let value = *lhs % rhs;
+                            // `wrapping_rem`, not `%`: integer division overflow
+                            // (`i64::MIN % -1`) *panics* in Rust — in release
+                            // too, because the hardware traps — and a panic is
+                            // an abort no `try` can see. The rest of the
+                            // language's integer arithmetic already wraps at
+                            // `i64::MIN`, and so does the native side
+                            // (`lkrt_i64_mod_checked`), which answered `0` here
+                            // while the interpreter took the process down.
+                            let value = lhs.wrapping_rem(rhs);
                             self.state.stack[dst] = RuntimeVal::Int(value);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
                                 self.pc += 1;
                             }
                         }
-                        lhs => bail!("ModIntI expected Int lhs, got {:?}", lhs.kind()),
+                        lhs => bail!("% expects an Int on the left, got {}", self.value_type_name(lhs)),
                     }
                 }
                 Opcode::MinInt => {
@@ -445,9 +481,9 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MinInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MinInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -460,9 +496,9 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MaxInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MaxInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -479,10 +515,10 @@ impl Executor {
                             self.pc += 1;
                         }
                         (acc, lhs, rhs) => bail!(
-                            "AddMulInt expected Int operands, got {:?}, {:?}, and {:?}",
-                            acc.kind(),
-                            lhs.kind(),
-                            rhs.kind()
+                            "AddMulInt expected Int operands, got {}, {}, and {}",
+                            self.value_type_name(acc),
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -499,10 +535,10 @@ impl Executor {
                             self.pc += 1;
                         }
                         (acc, lhs, rhs) => bail!(
-                            "Add2Int expected Int operands, got {:?}, {:?}, and {:?}",
-                            acc.kind(),
-                            lhs.kind(),
-                            rhs.kind()
+                            "Add2Int expected Int operands, got {}, {}, and {}",
+                            self.value_type_name(acc),
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
@@ -515,20 +551,17 @@ impl Executor {
                             self.pc += 1;
                         }
                         (lhs, rhs) => bail!(
-                            "MidInt expected Int operands, got {:?} and {:?}",
-                            lhs.kind(),
-                            rhs.kind()
+                            "MidInt expected Int operands, got {} and {}",
+                            self.value_type_name(lhs),
+                            self.value_type_name(rhs)
                         ),
                     }
                 }
                 Opcode::AddListInt | Opcode::SubListInt => {
                     let acc_idx = self.stack_index_unchecked(instr.a());
                     let RuntimeVal::Int(acc) = self.state.stack[acc_idx] else {
-                        bail!(
-                            "{:?} expected Int accumulator, got {:?}",
-                            instr.opcode(),
-                            self.state.stack[acc_idx].kind()
-                        );
+                        let got = self.value_type_name(&self.state.stack[acc_idx]);
+                        bail!("{:?} expected Int accumulator, got {got}", instr.opcode());
                     };
                     let item = self.read_known_int_list_index(instr.b(), instr.c())?;
                     let value = if instr.opcode() == Opcode::AddListInt {
@@ -572,14 +605,17 @@ impl Executor {
                         }
                     }
                 }
+                // `/` is float division whatever the operands are — see
+                // `check_numeric_binary` for why the runtime moved to the
+                // checker's rule rather than the reverse. Two `Int`s divide as
+                // `f64`, so a zero divisor is an infinity, not an error.
                 Opcode::DivInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
                     let rhs = &self.state.stack[rhs_idx];
                     match (lhs, rhs) {
-                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("DivInt divisor is zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            self.state.stack[dst] = RuntimeVal::Int(*l / *r);
+                            self.state.stack[dst] = RuntimeVal::Float(*l as f64 / *r as f64);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
@@ -594,9 +630,10 @@ impl Executor {
                     let lhs = &self.state.stack[lhs_idx];
                     let rhs = &self.state.stack[rhs_idx];
                     match (lhs, rhs) {
-                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
+                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("modulo by zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            let value = *l % *r;
+                            // Wrapping, as in `ModIntI` above.
+                            let value = l.wrapping_rem(*r);
                             self.state.stack[dst] = RuntimeVal::Int(value);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
@@ -621,28 +658,48 @@ impl Executor {
                     self.float_binary(instr, |lhs, rhs| lhs * rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                 }
+                // Float division by zero is IEEE's answer, not an error.
+                //
+                // `Float` *is* `f64`, and `1.0 / 0.0` is `inf` there. LK
+                // already admits both results as values — `math.inf` and
+                // `math.nan` are constants, and `math.nan + 1` propagates
+                // silently — so raising here protected nothing; it only made
+                // the natural way to reach them the one spelling that failed.
+                // Integer *remainder* still raises: `1 % 0` has no answer, and
+                // `%` — unlike `/` — keeps the operand type.
                 Opcode::DivFloat => {
-                    let lhs = self.read_number_unchecked(instr.b());
-                    let rhs = self.read_number_unchecked(instr.c());
-                    if rhs == 0.0 {
-                        bail!("DivFloat divisor is zero");
-                    }
-                    self.write_unchecked(instr.a(), RuntimeVal::Float(lhs / rhs));
+                    self.float_binary(instr, |lhs, rhs| lhs / rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
-                    self.pc += 1;
                 }
                 Opcode::ModFloat => {
-                    let lhs = self.read_number_unchecked(instr.b());
-                    let rhs = self.read_number_unchecked(instr.c());
-                    if rhs == 0.0 {
-                        bail!("ModFloat divisor is zero");
-                    }
-                    self.write_unchecked(instr.a(), RuntimeVal::Float(lhs % rhs));
+                    self.float_binary(instr, |lhs, rhs| lhs % rhs)?;
                     profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
-                    self.pc += 1;
                 }
                 Opcode::Not => {
                     self.dispatch_cold(Opcode::Not, function, module, instr, ctx, collect_metrics)?;
+                }
+                Opcode::Neg => {
+                    self.dispatch_cold(Opcode::Neg, function, module, instr, ctx, collect_metrics)?;
+                }
+                Opcode::FloorDivInt => {
+                    let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("division by zero"),
+                        (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
+                            // `div_euclid` panics on `i64::MIN / -1` for the
+                            // same reason `%` does. The wrapping answer is
+                            // `i64::MIN` (negating it overflows back to
+                            // itself), which is what the native side computes.
+                            let quotient = l.checked_div_euclid(*r).unwrap_or_else(|| l.wrapping_neg());
+                            self.state.stack[dst] = RuntimeVal::Int(quotient);
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        _ => {
+                            self.dispatch_floor_div_int(instr)?;
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                        }
+                    }
                 }
                 // Casts are a cold path: driver-ish code does them at
                 // boundaries, not in inner loops.
@@ -849,7 +906,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrEqZeroInt expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrEqZeroInt expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrNeZeroInt => {
@@ -863,7 +920,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrNeZeroInt expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrNeZeroInt expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrEqIntI4 => {
@@ -878,7 +935,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrEqIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrEqIntI4 expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrNeIntI4 => {
@@ -893,7 +950,7 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrNeIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!("BrNeIntI4 expected Int operand, got {}", self.value_type_name(value)),
                     }
                 }
                 Opcode::BrModEqZeroIntI4 => {
@@ -911,7 +968,10 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrModEqZeroIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!(
+                            "BrModEqZeroIntI4 expected Int operand, got {}",
+                            self.value_type_name(value)
+                        ),
                     }
                 }
                 Opcode::BrModNeZeroIntI4 => {
@@ -929,7 +989,10 @@ impl Executor {
                                 self.pc += 1;
                             }
                         }
-                        value => bail!("BrModNeZeroIntI4 expected Int operand, got {:?}", value.kind()),
+                        value => bail!(
+                            "BrModNeZeroIntI4 expected Int operand, got {}",
+                            self.value_type_name(value)
+                        ),
                     }
                 }
                 Opcode::TestEqInt => {
@@ -1150,7 +1213,7 @@ impl Executor {
                             .performance
                             .known_key(self.pc)
                             .and_then(|fact| fact.const_key)
-                            .and_then(|index| function.consts.string(index))
+                            .and_then(|index| function.consts.shared_string(index))
                     };
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
@@ -1210,7 +1273,7 @@ impl Executor {
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
                     }
-                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                    let Some(key) = function.consts.shared_string(instr.c() as u16) else {
                         bail!("GetFieldK const string index {} out of bounds", instr.c());
                     };
                     let value = self.get_index(
@@ -1265,7 +1328,7 @@ impl Executor {
                             .performance
                             .known_key(self.pc)
                             .and_then(|fact| fact.const_key)
-                            .and_then(|index| function.consts.string(index))
+                            .and_then(|index| function.consts.shared_string(index))
                     };
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
@@ -1316,7 +1379,7 @@ impl Executor {
                         .container_move(self.pc)
                         .is_some_and(|fact| fact.move_value);
                     let index_fact = self.static_index_fact(function);
-                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                    let Some(key) = function.consts.shared_string(instr.c() as u16) else {
                         bail!("SetFieldK const string index {} out of bounds", instr.c());
                     };
                     if collect_metrics {
@@ -1378,11 +1441,17 @@ impl Executor {
                     }
                 }
                 Opcode::CallMethodK => {
+                    if collect_metrics {
+                        record_call_op_known_enabled(VmCallMetric::Method);
+                    }
+                    // `method_call_ops` had arms adding it up and no site
+                    // constructing it, so the profile reported zero method calls
+                    // for every program. This is the opcode that makes one.
                     self.dispatch_call_method_k(function, module, instr, ctx)?;
                     profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
                 }
                 Opcode::GetGlobal => {
-                    let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+                    let slot = self.global_slot_from_fact_or_instr(function, instr);
                     let value = self.read_global(slot)?;
                     self.write(instr.a(), value)?;
                     profile.record_write_source(VmRegisterWriteSource::Global, collect_metrics);
@@ -1436,12 +1505,18 @@ fn gc_stress_enabled() -> bool {
     }
 }
 
-/// Format a single [`RuntimeVal`] against its heap into the VM's canonical
-/// display string. Exposed for host embedders that hold a `RuntimeVal` plus the
-/// [`HeapStore`] it came from (e.g. `lk-api`'s ergonomic `Value` conversion for
-/// heap kinds without a structured host representation).
+/// Format a single [`RuntimeVal`] against its heap, for a caller that has
+/// nowhere to put an error — a `Debug` impl, a diagnostic. Rendering *can*
+/// fail (a dangling handle, a value nested past [`crate::val::MAX_VALUE_DEPTH`])
+/// and this reports that as the text `<invalid ref>`.
+///
+/// Anything that can propagate should call [`runtime_display_value`] instead:
+/// `println` reached this one through a `Result`-returning wrapper, so a value
+/// too deep to print came out as `<invalid ref>` with the real reason dropped.
 pub fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore) -> String {
-    format::format_runtime_val(value, heap, 0)
+    // The one renderer (`display`), not the VM's old private one: the REPL, a
+    // host embedder and `println` were showing the same value three ways.
+    display::runtime_display_value(value, heap).unwrap_or_else(|_| "<invalid ref>".to_string())
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {
@@ -1486,4 +1561,4 @@ pub fn execute_module_with_globals_heap_and_ctx(
 }
 
 #[cfg(test)]
-mod exec_tests;
+pub(crate) mod exec_tests;

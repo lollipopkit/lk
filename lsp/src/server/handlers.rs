@@ -250,13 +250,27 @@ impl LanguageServer for LkLanguageServer {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut cleared_any = false;
         for change in params.changes {
             if let Ok(path) = change.uri.to_file_path() {
                 let affected = self.workspace_cache.invalidate_changed_path_dependents(&path);
                 for (affected_uri, version) in clear_cached_document_artifacts(&self.documents, &affected) {
+                    cleared_any = true;
                     self.schedule_diagnostics_and_warmup(affected_uri, version, 0).await;
                 }
             }
+        }
+
+        if cleared_any {
+            // Diagnostics are pushed, so re-scheduling them above is enough.
+            // Inlay hints and semantic tokens are *pulled*: dropping the cached
+            // ones only decides what the next request computes, and nothing has
+            // told the editor to make one. A dependency's edit does not change
+            // this document's version either, so the editor has no reason of its
+            // own to ask again — the hints would sit there showing types read
+            // out of a file that has since changed.
+            let _ = self.client.inlay_hint_refresh().await;
+            let _ = self.client.semantic_tokens_refresh().await;
         }
     }
 
@@ -594,6 +608,8 @@ impl LanguageServer for LkLanguageServer {
         let mut signatures: Vec<SignatureInformation> = Vec::new();
 
         // Built-ins and selected stdlib functions/meta-methods
+        // Globals first — they are functions, not methods, and belong to no
+        // receiver.
         match func_name.as_str() {
             "print" => signatures.push(sig(
                 "print(fmt, ...args)",
@@ -610,130 +626,20 @@ impl LanguageServer for LkLanguageServer {
                 ["message"].as_slice(),
                 "Global function - raise runtime error",
             )),
-            // iter module
-            "enumerate" => signatures.push(sig(
-                "enumerate(list)",
-                ["list"].as_slice(),
-                "iter: Add 0-based index to each element; returns list of [index, value]",
-            )),
-            "range" => {
-                signatures.push(sig(
-                    "range(end)",
-                    ["end"].as_slice(),
-                    "iter: Generate [0, 1, ..., end-1]",
-                ));
-                signatures.push(sig(
-                    "range(start, end)",
-                    ["start", "end"].as_slice(),
-                    "iter: Generate [start, ..., end) with step 1",
-                ));
-                signatures.push(sig(
-                    "range(start, end, step)",
-                    ["start", "end", "step"].as_slice(),
-                    "iter: Generate arithmetic progression with given step (nonzero)",
-                ));
-            }
-            "zip" => signatures.push(sig(
-                "zip(list1, list2)",
-                ["list1", "list2"].as_slice(),
-                "iter: Pair elements into [a[i], b[i]] up to the shortest length",
-            )),
-            "take" => signatures.push(sig(
-                "take(list, n)",
-                ["list", "n"].as_slice(),
-                "iter: First n elements (n <= 0 returns [])",
-            )),
-            "skip" => signatures.push(sig(
-                "skip(list, n)",
-                ["list", "n"].as_slice(),
-                "iter: Elements after skipping first n (n <= 0 returns original)",
-            )),
-            "chain" => signatures.push(sig(
-                "chain(list1, list2)",
-                ["list1", "list2"].as_slice(),
-                "iter: Concatenate two lists",
-            )),
-            "flatten" => signatures.push(sig(
-                "flatten(list)",
-                ["list"].as_slice(),
-                "iter: Flatten one nesting level (non-lists pass through)",
-            )),
-            "unique" => signatures.push(sig(
-                "unique(list)",
-                ["list"].as_slice(),
-                "iter: Stable de-duplicate preserving first occurrences",
-            )),
-            "chunk" => signatures.push(sig(
-                "chunk(list, size)",
-                ["list", "size"].as_slice(),
-                "iter: Split into chunks of positive size",
-            )),
-            // list meta-methods and module functions (common ones)
-            "map" => {
-                signatures.push(sig(
-                    "map(list, func)",
-                    ["list", "func(value)"].as_slice(),
-                    "Apply function to each element; returns transformed list",
-                ));
-                signatures.push(sig(
-                    "list.map(func)",
-                    ["func(value)"].as_slice(),
-                    "Meta-method variant of map",
-                ));
-            }
-            "filter" => {
-                signatures.push(sig(
-                    "filter(list, predicate)",
-                    ["list", "predicate(value)"].as_slice(),
-                    "Keep elements where predicate returns true (nil/false treated as false)",
-                ));
-                signatures.push(sig(
-                    "list.filter(predicate)",
-                    ["predicate(value)"].as_slice(),
-                    "Meta-method variant of filter",
-                ));
-            }
-            "reduce" => {
-                signatures.push(sig(
-                    "reduce(list, init, func)",
-                    ["list", "init", "func(acc, value)"].as_slice(),
-                    "Fold elements into an accumulator",
-                ));
-                signatures.push(sig(
-                    "list.reduce(init, func)",
-                    ["init", "func(acc, value)"].as_slice(),
-                    "Meta-method variant of reduce",
-                ));
-            }
-            "push" => signatures.push(sig(
-                "push(list, value)",
-                ["list", "value"].as_slice(),
-                "Return a new list with value appended",
-            )),
-            "concat" => signatures.push(sig(
-                "concat(list, other)",
-                ["list", "other"].as_slice(),
-                "Concatenate two lists",
-            )),
-            "join" => signatures.push(sig(
-                "join(list<string>, delimiter)",
-                ["list", "delimiter"].as_slice(),
-                "Join list of strings with delimiter",
-            )),
-            "get" => signatures.push(sig(
-                "get(list, index)",
-                ["list", "index"].as_slice(),
-                "Safe index access; returns value or nil",
-            )),
-            "first" => signatures.push(sig("first(list)", ["list"].as_slice(), "First element or nil")),
-            "last" => signatures.push(sig("last(list)", ["list"].as_slice(), "Last element or nil")),
-            "len" => signatures.push(sig(
-                "len(value)",
-                ["value"].as_slice(),
-                "Length of list/map/string (where applicable)",
-            )),
             _ => {}
         }
+        // Built-in methods, rendered from the one table that declares them
+        // (`lk_core::typ::BUILTIN_METHODS`).
+        //
+        // This used to be a hand-written arm per method, covering ten of the
+        // sixty-odd and describing `take(list, n)` as "n <= 0 returns []" —
+        // which stopped being true when a negative count started raising, and
+        // which nothing would have caught, because a help string has no reader
+        // that can disagree with it.
+        signatures.extend(builtin_method_signatures(&func_name));
+        // The module spelling of the same operations (`iter.take(xs, 2)`),
+        // from the signature the `#[stdlib_export]` macro generated.
+        signatures.extend(stdlib_export_signatures(&func_name));
 
         // Prefer AST-based scan for user-defined functions to reflect named parameter blocks
         if let Ok(mut analyzer) = self.analyzer.lock() {
@@ -972,15 +878,9 @@ impl LanguageServer for LkLanguageServer {
             }
             if want_types {
                 // Tokenize once and reuse across individual computations
-                if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&content) {
-                    let analyzer = LkAnalyzer::new_light();
-                    let mut h1 = analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range);
-                    let mut h2 = analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range);
-                    let mut h3 = analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range);
-                    hints.append(&mut h1);
-                    hints.append(&mut h2);
-                    hints.append(&mut h3);
-                }
+                let mut analyzer = LkAnalyzer::new_light();
+                hints.append(&mut analyzer.compute_type_inlay_hints(&content, range));
+                hints.append(&mut analyzer.compute_function_return_type_hints(&content, range));
             }
             hints
         })
@@ -1209,6 +1109,82 @@ impl LanguageServer for LkLanguageServer {
             edits,
         })))
     }
+}
+
+/// Signature help for a built-in method name, one entry per receiver that has
+/// it — `len` belongs to five of them, and which one the user meant is not
+/// knowable from the name alone.
+fn builtin_method_signatures(name: &str) -> Vec<SignatureInformation> {
+    lk_core::typ::BUILTIN_METHODS
+        .iter()
+        .filter(|declared| declared.name == name)
+        .map(|declared| {
+            let receiver = builtin_receiver_label(declared.receiver);
+            let last = declared.params.len().saturating_sub(1);
+            let params: Vec<String> = declared
+                .params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    // `...` on the repeating tail, the spelling `#[stdlib_export]`
+                    // uses for the same thing (`...values: Any`).
+                    if declared.variadic && index == last {
+                        format!("...{}: {}", param.name, param.ty)
+                    } else if param.optional {
+                        format!("{}?: {}", param.name, param.ty)
+                    } else {
+                        format!("{}: {}", param.name, param.ty)
+                    }
+                })
+                .collect();
+            let label = format!(
+                "{}.{}({}) -> {}",
+                receiver.to_lowercase(),
+                name,
+                params.join(", "),
+                declared.returns
+            );
+            let param_refs: Vec<&str> = params.iter().map(String::as_str).collect();
+            sig(&label, param_refs.as_slice(), declared.docs)
+        })
+        .collect()
+}
+
+fn builtin_receiver_label(kind: lk_core::typ::BuiltinReceiverKind) -> &'static str {
+    use lk_core::typ::BuiltinReceiverKind::*;
+    match kind {
+        List => "List",
+        Bytes => "Bytes",
+        Slice => "Slice",
+        Map => "Map",
+        Set => "Set",
+        Str => "String",
+    }
+}
+
+/// Signature help for a bare stdlib export name (`take` → `iter.take(...)`),
+/// taken from the catalog the export macro generates.
+fn stdlib_export_signatures(name: &str) -> Vec<SignatureInformation> {
+    let catalog = lk_stdlib::stdlib_catalog();
+    let mut out = Vec::new();
+    for module in &catalog.modules {
+        for export in &module.exports {
+            if export.name != name {
+                continue;
+            }
+            let Some(signature) = export.signature.as_deref() else {
+                continue;
+            };
+            let params: Vec<&str> = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.rsplit_once(')').map(|(inner, _)| inner))
+                .filter(|inner| !inner.is_empty())
+                .map(|inner| inner.split(", ").collect())
+                .unwrap_or_default();
+            out.push(sig(signature, params.as_slice(), export.docs.as_deref().unwrap_or("")));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

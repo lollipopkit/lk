@@ -4,9 +4,8 @@ use crate::{
     token::Tokenizer,
     val::RuntimeVal,
     vm::analysis::{PerfCallTargetKind, PerfIndexTargetKind, PerfValueKind},
-    vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, Opcode, execute, execute_module},
+    vm::{Opcode, execute, execute_module},
 };
-use anyhow::{Result, bail};
 
 fn compile_source(source: &str) -> Function {
     let tokens = Tokenizer::tokenize(source).expect("tokenize");
@@ -1194,35 +1193,6 @@ fn compiler_records_dynamic_named_call_shape_fact() {
                 && matches!(instr.a() as u16, dst if dst == first_arg || dst == named_key || dst == named_value)),
         "dynamic named call arguments should lower directly into the call window"
     );
-}
-
-#[test]
-fn compiler_records_native_call_target_shape_fact() {
-    fn native_id(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let [RuntimeVal::Int(value)] = args.as_slice() else {
-            bail!("native_id expects one int");
-        };
-        Ok(RuntimeVal::Int(*value))
-    }
-
-    let module = compile_source_module_with_natives(
-        "return native_id(42);",
-        vec![NativeEntry {
-            name: "native_id".to_string(),
-            arity: 1,
-            function: NativeFunction::Plain(native_id),
-        }],
-    )
-    .expect("compile module");
-    let function = &module.functions[0];
-    let call_pc = function
-        .code
-        .iter()
-        .position(|instr| instr.opcode() == Opcode::Call)
-        .expect("Call");
-    let fact = function.performance.call_site(call_pc).expect("call fact");
-
-    assert_eq!(fact.target_kind, PerfCallTargetKind::Native);
 }
 
 #[test]

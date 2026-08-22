@@ -4,7 +4,7 @@ use crate::compat::path::{Path, PathBuf};
 use crate::compat::prelude::*;
 use crate::token::token_lexeme;
 
-use crate::token::{ParseError, Span, Token};
+use crate::token::{ParseError, Span, TemplateSegment, Token, Tokenizer, split_template_string};
 
 mod expansion;
 mod follow;
@@ -26,6 +26,9 @@ mod validation;
 
 #[cfg(test)]
 mod hygiene_tests;
+
+#[cfg(test)]
+mod template_tests;
 
 // The validation corpus drives macro *file* imports and proc-macro
 // providers, both std-only leaves.
@@ -55,14 +58,33 @@ pub use procedural::run_proc_macro_process;
 
 const DEFAULT_RECURSION_LIMIT: usize = 128;
 
+/// Where `use <name>;` finds a package module's root, when the name is a
+/// package rather than a builtin macro module.
+///
+/// A function the caller supplies, not a call into `package`: macro expansion
+/// is part of *parsing*, and the package manager is built on top of it — it
+/// hands `ProcMacroProviders` down to expansion. `imports.rs` used to reach up
+/// and call `PackageGraph::discover` itself, which made the two mutually
+/// dependent and, at the crate level, unsplittable. `syntax::ParseOptions`
+/// installs the real one; `None` simply means package macro imports do not
+/// resolve, which is already the answer without a filesystem.
+pub type PackageMacroModuleResolver = fn(&Path, &str) -> Result<Option<PathBuf>, String>;
+
 #[derive(Debug, Clone)]
 pub struct MacroExpandOptions {
     pub recursion_limit: usize,
     pub trace: bool,
     pub base_dir: Option<PathBuf>,
+    pub package_macro_resolver: Option<PackageMacroModuleResolver>,
     pub proc_macro_providers: ProcMacroProviders,
     pub proc_macro_features: Vec<String>,
     pub proc_macro_dependency_recorder: ProcMacroDependencyRecorder,
+    /// Definitions from an earlier expansion to treat as already in scope.
+    ///
+    /// A carried definition loses to one this source declares, so re-entering
+    /// `macro_rules! m` in a REPL replaces it rather than colliding with it —
+    /// the same rule `let` and `fn` follow there.
+    pub carried_definitions: MacroDefinitions,
 }
 
 impl Default for MacroExpandOptions {
@@ -71,9 +93,11 @@ impl Default for MacroExpandOptions {
             recursion_limit: DEFAULT_RECURSION_LIMIT,
             trace: false,
             base_dir: None,
+            package_macro_resolver: None,
             proc_macro_providers: ProcMacroProviders::default(),
             proc_macro_features: Vec::new(),
             proc_macro_dependency_recorder: ProcMacroDependencyRecorder::default(),
+            carried_definitions: MacroDefinitions::default(),
         }
     }
 }
@@ -117,6 +141,44 @@ pub struct MacroExpandResult {
     pub origins: Vec<MacroTokenOrigin>,
     pub trace: Vec<MacroTrace>,
     pub proc_macro_dependencies: Vec<ProcMacroDependency>,
+    /// The `macro_rules!` definitions this expansion collected.
+    ///
+    /// A caller that compiles one source text has no use for these — the
+    /// definitions are consumed by the same expansion that found them. A REPL
+    /// does: each input is its own source text, so without carrying them a
+    /// macro defined on one line is gone by the next, and the definition is
+    /// dropped in silence. Feed this back through
+    /// [`MacroExpandOptions::carried_definitions`].
+    pub definitions: MacroDefinitions,
+}
+
+/// `macro_rules!` definitions collected by one expansion, to be carried into
+/// the next. Opaque: what a definition *is* stays inside this module.
+#[derive(Debug, Clone, Default)]
+pub struct MacroDefinitions {
+    registry: MacroRegistry,
+}
+
+impl MacroDefinitions {
+    /// Whether anything is carried — an empty set is the ordinary case for a
+    /// single-shot compile.
+    pub fn is_empty(&self) -> bool {
+        self.registry.macros.is_empty() && self.registry.runtime_anchors.is_empty()
+    }
+
+    /// The names carried, for a REPL that wants to complete or list them.
+    ///
+    /// A macro is registered twice — once under what the source wrote and once
+    /// under a `__lk_macro_crate_<hash>::` anchored alias that makes hygiene
+    /// work across files. Only the first is a name anyone typed, so the alias
+    /// is not offered.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.registry
+            .macros
+            .keys()
+            .map(String::as_str)
+            .filter(|name| !name.starts_with("__lk_macro_crate_"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +279,7 @@ struct ExpandedToken {
     origin_kind: MacroOriginKind,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 struct MacroRegistry {
     macros: HashMap<String, MacroDef>,
     pub(in crate::macro_system) runtime_anchors: HashMap<String, imports::MacroRuntimeAnchorSource>,
@@ -283,11 +345,56 @@ pub fn expand_macros(
             }
         })
         .collect::<Vec<_>>();
-    let (without_defs, registry) = collect_macro_defs(&source_tokens, options.base_dir.as_deref())?;
+    // Collect-then-expand, repeated: a `macro_rules!` that an *expansion*
+    // produces is not in the input the collection pass read, so a macro
+    // defining a macro used to leave the inner definition sitting in the token
+    // stream as ordinary tokens — the parser then failed on `macro_rules`
+    // itself, with the origin stack the only hint that a macro put it there.
+    //
+    // Each round expands what the previous one produced. It stops as soon as a
+    // round finds no definitions to collect, which is the first round for every
+    // program that does not do this; the cap is a backstop against a macro that
+    // defines a macro that defines a macro…
+    const MAX_DEFINITION_ROUNDS: usize = 8;
     let mut trace = Vec::new();
     let mut stack = Vec::new();
-    let expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
-    let expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
+    let mut current = source_tokens;
+    let mut expanded;
+    let mut rounds = 0usize;
+    // Assigned every round before any exit; the definitions handed back are the
+    // last round's, which is the set that was actually in scope.
+    let mut collected;
+    loop {
+        let (without_defs, mut registry) =
+            collect_macro_defs(&current, options.base_dir.as_deref(), options.package_macro_resolver)?;
+        // Carried definitions fill in behind this source's own, so a redefinition
+        // wins instead of raising "already defined in this macro scope" — which
+        // is the collision a REPL would otherwise hit on its second `macro_rules!
+        // m`, having been told the first one did not exist.
+        for (name, definition) in options.carried_definitions.registry.macros.clone() {
+            registry.insert_macro_if_absent(name, definition);
+        }
+        for (anchor, source) in options.carried_definitions.registry.runtime_anchors.clone() {
+            registry.insert_runtime_anchor(anchor, source);
+        }
+        expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
+        expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
+        collected = registry;
+        // Another round only when this one *both* took definitions out and put
+        // new ones back: otherwise there is nothing left to collect.
+        let produced_definitions = (0..expanded.len()).any(|index| macro_rules_start_at(&expanded, index).is_some());
+        if !produced_definitions {
+            break;
+        }
+        rounds += 1;
+        if rounds >= MAX_DEFINITION_ROUNDS {
+            return Err(ParseError::new(alloc::format!(
+                "macro definitions nested more than {MAX_DEFINITION_ROUNDS} deep; \
+                 a macro that defines a macro that defines a macro… does not terminate here"
+            )));
+        }
+        current = expanded;
+    }
     let (tokens, spans, origins) = split_source_tokens(expanded);
     Ok(MacroExpandResult {
         tokens,
@@ -295,6 +402,7 @@ pub fn expand_macros(
         origins,
         trace,
         proc_macro_dependencies: options.proc_macro_dependency_recorder.dependencies(),
+        definitions: MacroDefinitions { registry: collected },
     })
 }
 
@@ -305,10 +413,11 @@ pub fn is_builtin_macro_module(name: &str) -> bool {
 fn collect_macro_defs(
     tokens: &[SourceToken],
     base_dir: Option<&Path>,
+    package_resolver: Option<PackageMacroModuleResolver>,
 ) -> Result<(Vec<SourceToken>, MacroRegistry), ParseError> {
     let mut registry = MacroRegistry::default();
     let mut loading = Vec::new();
-    imports::collect_imported_macro_defs(tokens, base_dir, &mut registry, &mut loading)?;
+    imports::collect_imported_macro_defs(tokens, base_dir, package_resolver, &mut registry, &mut loading)?;
     let mut skipped_ranges = Vec::new();
     let mut export_items = Vec::new();
     let mut local_names = Vec::new();
@@ -695,6 +804,65 @@ fn parse_fragment_kind(name: &str) -> Option<FragmentKind> {
     }
 }
 
+/// Parenthesises an expansion that lands where an *expression* is expected.
+///
+/// A declarative macro's output is spliced as tokens, so its pieces used to
+/// bind to whatever surrounded the call rather than to each other:
+///
+/// ```text
+/// macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+/// let n = 3;
+/// twice!(n)          → 6     (nothing to bind to)
+/// twice!(n) * 2      → 9     (`n + n * 2`), and `2 * twice!(n)` the same
+/// "v=" + twice!(n)   → "v=33"
+/// ```
+///
+/// Two conditions, and both are needed. The **site** must want an expression —
+/// statement position is `;`, `{`, `}` or the start of the stream, and nothing
+/// else is — and the **expansion** must be a single expression, which a
+/// top-level `;` in it says it is not (`swap_names!` expands to three
+/// statements and must stay three statements).
+fn group_expression_expansion(before: &[SourceToken], expanded: Vec<SourceToken>) -> Vec<SourceToken> {
+    if expanded.is_empty() {
+        return expanded;
+    }
+    let statement_position = match before.last() {
+        None => true,
+        Some(token) => matches!(token.token, Token::Semicolon | Token::LBrace | Token::RBrace),
+    };
+    if statement_position {
+        return expanded;
+    }
+    let mut depth = 0i32;
+    for token in &expanded {
+        match token.token {
+            Token::LParen | Token::LBracket | Token::LBrace => depth += 1,
+            Token::RParen | Token::RBracket | Token::RBrace => depth -= 1,
+            Token::Semicolon if depth == 0 => return expanded,
+            _ => {}
+        }
+    }
+    // The parentheses take the call's span and origins, so a diagnostic inside
+    // still points at the macro rather than at punctuation nobody wrote.
+    let open = SourceToken {
+        token: Token::LParen,
+        span: expanded[0].span.clone(),
+        lexeme: "(".to_string(),
+        origins: expanded[0].origins.clone(),
+    };
+    let close = SourceToken {
+        token: Token::RParen,
+        span: expanded[expanded.len() - 1].span.clone(),
+        lexeme: ")".to_string(),
+        origins: expanded[expanded.len() - 1].origins.clone(),
+    };
+    let mut grouped = Vec::with_capacity(expanded.len() + 2);
+    grouped.push(open);
+    grouped.extend(expanded);
+    grouped.push(close);
+    grouped
+}
+
 fn expand_stream(
     tokens: &[SourceToken],
     registry: &MacroRegistry,
@@ -714,7 +882,14 @@ fn expand_stream(
     let mut index = 0usize;
     while index < tokens.len() {
         let Some((name, group_start)) = macro_invocation_at(tokens, index, registry, options) else {
-            output.push(tokens[index].clone());
+            output.push(expand_template_interiors(
+                &tokens[index],
+                registry,
+                options,
+                depth,
+                trace,
+                stack,
+            )?);
             index += 1;
             continue;
         };
@@ -761,10 +936,114 @@ fn expand_stream(
             }
         };
         stack.pop();
+        let expanded = group_expression_expansion(&output, expanded);
         output.extend(expanded);
         index = inner_end + 1;
     }
     Ok(output)
+}
+
+/// Expand macro invocations that sit inside a template string's `${…}` holes.
+///
+/// A template is one token here — its interior is only tokenized much later, by
+/// the parser — so `"${twice!(3)}"` used to reach the parser with the invocation
+/// intact, and the parser answered "no macro named `twice` is defined". That
+/// message rests on "expansion runs first, so anything left is undefined", which
+/// is true of every position *except* this one; `twice!` worked in
+/// `let a = twice!(3)` and in `println("{}", twice!(4))` in the same file.
+///
+/// A segment whose token stream comes back unchanged keeps its original text
+/// byte for byte. That matters: rendering tokens back to source is by lexeme, so
+/// `a.b` would return as `a . b`, and a program with no macros in its templates
+/// must not be rewritten at all. A segment that does not tokenize is also left
+/// alone — the parser reports that, with a position, and this pass has none.
+fn expand_template_interiors(
+    token: &SourceToken,
+    registry: &MacroRegistry,
+    options: &MacroExpandOptions,
+    depth: usize,
+    trace: &mut Vec<MacroTrace>,
+    stack: &mut Vec<MacroCallFrame>,
+) -> Result<SourceToken, ParseError> {
+    let Token::TemplateString(content) = &token.token else {
+        return Ok(token.clone());
+    };
+    let Ok(segments) = split_template_string(content) else {
+        return Ok(token.clone());
+    };
+    if !segments
+        .iter()
+        .any(|segment| matches!(segment, TemplateSegment::Expr(_)))
+    {
+        return Ok(token.clone());
+    }
+
+    let mut rebuilt = String::with_capacity(content.len());
+    let mut changed = false;
+    for segment in &segments {
+        match segment {
+            TemplateSegment::Literal(text) => rebuilt.push_str(text),
+            TemplateSegment::Expr(text) => {
+                rebuilt.push_str("${");
+                match expand_template_expr(text, token, registry, options, depth, trace, stack)? {
+                    Some(expanded) => {
+                        changed = true;
+                        rebuilt.push_str(&expanded);
+                    }
+                    None => rebuilt.push_str(text),
+                }
+                rebuilt.push('}');
+            }
+        }
+    }
+    if !changed {
+        return Ok(token.clone());
+    }
+    let mut rewritten = token.clone();
+    rewritten.token = Token::TemplateString(rebuilt);
+    rewritten.lexeme = token_lexeme(&rewritten.token);
+    Ok(rewritten)
+}
+
+/// Expand one `${…}` interior; `None` when it holds no macro to expand.
+fn expand_template_expr(
+    text: &str,
+    token: &SourceToken,
+    registry: &MacroRegistry,
+    options: &MacroExpandOptions,
+    depth: usize,
+    trace: &mut Vec<MacroTrace>,
+    stack: &mut Vec<MacroCallFrame>,
+) -> Result<Option<String>, ParseError> {
+    let Ok(inner) = Tokenizer::tokenize_enhanced(text) else {
+        return Ok(None);
+    };
+    let inner: Vec<SourceToken> = inner
+        .into_iter()
+        .map(|inner_token| SourceToken {
+            lexeme: token_lexeme(&inner_token),
+            token: inner_token,
+            // Every interior token answers with the template's own position: the
+            // template is one token to the lexer, so there is nothing finer.
+            span: token.span.clone(),
+            origins: token.origins.clone(),
+        })
+        .collect();
+    if !inner
+        .iter()
+        .enumerate()
+        .any(|(index, _)| macro_invocation_at(&inner, index, registry, options).is_some())
+    {
+        return Ok(None);
+    }
+    let expanded = expand_stream(&inner, registry, options, depth + 1, trace, stack)?;
+    Ok(Some(
+        expanded
+            .iter()
+            .map(|expanded_token| expanded_token.lexeme.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    ))
 }
 
 fn macro_error_with_stack(error: ParseError, stack: &[MacroCallFrame]) -> ParseError {
@@ -858,6 +1137,7 @@ fn token_matches(expected: &Token, actual: &Token) -> bool {
         (Token::Str(a), Token::Str(b)) => a == b,
         (Token::TemplateString(a), Token::TemplateString(b)) => a == b,
         (Token::Int(a), Token::Int(b)) => a == b,
+        (Token::UInt { value: a, .. }, Token::UInt { value: b, .. }) => a == b,
         (Token::Float(a), Token::Float(b)) => a == b,
         (Token::Bool(a), Token::Bool(b)) => a == b,
         _ => core::mem::discriminant(expected) == core::mem::discriminant(actual),
@@ -911,6 +1191,48 @@ mod tests {
         vm::execute_source,
     };
 
+    /// A definition survives into a *later* source text when carried.
+    ///
+    /// This is what a REPL needs and what it did not have: macros are expanded
+    /// during parsing, so a `macro_rules!` entered on one line was gone by the
+    /// next — accepted in silence, then reported as "no macro named `m` is
+    /// defined". `fn`, `struct`, `impl` and `let` all persisted.
+    #[test]
+    fn carried_definitions_outlive_the_source_that_declared_them() {
+        let first = expand_source("macro_rules! two { () => { 2 }; }", ParseOptions::default())
+            .expect("the definition expands");
+        assert_eq!(first.macro_definitions.names().collect::<Vec<_>>(), ["two"]);
+
+        // Without carrying, the second source does not know the name.
+        assert!(parse_program_source("return two!();", ParseOptions::default()).is_err());
+
+        let carried = ParseOptions {
+            carried_macro_definitions: first.macro_definitions.clone(),
+            ..ParseOptions::default()
+        };
+        let second = expand_source("return two!();", carried).expect("the carried macro resolves");
+        assert!(render_tokens(&second.tokens).contains('2'));
+    }
+
+    /// A source's own definition beats a carried one, so re-entering
+    /// `macro_rules! m` replaces it. Inserting the carried set first would
+    /// instead raise "already defined in this macro scope" — a collision on a
+    /// name the session had just been told did not exist.
+    #[test]
+    fn a_redefinition_beats_the_carried_definition() {
+        let first =
+            expand_source("macro_rules! v { () => { 1 }; }", ParseOptions::default()).expect("the first definition");
+        let carried = ParseOptions {
+            carried_macro_definitions: first.macro_definitions,
+            ..ParseOptions::default()
+        };
+        let second = expand_source("macro_rules! v { () => { 9 }; } return v!();", carried)
+            .expect("the redefinition replaces rather than collides");
+        let rendered = render_tokens(&second.tokens);
+        assert!(rendered.contains('9'), "expected the new body, got {rendered}");
+        assert!(!rendered.contains('1'), "expected the old body gone, got {rendered}");
+    }
+
     #[test]
     fn expands_vec_like_repetition() {
         let result = execute_source(
@@ -923,6 +1245,26 @@ mod tests {
         )
         .expect("macro program should execute");
         assert_eq!(result.display_first_return(), "5");
+    }
+
+    /// A macro call is an expression, so it may be an `expr` fragment.
+    ///
+    /// Composing macros is most of what macros are for, and this did not work:
+    /// expansion is token-level, so at capture time the inner call is still
+    /// `Id ! ( … )` — a shape the expression parser does not know — and the
+    /// matcher answered "expected `expr` fragment `$e`". Captured as tokens it
+    /// expands on a later round, like any other macro output.
+    #[test]
+    fn an_expr_fragment_may_be_a_macro_call() {
+        let result = execute_source(
+            r#"
+            macro_rules! twice { ($e:expr) => { ($e) + ($e) }; }
+            macro_rules! deep { ($e:expr) => { twice!(twice!($e)) }; }
+            return [twice!(twice!(1)), deep!(1), twice!(3)];
+            "#,
+        )
+        .expect("macro program should execute");
+        assert_eq!(result.display_first_return(), "[4,4,6]");
     }
 
     #[test]
@@ -1005,7 +1347,7 @@ mod tests {
         .expect("macro expansion succeeds");
         assert_eq!(expanded.trace.len(), 1);
         assert_eq!(expanded.trace[0].macro_name, "id");
-        assert!(render_tokens(&expanded.tokens).contains("return 7;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (7);"));
     }
 
     #[test]
@@ -1290,7 +1632,7 @@ mod tests {
             },
         )
         .expect("aliased macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -1316,7 +1658,7 @@ mod tests {
             },
         )
         .expect("namespaced file macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]
@@ -1342,7 +1684,7 @@ mod tests {
             },
         )
         .expect("aliased namespace macro import should expand");
-        assert!(render_tokens(&expanded.tokens).contains("return 42;"));
+        assert!(render_tokens(&expanded.tokens).contains("return (42);"));
     }
 
     #[test]

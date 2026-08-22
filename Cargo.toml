@@ -3,6 +3,7 @@ members = [
     "core",
     "values",
     "api",
+    "api-cabi",
     "cli",
     "completion",
     "aot/abi",
@@ -32,7 +33,6 @@ members = [
     "stdlib/crates/process",
     "stdlib/crates/random",
     "stdlib/crates/regex",
-    "stdlib/crates/slice",
     "stdlib/crates/stream",
     "stdlib/crates/string",
     "stdlib/crates/task",
@@ -62,7 +62,12 @@ anyhow = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml = "0"
-toml = "1"
+# `preserve_order`: a TOML document's tables come back in document order,
+# because an LK map's order is a contract (docs/semantics.md). Without it
+# `toml::Value` is a `BTreeMap` and a parsed table arrives alphabetised.
+# Unlike serde_json's same-named feature this costs nothing here — TOML
+# decoding is already `std`-only.
+toml = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 crc32fast = "1"
 ed25519-dalek = "2"
@@ -96,6 +101,21 @@ js-sys = "0.3"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
+
+# Debuginfo dominates `target/debug`: with the default `debug = 2` every one of
+# the workspace's ~30 test binaries carries full DWARF for the entire graph
+# (measured: 944 binaries, 70GB). `line-tables-only` keeps what a backtrace
+# actually reads — file, line, function — and drops the variable/type tables
+# that only an interactive debugger uses. Third-party dependencies get nothing
+# at all; stepping into `serde` is not something this workspace does.
+#
+# Raise to `debug = 2` locally (or `CARGO_PROFILE_DEV_DEBUG=2`) when a session
+# genuinely needs gdb-level inspection of a dependency.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 panic = "abort"

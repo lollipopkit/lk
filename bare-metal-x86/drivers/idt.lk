@@ -1,0 +1,121 @@
+// An interrupt descriptor table.
+//
+// This is the table the CPU indexes by vector number to find out where to go
+// when something interrupts. Its contents are entirely a *decision*: which
+// vector means the timer, which means the keyboard, which one a ring-3 task is
+// allowed to raise itself. None of that is a property of the machine, and all
+// of it used to be written in Rust for one missing reason — there was no way to
+// say `lidt` in LK. There is now (`cpu_load_idt`), so the table is here, where
+// the decisions it encodes already live.
+//
+// What stays on the board's side is the thing this cannot be: the trampolines.
+// An interrupt is not a call — the code it lands in never agreed to lose its
+// caller-saved registers — so entering a compiled function needs a stub that
+// spills everything first and leaves with `iretq`. That is assembly, and it is
+// assembly in any language.
+//
+// The table's storage is the caller's to choose, for the same reason the page
+// allocator's state is: a driver that picks an address is a driver that
+// collides with the next one.
+
+// Exported so a caller laying out fixed memory can say where this table ends
+// without naming 4096. The size is a product of the two, and a product is an
+// instruction — which a bundled module's top level may not emit — so the
+// multiplication happens in `table_size()` and, for the caller, at its own top
+// level where it is allowed.
+const IDT_GATE_SIZE = 16;
+const IDT_GATE_COUNT = 256;
+
+// Present, ring 0, 64-bit *interrupt* gate.
+//
+// "Interrupt" rather than "trap" is not a naming choice: an interrupt gate
+// clears IF on entry, so the handler cannot be re-entered by the same interrupt
+// before it has acknowledged the device. A trap gate leaves interrupts on, and
+// the first tick that arrives mid-handler starts a second one on the same stack.
+const TYPE_INTERRUPT = 0x8e;
+
+// How many bytes the caller has to set aside.
+//
+// 256 entries, always, however few are filled in. The CPU indexes this table by
+// the vector it computed and reads whatever is at that index — a table sized to
+// the gates actually in use is a fault that reads past the end, at the exact
+// moment there is a fault to report.
+//
+// A function rather than a `const`, and not by preference: a bundled module's
+// top level may hold literal scalars but must emit no instructions, and
+// `IDT_GATE_COUNT * IDT_GATE_SIZE` is a multiply. Writing 4096 instead would be the one
+// thing this file argues against everywhere else — a number that agrees with
+// two others until one of them changes.
+fn table_size() -> Int {
+    return IDT_GATE_COUNT * IDT_GATE_SIZE;
+}
+
+// Zeroes every gate.
+//
+// A zeroed gate is *not present*, which is the honest state for a vector
+// nothing handles: raising it is a general protection fault that says so. Left
+// as whatever the memory happened to hold, it is a present gate pointing at an
+// address made of old data — a jump into nothing, reported as nothing.
+fn zero(base: Int) {
+    for offset in 0..((table_size() / 8) as Int) {
+        unsafe { volatile_write_u64((base + offset * 8) as *mut u64, 0 as u64); };
+    }
+}
+
+// Fills in one gate.
+//
+// The handler's address is split across three fields that are not adjacent,
+// because this layout predates 64-bit addresses and was extended twice — 16
+// bits at offset 0, 16 more at offset 6, and the top 32 at offset 8. The
+// scattering is history, not design, which is why it is written out rather than
+// computed: there is no rule to express.
+//
+//   0..2   handler bits 0..16
+//   2..4   the code selector to enter through
+//   4      IST index (0 = keep using the current stack)
+//   5      type and attributes
+//   6..8   handler bits 16..32
+//   8..12  handler bits 32..64
+//   12..16 reserved, and the CPU checks it is zero
+//
+// `dpl` is the privilege a caller must already have to raise this vector with
+// an `int` instruction. Zero for everything a *device* raises: ring 3 doing
+// `int 0x21` would otherwise be a way to fake a keystroke. Three for exactly
+// the syscall, which is the door the ring boundary exists to make the only one.
+// Answers whether the gate was written.
+//
+// A vector outside the table is refused rather than written, and that is not
+// defensive tidiness: the table is 256 gates and whatever the kernel put after
+// it is one index away. In this kernel that is the GDT. The vector a device
+// interrupt lands on is `base + line`, and the line comes out of PCI config
+// space — where 0xFF is the *defined* value for "not connected", which makes
+// the vector 287 and the write 496 bytes past the end.
+//
+// The caller is told, because a device left without an interrupt is a decision
+// someone should see, and silently not installing a gate looks identical to
+// installing one.
+fn set_gate(base: Int, vector: Int, handler: Int, selector: Int, dpl: Int) -> Bool {
+    if (vector < 0 || vector >= IDT_GATE_COUNT) {
+        return false;
+    }
+    let at = base + vector * IDT_GATE_SIZE;
+    let low = (handler & 0xffff)
+        | (selector << 16)
+        | ((TYPE_INTERRUPT | (dpl << 5)) << 40)
+        | (((handler >> 16) & 0xffff) << 48);
+    let high = (handler >> 32) & 0xffffffff;
+    unsafe { volatile_write_u64(at as *mut u64, low as u64); };
+    unsafe { volatile_write_u64((at + 8) as *mut u64, high as u64); };
+    return true;
+}
+
+// Points the CPU at the table.
+//
+// The limit is the table's size *minus one*, which is what the hardware field
+// holds: a limit of 0 means one addressable byte. Computed here rather than
+// asked of the caller, because it is derived from a number this file already
+// owns and the off-by-one has no way to announce itself — a limit one too small
+// makes the last gate unreachable, and only the last gate.
+fn install(base: Int) {
+    unsafe { cpu_load_idt(base, table_size() - 1); };
+}

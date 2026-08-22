@@ -8,12 +8,11 @@ use crate::{
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
-    /// 解析整个程序
+    /// Parses a whole program.
     pub fn parse_program(&mut self) -> Result<Program> {
         let mut statements = Vec::new();
 
         while !self.eof() {
-            // 跳过空语句
             if self.tokens[self.pos] == Token::Semicolon {
                 statements.push(Box::new(Stmt::Empty));
                 self.pos += 1;
@@ -31,7 +30,6 @@ impl<'a> StmtParser<'a> {
         let mut statements = Vec::new();
 
         while !self.eof() {
-            // 跳过空语句
             if self.tokens[self.pos] == Token::Semicolon {
                 statements.push(Box::new(Stmt::Empty));
                 self.pos += 1;
@@ -189,12 +187,50 @@ impl<'a> StmtParser<'a> {
         (statements, errors)
     }
 
-    /// 解析单个语句
+    /// `defer <statement>` — run it when the function leaves, whichever way.
+    ///
+    /// The statement is parsed here and *erased* by `desugar_defers`, which
+    /// rewrites the enclosing function so it appears before every `return` and
+    /// at the end, in reverse order. Nothing downstream ever sees one.
+    fn parse_defer_stmt(&mut self) -> Result<Stmt> {
+        let span = self.current_span();
+        self.expect_token(Token::Defer)?;
+        let body = self.parse_statement()?;
+        Ok(Stmt::Defer {
+            body: Box::new(body),
+            span,
+        })
+    }
+
+    /// Parses one statement.
+    ///
+    /// The single choke point every level of statement nesting passes through:
+    /// a block parses its statements here, and `if`/`while`/`for`/`try` parse
+    /// their bodies as blocks. Bounding it here bounds every consumer that
+    /// walks the tree afterwards — which is the point, because the one that ran
+    /// out of stack first was the *type checker*, not this.
     pub fn parse_statement(&mut self) -> Result<Stmt> {
         if self.eof() {
             return Ok(Stmt::Empty);
         }
+        if self.depth >= crate::ast::parser::MAX_PARSE_DEPTH {
+            return Err(
+                anyhow::Error::new(crate::ast::parser::NestingTooDeep).context(self.err(&alloc::format!(
+                    "nesting too deep (more than {} levels)",
+                    crate::ast::parser::MAX_PARSE_DEPTH
+                ))),
+            );
+        }
+        self.depth += 1;
+        // Decremented on the error path too, like the expression parser's:
+        // a bounded parse that fails must not leave the counter raised for
+        // whatever the caller tries next.
+        let parsed = self.parse_statement_inner();
+        self.depth -= 1;
+        parsed
+    }
 
+    fn parse_statement_inner(&mut self) -> Result<Stmt> {
         match &self.tokens[self.pos] {
             Token::Hash => self.parse_attributed_stmt(),
             Token::Use => self.parse_import_stmt(),
@@ -209,13 +245,69 @@ impl<'a> StmtParser<'a> {
             Token::Impl => self.parse_impl_stmt(),
             Token::Let => self.parse_let_stmt(),
             Token::Const => self.parse_const_stmt(),
+            Token::Defer => self.parse_defer_stmt(),
             Token::Break => self.parse_break_stmt(),
             Token::Continue => self.parse_continue_stmt(),
             Token::Return => self.parse_return_stmt(),
             Token::Fn => self.parse_function_stmt(),
             Token::LBrace => self.parse_block_stmt(),
             Token::Id(id) => {
-                // 优先解析短声明 `id := expr` 以避免与标签 `id:` 冲突
+                // The one mis-spelling worth naming here, for the same reason
+                // `type_syntax::function_type_hint` names `fn(Int) -> Int`:
+                // somebody who read the macro documentation writes `export fn`,
+                // and what they got back was "Unexpected tokens at end (found
+                // Fn)" pointing at `export` — a message that names neither what
+                // `export` is nor that a function does not need it. This
+                // repository's own fixtures write `export fn` in four places
+                // (`macro_system/proc_deps.rs`), which only never showed
+                // because those tests hash the file instead of parsing it.
+                // The same reason, for the keyword somebody arrives with from
+                // another language. Each of these produced "Unexpected tokens
+                // at end" pointing at the word itself, which names neither the
+                // mistake nor the spelling that works — and the word is the
+                // first thing anybody types.
+                if let Some(Token::Id(name)) = self.peek_ahead(1)
+                    && matches!(id.as_str(), "function" | "func" | "def" | "fun")
+                {
+                    let message = alloc::format!(
+                        "`{id}` does not declare a function in LK — the keyword is `fn`, as in \
+                         `fn {name}(x: Int) -> Int {{ … }}`"
+                    );
+                    return Err(anyhow!(message));
+                }
+                // `elif` is Python's; a chain here is `else if`, and the word
+                // lexes as an ordinary identifier so nothing else reports it.
+                if id == "elif" {
+                    return Err(anyhow!(
+                        "`elif` is not a keyword in LK — chain the branches with `else if`".to_string()
+                    ));
+                }
+                if id == "export"
+                    && let Some(next) = self.peek_ahead(1)
+                    && matches!(
+                        next,
+                        Token::Fn
+                            | Token::Struct
+                            | Token::Const
+                            | Token::Let
+                            | Token::Trait
+                            | Token::Impl
+                            | Token::Type
+                    )
+                {
+                    let message = "`export` applies to `macro_rules!` only \
+                        (`export macro_rules! name { … }`). A top-level `fn`, `struct`, `const` or \
+                        `type` needs no export — it is already importable with \
+                        `use { name } from module;`. For a native symbol name, the spelling is the \
+                        attribute `#[export]`";
+                    // Plain, with no span of its own: the caller re-wraps a
+                    // statement error into a `ParseError` carrying the current
+                    // token's span, and attaching one here made the rendered
+                    // line read `… at 1:1-7 at 1:1-7`.
+                    return Err(anyhow!(message));
+                }
+                // The short declaration `id := expr` is tried first, so it is
+                // not read as the label `id:`.
                 if self.peek_ahead(1) == Some(&Token::Colon) && self.peek_ahead(2) == Some(&Token::Assign) {
                     self.parse_define_stmt_with_id(id.clone())
                 } else if matches!(self.peek_ahead(1), Some(Token::LBracket | Token::Dot))
@@ -223,7 +315,6 @@ impl<'a> StmtParser<'a> {
                 {
                     Ok(stmt)
                 } else if self.peek_ahead(1) == Some(&Token::Assign) {
-                    // 赋值 (id = expr;)
                     self.parse_assign_stmt_with_id(id.clone())
                 } else if matches!(
                     self.peek_ahead(1),
@@ -232,7 +323,11 @@ impl<'a> StmtParser<'a> {
                         | Some(&Token::MulAssign)
                         | Some(&Token::DivAssign)
                         | Some(&Token::ModAssign)
-                ) {
+                        | Some(&Token::BitAndAssign)
+                        | Some(&Token::BitOrAssign)
+                        | Some(&Token::BitXorAssign)
+                ) || self.peek_shift_assign(self.pos + 1).is_some()
+                {
                     self.parse_compound_assign_stmt_with_id(id.clone())
                 } else if self.peek_ahead(1) == Some(&Token::Colon) {
                     // Label + statement (id: stmt) is not yet supported; treat as expression fallback

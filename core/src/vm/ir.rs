@@ -5,7 +5,7 @@
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::FastHashMap;
+use crate::util::value_map::ValueMap;
 use alloc::sync::Arc;
 use core::fmt::Write as _;
 use core::mem::size_of;
@@ -14,10 +14,8 @@ use anyhow::{Result, bail};
 
 use crate::{
     val::{RuntimeMapKey, ShortStr},
-    vm::analysis::{FunctionAnalysis, PerformanceFacts},
+    vm::analysis::PerformanceFacts,
 };
-
-use super::runtime::NativeEntry;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalSlot {
@@ -28,7 +26,12 @@ pub struct GlobalSlot {
 pub struct ConstPool {
     pub ints: Vec<i64>,
     pub floats: Vec<f64>,
-    pub strings: Vec<String>,
+    /// `Arc<str>`, not `String`: a constant string key inserted into a map
+    /// becomes an `Arc<str>` there, and every insert used to allocate a fresh
+    /// one and free it when the map died. Sharing the pool's makes it a
+    /// refcount bump — `Arc<str>::drop_slow` alone was 4.6% of a map-building
+    /// workload. Reads still hand out `&str`.
+    pub strings: Vec<Arc<str>>,
     pub heap_values: Vec<ConstHeapValue>,
 }
 
@@ -40,15 +43,15 @@ impl ConstPool {
     }
 
     pub fn push_float(&mut self, value: f64) -> Result<u16> {
-        push_const(&mut self.floats, value, "float")
+        push_const_by(&mut self.floats, value, "float", |a, b| a.to_bits() == b.to_bits())
     }
 
-    pub fn push_string(&mut self, value: impl Into<String>) -> Result<u16> {
-        push_const(&mut self.strings, value.into(), "string")
+    pub fn push_string(&mut self, value: impl AsRef<str>) -> Result<u16> {
+        push_const(&mut self.strings, Arc::<str>::from(value.as_ref()), "string")
     }
 
     pub fn push_heap_value(&mut self, value: ConstHeapValue) -> Result<u16> {
-        push_const(&mut self.heap_values, value, "heap value")
+        push_const_by(&mut self.heap_values, value, "heap value", const_heap_value_is_same)
     }
 
     #[inline]
@@ -63,7 +66,14 @@ impl ConstPool {
 
     #[inline]
     pub fn string(&self, index: u16) -> Option<&str> {
-        self.strings.get(index as usize).map(String::as_str)
+        self.strings.get(index as usize).map(Arc::as_ref)
+    }
+
+    /// The pooled string itself, for a caller that is about to *store* it —
+    /// a map key. See [`Self::strings`].
+    #[inline]
+    pub fn shared_string(&self, index: u16) -> Option<&Arc<str>> {
+        self.strings.get(index as usize)
     }
 
     #[inline]
@@ -73,7 +83,21 @@ impl ConstPool {
 }
 
 fn push_const<T: PartialEq>(values: &mut Vec<T>, value: T, name: &str) -> Result<u16> {
-    if let Some(index) = values.iter().position(|existing| existing == &value) {
+    push_const_by(values, value, name, |existing, value| existing == value)
+}
+
+/// Deduplication is *identity*, and for a float that is its bits.
+///
+/// `PartialEq` is the wrong question here: `-0.0 == 0.0` is true and the two
+/// are different values, so whichever literal a file wrote first swallowed
+/// every later occurrence of the other. `println(-0.0); println(0.0);` printed
+/// `-0` twice, and — because the sign of zero reaches division —
+/// `println(1.0 / 0.0)` answered `-inf`. The answer depended on the spelling
+/// and position of an unrelated line in the same file.
+///
+/// Bit identity also merges two NaNs of the same payload, which `==` never did.
+fn push_const_by<T>(values: &mut Vec<T>, value: T, name: &str, eq: impl Fn(&T, &T) -> bool) -> Result<u16> {
+    if let Some(index) = values.iter().position(|existing| eq(existing, &value)) {
         return Ok(index as u16);
     }
     let index = values.len();
@@ -82,6 +106,34 @@ fn push_const<T: PartialEq>(values: &mut Vec<T>, value: T, name: &str) -> Result
     }
     values.push(value);
     Ok(index as u16)
+}
+
+/// [`ConstRuntimeValue`] equality for pooling: identical to the derived one
+/// except that floats compare by bits. See [`push_const_by`].
+fn const_value_is_same(left: &ConstRuntimeValue, right: &ConstRuntimeValue) -> bool {
+    match (left, right) {
+        (ConstRuntimeValue::Float(a), ConstRuntimeValue::Float(b)) => a.to_bits() == b.to_bits(),
+        (ConstRuntimeValue::Heap(a), ConstRuntimeValue::Heap(b)) => const_heap_value_is_same(a, b),
+        _ => left == right,
+    }
+}
+
+/// [`ConstHeapValue`] equality for pooling. A container constant holds
+/// [`ConstRuntimeValue`]s, so the float rule has to reach through it: `[0.0]`
+/// and `[-0.0]` were the same pool entry too.
+fn const_heap_value_is_same(left: &ConstHeapValue, right: &ConstHeapValue) -> bool {
+    match (left, right) {
+        (ConstHeapValue::List(a), ConstHeapValue::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| const_value_is_same(a, b))
+        }
+        (ConstHeapValue::Map(a), ConstHeapValue::Map(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, value)| b.get(key).is_some_and(|other| const_value_is_same(value, other)))
+        }
+        (ConstHeapValue::UpvalCell(a), ConstHeapValue::UpvalCell(b)) => const_value_is_same(a, b),
+        _ => left == right,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +150,10 @@ pub enum ConstRuntimeValue {
 pub enum ConstHeapValue {
     LongString(Arc<str>),
     List(Vec<ConstRuntimeValue>),
-    Map(FastHashMap<RuntimeMapKey, ConstRuntimeValue>),
+    /// Insertion-ordered: a map literal's entries reach the heap in the order
+    /// they were written, because that is the order the value iterates in
+    /// (`util::value_map`).
+    Map(ValueMap<RuntimeMapKey, ConstRuntimeValue>),
     UpvalCell(Box<ConstRuntimeValue>),
 }
 
@@ -283,51 +338,64 @@ pub enum Opcode {
     CallDirect = 69,
     CallNamed = 70,
     LoadFunction = 71,
-    LoadNative = 72,
-    MakeClosure = 73,
-    LoadCapture = 74,
-    LoadCellVal = 75,
-    StoreCellVal = 76,
-    GetGlobal = 77,
-    SetGlobal = 78,
-    NewList = 79,
-    NewMap = 80,
-    NewRange = 81,
-    NewObject = 82,
-    GetIndex = 83,
-    SetIndex = 84,
-    GetIndexStrI = 85,
-    SetIndexStrI = 86,
-    GetFieldK = 87,
-    SetFieldK = 88,
-    GetList = 89,
-    ListPush = 90,
-    Len = 91,
-    ToIter = 92,
-    Contains = 93,
-    SliceFrom = 94,
-    MapRest = 95,
-    ToString = 96,
-    ConcatString = 97,
-    ConcatN = 98,
-    StringSplit = 99,
-    ListJoin = 100,
-    Raise = 101,
-    TryBegin = 102,
-    TryEnd = 103,
-    Wide = 104,
+    MakeClosure = 72,
+    LoadCapture = 73,
+    LoadCellVal = 74,
+    StoreCellVal = 75,
+    GetGlobal = 76,
+    SetGlobal = 77,
+    NewList = 78,
+    NewMap = 79,
+    NewRange = 80,
+    NewObject = 81,
+    GetIndex = 82,
+    SetIndex = 83,
+    GetIndexStrI = 84,
+    SetIndexStrI = 85,
+    GetFieldK = 86,
+    SetFieldK = 87,
+    GetList = 88,
+    ListPush = 89,
+    Len = 90,
+    ToIter = 91,
+    Contains = 92,
+    SliceFrom = 93,
+    MapRest = 94,
+    ToString = 95,
+    ConcatString = 96,
+    ConcatN = 97,
+    StringSplit = 98,
+    ListJoin = 99,
+    Raise = 100,
+    TryBegin = 101,
+    TryEnd = 102,
+    Wide = 103,
     /// Boxing-free method call: `a` = window base (receiver at `a`, args at
     /// `[a+1, a+1+c)`, result written to `a`), `b` = method-name string
     /// constant index, `c` = positional argument count. Replaces the
     /// `GetGlobal __lk_call_method` + `NewList` + `Call` sequence for
     /// positional method calls whose name constant index fits in `b`.
-    CallMethodK = 105,
+    CallMethodK = 104,
     /// `A = B as <type encoded in C>` — see `CastTarget`.
     ///
     /// One opcode for every conversion rather than one per source/target pair:
     /// the source type is only known at runtime anyway, so a per-pair opcode
     /// would not save the dispatch on it.
-    CastTo = 106,
+    CastTo = 105,
+    /// `A = -B`.
+    ///
+    /// Not `0 - B`: the two differ on floats, where `-0.0` is a value distinct
+    /// from `0.0 - 0.0`, and negation is what the writer asked for.
+    Neg = 106,
+    /// `A = floor(B / C)` on two `Int`s — the fused form of
+    /// `math.floor(a / b)`.
+    ///
+    /// Exists because `/` yields a `Float`, so this idiom is the only way to
+    /// write integer division and it would otherwise cost a float divide plus
+    /// a native call. Floor, not truncation: `math.floor(-7 / 2)` is `-4`.
+    /// Non-`Int` operands divide as `f64` and floor the result, which is what
+    /// `math.floor` would have answered.
+    FloorDivInt = 107,
 }
 
 impl Opcode {
@@ -409,41 +477,42 @@ impl Opcode {
             69 => Some(Self::CallDirect),
             70 => Some(Self::CallNamed),
             71 => Some(Self::LoadFunction),
-            72 => Some(Self::LoadNative),
-            73 => Some(Self::MakeClosure),
-            74 => Some(Self::LoadCapture),
-            75 => Some(Self::LoadCellVal),
-            76 => Some(Self::StoreCellVal),
-            77 => Some(Self::GetGlobal),
-            78 => Some(Self::SetGlobal),
-            79 => Some(Self::NewList),
-            80 => Some(Self::NewMap),
-            81 => Some(Self::NewRange),
-            82 => Some(Self::NewObject),
-            83 => Some(Self::GetIndex),
-            84 => Some(Self::SetIndex),
-            85 => Some(Self::GetIndexStrI),
-            86 => Some(Self::SetIndexStrI),
-            87 => Some(Self::GetFieldK),
-            88 => Some(Self::SetFieldK),
-            89 => Some(Self::GetList),
-            90 => Some(Self::ListPush),
-            91 => Some(Self::Len),
-            92 => Some(Self::ToIter),
-            93 => Some(Self::Contains),
-            94 => Some(Self::SliceFrom),
-            95 => Some(Self::MapRest),
-            96 => Some(Self::ToString),
-            97 => Some(Self::ConcatString),
-            98 => Some(Self::ConcatN),
-            99 => Some(Self::StringSplit),
-            100 => Some(Self::ListJoin),
-            101 => Some(Self::Raise),
-            102 => Some(Self::TryBegin),
-            103 => Some(Self::TryEnd),
-            104 => Some(Self::Wide),
-            105 => Some(Self::CallMethodK),
-            106 => Some(Self::CastTo),
+            72 => Some(Self::MakeClosure),
+            73 => Some(Self::LoadCapture),
+            74 => Some(Self::LoadCellVal),
+            75 => Some(Self::StoreCellVal),
+            76 => Some(Self::GetGlobal),
+            77 => Some(Self::SetGlobal),
+            78 => Some(Self::NewList),
+            79 => Some(Self::NewMap),
+            80 => Some(Self::NewRange),
+            81 => Some(Self::NewObject),
+            82 => Some(Self::GetIndex),
+            83 => Some(Self::SetIndex),
+            84 => Some(Self::GetIndexStrI),
+            85 => Some(Self::SetIndexStrI),
+            86 => Some(Self::GetFieldK),
+            87 => Some(Self::SetFieldK),
+            88 => Some(Self::GetList),
+            89 => Some(Self::ListPush),
+            90 => Some(Self::Len),
+            91 => Some(Self::ToIter),
+            92 => Some(Self::Contains),
+            93 => Some(Self::SliceFrom),
+            94 => Some(Self::MapRest),
+            95 => Some(Self::ToString),
+            96 => Some(Self::ConcatString),
+            97 => Some(Self::ConcatN),
+            98 => Some(Self::StringSplit),
+            99 => Some(Self::ListJoin),
+            100 => Some(Self::Raise),
+            101 => Some(Self::TryBegin),
+            102 => Some(Self::TryEnd),
+            103 => Some(Self::Wide),
+            104 => Some(Self::CallMethodK),
+            105 => Some(Self::CastTo),
+            106 => Some(Self::Neg),
+            107 => Some(Self::FloorDivInt),
             _ => None,
         }
     }
@@ -473,7 +542,6 @@ impl Opcode {
                 | Self::LoadHeapConst
                 | Self::LoadCapture
                 | Self::LoadFunction
-                | Self::LoadNative
                 | Self::CallNamed
                 | Self::BrEqIntI4
                 | Self::BrNeIntI4
@@ -752,7 +820,6 @@ pub fn decode_instr(bytes: &[u8]) -> Result<Vec<Instr>> {
 pub struct Function {
     pub consts: ConstPool,
     pub code: Vec<Instr>,
-    pub analyses: Vec<FunctionAnalysis>,
     pub performance: PerformanceFacts,
     pub register_count: u16,
     pub param_count: u16,
@@ -784,7 +851,6 @@ pub struct Function {
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
-    pub natives: Vec<NativeEntry>,
     pub globals: Vec<GlobalSlot>,
     pub entry: u32,
     /// Static `trait`/`impl` declarations (see [`super::TypeInfo`]). Produced
@@ -792,8 +858,8 @@ pub struct Module {
     /// reconstruct it from bytecode.
     pub type_info: super::TypeInfo,
     /// Identity of this module as a *declarer of types* — see
-    /// [`super::TypeScope`].
-    pub type_scope: super::TypeScope,
+    /// [`crate::val::TypeScope`].
+    pub type_scope: crate::val::TypeScope,
 }
 
 impl Module {
@@ -801,21 +867,16 @@ impl Module {
     pub fn single(function: Function) -> Self {
         Self {
             functions: vec![function],
-            natives: Vec::new(),
             globals: Vec::new(),
             entry: 0,
             type_info: super::TypeInfo::default(),
-            type_scope: super::TypeScope::anonymous(),
+            type_scope: crate::val::TypeScope::anonymous(),
         }
     }
 
     #[inline]
     pub fn entry_function(&self) -> Option<&Function> {
         self.functions.get(self.entry as usize)
-    }
-
-    pub fn native_index(&self, name: &str) -> Option<usize> {
-        self.natives.iter().position(|native| native.name == name)
     }
 }
 
@@ -841,12 +902,6 @@ pub fn disassemble_module(module: &Module) -> String {
             let _ = writeln!(out, "  g{slot} {}", global.name);
         }
     }
-    if !module.natives.is_empty() {
-        let _ = writeln!(out, ".natives");
-        for (slot, native) in module.natives.iter().enumerate() {
-            let _ = writeln!(out, "  n{slot} {} arity={}", native.name, native.arity);
-        }
-    }
     for (index, function) in module.functions.iter().enumerate() {
         let _ = writeln!(out, ".fn {index}");
         out.push_str(&disassemble_function(function));
@@ -856,10 +911,61 @@ pub fn disassemble_module(module: &Module) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::util::fast_map::fast_hash_map_new;
-    use crate::{val::RuntimeVal, vm::NativeFunction};
 
     use super::*;
+
+    /// The opcode discriminants run 0..=N with no holes, and that is a
+    /// **performance** property, not tidiness.
+    ///
+    /// Removing `LoadNative` (an opcode no production path ever emitted) left a
+    /// hole at 72 and cost **9%** on the workload suite — measured three times
+    /// either side: 1.075 / 1.086 / 1.089 against a 0.991 / 0.986 baseline.
+    /// Renumbering the opcodes above it to close the hole put it back to
+    /// 0.994 / 0.987. The dispatch `match` lowers to a jump table only while the
+    /// discriminants are dense; one gap is enough to lose it.
+    ///
+    /// Nothing guarded this, and the next opcode removal would have paid the
+    /// same 9% with no test and no reviewer able to see why. Note the cost is
+    /// the *hole*, not the missing arm: the same removal with contiguous
+    /// numbering is free.
+    ///
+    /// Renumbering changes the artifact encoding, so it comes with a
+    /// `MODULE_ARTIFACT_VERSION` bump.
+    #[test]
+    fn opcodes_are_contiguous() {
+        assert_contiguous("Opcode", |value| Opcode::from_bits(value).map(|op| op as u8));
+        // Both of these are decoded from a byte on a dispatch path too, and the
+        // rule is not about `Opcode` — it is about what a `match` on a dense
+        // integer lowers to. Guarding only the one that was measured would be
+        // guarding the incident rather than the property.
+        assert_contiguous("InstrFormat", |value| InstrFormat::from_bits(value).map(|f| f as u8));
+        assert_contiguous("CastTarget", |value| CastTarget::from_u8(value).map(|c| c as u8));
+    }
+
+    /// Every byte the decoder accepts forms `0..=N`, **and** decodes to the
+    /// variant whose discriminant is that byte.
+    ///
+    /// The round trip is the load-bearing half. Each of these decoders is a
+    /// hand-written `match` on literals, so it mirrors the discriminants rather
+    /// than deriving from them — a first version of this test only checked
+    /// which bytes the decoder accepted, which is the mirror and not the thing.
+    /// It would have passed with `Sj = 40` and `4 => Some(Self::Sj)` side by
+    /// side: contiguous decode, sparse enum, and the jump table gone.
+    fn assert_contiguous(name: &str, decode: impl Fn(u8) -> Option<u8>) {
+        let decoded: Vec<(u8, u8)> = (0u8..=255)
+            .filter_map(|value| decode(value).map(|discriminant| (value, discriminant)))
+            .collect();
+        assert!(!decoded.is_empty(), "{name}: nothing decodes at all");
+        let expected: Vec<(u8, u8)> = (0..decoded.len() as u8).map(|value| (value, value)).collect();
+        assert_eq!(
+            decoded,
+            expected,
+            "{name} must decode 0..={} onto the variants whose discriminants are those bytes — a \
+             hole costs ~9% by breaking the dispatch jump table, and a decoder that disagrees with \
+             the discriminants hides one",
+            decoded.len() - 1
+        );
+    }
 
     #[test]
     fn abc_round_trips_opcode_format_and_registers() {
@@ -986,7 +1092,7 @@ mod tests {
 
     #[test]
     fn const_pool_heap_values_can_represent_nested_containers() {
-        let mut entries = fast_hash_map_new();
+        let mut entries = crate::util::value_map::value_map_new();
         entries.insert(
             RuntimeMapKey::ShortStr(ShortStr::new("name").expect("short")),
             ConstRuntimeValue::Heap(Box::new(ConstHeapValue::LongString(Arc::<str>::from(
@@ -1035,11 +1141,6 @@ mod tests {
     fn disassembles_module_metadata() {
         let module = Module {
             functions: vec![Function::default()],
-            natives: vec![NativeEntry {
-                name: "native_add".to_string(),
-                arity: 2,
-                function: NativeFunction::Plain(|_, _runtime| Ok(RuntimeVal::Nil)),
-            }],
             globals: vec![GlobalSlot {
                 name: Arc::<str>::from("answer"),
             }],
@@ -1052,7 +1153,42 @@ mod tests {
 
         assert!(text.contains(".module entry=0"));
         assert!(text.contains("g0 answer"));
-        assert!(text.contains("n0 native_add arity=2"));
         assert!(text.contains(".fn 0"));
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_pool_tests {
+    use super::*;
+
+    /// A constant pool entry's identity is its bits, not `==`.
+    ///
+    /// `-0.0 == 0.0` is true and the two are different values, so pooling by
+    /// equality made whichever literal a file wrote first swallow every later
+    /// occurrence of the other: `println(-0.0); println(0.0);` printed `-0`
+    /// twice, and the swallowed sign reached division —
+    /// `println(1.0 / 0.0)` answered `-inf`. The answer depended on the
+    /// spelling and position of an unrelated line in the same file.
+    #[test]
+    fn the_two_zeros_are_two_constants() {
+        let mut pool = ConstPool::default();
+        let negative = pool.push_float(-0.0).expect("pooled");
+        let positive = pool.push_float(0.0).expect("pooled");
+        assert_ne!(negative, positive, "-0.0 and 0.0 are different constants");
+        assert_eq!(pool.floats.len(), 2);
+        assert_eq!(pool.push_float(-0.0).expect("pooled"), negative, "and each still pools");
+        assert_eq!(pool.push_float(0.0).expect("pooled"), positive);
+
+        // The same rule one carrier deeper: a container constant holds these
+        // values, so `[0.0]` and `[-0.0]` were the same pool entry too.
+        let mut pool = ConstPool::default();
+        let negative = pool
+            .push_heap_value(ConstHeapValue::List(vec![ConstRuntimeValue::Float(-0.0)]))
+            .expect("pooled");
+        let positive = pool
+            .push_heap_value(ConstHeapValue::List(vec![ConstRuntimeValue::Float(0.0)]))
+            .expect("pooled");
+        assert_ne!(negative, positive);
+        assert_eq!(pool.heap_values.len(), 2);
     }
 }

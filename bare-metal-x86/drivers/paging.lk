@@ -1,0 +1,81 @@
+// Four-level page tables.
+//
+// Every level has the same shape — 512 eight-byte entries filling one 4 KiB
+// page — and every entry has the same shape too: a physical address with its
+// low twelve bits zero, because a page is 4 KiB aligned, and flags living in
+// those bits precisely because they are always zero. That regularity is the
+// whole reason this file is short: a PML4, a PDPT, a page directory and a page
+// table differ in what they *point at*, not in how they are written.
+//
+// What the CPU consults is not this table but the TLB, which does not notice a
+// write behind it. Changing a mapping that has already been used means saying
+// so — `invalidate` for one page, or reloading CR3, which flushes everything.
+
+const PAGE_SIZE = 4096;
+const TABLE_ENTRIES = 512;
+
+// The three flags this kernel uses. They are bits 0, 1 and 2 of an entry.
+//
+// `USER` is the one worth staring at: the CPU takes the *conjunction* down the
+// whole walk, so a page is reachable from ring 3 only if every level from the
+// PML4 down says so. Setting it on the leaf and not on the directory above is a
+// mapping that looks user-visible in the table and faults on access — which is
+// how the first ring-3 program here failed, on its own first instruction.
+const PAGE_PRESENT = 0x1;
+const PAGE_WRITE = 0x2;
+const PAGE_USER = 0x4;
+
+fn page_size() -> Int {
+    return PAGE_SIZE;
+}
+
+// Zeroes a table.
+//
+// A zeroed entry is *not present*, which is the honest state for an address
+// nothing maps: touching it faults, and the fault says where. Left as whatever
+// the page happened to hold, it is a present entry pointing at an address made
+// of old data — and the CPU will walk it.
+fn table_zero(base: Int) {
+    for index in 0..TABLE_ENTRIES {
+        unsafe { volatile_write_u64((base + index * 8) as *mut u64, 0 as u64); };
+    }
+}
+
+// Points one entry at a physical address.
+//
+// The address is masked rather than trusted: the low twelve bits are where the
+// flags live, so an unaligned address passed here would not be a wrong mapping
+// but a wrong *permission* — silently readable, or silently user-visible.
+fn table_set(base: Int, index: Int, physical: Int, flags: Int) {
+    let entry = (physical & ~(PAGE_SIZE - 1)) | flags;
+    unsafe { volatile_write_u64((base + index * 8) as *mut u64, entry as u64); };
+}
+
+// Which entry of a level an address selects.
+//
+// Nine bits per level, and the shift says which level: 39 for the PML4, 30 for
+// the PDPT (one entry per gigabyte), 21 for the directory (one per 2 MiB), 12
+// for the table (one per page).
+fn index_of(address: Int, shift: Int) -> Int {
+    return (address >> shift) & (TABLE_ENTRIES - 1);
+}
+
+const SHIFT_PML4 = 39;
+const SHIFT_PDPT = 30;
+const SHIFT_DIRECTORY = 21;
+const SHIFT_TABLE = 12;
+
+// Switches address spaces, which flushes the TLB in doing so.
+//
+// This is the whole difference between a thread and a process, as one
+// instruction: every virtual address means something else afterwards. It is
+// only survivable because the kernel is mapped at the same place in every
+// space — the code that runs *after* this instruction has to still be there.
+fn switch_to(cr3: Int) {
+    unsafe { cpu_write_cr3(cr3); };
+}
+
+// Drops one page's cached translation, for when a mapping changed under it.
+fn invalidate(address: Int) {
+    unsafe { cpu_invalidate_page(address); };
+}

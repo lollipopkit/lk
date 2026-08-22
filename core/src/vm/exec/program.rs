@@ -1,3 +1,4 @@
+use crate::compat::path::Path;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use alloc::sync::Arc;
@@ -25,6 +26,9 @@ pub trait ProgramExec {
     fn execute(&self) -> Result<ProgramResult>;
     /// Type-checks and runs the program in `ctx`.
     fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult>;
+    /// As [`Self::execute_with_ctx`], with the directory the program was loaded
+    /// from so its own imports can be seeded into the checker.
+    fn execute_with_ctx_from(&self, ctx: &mut VmContext, base_dir: Option<&Path>) -> Result<ProgramResult>;
 }
 
 impl ProgramExec for Program {
@@ -34,7 +38,27 @@ impl ProgramExec for Program {
     }
 
     fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult> {
+        self.execute_with_ctx_from(ctx, None)
+    }
+
+    /// As [`ProgramExec::execute_with_ctx`], with the directory this program
+    /// was loaded from so its own imports can be seeded.
+    ///
+    /// Without the directory the checker cannot open the files this program
+    /// imports, so a name that crosses a module boundary — a `struct` returned
+    /// by a function in another file — is unknown to it. That was invisible
+    /// while an unknown name silently became `Type::Named`: the annotation
+    /// checked against nothing. The entry file has always been seeded (the CLI
+    /// does it); a module *loaded as an import* had not been, so it was the one
+    /// place where cross-file calls went unchecked entirely.
+    fn execute_with_ctx_from(&self, ctx: &mut VmContext, base_dir: Option<&Path>) -> Result<ProgramResult> {
         let mut type_checker = crate::typ::TypeChecker::new();
+        #[cfg(feature = "std")]
+        if let Some(base_dir) = base_dir {
+            crate::typ::seed_imported_signatures(self, base_dir, &mut type_checker);
+        }
+        #[cfg(not(feature = "std"))]
+        let _ = base_dir;
         self.type_check(&mut type_checker)?;
         execute_program_with_ctx(self, ctx)
     }
@@ -46,6 +70,21 @@ pub fn execute_program(program: &Program) -> Result<ProgramResult> {
 }
 
 pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<Arc<crate::vm::Module>> {
+    compile_program_module_with_ctx_and_data_globals::<&str>(program, ctx, &[])
+}
+
+/// As [`compile_program_module_with_ctx`], naming the context globals that hold
+/// *user data* rather than an imported module object.
+///
+/// A plain program has none: everything it did not declare itself came from an
+/// import. The REPL is the exception — its `xs` from an earlier line arrives as
+/// a context global, and without this it compiles `xs.len()` as a module-member
+/// read (see `Compiler::compile_module_with_globals_and_data`).
+pub fn compile_program_module_with_ctx_and_data_globals<S: AsRef<str>>(
+    program: &Program,
+    ctx: &mut VmContext,
+    data_globals: &[S],
+) -> Result<Arc<crate::vm::Module>> {
     let imports = collect_program_imports(program);
     let resolver = ctx.resolver().clone();
     execute_imports(&imports, resolver.as_ref(), ctx)?;
@@ -55,11 +94,15 @@ pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -
         external_globals.push(name.clone());
     }
 
-    let mut module = Compiler::compile_module_with_natives_and_globals(program, Vec::new(), external_globals)?;
+    let mut module = Compiler::compile_module_with_globals_and_data(
+        program,
+        external_globals,
+        data_globals.iter().map(|name| name.as_ref()),
+    )?;
     // The compiler has no idea which file it is compiling; the loader does, and
     // it put that on the context before handing the program over. Stamping here
     // is what gives this module's declared types an identity distinct from an
-    // identically-named type in any other module (`vm::TypeScope`).
+    // identically-named type in any other module (`val::TypeScope`).
     module.type_scope = ctx.type_scope().clone();
     Ok(Arc::new(module))
 }
@@ -375,6 +418,813 @@ mod tests {
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
     }
 
+    /// `-x` — negation of anything that is not a literal.
+    ///
+    /// The language had no negation operator at all: `UnaryOp` held only
+    /// `Not`, and only the *lexer* could produce a negative number, by folding
+    /// `-5` into an `Int(-5)` token where it could tell an operand was
+    /// expected. So `-5` worked and `-x` was a syntax error in every position,
+    /// with `0 - x` as the workaround. That workaround is also not a
+    /// substitute: `0.0 - 0.0` is `+0.0` where `-(0.0)` is `-0.0`.
+    #[test]
+    fn negation_works_on_values_and_not_only_literals() {
+        let source = "let i = 7;\n\
+                      let f = 2.5;\n\
+                      let z = 0.0;\n\
+                      let neg = |v| -v;\n\
+                      return [-i, -f, -(-i), neg(i), -z, -9223372036854775808];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("scalars only");
+        assert_eq!(items[0], RuntimeVal::Int(-7));
+        assert_eq!(items[1], RuntimeVal::Float(-2.5));
+        assert_eq!(items[2], RuntimeVal::Int(7));
+        assert_eq!(items[3], RuntimeVal::Int(-7));
+        // The zero's *sign* survives, which is the whole reason this is a real
+        // negation and not `0 - x`: the latter answers `+0.0` here. `==` cannot
+        // see the difference, so ask for the sign bit.
+        let RuntimeVal::Float(negative_zero) = items[4] else {
+            panic!("expected a float");
+        };
+        assert!(
+            negative_zero == 0.0 && negative_zero.is_sign_negative(),
+            "-0.0 should keep its sign, got {negative_zero}"
+        );
+        // `i64::MIN`'s magnitude does not fit an `i64`, so the lexer still owns
+        // this one; it has to keep agreeing with the operator.
+        assert_eq!(items[5], RuntimeVal::Int(i64::MIN));
+    }
+
+    /// `if` produces a value, the way `match` always has.
+    ///
+    /// `let a = match c { … };` parsed and `let a = if c { … } else { … };` did
+    /// not, so the only way to *choose* a value was the C-style ternary — the
+    /// operator a language whose `if` is an expression does not need. Both now
+    /// lower to the same node, so they cannot drift apart.
+    #[test]
+    fn if_is_an_expression_that_yields_its_branch() {
+        let source = "let x = 5;\n\
+                      let size = if x > 3 { \"big\" } else if x > 1 { \"mid\" } else { \"small\" };\n\
+                      let doubled = if true { let t = x; t * 2 } else { 0 };\n\
+                      let missing = if false { 1 };\n\
+                      let pick = |v| if v > 0 { 1 } else { -1 };\n\
+                      // Truthiness, not `Bool`: `0` is truthy, only nil and false are not.\n\
+                      let zero_is_truthy = if 0 { \"yes\" } else { \"no\" };\n\
+                      return [size, doubled, missing, pick(-9), zero_is_truthy];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        let text = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+                RuntimeVal::Obj(h) => match outcome.state.heap().get(*h) {
+                    Some(HeapValue::String(s)) => s.to_string(),
+                    other => panic!("expected a string, got {other:?}"),
+                },
+                other => panic!("expected a string, got {other:?}"),
+            }
+        };
+        assert_eq!(text(&items[0]), "big");
+        assert_eq!(items[1], RuntimeVal::Int(10));
+        // No `else` means no value: `nil`, not a parse error.
+        assert_eq!(items[2], RuntimeVal::Nil);
+        assert_eq!(items[3], RuntimeVal::Int(-1));
+        assert_eq!(text(&items[4]), "yes");
+    }
+
+    /// A zero-parameter closure is a value, so it goes wherever a value goes.
+    ///
+    /// The lexer decides whether `||` opens a closure or is a logical or by
+    /// looking at what precedes it — and it used to look at the previous
+    /// *character*, accepting only `= ( { , ; :`. A character cannot see a
+    /// keyword, so `return || 1;` lexed as an operator ("Unexpected token:
+    /// Or") while `let f = || 1;` was fine, and `[|| 1]` failed on the missing
+    /// `[`. It asks the same predicate `-5` asks now: is a value expected here.
+    #[test]
+    fn a_zero_parameter_closure_goes_where_a_value_goes() {
+        let source = "fn returned() { return || 1; }\n\
+                      fn takes(c) { return c; }\n\
+                      let bound = || 2;\n\
+                      let in_list = [|| 3];\n\
+                      let in_map = {\"f\": || 4};\n\
+                      let x = 1;\n\
+                      return [\n\
+                        returned()(), bound(), in_list[0](), in_map.f(), takes(|| 5)(),\n\
+                        // …and `||` between two operands is still the operator.\n\
+                        (x > 0 || x < 0) ? 6 : 0,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        for (index, want) in [1, 2, 3, 4, 5, 6].iter().enumerate() {
+            assert_eq!(
+                items[index],
+                RuntimeVal::Int(*want),
+                "position {index} should have parsed"
+            );
+        }
+    }
+
+    /// The list's mutating methods all mutate, and hand back one of two
+    /// things.
+    ///
+    /// They used to disagree three ways: `push`/`set` changed the list,
+    /// `insert` copied it and returned a *new* one, and `remove_at` copied it
+    /// and returned a two-element `[updated, old]` — the only method in the
+    /// language shaped that way, whose "updated" list nobody was holding. So
+    /// `xs.push(v)` changed `xs` and `xs.insert(i, v)` did not, which is two
+    /// opposite answers to "does adding an element change this list".
+    ///
+    /// The rule now, across every container: a mutating method changes the
+    /// receiver, and answers either the container (so calls chain) or the
+    /// element it took out. A `Set` is the one exception, and for a reason —
+    /// `add`/`delete` have no separate element to hand back, so they report
+    /// whether the value was new or present.
+    #[test]
+    fn the_mutating_list_methods_agree() {
+        let source = "let xs = [1, 3];\n\
+                      let chained = xs.insert(1, 2);\n\
+                      let after_insert = xs.len();\n\
+                      let removed = xs.remove_at(0);\n\
+                      let after_remove = xs.len();\n\
+                      let strings = [\"a\", \"c\"];\n\
+                      strings.insert(1, \"b\");\n\
+                      let widened = [1, 2];\n\
+                      widened.insert(1, \"middle\");\n\
+                      let m = {};\n\
+                      m.set(\"a\", 1).set(\"b\", 2);\n\
+                      let chained_writes = [1, 2];\n\
+                      chained_writes.set(0, 9).set(1, 8);\n\
+                      return [\n\
+                        chained.len(), after_insert, removed, after_remove,\n\
+                        strings.len(), widened.len(), m.len(), chained_writes.get(0),\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        // `insert` answers the *receiver*, not a copy — so the chained value
+        // tracks the later `remove_at` and is two long, not three.
+        assert_eq!(items[0], RuntimeVal::Int(2));
+        assert_eq!(items[1], RuntimeVal::Int(3), "insert changes the receiver");
+        assert_eq!(items[2], RuntimeVal::Int(1), "remove_at answers the element it took");
+        assert_eq!(items[3], RuntimeVal::Int(2), "…and the list is one shorter");
+        assert_eq!(items[4], RuntimeVal::Int(3), "a string list inserts by content");
+        // A value the representation cannot hold widens the list rather than
+        // failing — the same degradation `push` has always done.
+        assert_eq!(items[5], RuntimeVal::Int(3));
+        // `set` answers the receiver too, on a map and on a list, so writes
+        // chain wherever they are written.
+        assert_eq!(items[6], RuntimeVal::Int(2));
+        assert_eq!(items[7], RuntimeVal::Int(9));
+    }
+
+    /// `pop` takes the element off; `last` reads it.
+    ///
+    /// They were the same function under two names — same body, same declared
+    /// type, same doc sentence — so the language had two spellings of "peek"
+    /// and no way at all to remove the last element. A name every language
+    /// uses for "remove and return" must not quietly mean "read".
+    #[test]
+    fn pop_removes_and_last_only_looks() {
+        let source = "let ints = [1, 2, 3];\n\
+                      let texts = [\"ab\", \"cdefghijk\"];\n\
+                      let peeked = ints.last();\n\
+                      let after_peek = ints.len();\n\
+                      let popped = ints.pop();\n\
+                      let after_pop = ints.len();\n\
+                      let long = texts.pop();\n\
+                      let empty = [];\n\
+                      return [peeked, after_peek, popped, after_pop, long, texts.len(), empty.pop()];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        assert_eq!(items[0], RuntimeVal::Int(3), "last() reads the final element");
+        assert_eq!(items[1], RuntimeVal::Int(3), "…and leaves the list alone");
+        assert_eq!(items[2], RuntimeVal::Int(3), "pop() returns the same element");
+        assert_eq!(items[3], RuntimeVal::Int(2), "…and takes it off");
+        // A heap string element comes back whole, and the list still shrinks.
+        assert_eq!(items[5], RuntimeVal::Int(1));
+        assert_eq!(items[6], RuntimeVal::Nil, "popping an empty list is nil, not an error");
+    }
+
+    /// `?.` calls a method, which is most of what it is for.
+    ///
+    /// `OptionalAccess` is a *read*, and the compiler lowers it as an index —
+    /// so `s?.len()` indexed the string with the string `"len"` and failed at
+    /// runtime with "String index must be Int". The null-safe operator did not
+    /// work on the values it exists for; only field access on a struct or map
+    /// went through. It is rewritten at parse time now, the way postfix `!`
+    /// is, so the checker and the compiler both see ordinary constructs.
+    #[test]
+    fn optional_chaining_reaches_methods_and_stops_at_nil() {
+        let source = "let present = \"abcd\";\n\
+                      let m = {\"a\": \"xy\"};\n\
+                      let missing = if false { \"abc\" };\n\
+                      return [\n\
+                        present?.len(), m.get(\"a\")?.len(), m.get(\"z\")?.len(),\n\
+                        missing?.len(), missing?.len() ?? 0,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("scalars only");
+        assert_eq!(items[0], RuntimeVal::Int(4));
+        assert_eq!(items[1], RuntimeVal::Int(2));
+        // The call does not happen at all when the receiver is nil.
+        assert_eq!(items[2], RuntimeVal::Nil);
+        assert_eq!(items[3], RuntimeVal::Nil);
+        assert_eq!(items[4], RuntimeVal::Int(0));
+    }
+
+    /// An `if` with no `else` is a value that may be nil, not a contradiction.
+    ///
+    /// The missing branch is a synthesised `nil`, and the two arms were
+    /// constrained to be *equal* — so `let r = if c { "a" };` reported "Cannot
+    /// unify String with Nil" and the expression form could not do what the
+    /// statement form does. `c ? "a" : nil` reads the same way and now gets the
+    /// same answer: `String?`.
+    #[test]
+    fn an_if_without_else_is_optional_not_a_conflict() {
+        fn check(source: &str) -> Result<(), String> {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .map_err(|e| e.to_string())
+        }
+
+        for source in [
+            "let c = true;\nlet r = if c { \"a\" };\n",
+            "let c = true;\nlet r: String? = if c { \"a\" };\n",
+            "let c = true;\nlet r = c ? \"a\" : nil;\n",
+            "let c = true;\nlet r = c ? nil : \"a\";\n",
+            // Both branches present and agreeing keeps the bare type.
+            "let c = true;\nlet r: String = if c { \"a\" } else { \"b\" };\n",
+        ] {
+            check(source).unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        let error = check("let c = true;\nlet r: String = if c { \"a\" };\n")
+            .expect_err("a branch that may not run makes the value optional");
+        assert!(error.contains("String?"), "should say String?, said: {error}");
+    }
+
+    /// A `match` that can miss is typed as able to miss.
+    ///
+    /// LK's rule is that an unmatched `match` evaluates to `nil` — deliberate,
+    /// and tested. The *type* ignored it: the expression was typed as its
+    /// arms' type, so
+    ///
+    /// ```text
+    /// let r: String = match x { 1 => "one" };   // checked, held nil
+    /// r.len()                                   // approved, failed at runtime
+    /// ```
+    ///
+    /// A binding annotated `String` holding nil is the type system saying
+    /// something untrue. It says `String?` now, and the shapes that cannot
+    /// miss — a catch-all arm, or a `Bool` with both literals — keep the bare
+    /// type so the common cases do not grow a `?`.
+    #[test]
+    fn a_match_that_can_miss_is_typed_as_nullable() {
+        fn check(source: &str) -> Result<(), String> {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .map_err(|e| e.to_string())
+        }
+
+        for source in [
+            "let x = 5;\nlet r: String = match x { 1 => \"one\" };\n",
+            "fn f(x: Int) -> String { return match x { 1 => \"one\" }; }\n",
+        ] {
+            let error = check(source).expect_err("a match that can miss is not a bare String");
+            assert!(error.contains("String?"), "{source} should say String?, said: {error}");
+        }
+
+        for source in [
+            // A catch-all arm always matches.
+            "let x = 5;\nlet r: String = match x { 1 => \"a\", _ => \"b\" };\n",
+            // A binding pattern is a catch-all too.
+            "let x = 5;\nlet r: String = match x { 1 => \"a\", other => \"b\" };\n",
+            // Both `Bool` literals cover every value of the type.
+            "let b = true;\nlet r: Int = match b { true => 1, false => 2 };\n",
+            // And the nullable type is writable when the miss is intended.
+            "let x = 5;\nlet r: String? = match x { 1 => \"one\" };\n",
+        ] {
+            check(source).unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+    }
+
+    /// A type declaration's position in the file does not matter.
+    ///
+    /// Function signatures were hoisted and type declarations were not, which
+    /// nobody noticed while an undeclared name silently became `Type::Named`:
+    /// the annotation checked against nothing either way. The moment unknown
+    /// names became an error, `fn f() -> Point { … }` written above
+    /// `struct Point { … }` — the ordinary way to put the interesting function
+    /// first — started failing.
+    #[test]
+    fn a_type_declaration_can_come_after_its_use() {
+        for source in [
+            "fn f() -> Point { return Point { a: 1 }; }\nstruct Point { a: Int }\nreturn f().a;\n",
+            "fn f(v: Point) -> Int { return v.a; }\nstruct Point { a: Int }\nreturn f(Point { a: 2 });\n",
+            "fn f(v: Int) -> U { return v; }\ntype U = Int;\nreturn f(1);\n",
+            "let s: Shown = 1;\ntype Shown = Int;\nreturn s;\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        // A name nothing declares is still an error, wherever it appears. LK
+        // has no generic parameters — `fn f<T>(…)` does not parse — so a bare
+        // `T` is an undeclared name like any other.
+        for source in ["fn f(v: T) -> T { return v; }\n", "let x: Nope = 1;\n"] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let error = program
+                .type_check(&mut crate::typ::TypeChecker::new())
+                .expect_err("an undeclared type name is an error");
+            assert!(error.to_string().contains("Unknown type"), "got: {error}");
+        }
+    }
+
+    /// A `type` alias works in every position, including across a module
+    /// boundary.
+    ///
+    /// It is a second *spelling*, not a second type. It worked in a binding
+    /// (`let x: U = 5`) and in a parameter (`fn f(v: U)`) and broke in exactly
+    /// one place — the return type — with "Cannot unify U with Int", because
+    /// the declared type went to the solver unresolved and the solver has no
+    /// registry to look a name up in. Aliases also never crossed a module
+    /// boundary at all: only `struct`s and `trait`s were seeded from an
+    /// imported file.
+    #[test]
+    fn a_type_alias_is_a_spelling_not_a_type() {
+        for source in [
+            "type U = Int;\nlet x: U = 5;\nreturn x;\n",
+            "type U = Int;\nfn f(v: U) -> Int { return v; }\nreturn f(3);\n",
+            "type U = Int;\nfn f(v: Int) -> U { return v; }\nreturn f(3);\n",
+            "type U = Int;\nfn f(v: Int) -> U { return v; }\nfn g(v: Int) -> U { return f(v); }\nreturn g(3);\n",
+            "type Pair = List<Int>;\nfn f() -> Pair { return [1, 2]; }\nreturn f().len();\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+
+        // …and a genuine mismatch is still one.
+        let source = "type U = Int;\nfn f(v: Int) -> U { return \"x\"; }\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let error = program
+            .type_check(&mut crate::typ::TypeChecker::new())
+            .expect_err("a String is not an Int by another name");
+        assert!(error.to_string().contains("Return type mismatch"), "got: {error}");
+    }
+
+    /// A misspelled type name is reported where it is written.
+    ///
+    /// `Type::Named` is the parser's answer for any identifier in type
+    /// position, so a typo became a type nothing declares — and the complaint
+    /// landed on the *value*: `let x: Strng = "a";` said "expected Strng, but
+    /// expression has type String", pointing away from the misspelling. A
+    /// signature was worse: `fn f(v: Nonexistent)` made the function
+    /// uncallable and blamed every caller.
+    #[test]
+    fn an_unknown_type_name_is_reported_at_the_annotation() {
+        fn check_error(source: &str) -> String {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .expect_err("an undeclared type name is an error")
+                .to_string()
+        }
+
+        // Every position an annotation can appear in. The bug repeated itself
+        // one position at a time — binding, then parameter, then return, then
+        // impl target, then trait method, then struct field — so the list is
+        // the point of the test.
+        for (source, expected) in [
+            ("let x: Strng = \"a\";\n", "Unknown type 'Strng'"),
+            ("fn f(v: Nonexistent) { return 1; }\n", "Unknown type 'Nonexistent'"),
+            ("fn f() -> Bogus { return 1; }\n", "Unknown type 'Bogus'"),
+            ("let x: List<Nope> = [1];\n", "Unknown type 'Nope'"),
+            ("let x: Map<String, Nope> = {};\n", "Unknown type 'Nope'"),
+            ("struct P { a: Nope }\n", "Unknown type 'Nope'"),
+            ("trait T { fn f(self) -> Missing; }\n", "Unknown type 'Missing'"),
+            ("trait T { fn f(self, v: Bogus) -> Int; }\n", "Unknown type 'Bogus'"),
+            (
+                "trait T { fn f(self) -> Int; }\nimpl T for Nonexistent { fn f(self) -> Int { return 1; } }\n",
+                "Unknown type 'Nonexistent'",
+            ),
+        ] {
+            let message = check_error(source);
+            assert!(
+                message.contains(expected),
+                "{source} should name the type, said: {message}"
+            );
+        }
+
+        // …and say what to write instead, when there is an obvious answer. A
+        // bare "Unknown type 'bool'" is accurate and useless: someone arriving
+        // from Rust or Python writes `bool`, `str`, `int` by reflex, and `f32`
+        // is a *decision* (one float type, spelled `Float` or `f64`) rather
+        // than an omission.
+        for (source, hint) in [
+            ("let x: bool = true;\n", "did you mean `Bool`?"),
+            ("let x: int = 1;\n", "did you mean `Int`?"),
+            ("let x: Strng = \"a\";\n", "did you mean `String`?"),
+            ("struct Point { a: Int }\nlet p: Poimt = 1;\n", "did you mean `Point`?"),
+            ("let x: str = \"a\";\n", "LK spells that `String`"),
+            ("let x: f32 = 1.0;\n", "LK spells that `Float`"),
+        ] {
+            let message = check_error(source);
+            assert!(message.contains(hint), "{source} should suggest, said: {message}");
+        }
+
+        // A name with no near miss says nothing rather than guessing.
+        let far = check_error("let x: Zzzzz = 1;\n");
+        assert!(!far.contains("did you mean"), "should not invent a suggestion: {far}");
+
+        // Declared names, builtins and documented runtime handles all pass.
+        for source in [
+            "let x: Int = 1;\n",
+            "struct P { a: Int }\nlet p: P = P { a: 1 };\n",
+            "trait T { fn f(self) -> Int; }\nfn g(v: T) -> Int { return 1; }\n",
+            "let x: List<String> = [];\n",
+            "let x: Map<String, Int> = {};\n",
+        ] {
+            let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+            let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+            let mut checker = crate::typ::TypeChecker::new();
+            program
+                .type_check(&mut checker)
+                .unwrap_or_else(|e| panic!("{source} should check, said: {e}"));
+        }
+    }
+
+    /// The declared arity is the arity — one source, not two.
+    ///
+    /// Each dispatcher stated its own in a `bail!` guard, so a method could
+    /// accept a shape the checker rejected (or the reverse) and nothing said
+    /// so. Three had drifted by the time anyone compared them by hand:
+    /// `bytes.slice` (checker computed the wrong count for a named call),
+    /// `map.get` (runtime took a default, the table declared one parameter),
+    /// and `str.slice` (declared `end` required where every other sequence has
+    /// it optional). Dispatch checks the declaration now, so a guard that
+    /// disagrees is unreachable rather than quietly authoritative.
+    #[test]
+    fn a_methods_optional_arguments_are_the_declared_ones() {
+        let source = "let m = {\"a\": 1};\n\
+                      let text = \"abcd\";\n\
+                      let xs = [10, 20, 30];\n\
+                      return [\n\
+                        m.get(\"z\", 9), m.get(\"a\", 9),\n\
+                        text.slice(1).len(), text.slice(1, 3).len(), xs.slice(1).len(),\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("ints only");
+        assert_eq!(items[0], RuntimeVal::Int(9), "an absent key takes the default");
+        assert_eq!(items[1], RuntimeVal::Int(1), "a present key ignores it");
+        assert_eq!(items[2], RuntimeVal::Int(3), "slice without an end runs to the end");
+        assert_eq!(items[3], RuntimeVal::Int(2));
+        assert_eq!(items[4], RuntimeVal::Int(2));
+    }
+
+    /// A `String` is a sequence, and reads like one.
+    ///
+    /// `List`, `Slice` and `Bytes` were unified on `first`/`last`/`get`/
+    /// `slice`/`take`/`skip`/`index_of`; `String` — a sequence of characters,
+    /// which is what `len()` counts and `[i]` indexes — was left out. It had
+    /// `substring(start, length)` and `find` instead, and `substring` was the
+    /// reason this was more than tidiness: it took a *length* where every
+    /// `slice` takes an *end*, so `xs.slice(1, 3)` and `s.substring(1, 3)`
+    /// cut different windows from the same numbers. Both are gone now.
+    #[test]
+    fn a_string_reads_like_every_other_sequence() {
+        let source = "let s = \"h\u{e9}llo\";\n\
+                      return [\n\
+                        s.slice(1, 3), s.take(2), s.skip(2),\n\
+                        s.first(), s.last(), s.get(1),\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("strings only");
+        let text = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+                RuntimeVal::Obj(h) => match outcome.state.heap().get(*h) {
+                    Some(HeapValue::String(s)) => s.to_string(),
+                    other => panic!("expected a string, got {other:?}"),
+                },
+                other => panic!("expected a string, got {other:?}"),
+            }
+        };
+        // `slice` counts to an *end*, so this is two characters — the same
+        // window `[10, 20, 30, 40].slice(1, 3)` takes.
+        assert_eq!(text(&items[0]), "él");
+        assert_eq!(text(&items[1]), "hé");
+        assert_eq!(text(&items[2]), "llo");
+        assert_eq!(text(&items[3]), "h");
+        assert_eq!(text(&items[4]), "o");
+        assert_eq!(text(&items[5]), "é");
+    }
+
+    /// `==`, `in`, and the constant folder answer the same question the same
+    /// way.
+    ///
+    /// There were three answers to "is `1` equal to `1.0`":
+    ///
+    /// ```text
+    /// println(1 == 1.0);                     → false   (constant folder)
+    /// let a = 1; let b = 1.0; a == b;        → true    (runtime)
+    /// 1 in [1.0];                            → false   (typed-list `in`)
+    /// ```
+    ///
+    /// The folder used `LiteralVal`'s derived `PartialEq` — structural, so two
+    /// variants are never equal — while contradicting its *own* ordering rule,
+    /// which promotes: `1 <= 1.0 && 1 >= 1.0` folded to `true`. And `in`
+    /// matched on the element's variant, so the answer depended on the list's
+    /// internal representation, which no program can see.
+    #[test]
+    fn equality_answers_the_same_whoever_asks() {
+        let source = "let a = 1;\n\
+                      let b = 1.0;\n\
+                      let ints = [1, 2];\n\
+                      let floats = [1.0, 2.0];\n\
+                      return [\n\
+                        1 == 1.0, a == b, 1 <= 1.0 && 1 >= 1.0,\n\
+                        a in floats, b in ints, 1 in floats, 1.0 in ints,\n\
+                        1.5 in ints, a in ints,\n\
+                      ];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of answers");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let answers = list.collect_owned().expect("bools only");
+        let expected = [true, true, true, true, true, true, true, false, true];
+        for (index, want) in expected.iter().enumerate() {
+            assert_eq!(
+                answers[index],
+                RuntimeVal::Bool(*want),
+                "answer {index} disagrees with the others"
+            );
+        }
+    }
+
+    /// A container is a container for `in`, whatever inferred it.
+    ///
+    /// `in`'s type check listed `List`/`Map`/`Set` and nothing else, so a
+    /// `String` (which contains substrings) and a `Tuple` (what a heterogeneous
+    /// list *literal* infers to) were rejected — while indexing, `len()` and
+    /// method dispatch took both. `"a" in "abc"` therefore worked as a folded
+    /// literal and was a type error one line later through a variable.
+    #[test]
+    fn in_accepts_every_container_the_rest_of_the_language_does() {
+        let source = "let text = \"abc\";\n\
+                      let mixed = [1, \"a\"];\n\
+                      return [\"b\" in text, \"z\" in text, \"a\" in mixed, 1 in mixed];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let mut checker = crate::typ::TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .expect("a String and a Tuple are containers");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of answers");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let answers = list.collect_owned().expect("bools only");
+        assert_eq!(answers[0], RuntimeVal::Bool(true));
+        assert_eq!(answers[1], RuntimeVal::Bool(false));
+        assert_eq!(answers[2], RuntimeVal::Bool(true));
+        assert_eq!(answers[3], RuntimeVal::Bool(true));
+    }
+
+    /// The braced constructs agree on punctuation and on parentheses.
+    ///
+    /// Three rules used to differ for no reason any of them could explain:
+    /// `while` *required* parentheses around its condition while `if` and
+    /// `for` did not; and `match x { … }` / `unsafe { … }` as statements
+    /// *required* a trailing `;` while `if c { … }` refused one. Same shape on
+    /// the page, different punctuation.
+    #[test]
+    fn braced_constructs_agree_on_parentheses_and_semicolons() {
+        let source = "let seen = [];\n\
+                      let i = 0;\n\
+                      while i < 3 { i = i + 1; }\n\
+                      while (i < 6) { i = i + 1; }\n\
+                      match i { 6 => { seen = seen.concat([\"matched\"]); }, _ => {} }\n\
+                      unsafe { seen = seen.concat([\"unsafe\"]); }\n\
+                      if i == 6 { seen = seen.concat([\"if\"]); }\n\
+                      return [i, seen];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        assert_eq!(items[0], RuntimeVal::Int(6), "both `while` forms should have run");
+        let RuntimeVal::Obj(seen) = items[1] else {
+            panic!("expected the marker list");
+        };
+        let Some(HeapValue::List(seen)) = outcome.state.heap().get(seen) else {
+            panic!("expected the marker list");
+        };
+        assert_eq!(seen.len(), 3, "each statement after a closing brace should have run");
+    }
+
+    /// A braced construct ends a *statement*, never an operand.
+    ///
+    /// `match x { … } println("next");` is two statements; `return match x
+    /// { … } == nil;` is one comparison. Stopping at the brace in both places
+    /// would silently drop the `== nil` — an answer, not a syntax error.
+    #[test]
+    fn a_block_ends_a_statement_but_not_an_operand() {
+        let source = "let compared = match 99 { 1 => \"one\", _ => nil } == nil;\n\
+                      return compared;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+        assert_eq!(*outcome.first_return(), RuntimeVal::Bool(true));
+    }
+
+    /// An `if` *statement* keeps working, and an `else` that belongs to one is
+    /// still its own.
+    ///
+    /// The statement parser slices an expression up to the next top-level
+    /// `else`, which was correct while `else` could only close a statement.
+    /// Now it has to hand the `else` to an unmatched `if` inside the slice
+    /// instead — and only a genuinely dangling one ends the expression.
+    #[test]
+    fn an_if_statement_still_owns_its_own_else() {
+        let source = "let seen = [];\n\
+                      if 1 > 2 { seen = seen.concat([\"then\"]); } else { seen = seen.concat([\"else\"]); }\n\
+                      let nested = if true { if false { 1 } else { 2 } } else { 3 };\n\
+                      return [seen, nested];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        let RuntimeVal::Obj(branch) = items[0] else {
+            panic!("expected the branch list");
+        };
+        let Some(HeapValue::List(branch)) = outcome.state.heap().get(branch) else {
+            panic!("expected the branch list");
+        };
+        assert_eq!(branch.len(), 1, "exactly one branch should have run");
+        assert_eq!(items[1], RuntimeVal::Int(2));
+    }
+
+    #[test]
+    fn negating_a_non_number_is_a_type_error() {
+        let tokens = crate::token::Tokenizer::tokenize("-\"text\"").expect("tokenize");
+        let expr = crate::ast::Parser::new(&tokens).parse().expect("parse");
+        let error = crate::typ::TypeChecker::new()
+            .check_expr(&expr)
+            .expect_err("negating a String has no answer");
+        assert!(
+            error.to_string().contains("numeric"),
+            "the error should say the operand is not numeric, said: {error}"
+        );
+    }
+
+    #[test]
+    fn long_string_elements_survive_every_read_path() {
+        // `ShortStr` inlines up to seven bytes. Every path that reads an
+        // element out of a `TypedList::String` used to assume that was always
+        // enough: the index fast path answered `Nil` for a longer element —
+        // making `xs[0]` disagree with `xs.first()` about the same list — and
+        // the slice path called `ShortStr::new(..).unwrap()` in the branch
+        // reached exactly when it returns `None`, so `xs[0..2]` panicked.
+        let source = "let xs = [\"aaaaaaaaaaaaaaaaaaaa\", \"bb\"];\n\
+                      let seen = [];\n\
+                      for x in xs { seen = seen.concat([x]); }\n\
+                      return [xs[0], xs.get(0), xs.first(), xs[0..1], seen];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list
+            .collect_owned()
+            .expect("results are heap objects, not inline strings");
+
+        let long = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::Obj(handle) => match outcome.state.heap().get(*handle) {
+                    Some(HeapValue::String(text)) => text.to_string(),
+                    other => panic!("expected a heap string, got {other:?}"),
+                },
+                other => panic!("expected a heap string, got {other:?}"),
+            }
+        };
+        assert_eq!(long(&items[0]), "aaaaaaaaaaaaaaaaaaaa", "xs[0]");
+        assert_eq!(long(&items[1]), "aaaaaaaaaaaaaaaaaaaa", "xs.get(0)");
+        assert_eq!(long(&items[2]), "aaaaaaaaaaaaaaaaaaaa", "xs.first()");
+    }
+
     fn compile_source(source: &str) -> crate::vm::Module {
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -410,7 +1260,9 @@ mod tests {
         let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
             panic!("result handle must stay live in the outcome state");
         };
-        let items = list.collect_owned();
+        let items = list
+            .collect_owned()
+            .expect("the result list holds no inline-limited strings");
         assert_eq!(items[0], RuntimeVal::Int(7));
         let RuntimeVal::Obj(text) = items[1] else {
             panic!("expected the long string element on the heap");
@@ -453,7 +1305,9 @@ mod tests {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let expected: alloc::vec::Vec<(String, RuntimeVal)> = [("alpha", 1), ("beta", 2), ("gamma", 3)]
             .into_iter()
-            .map(|(key, value)| (format!("String({key:?})"), RuntimeVal::Int(value)))
+            // `ShortStr`, not `String`: the text decides the representation, and
+            // these five-character keys fit inline.
+            .map(|(key, value)| (format!("ShortStr({key:?})"), RuntimeVal::Int(value)))
             .collect();
         assert_eq!(pairs, expected);
     }

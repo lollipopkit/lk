@@ -3,10 +3,10 @@ use crate::compat::prelude::*;
 use alloc::sync::Arc;
 use core::ops::Range;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    val::{HeapStore, RuntimeVal, TypedList},
     vm::{
         Function, Instr, Module, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, Opcode, RuntimeModuleState,
         VmContext,
@@ -72,56 +72,6 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
         TypedList::String(_) => bail!("internal error: typed string list write must be handled before mutable borrow"),
     }
     Ok(())
-}
-
-pub(super) fn push_list_value(list: &mut TypedList, value: RuntimeVal, string_value: Option<Arc<str>>) -> Result<()> {
-    match list {
-        TypedList::Mixed(values) if values.is_empty() => match (value, string_value) {
-            (RuntimeVal::Int(value), _) => *list = TypedList::Int(vec![value]),
-            (RuntimeVal::Float(value), _) => *list = TypedList::Float(vec![value]),
-            (RuntimeVal::Bool(value), _) => *list = TypedList::Bool(vec![value]),
-            (RuntimeVal::ShortStr(_) | RuntimeVal::Obj(_), Some(string_value)) => {
-                *list = TypedList::String(vec![string_value]);
-            }
-            (value, _) => values.push(value),
-        },
-        TypedList::Mixed(values) => values.push(value),
-        TypedList::Int(values) => match value {
-            RuntimeVal::Int(value) => values.push(value),
-            value => {
-                let mut mixed = copy_numeric_list(values, RuntimeVal::Int);
-                mixed.push(value);
-                *list = TypedList::Mixed(mixed);
-            }
-        },
-        TypedList::Float(values) => match value {
-            RuntimeVal::Float(value) => values.push(value),
-            value => {
-                let mut mixed = copy_numeric_list(values, RuntimeVal::Float);
-                mixed.push(value);
-                *list = TypedList::Mixed(mixed);
-            }
-        },
-        TypedList::Bool(values) => match value {
-            RuntimeVal::Bool(value) => values.push(value),
-            value => {
-                let mut mixed = copy_numeric_list(values, RuntimeVal::Bool);
-                mixed.push(value);
-                *list = TypedList::Mixed(mixed);
-            }
-        },
-        TypedList::String(values) => match string_value {
-            Some(value) => values.push(value),
-            None => bail!("internal error: typed string list push must be materialized before mutable borrow"),
-        },
-    }
-    Ok(())
-}
-
-fn copy_numeric_list<T: Copy>(values: &[T], wrap: impl Fn(T) -> RuntimeVal) -> Vec<RuntimeVal> {
-    let mut mixed = Vec::with_capacity(values.len() + 1);
-    mixed.extend(values.iter().copied().map(wrap));
-    mixed
 }
 
 fn copy_numeric_list_with_replacement<T: Copy>(
@@ -341,50 +291,17 @@ fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<
     result
 }
 
-pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
-    match value {
-        HeapValue::String(_) => "String",
-        HeapValue::Bytes(_) => "Bytes",
-        HeapValue::List(_) => "List",
-        HeapValue::Map(_) => "Map",
-        HeapValue::Set(_) => "Set",
-        HeapValue::Callable(_) => "Callable",
-        HeapValue::Task(_) => "Task",
-        HeapValue::Channel(_) => "Channel",
-        HeapValue::Stream(_) => "Stream",
-        HeapValue::StreamCursor(_) => "StreamCursor",
-        HeapValue::Slice(_) => "Slice",
-        HeapValue::Resource(resource) => resource.kind,
-        HeapValue::Object(_) => "Object",
-        HeapValue::UpvalCell(_) => "UpvalCell",
-        HeapValue::ErrorVal(_) => "Error",
-    }
-}
-
 impl Executor {
     #[inline]
     pub(super) fn read_int(&self, register: u8) -> Result<i64> {
         let index = self.stack_index(register)?;
         match &self.state.stack[index] {
             RuntimeVal::Int(value) => Ok(*value),
-            other => bail!("register {} expected Int, got {:?}", register, other.kind()),
-        }
-    }
-
-    #[inline]
-    pub(super) fn read_number(&self, register: u8) -> Result<f64> {
-        let index = self.stack_index(register)?;
-        self.number_value(&self.state.stack[index])
-            .map_err(|err| anyhow!("register {} expected Int or Float: {err}", register))
-    }
-
-    #[inline(always)]
-    pub(super) fn read_number_unchecked(&self, register: u8) -> f64 {
-        let index = self.stack_index_unchecked(register);
-        match &self.state.stack[index] {
-            RuntimeVal::Int(value) => *value as f64,
-            RuntimeVal::Float(value) => *value,
-            _ => panic!("register {} expected Int or Float", register),
+            other => bail!(
+                "register {} expected Int, got {}",
+                register,
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -392,7 +309,7 @@ impl Executor {
         match value {
             RuntimeVal::Int(value) => Ok(*value as f64),
             RuntimeVal::Float(value) => Ok(*value),
-            other => bail!("got {:?}", other.kind()),
+            other => bail!("got {}", self.value_type_name(other)),
         }
     }
 
@@ -669,6 +586,18 @@ impl Executor {
         bail!("jump before start of function")
     }
 
+    /// The call's shape: the function's own fact, else read off the
+    /// instruction.
+    ///
+    /// There used to be a third source between them — a cache in the module
+    /// *state*, keyed by pc alone. Keyed by pc alone across every function in
+    /// the module: two functions with a call at the same pc shared an entry, so
+    /// the second would have taken the first's call base and argument counts.
+    /// It never fired (the compiler records a fact for every call site it
+    /// emits, and artifact v4 serializes them, so the first branch always
+    /// wins), which is the only reason that was not a wrong answer waiting for
+    /// a program to find it. Measured across `examples/` and the bench: zero
+    /// reads reached it, while every call paid the write that filled it.
     #[inline]
     pub(super) fn call_fact_from_static_cache_or_instr(
         &mut self,
@@ -679,10 +608,6 @@ impl Executor {
         if let Some(fact) = function.performance.call_site(self.pc).copied()
             && (named || fact.named_count == 0)
         {
-            self.state.inline_caches.set_call(self.pc, fact);
-            return fact;
-        }
-        if let Some(fact) = self.state.inline_caches.call(self.pc) {
             return fact;
         }
         let (positional_count, named_count) = if named {
@@ -691,27 +616,26 @@ impl Executor {
         } else {
             (instr.c() as u16, 0)
         };
-        let fact = PerfCallFact {
+        PerfCallFact {
             // A holds the call-window base. B is only 7 bits and would truncate call_base >= 128.
             call_base: instr.a() as u16,
             positional_count,
             named_count,
             target_kind: self.observe_call_target_kind(instr.a() as u16),
-        };
-        self.state.inline_caches.set_call(self.pc, fact);
-        fact
+        }
     }
 
+    /// The global slot a `GetGlobal`/`SetGlobal` names.
+    ///
+    /// Same story as the call shape above: a pc-keyed state cache sat between
+    /// the fact and the instruction, shared by every function in the module.
     #[inline]
-    pub(super) fn global_slot_from_fact_cache_or_instr(&mut self, function: &Function, instr: Instr) -> u16 {
-        let slot = function
+    pub(super) fn global_slot_from_fact_or_instr(&mut self, function: &Function, instr: Instr) -> u16 {
+        function
             .performance
             .global_op(self.pc)
             .map(|fact| fact.slot)
-            .or_else(|| self.state.inline_caches.global(self.pc))
-            .unwrap_or_else(|| instr.bx());
-        self.state.inline_caches.set_global(self.pc, slot);
-        slot
+            .unwrap_or_else(|| instr.bx())
     }
 
     #[inline(always)]

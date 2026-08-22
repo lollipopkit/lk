@@ -12,9 +12,9 @@ mod tests {
     // Tests with literal expressions
     #[test]
     fn literal_list_operations() {
-        expect_expr("([1, 2, 3]) + ([4, 5])", "[1, 2, 3, 4, 5]");
-        expect_expr("([1, 2, 3]) - ([2])", "[1, 3]");
-        expect_expr("([1, 2, 3]) - 2", "[1, 3]");
+        expect_expr("([1, 2, 3]) + ([4, 5])", "[1,2,3,4,5]");
+        expect_expr("([1, 2, 3]) - ([2])", "[1,3]");
+        expect_expr("([1, 2, 3]) - 2", "[1,3]");
     }
 
     #[test]

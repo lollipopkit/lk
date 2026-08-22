@@ -8,7 +8,14 @@ license = "Apache-2.0"
 
 [lib]
 name = "lk_stdlib"
-crate-type = ["rlib", "staticlib"]
+# `rlib` only. A `staticlib` crate-type is emitted on *every* build of the
+# crate, and for this one that archive is ~480MB (the whole dependency graph's
+# objects plus debuginfo) — 19GB of stale generations had accumulated under
+# `target/debug/deps`. Nothing ever linked it: the AOT driver links
+# `liblkrt_cabi.a` and `liblk_api.a`, and both of those come from crates that
+# exist to produce them. Same rule as `lkrt-cabi`: a staticlib belongs to a
+# crate whose job is the staticlib.
+crate-type = ["rlib"]
 
 [features]
 default = []
@@ -33,7 +40,6 @@ lk-stdlib-path = { path = "crates/path" }
 lk-stdlib-process = { path = "crates/process" }
 lk-stdlib-random = { path = "crates/random" }
 lk-stdlib-regex = { path = "crates/regex" }
-lk-stdlib-slice = { path = "crates/slice" }
 lk-stdlib-stream = { path = "crates/stream" }
 lk-stdlib-string = { path = "crates/string" }
 lk-stdlib-task = { path = "crates/task" }
@@ -49,3 +55,13 @@ tracing = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+# `RuntimeVal`'s `PartialEq` exists for test code only — see the `testing`
+# feature in lk-core.
+lk-core = { path = "../core", features = ["testing"] }
+# Test-only, for the host-conformance check in `src/host_parity_test.rs`: the
+# two alternative hosts are asked what they know, rather than being described by
+# a second list that can drift. Neither links into the shipped `stdlib`.
+lk-stdlib-bare = { path = "bare" }
+lk-stdlib-web = { path = "web" }

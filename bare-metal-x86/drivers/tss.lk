@@ -1,0 +1,63 @@
+// The task state segment.
+//
+// Almost all of it is dead weight in long mode. The register-save fields a
+// 32-bit TSS had are gone, and hardware task switching went with them; what is
+// left that the CPU still reads is one field, and the whole structure exists to
+// hold it: `rsp0`, the stack to switch to when an interrupt or a syscall takes
+// the machine from ring 3 back to ring 0.
+//
+// The layout, at the offsets the hardware fixes:
+//
+//   0..4     reserved
+//   4..12    rsp0        the ring-0 stack
+//   12..28   rsp1, rsp2  (unused: nothing here runs at rings 1 or 2)
+//   28..36   reserved
+//   36..92   ist[7]      interrupt stack table (unused)
+//   92..102  reserved
+//   102..104 io_map_base
+//
+// `rsp0` at offset 4 is not eight-byte aligned, and that is the hardware's
+// doing, not a mistake: a 64-bit field starting at a 32-bit offset. x86 does
+// not care, but it is the reason this file writes it as a word at an address
+// rather than through anything that would want alignment.
+
+const TSS_SIZE = 104;
+
+// Past the end of the segment, deliberately.
+//
+// An I/O permission bitmap whose *start* is beyond the segment's limit means
+// "no ports are permitted", which is what a ring-3 task should be able to do:
+// nothing. Leaving this zero instead would point the CPU at the beginning of
+// the TSS and let a user task read a permission map made of the TSS's own
+// fields — whatever bytes happened to be there, interpreted as permission.
+const IO_MAP_NONE = 104;
+
+const RSP0_OFFSET = 4;
+const IO_MAP_OFFSET = 102;
+
+fn byte_size() -> Int {
+    return TSS_SIZE;
+}
+
+// Zeroes the segment and points its I/O bitmap past the end.
+//
+// Zeroing matters more than it looks: every reserved field is one the CPU
+// checks or will check, and `ist[7]` left as old memory is seven stack pointers
+// a future interrupt gate could be told to use.
+fn prepare(base: Int) {
+    for offset in 0..((TSS_SIZE / 8) as Int) {
+        unsafe { volatile_write_u64((base + offset * 8) as *mut u64, 0 as u64); };
+    }
+    unsafe { volatile_write_u16((base + IO_MAP_OFFSET) as *mut u16, IO_MAP_NONE as u16); };
+}
+
+// Points the CPU at the ring-0 stack for the next ring change.
+//
+// Per task, not once. Two user tasks sharing one kernel stack would have the
+// second one's interrupt frame land on top of the first one's, and the first
+// would resume into whatever was left of it. The scheduler calls this on every
+// switch, because the scheduler is the only thing that knows whose stack is
+// next.
+fn set_kernel_stack(base: Int, top: Int) {
+    unsafe { volatile_write_u64((base + RSP0_OFFSET) as *mut u64, top as u64); };
+}

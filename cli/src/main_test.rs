@@ -2,38 +2,31 @@ mod tests {
     use crate::*;
     use lk_core::vm::VmRuntimeMetrics;
 
+    /// A CLI path argument is taken as written, `..` included.
+    ///
+    /// There used to be a `sanitize_path` refusing any `..`, and four tests
+    /// pinning it — including one asserting that `/etc/passwd` **is** allowed.
+    /// The two halves say the guard stopped nothing: anything `..` reaches, an
+    /// absolute path reaches too, and every caller is an argument the person
+    /// running the command typed. What it did stop was `lk ../script.lk` from a
+    /// subdirectory.
     #[test]
-    fn test_sanitize_path_allows_simple_relative() {
-        let p = sanitize_path("foo/bar.lk").expect("relative path should be allowed");
-        assert_eq!(p, PathBuf::from("foo/bar.lk"));
+    fn a_path_argument_is_taken_as_written() {
+        for raw in ["foo/bar.lk", "../bar.lk", "foo/../bar.lk", "/etc/passwd"] {
+            assert_eq!(parse_path_arg(raw), Ok(PathBuf::from(raw)), "{raw}");
+        }
     }
 
+    /// `lk compile ../bar.lk` compiles `../bar.lk`.
+    ///
+    /// This asserted the opposite until the `..` guard came out — see
+    /// `a_path_argument_is_taken_as_written`.
     #[test]
-    fn test_sanitize_path_rejects_parent_dir() {
-        let err = sanitize_path("foo/../bar.lk").unwrap_err();
-        assert!(err.to_string().contains("Parent directory components"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_sanitize_path_allows_absolute_unix() {
-        let p = sanitize_path("/etc/passwd").expect("absolute path should be allowed");
-        assert_eq!(p, PathBuf::from("/etc/passwd"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_sanitize_path_allows_absolute_windows() {
-        let p = sanitize_path(r"C:\\Windows").expect("absolute path should be allowed");
-        assert_eq!(p, PathBuf::from(r"C:\\Windows"));
-    }
-
-    #[test]
-    fn test_cli_args_rejects_parent_dir_in_compile() {
-        let args = CliArgs::try_parse_from(["lk", "compile", "foo/../bar.lk"]).expect("should parse");
+    fn test_cli_args_accepts_parent_dir_in_compile() {
+        let args = CliArgs::try_parse_from(["lk", "compile", "../bar.lk"]).expect("should parse");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let err = split_compile_args(&positional).expect_err("should reject parent dirs");
-            assert!(err.to_string().contains("Parent directory components"));
+            let (_, file, _) = split_compile_args(&positional).expect("a path is a path");
+            assert_eq!(file, PathBuf::from("../bar.lk"));
         } else {
             panic!("expected compile command");
         }
@@ -68,7 +61,10 @@ mod tests {
     fn test_vm_profile_line_contains_benchmark_fields() {
         let line = vm_profile_line(VmRuntimeMetrics {
             opcode_steps: 11,
-            call_ops: 2,
+            call_ops: 9,
+            native_call_ops: 2,
+            exact_call_ops: 3,
+            method_call_ops: 1,
             branch_ops: 3,
             typed_branch_ops: 4,
             container_ops: 5,
@@ -76,38 +72,52 @@ mod tests {
             map_ops: 7,
             string_ops: 8,
             index_key_metrics: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
-            register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            copy_policy_heap_clones: 9,
-            register_copy_heap_clones: 10,
-            local_copy_heap_clones: 12,
-            local_load_heap_clones: 13,
-            local_store_heap_clones: 14,
-            const_load_heap_clones: 15,
-            call_arg_heap_clones: 16,
-            container_copy_heap_clones: 17,
+            register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            register_writes: 45,
             ..VmRuntimeMetrics::default()
         });
 
         assert!(line.starts_with("VM profile: "));
         assert!(line.contains("opcode_steps=11"));
-        assert!(line.contains("calls=2"));
+        assert!(line.contains("calls=9"));
+        // The breakdown, and the remainder that makes the parts add up: 2 + 3
+        // + 1 classified out of 9, so 3 calls the executor did not classify.
+        // Without the remainder a reader cannot tell "none of these kinds" from
+        // "this build does not measure it".
+        assert!(line.contains("call_kinds=native:2,exact:3,method:1,other:3"), "{line}");
         assert!(line.contains("branches=3"));
         assert!(line.contains("typed_branches=4"));
         assert!(line.contains("containers=5"));
-        assert!(line.contains("write_sources=other:10,string:9,global:8,call_return:7,index:6,container:5"));
+        // No `other:` any more: every dispatch arm that writes a register
+        // classifies it, so a catch-all bucket could only ever print zero.
+        assert!(line.contains("write_sources=string:9,global:8,call_return:7,index:6,container:5,compare:4"));
         assert!(line.contains(
             "index_keys=known_string_key:12,dynamic_register_key:11,dynamic_int_key:10,dynamic_short_string_key:9,dynamic_object_key:8,dynamic_other_key:7"
         ));
-        assert!(line.contains("val_clones=9"));
-        assert!(line.contains("heap_clones=9"));
-        assert!(line.contains("copy_policy_heap_clones=9"));
-        assert!(line.contains("register_copy_heap_clones=10"));
-        assert!(line.contains("local_copy_heap_clones=12"));
-        assert!(line.contains("local_load_heap_clones=13"));
-        assert!(line.contains("local_store_heap_clones=14"));
-        assert!(line.contains("const_load_heap_clones=15"));
-        assert!(line.contains("call_arg_heap_clones=16"));
-        assert!(line.contains("container_copy_heap_clones=17"));
+        // The ten `*_heap_clones` fields this used to pin are gone. They were
+        // written only by `record_copy_policy_clone`, which had no caller — and
+        // because this test builds the struct by hand, it happily printed 9/10/12
+        // while every real run printed ten zeros in a row. A formatter test cannot
+        // tell you a counter is dead; only a caller scan can.
+        assert!(line.contains("register_writes=45"));
+    }
+
+    #[test]
+    fn the_profile_report_says_so_when_it_cannot_profile() {
+        // `LK_VM_PROFILE=1` used to be answered by a well-formed profile of zeros
+        // on a binary with no counters compiled in — `opcode_steps=0` right after
+        // running four thousand of them. The report has to agree with the build it
+        // is part of, so this test is a `cfg` pair rather than a value check: the
+        // one that can measure must print numbers, the one that can't must say it
+        // can't.
+        let report = vm_profile_report();
+        if vm_runtime_metrics_enabled() {
+            assert!(report.starts_with("VM profile: "), "{report}");
+            assert!(!report.contains("unavailable"), "{report}");
+        } else {
+            assert!(report.contains("unavailable"), "{report}");
+            assert!(report.contains("--features vm-profile"), "{report}");
+        }
     }
 
     #[test]
@@ -117,7 +127,7 @@ mod tests {
         let args =
             CliArgs::try_parse_from(["lk", "compile", "bytecode", "foo.lk"]).expect("should parse positional target");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let (target, file) = split_compile_args(&positional).expect("should split compile args");
+            let (target, file, _out) = split_compile_args(&positional).expect("should split compile args");
             assert_eq!(target, CompileMode::Bytecode);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
@@ -162,7 +172,7 @@ mod tests {
     fn test_cli_args_compile_default_target_is_exe() {
         let args = CliArgs::try_parse_from(["lk", "compile", "foo.lk"]).expect("should parse default compile");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let (target, file) = split_compile_args(&positional).expect("should split compile args");
+            let (target, file, _out) = split_compile_args(&positional).expect("should split compile args");
             assert_eq!(target, CompileMode::Exe);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
@@ -186,7 +196,10 @@ mod tests {
         let main = temp.path().join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write main.lk");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
+        let (target, file, output) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
+        // A loose `./main.lk` keeps the old rule: `main.lk` -> `main` beside it
+        // is what naming the file would have done anyway.
+        assert_eq!(output, None);
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
@@ -205,10 +218,20 @@ mod tests {
         let main = src.join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write src/main.lk");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
+        let (target, file, output) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
+        // A build output does not belong in `src/`. The entry is
+        // `<pkg>/src/main.lk` and the output used to be that path without its
+        // extension — a 20 MB executable dropped next to the source it was
+        // built from, where the next `git add .` picks it up. It goes to the
+        // package root, named after the package directory.
+        let package_root = main.parent().and_then(std::path::Path::parent).expect("package root");
+        assert_eq!(
+            output.expect("a package build has an implicit output"),
+            package_root.join(package_root.file_name().expect("package directory name"))
+        );
     }
 
     #[test]
@@ -218,7 +241,7 @@ mod tests {
         std::fs::write(&main, "return 1;\n").expect("write main.lk");
 
         let args = vec!["bytecode".to_string()];
-        let (target, file) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
+        let (target, file, _out) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
 
         assert_eq!(target, CompileMode::Bytecode);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
@@ -268,7 +291,8 @@ mod tests {
         let main = src.join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write app main");
 
-        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
+        let (target, file, _out) =
+            split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
 
         assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));

@@ -29,3 +29,21 @@ fn is_release(scancode: Int) -> Bool {
 fn key_code(scancode: Int) -> Int {
     return scancode & 0x7f;
 }
+
+// The modifier keys, by scancode.
+//
+// They are keys like any other — the controller has no notion of a "modifier",
+// and reports a press and a release for each. What makes them modifiers is that
+// the program keeps their state instead of translating them, which is why this
+// module only names them.
+const SCAN_LEFT_SHIFT = 0x2a;
+const SCAN_RIGHT_SHIFT = 0x36;
+const SCAN_CAPS_LOCK = 0x3a;
+
+fn is_shift(code: Int) -> Bool {
+    return code == SCAN_LEFT_SHIFT || code == SCAN_RIGHT_SHIFT;
+}
+
+fn is_caps_lock(code: Int) -> Bool {
+    return code == SCAN_CAPS_LOCK;
+}

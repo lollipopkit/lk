@@ -1,0 +1,221 @@
+// The 8259 interrupt controller pair.
+//
+// Two chips, cascaded: eight lines on the master, eight more on the slave,
+// which reaches the CPU through the master's line 2. That arrangement is from
+// 1981 and every x86 still boots into it, so a kernel deals with it before it
+// deals with anything else that raises an interrupt.
+//
+// This file holds both halves of the chip's contract, and holds them together
+// on purpose. Bringing it up decides which vector each line lands on;
+// acknowledging an interrupt decides which chip is told the handler is done.
+// Those are one decision, and split across a language boundary they become two
+// files naming the same command port — which is exactly how the mouse stopped
+// after one packet the first time, from an end-of-interrupt sent to the master
+// and not the slave.
+
+// Command and data ports. The chip has two registers per chip and which one a
+// write means depends on where in the initialisation sequence it arrives,
+// which is why the sequence below is written as a sequence.
+const PIC1_CMD = 0x20;
+const PIC1_DATA = 0x21;
+const PIC2_CMD = 0xa0;
+const PIC2_DATA = 0xa1;
+
+// "The handler is finished." Until this arrives the chip believes the line is
+// still in service and raises nothing further on it — a device that works once
+// and then goes quiet, with nothing anywhere to say why.
+const EOI = 0x20;
+
+// Points the chips at `base` and `base + 8`.
+//
+// Four writes per chip, in order, latched as ICW1-ICW4. The order is the
+// protocol: the chip has no register addresses for these, only a position in
+// the sequence, so a write out of place is not an error but a different
+// meaning.
+//
+// `base` matters because the power-on default overlaps the vectors the CPU
+// reserves for its own exceptions — an interrupt from the timer would arrive
+// as a double fault. Remapping away from them is the first thing every x86
+// kernel does, and the number to remap to belongs to whoever builds the
+// interrupt table, which is not this file.
+fn remap(base: Int) {
+    unsafe { port_out_u8(PIC1_CMD, 0x11 as u8); };   // ICW1: begin init, expect ICW4
+    unsafe { port_out_u8(PIC2_CMD, 0x11 as u8); };
+    unsafe { port_out_u8(PIC1_DATA, base as u8); };  // ICW2: vector offsets
+    unsafe { port_out_u8(PIC2_DATA, (base + 8) as u8); };
+    unsafe { port_out_u8(PIC1_DATA, 0x04 as u8); };  // ICW3: slave on line 2
+    unsafe { port_out_u8(PIC2_DATA, 0x02 as u8); };
+    unsafe { port_out_u8(PIC1_DATA, 0x01 as u8); };  // ICW4: 8086 mode
+    unsafe { port_out_u8(PIC2_DATA, 0x01 as u8); };
+}
+
+// Which lines are allowed to raise anything. A set bit is masked *off*.
+//
+// An unmasked line with no gate behind it is an interrupt into a not-present
+// descriptor, which is a general protection fault raised from inside an
+// interrupt — so the mask and the table have to agree, and the caller is the
+// one that knows both.
+fn mask(master: Int, slave: Int) {
+    unsafe { port_out_u8(PIC1_DATA, master as u8); };
+    unsafe { port_out_u8(PIC2_DATA, slave as u8); };
+}
+
+// The master's line the slave arrives on. Unmasking any of lines 8-15 without
+// this one open is a device that raises an interrupt the CPU never sees.
+const CASCADE_LINE = 2;
+
+// Two chips, eight lines each, and no seventeenth.
+//
+// Exported because a caller with a line number out of PCI config space needs
+// something to compare it against, and 16 written at the call site is a number
+// that agrees with this file until one of them changes. `bit_of` returns 0x80
+// for anything past the end, so an out-of-range line does not corrupt anything
+// — it quietly masks or unmasks line 7 or 15 instead, which is a device that
+// never fires and another that fires when it should not.
+const LINE_COUNT = 16;
+
+// Whether the chip has this line at all.
+//
+// A predicate rather than the constant, because the caller's question is not
+// "how many are there" but "may I use this number as an index". The number it
+// is checking came out of PCI config space, where 0xFF means "not connected".
+fn line_exists(irq: Int) -> Bool {
+    return irq >= 0 && irq < LINE_COUNT;
+}
+
+// The interrupt mask register reads back, which is what makes it possible to
+// open one line without knowing what else is open.
+//
+// `mask` above takes both bytes at once, and that is right for a kernel setting
+// up the machine — it knows every line it intends to allow. It is wrong for a
+// *driver*: a PCI device does not learn its interrupt line until it reads
+// configuration space, by which time the masks are already set, and a driver
+// that wrote a whole byte would silently close every line it did not know
+// about. Read, clear one bit, write back.
+fn unmask(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(PIC1_DATA) } as Int;
+        unsafe { port_out_u8(PIC1_DATA, (current & (0xff - bit_of(irq))) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(PIC2_DATA) } as Int;
+    unsafe { port_out_u8(PIC2_DATA, (current & (0xff - bit_of(irq - 8))) as u8); };
+    // The slave reaches the CPU through the master, so opening one of its lines
+    // means opening the cascade too. Done here rather than left to the caller
+    // because a caller that forgets sees a device that raises nothing, with the
+    // mask register showing its line open.
+    let master = unsafe { port_in_u8(PIC1_DATA) } as Int;
+    unsafe { port_out_u8(PIC1_DATA, (master & (0xff - bit_of(CASCADE_LINE))) as u8); };
+}
+
+// Closes one line, leaving the others as they are.
+fn mask_line(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(PIC1_DATA) } as Int;
+        unsafe { port_out_u8(PIC1_DATA, (current | bit_of(irq)) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(PIC2_DATA) } as Int;
+    unsafe { port_out_u8(PIC2_DATA, (current | bit_of(irq - 8)) as u8); };
+}
+
+// 1 << n, for n in 0..8. A table rather than a shift because these are the only
+// eight values that exist here and the loop that would compute them is longer
+// than the answer.
+fn bit_of(line: Int) -> Int {
+    if (line == 0) { return 0x01; }
+    if (line == 1) { return 0x02; }
+    if (line == 2) { return 0x04; }
+    if (line == 3) { return 0x08; }
+    if (line == 4) { return 0x10; }
+    if (line == 5) { return 0x20; }
+    if (line == 6) { return 0x40; }
+    return 0x80;
+}
+
+// The edge/level control register, which is how a PC says that a line is held
+// rather than pulsed.
+//
+// The 8259 is from 1981 and its lines are edge-triggered: an interrupt is a
+// *transition*, and a device that keeps its line high after being serviced gets
+// exactly one. PCI's INTx is the opposite — a device asserts and holds until the
+// driver has dealt with it — so a PCI line left edge-triggered delivers one
+// interrupt and then goes quiet for ever, while the device sits there asserting.
+//
+// That is not a hypothetical. A network card driven this way answered its first
+// interrupt and none of the eleven after it; the driver still worked, because it
+// had a timeout and the frames were already in the ring, which is a polling
+// driver wearing an interrupt driver's comments. The card's own cause register
+// still read 0x83 when the run finished — the line had been high the whole time.
+//
+// The register is the chipset's, not the chip's: two ports, one byte per PIC,
+// bit n for line n. Only lines 3-7 and 9-12 and 14-15 may be level — the timer,
+// the keyboard and the cascade are edge by construction and writing them is
+// undefined — which is why this takes a line rather than a byte.
+const ELCR1 = 0x4d0;
+const ELCR2 = 0x4d1;
+
+fn set_level_triggered(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(ELCR1) } as Int;
+        unsafe { port_out_u8(ELCR1, (current | bit_of(irq)) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(ELCR2) } as Int;
+    unsafe { port_out_u8(ELCR2, (current | bit_of(irq - 8)) as u8); };
+}
+
+// Whether the chip really has this line in service.
+//
+// The 8259 has a documented way of lying. If a line's request disappears
+// between the chip raising INTR and the CPU acknowledging — a glitch, or a line
+// masked while its request was pending — the chip has already committed to
+// delivering *something*, so it delivers its lowest-priority line: 7 on the
+// master, 15 on the slave. That is a "spurious interrupt", and it arrives on a
+// vector a kernel may otherwise have no reason to give a gate to, which turns
+// it into a general protection fault raised from inside an interrupt.
+//
+// The in-service register is how to tell one from the other, and it is the only
+// way: a spurious interrupt is indistinguishable from a real one at the vector.
+// OCW3 selects which register the command port reads back.
+fn in_service(irq: Int) -> Bool {
+    if (irq < 8) {
+        unsafe { port_out_u8(PIC1_CMD, 0x0b as u8); };
+        let register = unsafe { port_in_u8(PIC1_CMD) } as Int;
+        return (register & bit_of(irq)) != 0;
+    }
+    unsafe { port_out_u8(PIC2_CMD, 0x0b as u8); };
+    let register = unsafe { port_in_u8(PIC2_CMD) } as Int;
+    return (register & bit_of(irq - 8)) != 0;
+}
+
+// Acknowledges by line number, which is what a driver has.
+//
+// The two functions below are the chip's contract; this is the one a driver
+// should call. Which chip to tell is a property of the line, not a decision the
+// driver should be making — and getting it wrong is the failure that looks like
+// the device broke.
+fn eoi(irq: Int) {
+    if (irq < 8) {
+        eoi_master();
+        return;
+    }
+    eoi_slave();
+}
+
+// Acknowledges an interrupt from one of the master's own lines (0-7).
+fn eoi_master() {
+    unsafe { port_out_u8(PIC1_CMD, EOI as u8); };
+}
+
+// Acknowledges an interrupt from the slave's lines (8-15) — to *both* chips,
+// slave first.
+//
+// The master never saw the device; what it saw was the cascade line, and it is
+// still in service until told otherwise. Acknowledging only one of the two is
+// the shape of a bug that looks like the device broke: it delivers exactly one
+// interrupt and then nothing, forever.
+fn eoi_slave() {
+    unsafe { port_out_u8(PIC2_CMD, EOI as u8); };
+    unsafe { port_out_u8(PIC1_CMD, EOI as u8); };
+}

@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -10,7 +10,7 @@ use crate::val::{
 };
 
 use super::profile::{record_dynamic_index_key_metric, record_index_key_metric};
-use super::{Executor, heap_kind, push_list_value, set_list_value};
+use super::{Executor, set_list_value};
 use crate::vm::{
     IndexInlineCache,
     analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric},
@@ -27,6 +27,8 @@ enum IndexTargetKind {
     Map,
     Object,
     String,
+    Slice,
+    Bytes,
 }
 
 enum SliceFromPlan {
@@ -78,8 +80,8 @@ impl Executor {
         Ok(out)
     }
 
-    pub(super) fn read_map_entries(&self, base: u8, count: u8) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
-        let mut values = fast_hash_map_new();
+    pub(super) fn read_map_entries(&self, base: u8, count: u8) -> Result<ValueMap<RuntimeMapKey, RuntimeVal>> {
+        let mut values = value_map_new();
         for entry in 0..count {
             let key_reg = base
                 .checked_add(entry.checked_mul(2).expect("map entry register overflow"))
@@ -100,8 +102,8 @@ impl Executor {
         count: u8,
         move_keys: bool,
         move_values: bool,
-    ) -> Result<FastHashMap<RuntimeMapKey, RuntimeVal>> {
-        let mut values = fast_hash_map_new();
+    ) -> Result<ValueMap<RuntimeMapKey, RuntimeVal>> {
+        let mut values = value_map_new();
         for entry in 0..count {
             let key_reg = base
                 .checked_add(entry.checked_mul(2).expect("map entry register overflow"))
@@ -121,12 +123,44 @@ impl Executor {
         Ok(values)
     }
 
+    /// A struct field's name, as the `Arc<str>` the object will key by.
+    ///
+    /// The general conversion renders a value into a fresh `String`, which this
+    /// then copied into an `Arc` — two allocations per field per construction,
+    /// and the rendering was 7.5% of a loop that builds one struct. A field name
+    /// is a string already: a heap one *is* an `Arc` and is shared, and an
+    /// inline one is copied once.
+    fn field_name_from_register(&self, register: u8, ty: &crate::val::DeclaredType) -> Result<Arc<str>> {
+        let borrowed = match self.read(register)? {
+            RuntimeVal::ShortStr(text) => Some(text.as_str()),
+            RuntimeVal::Obj(handle) => match self.state.heap.get(*handle) {
+                // A heap field name is an `Arc` already, and the object may
+                // share it.
+                Some(HeapValue::String(text)) => return Ok(Arc::clone(text)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(text) = borrowed {
+            // The declaration holds this name, so every instance keys by the
+            // *same* `Arc` — one allocation for the program, not one per
+            // construction. A name the declaration does not have (an undeclared
+            // field, or a struct whose declaration is out of reach) still costs
+            // its own.
+            if let Some(shared) = ty.declared_field_name(text) {
+                return Ok(Arc::clone(shared));
+            }
+            return Ok(Arc::<str>::from(text));
+        }
+        Ok(Arc::<str>::from(self.to_runtime_string(register)?))
+    }
+
     pub(super) fn read_object_fields(&mut self, base: u8, count: u8) -> Result<RuntimeObject> {
         let ty = self.declared_type(base)?;
         let field_base = base
             .checked_add(1)
             .ok_or_else(|| anyhow!("object field base overflow"))?;
-        let mut fields = fast_hash_map_new();
+        let mut fields = value_map_new();
         for entry in 0..count {
             let offset = entry
                 .checked_mul(2)
@@ -137,10 +171,22 @@ impl Executor {
             let value_reg = key_reg
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("object value register overflow"))?;
-            fields.insert(
-                Arc::<str>::from(self.to_runtime_string(key_reg)?),
-                *self.read(value_reg)?,
-            );
+            let key = self.field_name_from_register(key_reg, &ty)?;
+            let value = *self.read(value_reg)?;
+            // Construction is checked against the declaration for the same
+            // reason a store is: `A { v: x }` with an untyped `x` is a write
+            // the type checker cannot see.
+            if let Some(declared) = ty.field_type(&key)
+                && !crate::val::value_satisfies_declared(&value, declared, &self.state.heap)
+            {
+                let declared = declared.display();
+                bail!(
+                    "field `{key}` of {} is declared {declared}, and a {} cannot be stored in it",
+                    ty.name,
+                    self.value_type_name(&value)
+                );
+            }
+            fields.insert(key, value);
         }
         Ok(RuntimeObject::new(ty, fields))
     }
@@ -151,7 +197,7 @@ impl Executor {
     /// Memoized on the last one built: a loop constructing the same struct
     /// names the same type every iteration, so this allocates once for the
     /// whole loop rather than once per object.
-    fn declared_type(&mut self, base: u8) -> Result<Arc<crate::vm::DeclaredType>> {
+    fn declared_type(&mut self, base: u8) -> Result<Arc<crate::val::DeclaredType>> {
         let name = self.to_runtime_string(base)?;
         if let Some(cached) = &self.last_declared_type
             && cached.scope.is_same(&self.type_scope)
@@ -159,9 +205,27 @@ impl Executor {
         {
             return Ok(Arc::clone(cached));
         }
-        let ty = Arc::new(crate::vm::DeclaredType::new(
+        // The declaration's field order travels with the type, so `display`
+        // can print an instance the way its `struct` was written. Looked up
+        // once per distinct type thanks to the memo above, not once per object.
+        let name = Arc::<str>::from(name);
+        let fields: Arc<[crate::val::DeclaredField]> = match self.struct_decls.iter().find(|decl| decl.name == *name) {
+            Some(decl) => decl
+                .fields
+                .iter()
+                .map(|field| {
+                    crate::val::DeclaredField::new(
+                        Arc::<str>::from(field.name.as_str()),
+                        field.ty.as_deref().and_then(crate::val::Type::parse),
+                    )
+                })
+                .collect(),
+            None => Arc::from([] as [crate::val::DeclaredField; 0]),
+        };
+        let ty = Arc::new(crate::val::DeclaredType::with_fields(
             self.type_scope.clone(),
-            Arc::<str>::from(name),
+            name,
+            fields,
         ));
         self.last_declared_type = Some(Arc::clone(&ty));
         Ok(ty)
@@ -189,31 +253,70 @@ impl Executor {
                 {
                     HeapValue::String(value) => self.slice_string_general(Arc::clone(value), start, end),
                     HeapValue::List(list) => {
-                        let items = list.collect_owned();
-                        let end = end.unwrap_or(items.len() as i64);
-                        let start = if start < 0 {
-                            (items.len() as i64 + start).max(0)
-                        } else {
-                            start
-                        };
-                        let end = if end < 0 {
-                            (items.len() as i64 + end).max(0)
-                        } else {
-                            end
-                        };
-                        let start = start as usize;
-                        let end = end as usize;
-                        let end = end.min(items.len());
-                        let start = start.min(end);
-                        let slice: Vec<RuntimeVal> = items[start..end].to_vec();
-                        Ok(RuntimeVal::Obj(
-                            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(slice))),
-                        ))
+                        // Cloned first because materializing the window can
+                        // allocate — a string element past the inline limit
+                        // becomes a heap string — and that needs the heap
+                        // mutably while the source is still borrowed from it.
+                        //
+                        // This used to go through `TypedList::collect_owned`,
+                        // which cannot allocate and answered such an element
+                        // with `ShortStr::new(..).unwrap()`: `xs[0..2]` on a
+                        // list of long strings took the process down.
+                        let list = list.clone();
+                        let source_len = list.len() as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(source_len as usize);
+                        let start = (start as usize).min(end);
+                        let mut slice = Vec::with_capacity(end - start);
+                        for index in start..end {
+                            slice.push(self.typed_list_element_allocating(&list, index));
+                        }
+                        let slice = TypedList::from_runtime_values(&slice, &self.state.heap);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(slice))))
                     }
-                    _ => bail!("Slice target must be string or list"),
+                    // `b[a..c]` is `b.slice(a, c)` written the other way, and
+                    // the two have to answer the same thing — a `Bytes`, since
+                    // every element of the answer is still a byte. Clamped and
+                    // counted from the end exactly as the list arm above does.
+                    HeapValue::Bytes(bytes) => {
+                        let bytes = Arc::clone(bytes);
+                        let source_len = bytes.len() as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(bytes.len());
+                        let start = (start as usize).min(end);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Bytes(
+                            Arc::<[u8]>::from(&bytes[start..end]),
+                        ))))
+                    }
+                    // A sub-range of a window is a window, which is what
+                    // `w.slice(a, c)` answers.
+                    HeapValue::Slice(slice) => {
+                        let slice = Arc::clone(slice);
+                        let source_len = slice.live_len(&self.state.heap) as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(source_len as usize);
+                        let start = (start as usize).min(end);
+                        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Slice(Arc::new(
+                            crate::val::SliceValue {
+                                source: slice.source,
+                                start: slice.start + start,
+                                len: end - start,
+                            },
+                        )))))
+                    }
+                    _ => bail!("Slice target must be a string, list, bytes or slice"),
                 }
             }
-            other => bail!("Slice target expected string/list, got {:?}", other.kind()),
+            other => bail!(
+                "Slice target expected string/list/bytes/slice, got {}",
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -259,7 +362,12 @@ impl Executor {
             HeapValue::Map(_) => Ok(IndexTargetKind::Map),
             HeapValue::Object(_) => Ok(IndexTargetKind::Object),
             HeapValue::String(_) => Ok(IndexTargetKind::String),
-            other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(other)),
+            HeapValue::Slice(_) => Ok(IndexTargetKind::Slice),
+            HeapValue::Bytes(_) => Ok(IndexTargetKind::Bytes),
+            other => bail!(
+                "GetIndex target object is not indexable: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -274,12 +382,32 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(string_char_len(value)),
+                // Bytes counts bytes — that is the whole point of asking for
+                // them. `s.len()` counts characters, `s.bytes().len()` counts
+                // bytes, and the difference is now something the reader chose
+                // rather than something the implementation decided for them.
+                HeapValue::Bytes(value) => Ok(value.len()),
+                // A window's length is the window's, not the source's — and it
+                // is what the window can still reach, so a source that shrank
+                // shortens it rather than leaving it pointing past the end.
+                HeapValue::Slice(slice) => Ok(slice.live_len(&self.state.heap)),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),
-                other => bail!("Len target object is not sized: {:?}", heap_kind(other)),
+                // "Len target" is this opcode's operand, not anything the
+                // program wrote. What it wrote is `x.len()`, and what is wrong
+                // is the value.
+                other => bail!("`len()` has no answer for {}", HeapValue::type_name(other)),
             },
-            other => bail!("Len target expected string/list/map/set, got {:?}", other.kind()),
+            // No article: "a Int" is wrong and "an Int" needs a rule about
+            // vowels that has nothing to do with anything here.
+            other => bail!(
+                "`len()` works on a String, List, Map, Set, Bytes or Slice, got {}",
+                match self.value_type_name(other) {
+                    "Nil" => "nil",
+                    name => name,
+                }
+            ),
         }
     }
 
@@ -308,9 +436,41 @@ impl Executor {
                 HeapValue::List(values) => self.list_contains(values, needle),
                 HeapValue::Map(values) => self.map_contains(values, needle),
                 HeapValue::Set(values) => self.set_contains(values, needle),
-                other => bail!("Contains haystack object is not searchable: {:?}", heap_kind(other)),
+                // `Bytes` and a window were the two carriers `in` did not
+                // search, and neither had a reason: both index, both report a
+                // `len`, both iterate, and `Bytes` even has a `contains`
+                // method. The operator was the one place they were not
+                // containers.
+                HeapValue::Bytes(bytes) => Ok(match needle {
+                    RuntimeVal::Int(byte) => u8::try_from(*byte).is_ok_and(|byte| bytes.contains(&byte)),
+                    // A byte string holds byte values, so nothing else can be
+                    // in it — the VM's answer for a needle of the wrong kind
+                    // is `false`, as it is for a list of Ints searched for a
+                    // string.
+                    _ => false,
+                }),
+                // A window is a range of its source, so membership is
+                // membership in that range — the same reading `len`,
+                // indexing and `for` already take.
+                HeapValue::Slice(slice) => {
+                    let RuntimeVal::Obj(source) = slice.source else {
+                        return Ok(false);
+                    };
+                    let Some(HeapValue::List(values)) = self.state.heap.get(source) else {
+                        return Ok(false);
+                    };
+                    let window = values.window(slice.start, slice.live_len(&self.state.heap));
+                    self.list_contains(&window, needle)
+                }
+                other => bail!(
+                    "Contains haystack object is not searchable: {:?}",
+                    HeapValue::type_name(other)
+                ),
             },
-            other => bail!("Contains haystack expected string/list/map/set, got {:?}", other.kind()),
+            other => bail!(
+                "Contains haystack expected string/list/map/set/bytes/slice, got {}",
+                self.value_type_name(other)
+            ),
         }
     }
 
@@ -328,14 +488,20 @@ impl Executor {
                 {
                     HeapValue::List(values) => SliceFromPlan::List(values.slice_from(start)),
                     HeapValue::String(value) => SliceFromPlan::String(Arc::clone(value)),
-                    other => bail!("SliceFrom target object is not sliceable: {:?}", heap_kind(other)),
+                    other => bail!(
+                        "SliceFrom target object is not sliceable: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                 };
                 match plan {
                     SliceFromPlan::List(values) => Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values)))),
                     SliceFromPlan::String(value) => self.slice_string_from(value, start),
                 }
             }
-            other => bail!("SliceFrom target expected string/list object, got {:?}", other.kind()),
+            other => bail!(
+                "SliceFrom target expected string/list/bytes/slice object, got {}",
+                self.value_type_name(&other)
+            ),
         }
     }
 
@@ -358,7 +524,7 @@ impl Executor {
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::Map(map) => map,
-            other => bail!("MapRest source object is not a map: {:?}", heap_kind(other)),
+            other => bail!("MapRest source object is not a map: {:?}", HeapValue::type_name(other)),
         };
 
         let mut removed_keys = Vec::with_capacity(usize::from(key_count));
@@ -375,9 +541,34 @@ impl Executor {
 
     fn list_contains(&self, values: &TypedList, needle: &RuntimeVal) -> Result<bool> {
         Ok(match values {
-            TypedList::Mixed(values) => values.iter().any(|value| value == needle),
-            TypedList::Int(values) => matches!(needle, RuntimeVal::Int(needle) if values.contains(needle)),
-            TypedList::Float(values) => matches!(needle, RuntimeVal::Float(needle) if values.contains(needle)),
+            // `x in xs` compares values, and a mixed list is where non-scalar
+            // elements live. This used to be `==` — handle identity — so
+            // `[1, 2] in [[1, 2], [3]]` answered false.
+            TypedList::Mixed(values) => {
+                let mut found = false;
+                for value in values {
+                    if self.runtime_values_equal(value, needle)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+            // Numeric comparison across `Int`/`Float`, the same rule `==` uses.
+            // These arms used to demand the *same variant*, so `a == b` was
+            // true and `a in [b]` was false for the same pair — and the answer
+            // depended on the list's internal representation, since the
+            // `Mixed` arm above compares by value.
+            TypedList::Int(values) => match needle {
+                RuntimeVal::Int(needle) => values.contains(needle),
+                RuntimeVal::Float(needle) => values.iter().any(|value| *value as f64 == *needle),
+                _ => false,
+            },
+            TypedList::Float(values) => match needle {
+                RuntimeVal::Float(needle) => values.contains(needle),
+                RuntimeVal::Int(needle) => values.contains(&(*needle as f64)),
+                _ => false,
+            },
             TypedList::Bool(values) => matches!(needle, RuntimeVal::Bool(needle) if values.contains(needle)),
             TypedList::String(values) => {
                 let Some(needle) = self.runtime_value_to_string(needle)? else {
@@ -388,12 +579,30 @@ impl Executor {
         })
     }
 
+    /// `k in m` — whether the map holds that key.
+    ///
+    /// A needle that cannot *be* a key is not a member, and the answer is
+    /// `false` rather than a raise. Building the key and propagating its
+    /// failure made the answer depend on the map's internal representation:
+    ///
+    /// ```lk
+    /// 1.5 in {"k": 1}     // false — a string-keyed carrier
+    /// 1.5 in {1: 2}       // raised — the same question, `Mixed` inside
+    /// ```
+    ///
+    /// Which carrier a map has is not something a program can see, so that was
+    /// two answers to one question. `in` is a predicate and answers: a list
+    /// already says `"s" in [1, 2]` is false rather than refusing the needle's
+    /// type, and this is the same rule one container over.
+    ///
+    /// Only membership. Indexing and insertion still raise, because there the
+    /// key is being *built* — `m[1.5] = x` has to say so.
     fn map_contains(&self, values: &TypedMap, needle: &RuntimeVal) -> Result<bool> {
         Ok(match values {
-            TypedMap::Mixed(values) => {
-                let key = self.runtime_map_key_from_value(needle)?;
-                values.contains_key(&key)
-            }
+            TypedMap::Mixed(values) => match self.runtime_map_key_from_value(needle) {
+                Ok(key) => values.contains_key(&key),
+                Err(_) => false,
+            },
             TypedMap::StringMixed(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringInt(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringFloat(values) => self.string_map_contains_key(values, needle)?,
@@ -401,12 +610,40 @@ impl Executor {
         })
     }
 
+    /// `v in s` — whether the set holds it. Total, for [`Self::map_contains`]'s
+    /// reason: a set's members are keys, so a value that cannot be one is not a
+    /// member.
     fn set_contains(&self, values: &RuntimeSet, needle: &RuntimeVal) -> Result<bool> {
-        let key = self.runtime_map_key_from_value(needle)?;
-        Ok(values.contains(&key))
+        Ok(match self.runtime_map_key_from_value(needle) {
+            Ok(key) => values.contains(&key),
+            Err(_) => false,
+        })
     }
 
     #[allow(clippy::wrong_self_convention)] // allocates on the heap, so it needs `&mut self`
+    /// One element of a typed list, allocating when the element needs it.
+    ///
+    /// A `TypedList::String` element longer than a `ShortStr` has to become a
+    /// heap string; every read path that can allocate goes through here so that
+    /// none of them has to decide what to do when it cannot.
+    pub(super) fn typed_list_element_allocating(&mut self, list: &TypedList, index: usize) -> RuntimeVal {
+        match list {
+            TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
+            TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
+            TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
+            TypedList::Mixed(values) => values.get(index).copied(),
+            TypedList::String(values) => values.get(index).cloned().map(|text| match ShortStr::new(&text) {
+                Some(short) => RuntimeVal::ShortStr(short),
+                None => RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(text))),
+            }),
+        }
+        .unwrap_or(RuntimeVal::Nil)
+    }
+
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "`to_iter` names the opcode it implements, and it drives the executor"
+    )]
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
         match *self.read(register)? {
             RuntimeVal::ShortStr(value) => {
@@ -421,14 +658,28 @@ impl Executor {
                     .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 {
                     HeapValue::List(_) => ToIterPlan::ExistingList(handle),
+                    // A window is indexable and knows its length, which is all
+                    // the loop needs — copying it out would defeat the point.
+                    HeapValue::Slice(_) => ToIterPlan::ExistingList(handle),
+                    // Same reasoning: a `Bytes` is indexable and knows its
+                    // length. `for b in data` was a type error until now, so
+                    // reading bytes meant `bytes.to_list(data)` — a copy that
+                    // also turns each byte into an eight-byte `Int`.
+                    HeapValue::Bytes(_) => ToIterPlan::ExistingList(handle),
                     HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
                     HeapValue::Set(values) => ToIterPlan::Set(values.entries().cloned().collect()),
-                    other => bail!("ToIter target object is not iterable: {:?}", heap_kind(other)),
+                    other => bail!(
+                        "ToIter target object is not iterable: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                 };
                 self.finish_to_iter_plan(plan)
             }
-            other => bail!("ToIter target expected string/list/map/set, got {:?}", other.kind()),
+            other => bail!(
+                "ToIter target expected string/list/map/set/bytes/slice, got {}",
+                self.value_type_name(&other)
+            ),
         }
     }
 
@@ -444,13 +695,12 @@ impl Executor {
     }
 
     fn set_values_to_iter_list(&mut self, values: Vec<RuntimeMapKey>) -> Result<RuntimeVal> {
-        let values = values
+        let values: Vec<RuntimeVal> = values
             .into_iter()
             .map(|value| self.runtime_map_key_to_value(value))
             .collect();
-        Ok(RuntimeVal::Obj(
-            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(values))),
-        ))
+        let values = TypedList::from_runtime_values(&values, &self.state.heap);
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values))))
     }
 
     fn map_entries_to_iter_list(&mut self, entries: TypedMapIterSnapshot) -> Result<RuntimeVal> {
@@ -487,13 +737,12 @@ impl Executor {
                 }
             }
         }
-        Ok(RuntimeVal::Obj(
-            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(pairs))),
-        ))
+        let pairs = TypedList::from_runtime_values(&pairs, &self.state.heap);
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(pairs))))
     }
 
     fn push_iter_pair(&mut self, pairs: &mut Vec<RuntimeVal>, key: RuntimeVal, value: RuntimeVal) {
-        let pair = HeapValue::List(TypedList::Mixed(vec![key, value]));
+        let pair = HeapValue::List(TypedList::from_runtime_values(&[key, value], &self.state.heap));
         pairs.push(RuntimeVal::Obj(self.alloc_heap_value(pair)));
     }
 
@@ -510,7 +759,6 @@ impl Executor {
                     RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value)))
                 }
             }
-            RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
         }
     }
 
@@ -527,7 +775,7 @@ impl Executor {
         let handle = {
             let target = self.read(target_reg)?;
             let RuntimeVal::Obj(handle) = target else {
-                bail!("ListPush target expected Obj, got {:?}", target.kind());
+                bail!("ListPush target expected Obj, got {}", self.value_type_name(target));
             };
             *handle
         };
@@ -545,7 +793,7 @@ impl Executor {
             let Some(HeapValue::List(list)) = self.state.heap.get_mut(handle) else {
                 bail!("ListPush target object is not a list");
             };
-            push_list_value(list, value, string_value)?;
+            list.push(value, string_value)?;
         }
 
         self.state.heap.bump_shape_generation(handle);
@@ -562,7 +810,7 @@ impl Executor {
             HeapValue::List(TypedList::String(values)) => values.clone(),
             other => bail!(
                 "ListPush target object changed while materializing string list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         };
         let mut mixed = Vec::with_capacity(values.len() + 1);
@@ -600,7 +848,24 @@ impl Executor {
                 target_kind: PerfIndexTargetKind::String,
                 value_kind: PerfValueKind::Unknown,
             }),
-            other => bail!("index target object is not indexable: {:?}", heap_kind(other)),
+            // A window is indexable but has no specialised fast path to record
+            // a fact for: `Unknown` sends the read down the general path, which
+            // resolves it against the source list.
+            HeapValue::Slice(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Unknown,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            // Same as a window: indexable, no specialised fast path. The
+            // elements *are* known to be `Int`, but `value_kind` describes the
+            // fast path's output and there is none to describe.
+            HeapValue::Bytes(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Unknown,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            other => bail!(
+                "index target object is not indexable: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -608,7 +873,7 @@ impl Executor {
         &mut self,
         pc: usize,
         handle: HeapRef,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
     ) -> Result<Option<IndexInlineCache>> {
         let generation = self
             .state
@@ -626,7 +891,7 @@ impl Executor {
         Ok(self.state.inline_caches.index(pc, handle, generation))
     }
 
-    fn object_field_slot_from_heap(&self, handle: HeapRef, key: Option<&str>) -> Result<Option<u16>> {
+    fn object_field_slot_from_heap(&self, handle: HeapRef, key: Option<&Arc<str>>) -> Result<Option<u16>> {
         let Some(key) = key else {
             return Ok(None);
         };
@@ -648,14 +913,14 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         has_static_fact: bool,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<()> {
         let key: Arc<str> = match known_string_key {
             Some(key_str) => {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                Arc::<str>::from(key_str)
+                Arc::clone(key_str)
             }
             None => {
                 match moved_key.as_ref() {
@@ -666,6 +931,21 @@ impl Executor {
                 self.object_key_from_register_or_value(key_reg, moved_key)?
             }
         };
+        // A declared field is checked against the type it was declared with.
+        // The type checker catches every store it can see; this is the one it
+        // cannot — a write through an untyped binding, `fn poison(p) { p["v"]
+        // = "s"; }` — and without it a `struct P { v: Int }` could hold a
+        // String and the declaration meant nothing.
+        if let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
+            && let Some(declared) = object.ty.field_type(&key)
+            && !crate::val::value_satisfies_declared(&value, declared, &self.state.heap)
+        {
+            let (type_name, declared) = (object.ty.name.clone(), declared.display());
+            bail!(
+                "field `{key}` of {type_name} is declared {declared}, and a {} cannot be stored in it",
+                self.value_type_name(&value)
+            );
+        }
         match self
             .state
             .heap
@@ -678,7 +958,7 @@ impl Executor {
             }
             other => bail!(
                 "SetIndex target object changed while writing object: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         if !has_static_fact {
@@ -710,9 +990,9 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => Ok(value.clone()),
-                other => bail!("object field key cannot be object: {:?}", heap_kind(other)),
+                other => bail!("object field key cannot be object: {:?}", HeapValue::type_name(other)),
             },
-            other => bail!("object field key must be string, got {:?}", other.kind()),
+            other => bail!("object field key must be string, got {}", self.value_type_name(other)),
         }
     }
 
@@ -728,7 +1008,11 @@ impl Executor {
         let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get(handle) else {
             return Ok(None);
         };
-        let index = usize::try_from(*index).map_err(|_| anyhow!("list index must be non-negative"))?;
+        // Not "must be non-negative": `xs[-1]` is the last element, so that
+        // sentence describes a rule this language does not have. What happened
+        // is that the index resolved below 0 — the same out-of-range answer the
+        // other end gives, and `index` here is the index *as written*.
+        let index = usize::try_from(*index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
         if index >= values.len() {
             bail!("list index {} out of bounds", index);
         }
@@ -764,7 +1048,21 @@ impl Executor {
         key_reg: u8,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<RuntimeVal> {
-        let index = usize::try_from(self.read_int(key_reg)?).map_err(|_| anyhow!("list index must be non-negative"))?;
+        // A negative index has already been resolved against the length by the
+        // time it reaches this register, so one that is *still* negative is out
+        // of range at the low end — and a read out of range is `nil`, the same
+        // answer this gives past the high end and the same one `String`,
+        // `Bytes` and the native build already gave.
+        //
+        // It used to be `usize::try_from(…)` raising `list index must be
+        // non-negative`: a rule this language does not have (`xs[-1]` is the
+        // last element), and a VM/native divergence that wording hid —
+        // `xs[-10]` raised interpreted and answered `nil` compiled. See
+        // `val::position::element_position`, which states this rule and, until
+        // now, had no callers.
+        let Ok(index) = usize::try_from(self.read_int(key_reg)?) else {
+            return Ok(RuntimeVal::Nil);
+        };
         if let Some(value) = self.index_typed_list_handle(handle, index, known_value_kind)? {
             return Ok(value);
         }
@@ -807,7 +1105,10 @@ impl Executor {
                 }
                 value.clone()
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         };
         Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(long_string))))
     }
@@ -857,11 +1158,39 @@ impl Executor {
             }
             (PerfValueKind::Unknown, _) => Ok(None),
             (_, HeapValue::List(_)) => Ok(None),
-            (_, other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            (_, other) => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
-    fn index_string_at(&self, value: &str, index: usize) -> Result<RuntimeVal> {
+    /// `s[index]` — one character, or nil outside.
+    ///
+    /// Takes the raw index so the negative-counts-from-the-end rule lives in
+    /// one place. It counted back from the *byte* length in all three callers,
+    /// which is the same number only for ASCII: `"中文abc"` has five characters
+    /// and nine bytes, so `[-1]` asked for character 8 and got nil while `[-5]`
+    /// answered `"c"`. `len()` counts characters and `[i]` indexes characters;
+    /// `[-i]` now does too. Two of those three callers also let `len + index`
+    /// underflow into a huge `usize` and relied on the lookup missing.
+    fn index_string_at(&self, value: &str, index: i64) -> Result<RuntimeVal> {
+        let index = if index < 0 {
+            // For ASCII the byte length *is* the character count, so the cheap
+            // one is exact there.
+            let len = if value.is_ascii() {
+                value.len() as i64
+            } else {
+                value.chars().count() as i64
+            };
+            let wrapped = len + index;
+            if wrapped < 0 {
+                return Ok(RuntimeVal::Nil);
+            }
+            wrapped as usize
+        } else {
+            index as usize
+        };
         if value.is_ascii() {
             let Some(byte) = value.as_bytes().get(index).copied() else {
                 return Ok(RuntimeVal::Nil);
@@ -892,7 +1221,10 @@ impl Executor {
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::Map(map) => Ok(map.get(key)),
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -911,7 +1243,7 @@ impl Executor {
         let HeapValue::Map(map) = heap_value else {
             bail!(
                 "GetIndex target object changed while indexing: {:?}",
-                heap_kind(heap_value)
+                HeapValue::type_name(heap_value)
             );
         };
         // When value_kind is known, use it for direct typed dispatch.
@@ -972,7 +1304,10 @@ impl Executor {
                 }
                 Ok(object.get_field(key))
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 
@@ -993,28 +1328,15 @@ impl Executor {
     fn int_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<i64> {
         match moved_key {
             Some(RuntimeVal::Int(value)) => Ok(value),
-            Some(other) => bail!("SetIndex list key must be Int, got {:?}", other.kind()),
+            Some(other) => bail!("a list index must be Int, got {}", self.value_type_name(&other)),
             None => self.read_int(register),
         }
     }
 
+    /// The key a value is used under — see [`RuntimeMapKey::from_value`], which
+    /// is the one conversion.
     pub(super) fn runtime_map_key_from_value(&self, value: &RuntimeVal) -> Result<RuntimeMapKey> {
-        match value {
-            RuntimeVal::Nil => Ok(RuntimeMapKey::Nil),
-            RuntimeVal::Bool(value) => Ok(RuntimeMapKey::Bool(*value)),
-            RuntimeVal::Int(value) => Ok(RuntimeMapKey::Int(*value)),
-            RuntimeVal::ShortStr(value) => Ok(RuntimeMapKey::ShortStr(*value)),
-            RuntimeVal::Obj(handle) => match self
-                .state
-                .heap
-                .get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            {
-                HeapValue::String(value) => Ok(RuntimeMapKey::String(value.clone())),
-                other => bail!("object cannot be used as map key: {:?}", heap_kind(other)),
-            },
-            RuntimeVal::Float(_) => bail!("Float cannot be used as RuntimeMapKey"),
-        }
+        RuntimeMapKey::from_value(value, &self.state.heap)
     }
 
     fn runtime_value_to_key_string(&self, value: &RuntimeVal) -> Result<Option<Arc<str>>> {
@@ -1036,7 +1358,7 @@ impl Executor {
         })
     }
 
-    fn string_map_contains_key<T>(&self, values: &FastHashMap<Arc<str>, T>, needle: &RuntimeVal) -> Result<bool> {
+    fn string_map_contains_key<T>(&self, values: &ValueMap<Arc<str>, T>, needle: &RuntimeVal) -> Result<bool> {
         let Some(key) = self.runtime_value_to_key_string(needle)? else {
             return Ok(false);
         };
@@ -1055,11 +1377,7 @@ fn runtime_map_string_key(value: Arc<str>) -> RuntimeMapKey {
 
 #[inline(always)]
 fn runtime_map_key_from_str(key_str: &str) -> RuntimeMapKey {
-    if let Some(short) = ShortStr::new(key_str) {
-        RuntimeMapKey::ShortStr(short)
-    } else {
-        RuntimeMapKey::String(Arc::<str>::from(key_str))
-    }
+    RuntimeMapKey::from_text(key_str)
 }
 
 fn list_value_kind(list: &TypedList) -> PerfValueKind {
@@ -1075,7 +1393,7 @@ fn list_value_kind(list: &TypedList) -> PerfValueKind {
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !typed_map_key_removed(key, removed_keys) {
                     out.insert(key.clone(), *value);
@@ -1084,7 +1402,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1093,7 +1411,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1102,7 +1420,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);
@@ -1111,7 +1429,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             TypedMap::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
                     out.insert(Arc::clone(key), *value);

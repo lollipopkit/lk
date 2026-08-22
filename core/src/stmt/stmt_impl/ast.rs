@@ -16,38 +16,67 @@ pub struct Attribute {
     pub span: Option<Span>,
 }
 
-/// For 循环的模式匹配 (类似 Rust 的 Pattern)
+/// A `for` loop's binding pattern.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForPattern {
-    /// 简单变量绑定：for x in iter
+    /// `for x in iter`
     Variable(String),
-    /// 忽略模式：for _ in iter
+    /// `for _ in iter`
     Ignore,
-    /// 元组解构：for (a, b, c) in iter
+    /// `for (a, b, c) in iter`
     Tuple(Vec<ForPattern>),
-    /// 数组解构：for [a, b] in iter
+    /// `for [a, b] in iter`
     Array {
         patterns: Vec<ForPattern>,
         rest: Option<String>, // for [a, b, ..rest] or [a, b, ..]
     },
-    /// 对象解构：for {"k1": v1, "k2": v2} in iter
-    /// 仅支持字符串字面量作为键，值位置可以是变量或更深的模式（递归支持）
+    /// `for {"k1": v1, "k2": v2} in iter` — string-literal keys only; a value
+    /// position takes a name or a deeper pattern.
     Object(Vec<(String, ForPattern)>),
 }
 
-/// 具名参数声明（用于函数定义）
+/// The first name a `for` pattern binds twice, if any.
+///
+/// The `for` twin of [`crate::expr::duplicate_binding`] — a separate walk only
+/// because the loop header has its own pattern type.
+pub(crate) fn duplicate_for_binding(pattern: &ForPattern) -> Option<String> {
+    fn note(name: &str, seen: &mut Vec<String>) -> Option<String> {
+        if seen.iter().any(|s| s == name) {
+            return Some(name.to_string());
+        }
+        seen.push(name.to_string());
+        None
+    }
+
+    fn walk(pattern: &ForPattern, seen: &mut Vec<String>) -> Option<String> {
+        match pattern {
+            ForPattern::Variable(name) => note(name, seen),
+            ForPattern::Ignore => None,
+            ForPattern::Tuple(patterns) => patterns.iter().find_map(|p| walk(p, seen)),
+            ForPattern::Array { patterns, rest } => patterns
+                .iter()
+                .find_map(|p| walk(p, seen))
+                .or_else(|| rest.as_ref().and_then(|r| note(r, seen))),
+            ForPattern::Object(entries) => entries.iter().find_map(|(_k, p)| walk(p, seen)),
+        }
+    }
+
+    walk(pattern, &mut Vec::new())
+}
+
+/// A named parameter, as a function declares it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedParamDecl {
     pub name: String,
-    /// 可选类型注解（None 表示未注解，按 Any 处理）
+    /// `None` means unannotated, which is `Any`.
     pub type_annotation: Option<Type>,
-    /// 可选默认值表达式（仅在调用省略该具名参数时使用）
+    /// Used only when the call omits this parameter.
     pub default: Option<Expr>,
 }
 
-/// Statement AST 节点类型定义
+/// The statement AST.
 ///
-/// 语法设计：
+/// The syntax:
 /// program  ::= statement*
 /// statement ::= import_stmt | if_stmt | while_stmt | let_stmt | assign_stmt | break_stmt | continue_stmt | return_stmt | fn_stmt | expr_stmt | block_stmt
 /// import_stmt ::= 'use' import_spec ';'
@@ -84,7 +113,10 @@ pub enum Stmt {
         else_stmt: Option<Box<Stmt>>,
     },
     /// while (condition) body
-    While { condition: Box<Expr>, body: Box<Stmt> },
+    While {
+        condition: Box<Expr>,
+        body: Box<Stmt>,
+    },
     /// while let pattern = expression { body }
     WhileLet {
         pattern: Pattern,
@@ -105,34 +137,68 @@ pub enum Stmt {
         span: Option<Span>,
         is_const: bool,
     },
-    /// name = value; (赋值语句)
+    /// `name = value;`
     Assign {
         name: String,
         value: Box<Expr>,
         span: Option<Span>,
     },
-    /// name op= value; (复合赋值语句, 如 x += 5)
+    /// `name op= value;` — `x += 5` and the rest.
     CompoundAssign {
         name: String,
         op: BinOp,
         value: Box<Expr>,
         span: Option<Span>,
     },
-    /// name = value; (变量定义，类似 Go 的短声明)
-    Define { name: String, value: Box<Expr> },
+    /// `name := value;` — Go's short declaration.
+    ///
+    /// The same binding `let name = value` makes — both lower through
+    /// `lower_define` — so it carries a span for the same reasons `Let` does:
+    /// to place its type error, and to place the type hint an editor writes
+    /// where the annotation would have gone.
+    Define {
+        name: String,
+        value: Box<Expr>,
+        span: Option<Span>,
+    },
     /// break;
+    /// `defer <statement>` — run it when the function *returns*, on every
+    /// return path, in reverse order.
+    ///
+    /// **Not** when a raise unwinds past it. This comment used to say "whichever
+    /// way", which the rewrite below cannot deliver and which
+    /// [`crate::stmt::defer`] contradicts in the same words two files away — see
+    /// there for the two measured attempts at the raise path and why each was
+    /// reverted.
+    ///
+    /// Gone by the time anything but the parser sees it: a pass rewrites each
+    /// function's body so the deferred statements appear before every `return`
+    /// and at the end, in reverse order. That keeps it out of the type checker,
+    /// the resolver, both compilers and both backends — a release that has to
+    /// happen on every path is a *shape*, not a runtime mechanism, and the one
+    /// thing worse than not having it would be having it in one backend.
+    Defer {
+        body: Box<Stmt>,
+        span: Option<Span>,
+    },
+
     Break,
     /// continue;
     Continue,
     /// return [expression];
-    Return { value: Option<Box<Expr>> },
+    Return {
+        value: Option<Box<Expr>>,
+    },
     /// struct Name { field: Type, ... }
     Struct {
         name: String,
         fields: Vec<(String, Option<Type>)>,
     },
     /// type Alias = ExistingType;
-    TypeAlias { name: String, target: Type },
+    TypeAlias {
+        name: String,
+        target: Type,
+    },
     /// fn name(param1[: type], ...) [-> type] { body }
     Function {
         name: String,
@@ -150,39 +216,60 @@ pub enum Stmt {
         name: String,
         /// Method signatures indexed by method name
         methods: Vec<(String, Type)>,
+        /// Methods the trait wrote a *body* for, as the `Stmt::Function` an
+        /// `impl` block would have held.
+        ///
+        /// A type that implements the trait and does not write the method gets
+        /// this one, copied in by `stmt::trait_defaults` — so dispatch, the
+        /// type checker and the AOT lowering never learn that defaults exist.
+        /// Storing the whole function is what makes the copy exact: a signature
+        /// alone loses the parameter *names* the body reads.
+        default_methods: Vec<Stmt>,
     },
     /// impl Trait for Type { fn method(...) { body } }
     Impl {
-        trait_name: String,
+        /// `None` for an inherent `impl Type { … }` — methods that belong to
+        /// the type itself rather than to a trait it satisfies.
+        trait_name: Option<String>,
         target_type: Type,
         /// Methods implemented in this block (as function statements)
         methods: Vec<Stmt>,
     },
     /// expression;
-    Expr(Box<Expr>),
-    /// `try { body } catch name { handler }`
     ///
-    /// A real statement rather than parse-time sugar. It used to be rewritten in
-    /// the parser into `let [ok, e] = try$call(|| { body }); if !ok { handler }`,
-    /// so every later stage — name resolution, the type checker, both back ends —
-    /// saw a closure and a destructuring `let` instead of a protected region.
-    /// Three separate wrong answers came out of that shape: a `return` inside
-    /// the body returned from the *closure*, an assignment to an annotated local
-    /// inside the body lost its type, and a top-level body writing an outer
-    /// local failed at runtime in the cell-capture machinery.
-    Try {
-        body: Vec<Box<Stmt>>,
-        /// The name the handler binds the caught error to.
-        catch_var: String,
-        handler: Vec<Box<Stmt>>,
+    /// Carries a span for the same reason `Let` does, and for one more: this is
+    /// where a bare call statement lives, so it is where argument type errors
+    /// are raised. It was the one statement variant with no position at all, and
+    /// `TypeError::span` is filled by the enclosing statement on the way out —
+    /// so `f("x");` reported "Argument 1 has the wrong type (expected Int, got
+    /// String) at `x`" and nothing else. In a four-thousand-line program that is
+    /// not a diagnostic; the same mistake in a `let` said `1:1-6`.
+    Expr {
+        value: Box<Expr>,
+        span: Option<Span>,
     },
     /// { statements }
-    Block { statements: Vec<Box<Stmt>> },
-    /// 空语句 (用于处理解析时的占位)
+    Block {
+        statements: Vec<Box<Stmt>>,
+    },
+    /// A placeholder the parser emits where a statement was expected.
     Empty,
 }
 
-/// 程序结构 - 包含语句列表
+impl Stmt {
+    /// A bare expression statement whose position is not known yet.
+    ///
+    /// Most construction sites are desugarings and tests, which have no source
+    /// text to point at; the parser fills the span in where the statement really
+    /// was written. Having the constructor keeps those sites from each having to
+    /// spell `span: None`, and keeps the field from drifting back to "there is
+    /// no position here" by default in the one place that does have one.
+    pub fn expr(value: Box<Expr>) -> Self {
+        Self::Expr { value, span: None }
+    }
+}
+
+/// A program: its statements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub statements: Vec<Box<Stmt>>,

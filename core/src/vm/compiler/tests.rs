@@ -712,8 +712,7 @@ fn compiler_lowers_int_math_floor_directly_into_destination() {
         return mid;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     let mid = function
@@ -757,8 +756,7 @@ fn compiler_midpoint_floor_preserves_current_int_division_semantics() {
         return math.floor((lo + hi) / 2);
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["math"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     assert!(
@@ -784,8 +782,7 @@ fn compiler_lowers_map_get_directly_into_destination() {
         return value;
         "#,
     );
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let module = Compiler::compile_module_with_globals(&program, ["map"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
     let get = function
@@ -997,4 +994,135 @@ fn compiler_lowers_map_literal_and_string_access() {
     let result = execute(&function).expect("execute");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+/// A binding is not in scope inside its own initializer, so a lambda cannot
+/// call itself — and the report used to be "Compiler undefined callable
+/// `fact`": a sentence about an operand, for a rule about scope, with nothing
+/// the reader could do about it. Recursion goes through a top-level `fn`, and
+/// the message says so.
+#[test]
+fn a_lambda_calling_itself_is_told_the_rule() {
+    let error = compile_source("let fact = |n| { if (n <= 1) { return 1; } return n * fact(n - 1); };")
+        .expect_err("a self-call cannot resolve");
+    let text = alloc::format!("{error:#}");
+    assert!(text.contains("not in scope inside its own initializer"), "{text}");
+    assert!(text.contains("top-level `fn fact("), "{text}");
+
+    // A name that is simply not there still reads as what it is — and no
+    // longer as "Compiler undefined callable", which named this compiler and
+    // one of its operand kinds for what is almost always a typo.
+    let typo = compile_source("let f = |x| { return nope(x); };").expect_err("no such callable");
+    let typo_text = alloc::format!("{typo:#}");
+    assert!(typo_text.contains("undefined function `nope`"), "{typo_text}");
+
+    // An *outer* binding of the same name is a different function, and calling
+    // it is fine.
+    compile_source("fn fact(n: Int) -> Int { return n; }\nlet fact = |n| { return fact(n) + 1; };")
+        .expect("calling the outer `fact` is not a self-call");
+}
+
+/// An unresolved name says what the program did, and offers the near miss.
+///
+/// `Compiler undefined local/global `nope`` named this compiler and two of its
+/// storage classes for what is, essentially always, a typo — and said nothing
+/// about the names that *are* in scope, which are sitting right there.
+///
+/// The measurement is the same `edit_distance` the unknown-*type* hint uses,
+/// and it counts a transposition as one edit: `nmae` for `name` is the
+/// commonest typo there is, and under plain Levenshtein it cost two and was
+/// therefore never suggested for a short name.
+#[test]
+fn an_unresolved_name_offers_the_near_miss() {
+    // No builtins in these programs: this harness compiles without the standard
+    // library, so `println` would be the undefined name.
+    for (source, expected) in [
+        ("let value = 1;\nlet a = Value;", "did you mean `value`?"),
+        ("let name = 1;\nlet a = nmae;", "did you mean `name`?"),
+        ("let count = 1;\nlet a = cuont;", "did you mean `count`?"),
+        (
+            "fn helper() -> Int { return 1; }\nlet a = helpr();",
+            "did you mean `helper`?",
+        ),
+    ] {
+        let error = compile_source(source).expect_err("the name does not resolve");
+        let text = alloc::format!("{error:#}");
+        assert!(text.contains(expected), "{source} → {text}");
+        assert!(
+            !text.contains("Compiler"),
+            "the message is for the program, not the compiler: {text}"
+        );
+    }
+
+    // Nothing close by invents nothing.
+    let far = compile_source("let value = 1;\nlet a = zzzzzz;").expect_err("no such name");
+    let far_text = alloc::format!("{far:#}");
+    assert!(far_text.contains("undefined name `zzzzzz`"), "{far_text}");
+    assert!(
+        !far_text.contains("did you mean"),
+        "should not invent a suggestion: {far_text}"
+    );
+}
+
+/// A range with no end says what to write, not that a compiler does not support
+/// something.
+#[test]
+fn an_open_ended_range_says_what_to_write() {
+    let loop_error = compile_source("for i in 0.. { println(i); }").expect_err("no end");
+    let loop_text = alloc::format!("{loop_error:#}");
+    assert!(loop_text.contains("would never finish"), "{loop_text}");
+    assert!(!loop_text.contains("Compiler"), "{loop_text}");
+
+    let expr_error = compile_source("let r = 0..;").expect_err("no end");
+    let expr_text = alloc::format!("{expr_error:#}");
+    assert!(expr_text.contains("a range needs an end"), "{expr_text}");
+    assert!(!expr_text.contains("Compiler"), "{expr_text}");
+}
+
+/// The call-width limits say what the program hit, not which operand ran out.
+///
+/// `Compiler call has 300 args, max 127` named this compiler and a number with
+/// no explanation — the number is the `Call` opcode's 7-bit count, which is a
+/// fact about the encoding. It appeared as a bare `max 127` in three places and
+/// as `max 255` in a fourth, all for the same kind of limit; it is one named
+/// constant now, and each message says what to do instead.
+///
+/// The parameter side is said **at the declaration**: a function with more
+/// parameters than a call can pass is one nothing can call, and reporting that
+/// at some later call site pointed at the wrong line.
+#[test]
+fn the_call_width_limits_are_stated_in_the_programs_terms() {
+    let params: alloc::vec::Vec<alloc::string::String> = (0..300).map(|i| alloc::format!("a{i}")).collect();
+
+    let closure = compile_source(&alloc::format!("let f = |{}| a0;", params.join(", ")))
+        .expect_err("a closure that nothing can call");
+    let closure_text = alloc::format!("{closure:#}");
+    assert!(closure_text.contains("could never be called"), "{closure_text}");
+    assert!(!closure_text.contains("Compiler"), "{closure_text}");
+    assert!(
+        !closure_text.contains("registers"),
+        "the parameters are the problem: {closure_text}"
+    );
+
+    // Named parameters are *not* bounded by this: they ride a wider field, and
+    // a struct's generated constructor is one named parameter per field — the
+    // 200-field literal in `compile_cli_test` is exactly that, and counting
+    // named parameters here refused a struct literal that works.
+    let named: alloc::vec::Vec<alloc::string::String> = (0..200).map(|i| alloc::format!("f{i}: Int")).collect();
+    compile_source(&alloc::format!(
+        "fn wide({{{}}}) -> Int {{ return f0; }}",
+        named.join(", ")
+    ))
+    .expect("200 named parameters are within the named field's range");
+
+    let typed: alloc::vec::Vec<alloc::string::String> = (0..300).map(|i| alloc::format!("a{i}: Int")).collect();
+    let args = alloc::vec!["1"; 300].join(", ");
+    let call = compile_source(&alloc::format!(
+        "fn f({}) -> Int {{ return a0; }}\nlet x = f({args});",
+        typed.join(", ")
+    ))
+    .expect_err("a call wider than the instruction");
+    let call_text = alloc::format!("{call:#}");
+    assert!(call_text.contains("is the most"), "{call_text}");
+    assert!(!call_text.contains("Compiler"), "{call_text}");
 }

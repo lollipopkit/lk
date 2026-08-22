@@ -35,9 +35,15 @@ fn compiler_lowers_struct_literal_and_field_access() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
+/// Declarations that contribute no instructions of their own still compile.
+///
+/// Runs through the module path: a `struct` also declares its hidden
+/// constructor (`stmt::struct_ctors`), and a program that declares a function
+/// cannot be executed as a bare `Function` — `LoadFunction` publishes it, which
+/// needs a module.
 #[test]
 fn compiler_accepts_type_only_declarations_as_noop() {
-    let function = compile_source(
+    let result = crate::vm::execute_source(
         r#"
         struct Point { x: Int, y: Int }
         type Count = Int;
@@ -46,9 +52,7 @@ fn compiler_accepts_type_only_declarations_as_noop() {
         return point.x + point.y;
         "#,
     )
-    .expect("compile source");
-
-    let result = execute(&function).expect("execute");
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
@@ -360,17 +364,15 @@ fn compiler_lowers_native_call_through_module() {
         Ok(crate::val::RuntimeVal::Int(lhs + rhs))
     }
 
-    let module = compile_source_module_with_natives(
+    // The native arrives as a *global*, the only way a running program gets one
+    // (see `exec_tests::execute_source_with_natives`). Compiling it into the
+    // module's own table emitted `LoadNative`, which every production caller
+    // makes unreachable by passing an empty table.
+    let result = crate::vm::exec::exec_tests::execute_source_with_natives(
         "return native_add(19, 23);",
-        vec![NativeEntry {
-            name: "native_add".to_string(),
-            arity: 2,
-            function: NativeFunction::Plain(native_add),
-        }],
+        &[("native_add", NativeFunction::Plain(native_add), 2)],
     )
-    .expect("compile module");
-
-    let result = execute_module(&module).expect("execute module");
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
@@ -397,6 +399,118 @@ fn compiler_lowers_top_level_define_to_global_slot() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
     assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(40));
     assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
+}
+
+/// A program with more top-level constants than there are registers still
+/// compiles, and still computes with them.
+///
+/// The register file is 256 deep — they are `u8` in the instruction encoding —
+/// and the top level is one function. Every global-backed top-level binding
+/// used to keep one register permanently as a cache of its global slot, so at
+/// 256 of them the next statement's temporaries had nowhere to go and the
+/// compiler reported `Compiler global dst register 256 exceeds u8 encoding`,
+/// naming whichever constant happened to be added last.
+///
+/// That is not an exotic program. It is what `bare-metal-x86/program.lk` became
+/// once its drivers — each a file of perfectly ordinary constants — were
+/// bundled into it, and adding one more driver was enough.
+///
+/// 400 rather than 257: the cache limit leaves the rest of the register file
+/// for one statement's working set, so a test that only just crosses it would
+/// pass with the eviction rule doing nothing. This one has three hundred
+/// bindings past the point where caching stops, and reads the first and the
+/// last of them from a function — which can only see them through the global
+/// slots, the thing the cache was ever a cache *of*.
+#[test]
+fn compiler_compiles_more_top_level_constants_than_registers() {
+    let mut source = String::new();
+    for index in 0..400 {
+        source.push_str(&format!("const K{index} = {index};\n"));
+    }
+    source.push_str("fn ends() { return K0 + K399; }\n");
+    source.push_str("return ends() + K1 + K398;\n");
+
+    let module = compile_source_module(&source).expect("compile module");
+    let result = execute_module(&module).expect("execute module");
+
+    // 0 + 399 from the function, 1 + 398 from the top level.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(798)]);
+}
+
+/// A program with more top-level `fn` declarations than there are registers
+/// still compiles, and the functions still work.
+///
+/// Publishing a declaration is `LoadFunction r; SetGlobal r, slot`, and the
+/// register is dead the moment the store lands — but it used to be a fresh one
+/// every time, so a program paid one register per `fn` for the whole of its top
+/// level. `bare-metal-x86/program.lk` with its drivers bundled in declares 236
+/// functions, which is most of the 256 a `u8` register field allows, and it ran
+/// out on the *constants* that came afterwards.
+///
+/// 300 rather than 257 so the shared register is doing real work rather than
+/// just crossing the line, and two of them are called so the test fails on a
+/// register that stopped meaning what the caller thought.
+#[test]
+fn compiler_compiles_more_top_level_functions_than_registers() {
+    let mut source = String::new();
+    for index in 0..300 {
+        source.push_str(&format!("fn f{index}() {{ return {index}; }}\n"));
+    }
+    source.push_str("return f0() + f299();\n");
+
+    let module = compile_source_module(&source).expect("compile module");
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(299)]);
+}
+
+/// The register those declarations share is *only* ever a function value.
+///
+/// Not a nicety: the AOT lowering tracks what a register means keyed by
+/// `(block, register)` with no notion of time, so a register that once held a
+/// function value keeps that meaning for the rest of the block. Recycling it —
+/// handing it back for a later `let` to use — makes the next `SetGlobal` from
+/// it read as declaration bookkeeping, and a global write is silently elided.
+///
+/// So this asserts the shape rather than the outcome: after the declarations,
+/// a top-level binding must not land on the register they published through.
+#[test]
+fn compiler_does_not_reuse_the_function_publish_register() {
+    let module = compile_source_module(
+        r#"
+        fn a() { return 1; }
+        fn b() { return 2; }
+        answer := 40;
+        fn read() { return answer + 2; }
+        return read();
+        "#,
+    )
+    .expect("compile module");
+
+    // Every `SetGlobal` whose source register also appears as a `LoadFunction`
+    // destination is a declaration; no other `SetGlobal` may share one.
+    let code = &module.functions[module.entry as usize].code;
+    let mut function_regs = std::collections::HashSet::new();
+    for instr in code {
+        if instr.opcode() == crate::vm::Opcode::LoadFunction {
+            function_regs.insert(instr.a());
+        }
+    }
+    assert!(!function_regs.is_empty(), "no function declarations were emitted");
+    for instr in code {
+        if instr.opcode() == crate::vm::Opcode::SetGlobal {
+            let name = module.globals[instr.bx() as usize].name.as_ref();
+            if name == "answer" {
+                assert!(
+                    !function_regs.contains(&instr.a()),
+                    "a value global is stored from the register function declarations publish through"
+                );
+            }
+        }
+    }
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
 #[test]
@@ -1306,4 +1420,246 @@ fn a_call_above_its_definition_still_knows_the_signature() {
         let result = execute_module(&module).unwrap_or_else(|error| panic!("{order}: {error}"));
         assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)], "{order}");
     }
+}
+
+/// Compiling n functions costs O(n), not O(n²).
+///
+/// Every function gets its own `Compiler`, and each one used to receive a deep
+/// **clone** of the ten tables that describe the program — names, signatures,
+/// inlinable bodies (which hold ASTs), widths. So compiling the n-th function
+/// A function may call 256 distinct methods, not 128.
+///
+/// `CallMethodK` carries the method name's constant index in **8 bits** — the
+/// `abc` form is full (7 opcode + 8 A + 1 K + 8 B + 8 C) — and a name past 255
+/// falls back to a `__lk_call_method` helper call, which the native backend
+/// cannot lower. So the whole program silently loses native compilation.
+///
+/// The bound *read* like 256 method names and *was* 129: a function's constant
+/// pool is shared with everything else it mentions, so 130 structs each
+/// constructed and called once pushed the method names past the byte with their
+/// own type and field names. Seeding the pool with the body's method names
+/// first makes the two agree.
+///
+/// Asserted on the instruction, not on whether it compiles: the fallback path
+/// still produces a working program, so only the opcode says which one ran.
+#[test]
+fn a_function_may_call_two_hundred_distinct_methods() {
+    fn method_calls(n: usize) -> String {
+        let mut out = String::new();
+        for i in 0..n {
+            out.push_str(&alloc::format!(
+                "struct S{i} {{ x: Int }}\nimpl S{i} {{ fn m{i}(self) -> Int {{ return self.x + 1; }} }}\n"
+            ));
+        }
+        out.push_str("fn main() -> Int {\n");
+        for i in 0..n {
+            out.push_str(&alloc::format!("    let v{i} = S{i} {{ x: {i} }}.m{i}();\n"));
+        }
+        out.push_str("    return 0;\n}\nmain();\n");
+        out
+    }
+
+    let generic_calls = |source: &str| {
+        let program = parse_program(source);
+        let module = crate::vm::Compiler::compile_module(&program).expect("compile module");
+        module
+            .functions
+            .iter()
+            .flat_map(|function| function.code.iter().copied())
+            .filter(|instr| instr.opcode() == crate::vm::Opcode::CallMethodK)
+            .count()
+    };
+
+    // 200 distinct methods, each called once: every call is a `CallMethodK`.
+    assert_eq!(generic_calls(&method_calls(200)), 200);
+}
+
+/// copied everything the n-1 before it had declared. It was not subtle: 1000
+/// functions took 0.55s, 2000 took 2.30s, 4000 took 10.9s, and before the type
+/// checker's scopes stopped cloning too, 4000 took 23s.
+///
+/// A wall-clock assertion would be flaky, so this measures the *shape*: double
+/// the input and the work must not quadruple. The bound is generous (3x for a
+/// 2x input) because a real machine has noise and allocation is not free — it
+/// fails on quadratic (which is 4x) and passes on linear.
+///
+/// **`#[ignore]`d, and run alone in CI** (`.github/workflows/check.yml`, the
+/// same treatment `lsp/tests/perf_latency_test.rs` got). Min-of-5 was the first
+/// attempt at making it survive `cargo test --workspace --all-features`, and it
+/// was not enough: the assertion is a *ratio of two* wall-clock measurements,
+/// so a lucky-fast `small` against an unlucky-slow `large` blows it up even
+/// when both minima are clean. It failed a workspace run again on 2026-08-06
+/// (that run took 0.68s against 0.17s on its own — the suite was sharing cores
+/// with a `cargo clippy`), and passed eight times in a row alone, including
+/// four with three parallel builds running.
+///
+/// A gate that fails for reasons the change did not cause teaches people to
+/// re-run it, which is worse than no gate. Run it with:
+///
+/// ```sh
+/// cargo test -p lk-core --lib -- --ignored --test-threads=1 compiling_many_functions
+/// ```
+#[test]
+#[ignore = "wall-clock ratio: runs alone in CI, see the doc comment"]
+fn compiling_many_functions_stays_linear() {
+    fn source(n: usize) -> String {
+        let mut out = String::new();
+        for i in 0..n {
+            out.push_str(&alloc::format!(
+                "fn f{i}(a: Int, b: Int) -> Int {{ let x = a + b; return x * 2; }}\n"
+            ));
+        }
+        out.push_str("return 0;\n");
+        out
+    }
+
+    // The **fastest** of several runs, not one run.
+    //
+    // A wall-clock ratio is the only cheap way to say "not quadratic", and one
+    // sample of it is a coin flip: this assertion failed once inside
+    // `cargo test --workspace --all-features` — where a few dozen test threads
+    // share the cores — and passed five times in a row on its own. A gate that
+    // fails for reasons the change did not cause is worse than no gate, because
+    // the habit it teaches is to re-run it.
+    //
+    // The minimum is the right estimator here: scheduler noise, page faults and
+    // frequency scaling can only ever make a run *slower*, so the smallest
+    // sample is the closest one to the work actually being measured.
+    let time = |n: usize| {
+        let program = parse_program(&source(n));
+        (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                crate::vm::Compiler::compile_module(&program).expect("compile module");
+                start.elapsed()
+            })
+            .min()
+            .expect("five samples")
+    };
+
+    // Warm the allocator so the first measurement is not the outlier.
+    let _ = time(200);
+    let small = time(400);
+    let large = time(800);
+    assert!(
+        large < small * 3,
+        "doubling the function count roughly tripled or worse — quadratic is back: \
+         400 fns in {small:?}, 800 fns in {large:?}"
+    );
+}
+
+/// The call-kind counters count. None of them may be structurally zero.
+///
+/// `native_call_ops`, `closure_call_ops` and `method_call_ops` had match arms
+/// adding them up and **no site constructing one**, so `lk coverage --runtime`
+/// reported zero native calls for a program that calls `println` in a loop. A
+/// number that is always zero is worse than an absent one: `bench/README.md`
+/// decides which fused opcodes to keep from these proportions.
+///
+/// Asserted as an exact partition — every call lands in exactly one bucket, so
+/// the parts must sum to the total. That is what catches the next version of
+/// this bug: a call classified twice, or a new call opcode that forgets to
+/// classify at all, breaks the sum.
+#[test]
+fn every_call_lands_in_exactly_one_bucket() {
+    fn a_native(args: NativeArgs<'_>, _runtime: &mut crate::vm::NativeRuntime<'_>) -> Result<crate::val::RuntimeVal> {
+        let [value] = args.as_slice() else {
+            bail!("a_native expects one argument");
+        };
+        Ok(*value)
+    }
+
+    // The native is *installed*, not compiled into the module: the counter this
+    // test defends is bumped by `exec::call`'s classification of the value being
+    // called, so proving it through an inline `NativeEntry` proved it for a path
+    // that does not ship — no production caller ever fills that table.
+    //
+    // A *builtin* method for the method bucket (`xs.unique()` lowers to
+    // `CallMethodK`), so this needs no impl table.
+    crate::vm::vm_runtime_metrics_reset();
+    crate::vm::exec::exec_tests::execute_source_with_natives(
+        r#"
+        fn direct(n: Int) -> Int { return n + 1; }
+        let closure = |x: Int| x + 1;
+        let xs = [3, 1, 2, 1];
+        let total = 0;
+        total = total + direct(1);
+        total = total + closure(1);
+        total = total + xs.unique().len();
+        total = total + a_native(1);
+        return total;
+        "#,
+        &[("a_native", NativeFunction::Plain(a_native), 1)],
+    )
+    .expect("execute source");
+    let metrics = crate::vm::vm_runtime_metrics_snapshot();
+
+    assert!(
+        metrics.native_call_ops > 0,
+        "`a_native(1)` is a native call: {metrics:?}"
+    );
+    assert!(
+        metrics.closure_call_ops > 0,
+        "the lambda is a closure call: {metrics:?}"
+    );
+    assert!(
+        metrics.method_call_ops > 0,
+        "`xs.unique()` is a method call: {metrics:?}"
+    );
+    assert!(metrics.exact_call_ops > 0, "`direct(1)` is a direct call: {metrics:?}");
+
+    let classified = metrics.native_call_ops
+        + metrics.closure_call_ops
+        + metrics.method_call_ops
+        + metrics.exact_call_ops
+        + metrics.named_call_ops;
+    assert_eq!(
+        classified, metrics.call_ops,
+        "every call is counted once and classified once: {metrics:?}"
+    );
+
+    // The same identity for register writes. `register_writes` was bumped in one
+    // helper while the sources are recorded at every opcode that writes, so the
+    // report printed a total of 210 above parts summing to 763 — a reader takes
+    // the first line for the sum of the rest. The total is now computed *from*
+    // the breakdown, and this says so.
+    assert!(metrics.register_writes > 0, "the program writes registers: {metrics:?}");
+    assert_eq!(
+        metrics.register_writes,
+        metrics.register_write_sources.iter().sum::<u64>(),
+        "the register-write total is the sum of its sources: {metrics:?}"
+    );
+}
+
+/// A method call whose receiver is a top-level `:=` global, read from inside a
+/// function, dispatches as a *method*.
+///
+/// It used to compile to `GetIndex` keyed by the string `"len"`, because the
+/// "is this a module object or user data?" check consulted a `let`-only set.
+/// The program then failed at run time with `register 2 expected Int, got
+/// String` — for `let xs = [1,2]` beside it, the identical code worked.
+#[test]
+fn method_call_on_define_global_inside_function_dispatches_as_method() {
+    let program = crate::syntax::parse_program_source(
+        "xs := [1,2];\nfn h() { return xs.len(); }\nreturn h();",
+        crate::syntax::ParseOptions::default(),
+    )
+    .expect("parse");
+    let module = crate::vm::Compiler::compile_module(&program).expect("compile");
+    let body = module
+        .functions
+        .iter()
+        .find(|function| function.debug_name.as_deref() == Some("h"))
+        .expect("compiled `h`");
+
+    assert!(
+        body.code.iter().any(|instr| instr.opcode() == Opcode::Len),
+        "expected a Len opcode in {:?}",
+        body.code
+    );
+    assert!(
+        !body.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        "the method name must not become an index key: {:?}",
+        body.code
+    );
 }

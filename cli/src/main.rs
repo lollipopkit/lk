@@ -21,7 +21,8 @@ use lk_core::{
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
         compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-        execute_program_with_ctx_and_limits, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+        execute_program_with_ctx_and_limits, vm_runtime_metrics_enabled, vm_runtime_metrics_reset,
+        vm_runtime_metrics_snapshot,
     },
 };
 
@@ -51,7 +52,7 @@ use coverage::run_coverage_report;
 use fmt::run_fmt;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
-use paths::{expand_program_file, parse_options_for_file, parse_sanitized_path, sanitize_path, split_compile_args};
+use paths::{expand_program_file, parse_options_for_file, parse_path_arg, split_compile_args};
 use pkg::run_pkg_command;
 
 #[derive(Debug, Parser)]
@@ -69,7 +70,7 @@ struct CliArgs {
     command: Option<Commands>,
 
     /// If no subcommand, treat as a source file to execute (statements only)
-    #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+    #[arg(value_name = "FILE", value_parser = parse_path_arg)]
     file: Option<PathBuf>,
 }
 
@@ -98,26 +99,38 @@ pub(crate) enum CompileMode {
 enum Commands {
     /// Compile sources into supported migration targets.
     Compile {
-        /// 支持 `lk compile [TARGET] [FILE]`（默认编译 exe；省略 FILE 时自动查找当前目录入口）
+        /// `lk compile [TARGET] [FILE]` — the default target is a native exe,
+        /// and an omitted FILE looks for this directory's entry point.
         #[arg(value_name = "ARGS", num_args = 0..=2)]
         positional: Vec<String>,
         #[cfg(feature = "aot")]
-        /// 输出文件路径（针对默认 exe 目标指定最终可执行文件路径）
+        /// Where to write the answer; for the default exe target, the final
+        /// executable's path.
         #[arg(long)]
         output: Option<PathBuf>,
     },
     /// Type-check a source file without executing it.
     Check {
         /// Source file to type-check
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
+        /// Also require every function's parameters and return type to resolve
+        /// to something other than `Any`.
+        ///
+        /// Off by default because `lk check` answers "will this run", and an
+        /// unannotated parameter runs: `fn process(xs) { … }` is a program both
+        /// backends accept. Demanding the annotation is a rigour policy, and a
+        /// policy that rejects working programs cannot be the default answer of
+        /// the command you run *before* running.
+        #[arg(long)]
+        strict: bool,
     },
     /// Format LK sources in place (4-space indent). Without a path, formats the
     /// whole project (nearest `Lk.toml` directory, else the current directory).
     /// `--check` reports without writing.
     Fmt {
         /// Files or directories to format. Defaults to the whole project.
-        #[arg(value_name = "PATH", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "PATH", value_parser = parse_path_arg)]
         paths: Vec<PathBuf>,
         /// Do not write; exit non-zero if any file is not already formatted.
         #[arg(long)]
@@ -127,16 +140,17 @@ enum Commands {
     /// that embeds the program and the VM (100% coverage; runs the VM at launch).
     Bundle {
         /// Source file to bundle
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
-        /// Output executable path
-        #[arg(short, long, value_name = "OUT", value_parser = parse_sanitized_path)]
-        output: PathBuf,
+        /// Output executable path (default: the source path without its
+        /// extension, as `lk compile` does)
+        #[arg(short, long, value_name = "OUT", value_parser = parse_path_arg)]
+        output: Option<PathBuf>,
     },
     /// Report VM coverage for a source file.
     Coverage {
         /// Source file to inspect
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Print disassembled VM functions after static coverage
         #[arg(long)]
@@ -162,7 +176,7 @@ enum MacroCommand {
     /// Expand macros in a source file and print the resulting LK token stream.
     Expand {
         /// Source file to expand
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        #[arg(value_name = "FILE", value_parser = parse_path_arg)]
         file: PathBuf,
         /// Print expansion trace entries before expanded source
         #[arg(long)]
@@ -186,7 +200,7 @@ enum PkgCommand {
         /// Package name. Defaults to the current directory name.
         name: Option<String>,
     },
-    /// Add a GitHub dependency to Lk.toml.
+    /// Add a dependency to Lk.toml: `owner/repo` (GitHub), a git URL, or a local path.
     Add {
         name: String,
         source: String,
@@ -283,37 +297,85 @@ fn maybe_print_vm_profile(enabled: bool) {
     if !enabled {
         return;
     }
-    let metrics = vm_runtime_metrics_snapshot();
-    eprintln!("{}", vm_profile_line(metrics));
+    eprintln!("{}", vm_profile_report());
+}
+
+/// What `LK_VM_PROFILE=1` prints — including when it can't profile.
+///
+/// The recording sites are `#[cfg]`-gated: without `--features vm-profile` they
+/// compile to nothing, so every counter reads 0. This asked the environment
+/// variable and nothing else, so a default build answered `LK_VM_PROFILE=1` with
+/// a full, well-formed profile in which every single number was fiction —
+/// `opcode_steps=0` for a program that had just run four thousand of them.
+/// `lk coverage --runtime` was already checking `vm_runtime_metrics_enabled()`;
+/// one rule, two carriers, one of them following it.
+fn vm_profile_report() -> String {
+    if !vm_runtime_metrics_enabled() {
+        return "VM profile: unavailable — this binary has no profiling counters compiled in. \
+                Rebuild with `cargo build -p lk-cli --features vm-profile`."
+            .to_string();
+    }
+    vm_profile_line(vm_runtime_metrics_snapshot())
 }
 
 fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
-    let heap_clones = metrics.copy_policy_heap_clones;
-    let val_clones = heap_clones;
     format!(
-        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
+        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} call_kinds={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} register_writes={}",
         metrics.opcode_steps,
         top_opcode_profile(&metrics),
         top_register_write_source_profile(&metrics),
         top_index_key_profile(&metrics),
         metrics.call_ops,
+        call_kind_profile(&metrics),
         metrics.branch_ops,
         metrics.typed_branch_ops,
         metrics.container_ops,
         metrics.list_ops,
         metrics.map_ops,
         metrics.string_ops,
-        val_clones,
-        heap_clones,
-        metrics.copy_policy_heap_clones,
-        metrics.register_copy_heap_clones,
-        metrics.local_copy_heap_clones,
-        metrics.local_load_heap_clones,
-        metrics.local_store_heap_clones,
-        metrics.const_load_heap_clones,
-        metrics.call_arg_heap_clones,
-        metrics.container_copy_heap_clones
+        metrics.register_writes,
     )
+}
+
+/// The call total split by what the call site dispatched to.
+///
+/// `call_ops` alone cannot answer the question the counter exists for — where
+/// call cost goes — because the four kinds have nothing in common: an `exact`
+/// call is a direct index into the function table, a `method` call is a
+/// devirtualized table lookup, and a `native` call is the only one that reads a
+/// heap `CallableValue`. On the arithmetic-heavy benchmark the split is 62
+/// native against 228k total; on a stdlib-call-heavy program it is 34 of 34.
+/// One number cannot say both.
+///
+/// The breakdown was already being collected, and `lk coverage --runtime`
+/// already printed it — this line dropped it. Same measurement, two surfaces,
+/// one of them lossy.
+fn call_kind_profile(metrics: &VmRuntimeMetrics) -> String {
+    let kinds = [
+        ("native", metrics.native_call_ops),
+        ("closure", metrics.closure_call_ops),
+        ("exact", metrics.exact_call_ops),
+        ("named", metrics.named_call_ops),
+        ("method", metrics.method_call_ops),
+    ];
+    let named: u64 = kinds.iter().map(|(_, count)| count).sum();
+    let mut parts: Vec<String> = kinds
+        .iter()
+        .filter(|(_, count)| *count != 0)
+        .map(|(name, count)| format!("{name}:{count}"))
+        .collect();
+    // A call the executor could not classify is still a call. Naming the
+    // remainder keeps the parts summing to `calls=`, so a reader can tell
+    // "none of these" from "not measured".
+    if let Some(rest) = metrics.call_ops.checked_sub(named)
+        && rest != 0
+    {
+        parts.push(format!("other:{rest}"));
+    }
+    if parts.is_empty() {
+        return "none".to_string();
+    }
+    parts.join(",")
 }
 
 fn top_index_key_profile(metrics: &VmRuntimeMetrics) -> String {
@@ -391,7 +453,32 @@ fn top_opcode_profile(metrics: &VmRuntimeMetrics) -> String {
         .join(",")
 }
 
+/// Die on `SIGPIPE` like every other Unix filter, instead of panicking.
+///
+/// Rust sets `SIGPIPE` to `SIG_IGN` before `main`, so a write to a closed pipe
+/// comes back as `EPIPE` and `println!` unwraps it into a panic: `lk gen.lk |
+/// head` printed `thread 'main' panicked at library/std/src/io/stdio.rs … note:
+/// run with RUST_BACKTRACE=1` and exited 101. That is the implementation
+/// talking, not the language, and piping into `head` is the most ordinary thing
+/// a shell does with a program that prints.
+///
+/// The AOT-compiled binary was already right — its `main` is a C `main`, so
+/// Rust's startup never ran and it died with signal 13 (exit 141), silently.
+/// So this is also the two backends disagreeing, with the native one correct.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: sets a signal disposition before anything has been printed and
+    // before any thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn main() -> anyhow::Result<()> {
+    restore_default_sigpipe();
     let mut startup = startup_trace::StartupTrace::new("main");
     mem::configure();
     maybe_init_perf_tracing();
@@ -413,27 +500,32 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "aot")]
                     output: output_arg,
             } => {
-                let (pos_target, safe) = split_compile_args(&positional)?;
+                let (pos_target, safe, implicit_output) = split_compile_args(&positional)?;
 
                 #[cfg(feature = "aot")]
+                let output_arg_given = output_arg.is_some();
+                #[cfg(feature = "aot")]
                 let output = output_arg
-                    .map(|p| {
-                        sanitize_path(p.to_string_lossy().as_ref()).inspect_err(|e| {
-                            diagnostic::error(e);
-                        })
-                    })
-                    .transpose()?;
+                    // A package build the user did not name a file for: the
+                    // output belongs at the package root, not inside `src/`.
+                    .or(implicit_output.clone());
 
                 let compile_mode = pos_target;
 
+                // The guard is about the *flag*, not about the implicit default
+                // a package build derives — `--output` still means nothing for
+                // `bytecode`, and the default still has to reach it.
                 #[cfg(feature = "aot")]
-                if matches!(compile_mode, CompileMode::Bytecode) && output.is_some() {
+                if matches!(compile_mode, CompileMode::Bytecode) && output_arg_given {
                     anyhow::bail!("--output is only supported for `lk compile <FILE>` and `object:<triple>`");
                 }
 
                 match compile_mode {
                     CompileMode::Bytecode => {
-                        compile_instr_module(&safe)?;
+                        #[cfg(feature = "aot")]
+                        compile_instr_module(&safe, output.as_deref())?;
+                        #[cfg(not(feature = "aot"))]
+                        compile_instr_module(&safe, implicit_output.as_deref())?;
                         return Ok(());
                     }
                     CompileMode::Object { triple } => {
@@ -463,8 +555,8 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            Commands::Check { file } => {
-                run_type_check(&file)?;
+            Commands::Check { file, strict } => {
+                run_type_check(&file, strict)?;
                 return Ok(());
             }
             Commands::Fmt { paths, check } => {
@@ -472,8 +564,24 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Commands::Bundle { file, output } => {
-                run_bundle(&file, &output)?;
-                return Ok(());
+                #[cfg(not(feature = "aot"))]
+                {
+                    let _ = (&file, &output);
+                    anyhow::bail!(
+                        "bundling links the VM in through lk-api's staticlib, which is part of the native backend; rebuild with `--features aot`"
+                    );
+                }
+                #[cfg(feature = "aot")]
+                {
+                    // The same default `lk compile` uses. Both commands produce
+                    // an executable from a source file, and one of them used to
+                    // demand a name for it while the other worked one out —
+                    // `lk bundle app.lk` was a usage error, which is also the
+                    // spelling `CLAUDE.md` and `README` documented.
+                    let output = output.unwrap_or_else(|| file.with_extension(""));
+                    run_bundle(&file, &output)?;
+                    return Ok(());
+                }
             }
             Commands::Coverage {
                 file,
@@ -495,9 +603,7 @@ fn main() -> anyhow::Result<()> {
     }
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
-    let safe = sanitize_path(file.to_string_lossy().as_ref()).inspect_err(|e| {
-        diagnostic::error(e);
-    })?;
+    let safe = file;
     let src_path_str = safe.to_string_lossy().to_string();
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
 
@@ -570,6 +676,12 @@ fn main() -> anyhow::Result<()> {
     let macro_free = expansion.proc_macro_dependencies.is_empty();
     let program = expansion.program;
 
+    // Built before the type check, not after: registering the standard library
+    // is what publishes its declared signatures to the checker, and a check that
+    // runs first sees only the small fallback table in core — `string.split("a")`
+    // would go unchecked here while `lk check` caught it.
+    let mut base_env = build_vm_context(&safe)?;
+
     // Cross-file signatures, checked here rather than inside the VM: the type
     // check `execute_with_ctx` runs has no path to resolve imports against, so
     // this is the only place a running program gets the same checking that
@@ -579,8 +691,6 @@ fn main() -> anyhow::Result<()> {
         seed_imports(&program, &safe, &mut checker);
         program.type_check(&mut checker)?;
     }
-
-    let mut base_env = build_vm_context(&safe)?;
 
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
@@ -600,15 +710,37 @@ fn main() -> anyhow::Result<()> {
                 }
                 Err(err) => Err(err),
             },
-            None => program.execute_with_ctx(&mut base_env),
+            // The directory, not `None`: `execute_with_ctx` type-checks the
+            // program *again* with a fresh checker, and one without a path to
+            // resolve imports against rejects every name that crosses a module
+            // boundary — so `lk check FILE` passed and `lk FILE` answered
+            // `Unknown type 'P' in parameter 'p'` for the same file. A program
+            // that clears the pre-flight command has to be runnable.
+            //
+            // The check above stays because it is the only one the sandboxed and
+            // cached branches get; that this path now checks twice is a startup
+            // cost, not a correctness one.
+            None => program.execute_with_ctx_from(&mut base_env, safe.parent()),
         }
-    }
-    .with_context(|| "VM execution failed");
+    };
 
     // Shutdown runtime after execution
     base_env.shutdown_async_runtime();
 
-    let result = unwrap_with_traceback(exec_result, &base_env)?;
+    // Reported here rather than propagated, so a failing program reads the same
+    // whichever backend ran it. This used to carry `.with_context("VM execution
+    // failed")`, which anyhow rendered as four lines around the real message —
+    // and the claim was false for half of what reaches here: the compiler's own
+    // errors come out of this `Result` too (`compile_program_module_with_ctx`),
+    // and nothing had executed. A native binary prints one `Error: …` line;
+    // `an_uncaught_error_exits_and_reads_the_same_on_both_backends` pins the two together.
+    let result = match unwrap_with_traceback(exec_result, &base_env) {
+        Ok(result) => result,
+        Err(err) => {
+            diagnostic::error(format!("{err:#}"));
+            std::process::exit(1);
+        }
+    };
     maybe_print_vm_profile(profile_enabled);
 
     if !result.first_return_is_nil() {
@@ -637,10 +769,15 @@ fn expand_macro_file(path: &Path, trace: bool, deps: bool, origins: bool, featur
     // Deduplicate features preserving first-occurrence order.
     let mut seen = std::collections::HashSet::new();
     options.macro_features = features.into_iter().filter(|f| seen.insert(f.clone())).collect();
-    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
-        diagnostic::parse_error(&parse_err, &input);
-        anyhow::anyhow!(parse_err.to_string())
-    })?;
+    // Printed and exited — see `run_type_check` for why returning it prints
+    // the same line twice.
+    let expanded = match expand_program_source(&input, options) {
+        Ok(expanded) => expanded,
+        Err(parse_err) => {
+            diagnostic::parse_error(&parse_err, &input);
+            std::process::exit(1);
+        }
+    };
     if trace {
         for step in &expanded.source.trace {
             println!(
@@ -785,14 +922,39 @@ fn json_span(span: &lk_core::token::Span) -> JsonSpan {
     }
 }
 
-fn run_type_check(path: &Path) -> anyhow::Result<()> {
+/// `lk check FILE` — the same type check the executors run, without running.
+///
+/// "The same" is the whole point, and it was not: this used
+/// `TypeChecker::new_strict()` while `Program::execute_with_ctx_from` builds a
+/// plain `TypeChecker::new()`, so four of the language's own examples were
+/// rejected here and ran fine — `fn process_list(xs) { … }` is
+/// `infers implicit Any for return type` to `check` and a working program to
+/// everything else. `lk compile` produced a native executable from the same
+/// file.
+///
+/// The strict pass is still reachable with `--strict`; it is a lint about
+/// under-specified signatures, not a statement about whether the program runs.
+fn run_type_check(path: &Path, strict: bool) -> anyhow::Result<()> {
     let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
     let options = parse_options_for_file(path)?;
-    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
-        diagnostic::parse_error(&parse_err, &input);
-        anyhow::anyhow!(parse_err.to_string())
-    })?;
-    let mut checker = TypeChecker::new_strict();
+    // Printed *and* exited, not printed and returned: returning it makes the
+    // caller print the same line a second time, so `lk check` answered every
+    // syntax error twice — once with its caret snippet and once bare. The two
+    // sites below in this function already do it this way, and so does
+    // `lk FILE`.
+    let expanded = match expand_program_source(&input, options) {
+        Ok(expanded) => expanded,
+        Err(parse_err) => {
+            diagnostic::parse_error(&parse_err, &input);
+            std::process::exit(1);
+        }
+    };
+    ensure_stdlib_signatures();
+    let mut checker = if strict {
+        TypeChecker::new_strict()
+    } else {
+        TypeChecker::new()
+    };
     seed_imports(&expanded.program, path, &mut checker);
     if let Err(err) = expanded.program.type_check(&mut checker) {
         let mut message = err.to_string();
@@ -847,13 +1009,76 @@ fn heap_object_limit_from_env() -> Option<usize> {
         .filter(|&limit| limit > 0)
 }
 
+/// Tier 0 embeds **one file**, so a program that imports another one cannot
+/// work — and used to say so only at run time, as `lk: Module 'dep' not found`
+/// from a binary `lk compile` had just reported as built.
+///
+/// A stdlib import is fine: the VM linked into the bundle has the whole
+/// standard library. What cannot travel is a *file* import (`use "…"`) or a
+/// package dependency, because the bundle carries no filesystem context and the
+/// dependency's source was never embedded.
+#[cfg(feature = "aot")]
+fn refuse_bundle_with_source_imports(source_path: &Path, source: &str) -> anyhow::Result<()> {
+    use lk_core::stmt::{ImportSource, ImportStmt, Stmt};
+
+    let Ok(program) = lk_core::syntax::parse_program_source(source, Default::default()) else {
+        // Not parseable: the compile below will say so in the language's words.
+        return Ok(());
+    };
+    let stdlib_module = |name: &str| lk_stdlib::stdlib_catalog().modules.iter().any(|spec| spec.name == name);
+    let mut offenders: Vec<String> = Vec::new();
+    for statement in &program.statements {
+        let Stmt::Import(import) = statement.as_ref() else {
+            continue;
+        };
+        match import {
+            ImportStmt::File { path } => offenders.push(format!("`use \"{path}\"`")),
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } if !stdlib_module(module) => {
+                offenders.push(format!("`use {module}`"));
+            }
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => offenders.push(format!("`use … from \"{path}\"`")),
+            ImportStmt::Items {
+                source: ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::Module(module),
+                ..
+            } if !stdlib_module(module) => offenders.push(format!("`use … from {module}`")),
+            _ => {}
+        }
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    offenders.sort();
+    offenders.dedup();
+    anyhow::bail!(
+        "{} imports {} — the Tier 0 bundle embeds a single file plus the VM, so an imported \
+         module's source never travels with it and the binary would fail at launch with \
+         \"Module not found\". Run it with `lk {}`, or keep the program in one file",
+        source_path.display(),
+        offenders.join(", "),
+        source_path.display()
+    )
+}
+
 /// AOT Tier 0: bundle `source_path` into a self-contained native executable that
 /// embeds the program source and the VM (via lk-api's C-ABI staticlib). 100%
 /// coverage — the produced binary just runs the VM at launch, so any program that
 /// runs under the VM bundles (unlike the MIR native path). Linux/`cc` for now.
+#[cfg(feature = "aot")]
 fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     let source =
         std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
+    refuse_bundle_with_source_imports(source_path, &source)?;
     let staticlib = ensure_lk_api_staticlib()?;
     // Dev workspace layout: the C-ABI header lives in the workspace.
     let header_dir = workspace_root()?.join("api/include");
@@ -862,7 +1087,9 @@ fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
         "#include <stdio.h>\n#include \"lk.h\"\nstatic const char *LK_SRC = \"{escaped}\";\n\
          int main(void) {{\n  LkVm *vm = lk_vm_new();\n  char *out = lk_vm_eval(vm, LK_SRC);\n\
          if (out) {{ if (out[0]) printf(\"%s\\n\", out); lk_string_free(out); lk_vm_free(vm); return 0; }}\n\
-         lk_vm_free(vm); fprintf(stderr, \"lk: execution failed\\n\"); return 1;\n}}\n"
+         const char *err = lk_vm_last_error(vm);\n\
+         fprintf(stderr, \"lk: %s\\n\", err ? err : \"execution failed\");\n\
+         lk_vm_free(vm); return 1;\n}}\n"
     );
     let scratch = std::env::temp_dir().join(format!("lk_bundle_{}", std::process::id()));
     std::fs::create_dir_all(&scratch)?;
@@ -890,6 +1117,11 @@ fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Both callers (`run_bundle` and `native_compile`'s staticlib builder) are
+/// `#[cfg(feature = "aot")]`, so this is too — a helper that outlives the only
+/// configuration that calls it is dead code, and CI builds the CLI *without*
+/// `aot` (the bare-metal step needs a `lk` that only compiles bytecode).
+#[cfg(feature = "aot")]
 fn workspace_root() -> anyhow::Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -913,9 +1145,21 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     resolver.set_base_dir(base);
     configure_package_resolver(&mut resolver, path)?;
     let resolver = Arc::new(resolver);
-    Ok(VmContext::new()
-        .with_resolver(Arc::clone(&resolver))
-        .with_type_checker(Some(TypeChecker::new_strict())))
+    Ok(VmContext::new().with_resolver(Arc::clone(&resolver)))
+}
+
+/// Publish the standard library's declared signatures to the type checker.
+///
+/// Registering the modules is what does it — `register_stdlib_module_metadata`
+/// forwards each module's signatures to `lk_core::typ`, process-wide. The
+/// commands that type-check without running (`lk check`, `lk compile`) never
+/// build a `VmContext`, so without this they fall back to the small table core
+/// keeps for its own tests and miss everything outside `os`/`env`/`math`.
+///
+/// The registry is built and dropped; what survives is global. Idempotent.
+pub(crate) fn ensure_stdlib_signatures() {
+    let mut registry = ModuleRegistry::new();
+    let _ = register_enabled_stdlib(&mut registry);
 }
 
 pub(crate) fn register_enabled_stdlib(registry: &mut ModuleRegistry) -> anyhow::Result<()> {
@@ -972,6 +1216,19 @@ pub(crate) enum BundleOutcome {
 }
 
 #[cfg(feature = "aot")]
+/// One validated dependency, held until the merge knows how to number it.
+#[cfg(feature = "aot")]
+struct PendingBundle {
+    import_path: String,
+    canonical: PathBuf,
+    dep: ModuleArtifact,
+    dep_entry: usize,
+    /// Exported name → the dep's own function index.
+    pairs: Vec<(String, u32)>,
+    dep_consts: Vec<(String, BundledConst)>,
+}
+
+#[cfg(feature = "aot")]
 fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Result<BundleOutcome> {
     use lk_core::vm::{Instr, Opcode};
 
@@ -980,10 +1237,30 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     // driver. Keyed by resolved path rather than by the text of the import,
     // because two files can name the same module differently — and because
     // that is also what makes a cycle terminate.
+    // Every renamed item a file import binds, from any module in the bundle.
+    //
+    // A bundled module's constants fold into their reads by *slot*, and the slot
+    // is the constant's own name. `use { SIZE as TSS_SIZE }` reads a different
+    // name, so the fold missed it and the read survived as a `GetGlobal` of a
+    // slot nothing initialises — "does not resolve to anything natively
+    // lowerable" under `compile object:`, a fall back to the VM otherwise. The
+    // VM binds it, so the two backends differed in coverage.
+    //
+    // Collected from every module because a driver may rename another driver's
+    // constant, which is where this would have been found rather than reasoned
+    // about.
+    let mut renamed_items: Vec<(String, String)> = Vec::new();
+    collect_renamed_file_items(&artifact.imports, &mut renamed_items);
     let mut queue: Vec<(String, PathBuf)> = file_import_paths(&artifact.imports)
         .into_iter()
         .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    // A package dependency is a `.lk` file like any other, and the binding it
+    // produces is the same shape a file import produces — so it bundles the
+    // same way. It did not, and the workspace example was the whole sweep's
+    // one fallback: every program that reaches for a dependency ran on the
+    // Tier 0 VM bundle, about 3x slower, with nothing said.
+    queue.extend(package_import_modules(source, &artifact.imports)?);
     if queue.is_empty() {
         return Ok(BundleOutcome::Nothing);
     }
@@ -993,8 +1270,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     // by a driver next to it are the same file under two names; recording only
     // the first left the second one's `use { .. }` resolving to nothing, which
     // the lowering reports as an unresolved global far from the cause.
-    let mut bundled_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
-        std::collections::HashMap::new();
+    let mut bundled_fns: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     // Every constant any bundled module defined, and which module defined it.
     // Two deps exporting the same name would both fold into one merged slot,
     // and the first one popped off the queue would win for the importer's
@@ -1005,15 +1281,21 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
 
     let mut merged = artifact.clone();
     let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
+    // Validated deps, waiting to be numbered. Nothing is appended inside the
+    // loop: which merged index each function gets depends on every dep, so the
+    // numbering is decided once, afterwards.
+    let mut pending: Vec<PendingBundle> = Vec::new();
+    // Import paths naming a file some other path already brought in. They add
+    // no functions, only a binding table — which does not exist until the
+    // numbering does.
+    let mut aliases: Vec<(String, PathBuf)> = Vec::new();
     while let Some((import_path, dep_path)) = queue.pop() {
         let canonical = std::fs::canonicalize(&dep_path).unwrap_or_else(|_| dep_path.clone());
-        if let Some(fns) = bundled_fns.get(&canonical) {
-            bundles.push(lk_aot::BundledImport {
-                path: import_path,
-                fns: fns.clone(),
-            });
+        if bundled_fns.contains(&canonical) {
+            aliases.push((import_path, canonical));
             continue;
         }
+        bundled_fns.insert(canonical.clone());
 
         let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
         // Bundling this module would give its functions a *reference* to the
@@ -1031,6 +1313,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // The dep's own file imports resolve relative to *its* directory, not
         // the importing file's.
         let dep_dir = dep_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        collect_renamed_file_items(&dep.imports, &mut renamed_items);
         for nested in file_import_paths(&dep.imports) {
             let resolved = resolve_bundled_import(&dep_dir, &nested)
                 .with_context(|| format!("nested import of '{import_path}'"))?;
@@ -1046,7 +1329,6 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // why this restriction is what keeps the two backends agreeing.
         let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
         let mut reg_const: std::collections::HashMap<u8, BundledConst> = std::collections::HashMap::new();
-        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut pairs: Vec<(String, u32)> = Vec::new();
         let mut dep_consts: Vec<(String, BundledConst)> = Vec::new();
         let dep_entry_fn = &dep.module.functions[dep_entry];
@@ -1103,6 +1385,75 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                         );
                     }
                 }
+                // A constant derived from constants.
+                //
+                // A module's top level is already required to be effect-free —
+                // that is what everything else in this scan enforces. What was
+                // missing was the ability to *evaluate* a pure one, so
+                // `const FRAME = HEADER + BODY;` was rejected as an effect
+                // while `const FRAME = 42;` was not. Deriving one constant from
+                // two others is the ordinary shape of a protocol header, and
+                // the alternative is the same number written twice.
+                //
+                // Folded rather than deferred: the value has to be known here,
+                // because what crosses the bundle boundary is a value and not
+                // an expression — `rewrite_bundled_globals` replaces each
+                // `GetGlobal` in the importer with a load.
+                Opcode::GetGlobal => {
+                    let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                    match dep_consts.iter().rev().find(|(known, _)| *known == name) {
+                        Some((_, value)) => {
+                            reg_const.insert(instr.a(), value.clone());
+                        }
+                        None => anyhow::bail!(
+                            "bundled import '{import_path}' reads `{name}` at its top level, which is not a constant defined above it"
+                        ),
+                    }
+                }
+                Opcode::Move => {
+                    if let Some(value) = reg_const.get(&instr.b()).cloned() {
+                        reg_const.insert(instr.a(), value);
+                    } else if let Some(&fidx) = reg_fn.get(&instr.b()) {
+                        reg_fn.insert(instr.a(), fidx);
+                    } else {
+                        anyhow::bail!(
+                            "bundled import '{import_path}' moves a top-level register that holds neither a function nor a constant"
+                        )
+                    }
+                }
+                // Integer arithmetic on values already known.
+                //
+                // These three and their immediate forms, and deliberately not
+                // division: `/` is float division in LK, so an integer divide
+                // here is a cast the front end proved, and matching its exact
+                // truncation and its behaviour at zero is a second
+                // implementation of a thing worth having only one of. A header
+                // constant that needs one gets the diagnostic below, naming the
+                // opcode.
+                //
+                // Wrapping, because that is what the executor does — a fold
+                // that panicked where the VM wrapped would be a compiler that
+                // rejects a program the VM runs.
+                Opcode::AddInt | Opcode::SubInt | Opcode::MulInt => {
+                    let lhs = int_operand(&reg_const, instr.b(), &import_path)?;
+                    let rhs = int_operand(&reg_const, instr.c(), &import_path)?;
+                    let value = match instr.opcode() {
+                        Opcode::AddInt => lhs.wrapping_add(rhs),
+                        Opcode::SubInt => lhs.wrapping_sub(rhs),
+                        _ => lhs.wrapping_mul(rhs),
+                    };
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
+                Opcode::AddIntI | Opcode::MulIntI => {
+                    let lhs = int_operand(&reg_const, instr.b(), &import_path)?;
+                    let rhs = instr.sc() as i64;
+                    let value = if instr.opcode() == Opcode::AddIntI {
+                        lhs.wrapping_add(rhs)
+                    } else {
+                        lhs.wrapping_mul(rhs)
+                    };
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
                 Opcode::Return0 => {}
                 // A container at a module's top level cannot cross this
                 // boundary and keep the VM's meaning.
@@ -1153,18 +1504,94 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
             }
         }
 
-        // Merge: append every dep function except its entry; function indices
-        // and global slots (by name) rewrite in place — pcs are unchanged, so
-        // pc-keyed facts stay valid.
-        let base = merged.module.functions.len() as u32;
-        let mut remap: Vec<Option<u32>> = vec![None; dep.module.functions.len()];
-        let mut next = base;
-        for (i, slot) in remap.iter_mut().enumerate() {
-            if i != dep_entry {
-                *slot = Some(next);
+        // Nothing is merged yet: the numbering the merge hands out depends on
+        // every dep, so it is decided once, after all of them are known.
+        pending.push(PendingBundle {
+            import_path,
+            canonical,
+            dep,
+            dep_entry,
+            pairs,
+            dep_consts,
+        });
+    }
+
+    // The numbering, and the reason it is not simply "append in the order they
+    // arrived".
+    //
+    // A `CallDirect` or `MakeClosure` names its target in the instruction's `b`
+    // field, which is a byte. A dep's instructions are already emitted by the
+    // time they reach here — rewriting one into two would move every jump
+    // offset after it — so any dep function that one of those names has to land
+    // below 256. Appending in arrival order made that a bound on the *whole*
+    // program, and `bare-metal-x86/program.lk` with its drivers hit it at 260.
+    //
+    // But most functions are not named that way. Of 159 driver functions there,
+    // 52 are: the rest are reached by name from the importing program, which
+    // the lowering resolves through `BundledImport::fns` — a `u32`. So the
+    // targets go first and the bound becomes "the importing file's functions,
+    // plus the ones a dep calls directly", which for that program is 144.
+    //
+    // What still has no answer is a program that crosses *that*. The honest fix
+    // is a wider field, and that is an instruction-encoding change.
+    let mut targets: Vec<std::collections::HashSet<usize>> = Vec::with_capacity(pending.len());
+    for entry in &pending {
+        let mut set = std::collections::HashSet::new();
+        for (index, function) in entry.dep.module.functions.iter().enumerate() {
+            if index == entry.dep_entry {
+                continue;
+            }
+            for raw in &function.code {
+                let instr = Instr::try_from_raw(*raw)
+                    .map_err(|_| anyhow::anyhow!("bundled import '{}': bad instruction", entry.import_path))?;
+                if matches!(instr.opcode(), Opcode::CallDirect | Opcode::MakeClosure) {
+                    set.insert(instr.b() as usize);
+                }
+            }
+        }
+        targets.push(set);
+    }
+
+    let base = merged.module.functions.len() as u32;
+    let mut remaps: Vec<Vec<Option<u32>>> = pending
+        .iter()
+        .map(|entry| vec![None; entry.dep.module.functions.len()])
+        .collect();
+    let mut next = base;
+    // Directly-called functions first, across every dep, then everything else.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "the bound is the dep module's function count, not `remaps`' length"
+    )]
+    for directly_called in [true, false] {
+        for (which, entry) in pending.iter().enumerate() {
+            for index in 0..entry.dep.module.functions.len() {
+                if index == entry.dep_entry || targets[which].contains(&index) != directly_called {
+                    continue;
+                }
+                remaps[which][index] = Some(next);
                 next += 1;
             }
         }
+    }
+
+    // Laid out by merged index rather than pushed as they are rewritten: the
+    // two passes above interleave the deps, so arrival order is no longer
+    // append order.
+    let mut placed: Vec<Option<lk_core::vm::FunctionData>> = (base..next).map(|_| None).collect();
+    let mut canonical_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
+        std::collections::HashMap::new();
+    let mut all_consts: Vec<(String, Vec<(String, BundledConst)>)> = Vec::new();
+    for (which, entry) in pending.into_iter().enumerate() {
+        let PendingBundle {
+            import_path,
+            canonical,
+            dep,
+            dep_entry,
+            pairs,
+            dep_consts,
+        } = entry;
+        let remap = &remaps[which];
         let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
             match globals.iter().position(|g| g == name) {
                 Some(slot) => slot as u16,
@@ -1174,8 +1601,8 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 }
             }
         };
-        for (i, function) in dep.module.functions.iter().enumerate() {
-            if i == dep_entry {
+        for (index, function) in dep.module.functions.iter().enumerate() {
+            if index == dep_entry {
                 continue;
             }
             let mut function = function.clone();
@@ -1190,8 +1617,17 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                             .copied()
                             .flatten()
                             .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' calls its entry"))?;
-                        let new = u8::try_from(new)
-                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        // The numbering above put every one of these below 256.
+                        // Reaching here means the *importing* file plus every
+                        // directly-called dep function came to more than that,
+                        // which is the ceiling this layout postponed rather
+                        // than removed.
+                        let new = u8::try_from(new).map_err(|_| {
+                            anyhow::anyhow!(
+                                "bundled import '{import_path}': more than 256 directly-called functions — \
+                                 the call instruction names its target in a byte"
+                            )
+                        })?;
                         Some(Instr::abc(instr.opcode(), instr.a(), new, instr.c()))
                     }
                     Opcode::LoadFunction => {
@@ -1216,8 +1652,107 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                     *raw_instr = instr.raw();
                 }
             }
-            merged.module.functions.push(function);
+            let at = remap[index].expect("every non-entry function was numbered") - base;
+            placed[at as usize] = Some(function);
         }
+        // The dep's `impl` blocks come across too, with their method indices
+        // rewritten by the same remap.
+        //
+        // Without this the merged artifact had the *functions* of an imported
+        // `impl` but no record that they implement anything, so the AOT's trait
+        // environment (`trait_env_prescan`, which reads `type_info.impls`) could
+        // not see them: `types.make(3, 4).norm()` fell out of the native subset
+        // — every cross-module method call did — while the same code inside the
+        // defining module lowered fine.
+        //
+        // A type declared in two bundled modules under one name would now share
+        // a dispatch key. The VM keeps them apart by `TypeScope`, so this
+        // refuses rather than resolving, by the rule the rest of this bundler
+        // follows.
+        // A `trait` the dep declares comes across too. Nothing in the AOT
+        // pipeline reads `type_info.traits` — dispatch is devirtualized from
+        // `impls` — but leaving it out produced a *module* whose impls name
+        // traits it does not declare, and `register_module_types` refuses that
+        // outright ("Trait 'Area' not found") the moment any consumer runs the
+        // merged artifact with a type checker attached. An artifact that is
+        // internally inconsistent is a trap for the next consumer, not a
+        // saving.
+        for decl in &dep.module.type_info.traits {
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .traits
+                .iter()
+                .find(|other| other.name == decl.name)
+            {
+                if existing.methods != decl.methods {
+                    anyhow::bail!(
+                        "bundled import '{import_path}': trait `{}` is declared in more than one module — \
+                         the VM keeps them apart by declaring module, the bundle cannot",
+                        decl.name
+                    );
+                }
+                continue;
+            }
+            merged.module.type_info.traits.push(decl.clone());
+        }
+        // The dep's `struct` declarations come across for the same reason, and
+        // they are what gives a type its *runtime* identity: `trait_env_prescan`
+        // hands every declared struct a type id, and the id is how the native
+        // display finds the type's name and field order. Without this an
+        // imported struct got no id, so `NewObject` skipped `obj_mark` and
+        // `println(geo.P { x: 4 })` rendered the carrier — `{"x":4}` — where
+        // the VM prints `P{x:4}`. A wrong answer, not a fallback, because the
+        // rest of the shape lowered fine.
+        //
+        // Same-name refusal as the impls below, and for the same reason: two
+        // bundled modules declaring `P` are two types to the VM and one id
+        // here.
+        for decl in &dep.module.type_info.structs {
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .structs
+                .iter()
+                .find(|other| other.name == decl.name)
+            {
+                if existing.fields != decl.fields {
+                    anyhow::bail!(
+                        "bundled import '{import_path}': type `{}` is declared in more than one module — \
+                         the VM keeps them apart by declaring module, the bundle cannot",
+                        decl.name
+                    );
+                }
+                continue;
+            }
+            merged.module.type_info.structs.push(decl.clone());
+        }
+        for decl in &dep.module.type_info.impls {
+            let mut rewritten = decl.clone();
+            for method in &mut rewritten.methods {
+                method.function = remap
+                    .get(method.function as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling impl method"))?;
+            }
+            if let Some(existing) = merged
+                .module
+                .type_info
+                .impls
+                .iter()
+                .find(|other| other.type_name == rewritten.type_name && other.trait_name == rewritten.trait_name)
+                && existing.methods != rewritten.methods
+            {
+                anyhow::bail!(
+                    "bundled import '{import_path}': type `{}` is implemented in more than one module — \
+                     the VM keeps them apart by declaring module, the bundle cannot",
+                    rewritten.type_name
+                );
+            }
+            merged.module.type_info.impls.push(rewritten);
+        }
+        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for (name, fidx) in pairs {
             let merged_fidx = remap
                 .get(fidx as usize)
@@ -1226,27 +1761,154 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
             fns.insert(name, merged_fidx);
         }
-        // A bundled module's constants have no initialiser in the merged
-        // program: its entry — the only code that would have run the
-        // assignment — is the one function the merge drops. Rather than splice
-        // an initialiser into the importing entry (which would shift every pc
-        // and invalidate the pc-keyed facts), fold the value into each read.
-        // They are constants; substituting them is what `const` means.
+        canonical_fns.insert(canonical, fns.clone());
+        bundles.push(lk_aot::BundledImport {
+            path: import_path.clone(),
+            fns,
+        });
         if !dep_consts.is_empty() {
-            let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
-                .into_iter()
-                .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
-                .collect();
-            for function in &mut merged.module.functions {
-                fold_global_constants(function, &const_slots)
-                    .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
-            }
+            all_consts.push((import_path, dep_consts));
         }
+    }
+    for (which, function) in placed.into_iter().enumerate() {
+        merged.module.functions.push(
+            function
+                .ok_or_else(|| anyhow::anyhow!("bundled merge left function {} unfilled", base as usize + which))?,
+        );
+    }
 
-        bundled_fns.insert(canonical, fns.clone());
+    // A second import path for a file already merged: same functions, its own
+    // binding table.
+    for (import_path, canonical) in aliases {
+        let fns = canonical_fns
+            .get(&canonical)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': no merged module to bind to"))?;
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
+
+    // A bundled module's constants have no initialiser in the merged program:
+    // its entry — the only code that would have run the assignment — is the one
+    // function the merge drops. Rather than splice an initialiser into the
+    // importing entry (which would shift every pc and invalidate the pc-keyed
+    // facts), fold the value into each read. They are constants; substituting
+    // them is what `const` means.
+    //
+    // After every function is in place, which is also a fix: folding used to
+    // happen as each dep landed, so a dep merged *later* had its reads of an
+    // earlier dep's constant left as a `GetGlobal` of a slot nothing ever
+    // initialises. Nothing depended on that yet — a driver importing another
+    // driver's constant is what would have found it.
+    for (import_path, dep_consts) in all_consts {
+        let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
+            match globals.iter().position(|g| g == name) {
+                Some(slot) => slot as u16,
+                None => {
+                    globals.push(name.to_string());
+                    (globals.len() - 1) as u16
+                }
+            }
+        };
+        let mut const_slots: std::collections::HashMap<u16, BundledConst> = std::collections::HashMap::new();
+        for (name, value) in dep_consts {
+            // The name every module that did *not* rename it reads.
+            const_slots.insert(slot_of(&name, &mut merged.module.globals), value.clone());
+            // And every name one that did. Skipped when something writes the
+            // alias's slot: a module of its own with that name shadows the
+            // import, which is what the VM does, and folding would answer the
+            // constant where the VM answers the variable.
+            for (alias, _) in renamed_items.iter().filter(|(_, original)| *original == name) {
+                let slot = slot_of(alias, &mut merged.module.globals);
+                let written = merged.module.functions.iter().any(|function| {
+                    function.code.iter().any(|raw| {
+                        Instr::try_from_raw(*raw)
+                            .map(|i| i.opcode() == Opcode::SetGlobal && i.bx() == slot)
+                            .unwrap_or(false)
+                    })
+                });
+                if !written {
+                    const_slots.insert(slot, value.clone());
+                }
+            }
+        }
+        for function in &mut merged.module.functions {
+            fold_global_constants(function, &const_slots)
+                .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
+        }
+    }
     Ok(BundleOutcome::Bundled(merged, bundles))
+}
+
+/// The `use { name as alias } from "path"` bindings a module declares, as
+/// `(alias, name)`. Only renamed ones: an unrenamed item already reads the name
+/// the bundle flattened it under.
+#[cfg(feature = "aot")]
+fn collect_renamed_file_items(imports: &[lk_core::stmt::ImportStmt], out: &mut Vec<(String, String)>) {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    for import in imports {
+        if let ImportStmt::Items {
+            items,
+            source: ImportSource::File(_),
+        } = import
+        {
+            for item in items {
+                if let Some(alias) = &item.alias
+                    && alias != &item.name
+                {
+                    out.push((alias.clone(), item.name.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// The package dependencies an artifact imports, as `(binding, entry file)`.
+///
+/// The file half of this question is [`file_import_paths`]; this is the other
+/// half of the same one, and it answers every spelling that names a package:
+/// `use dep;`, `use dep as name;`, `use { item } from dep;` and
+/// `use * as ns from dep;`.
+#[cfg(feature = "aot")]
+fn package_import_modules(
+    source: &Path,
+    imports: &[lk_core::stmt::ImportStmt],
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    use lk_core::stmt::ImportStmt;
+
+    let wanted: Vec<(&str, &str)> = imports
+        .iter()
+        .filter_map(|import| match import {
+            ImportStmt::Module { module } => Some((module.as_str(), module.as_str())),
+            ImportStmt::ModuleAlias { module, alias } => Some((alias.as_str(), module.as_str())),
+            // An item or namespace import has no module-object binding of its
+            // own, so the bundle is keyed by the module's name — which is what
+            // the lowering looks it up by for these two spellings.
+            ImportStmt::Items {
+                source: lk_core::stmt::ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: lk_core::stmt::ImportSource::Module(module),
+                ..
+            } => Some((module.as_str(), module.as_str())),
+            _ => None,
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Discovery walks up for an `Lk.toml`, so a program with only stdlib
+    // imports pays one stat of its own directory and stops.
+    let Some(graph) = PackageGraph::discover(source)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (binding, module) in wanted {
+        if let Some(found) = graph.modules.iter().find(|candidate| candidate.name == module) {
+            out.push((binding.to_string(), found.root.clone()));
+        }
+    }
+    Ok(out)
 }
 
 /// The file imports (`use "path"` in any of its forms) a module declares.
@@ -1293,6 +1955,54 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))
 }
 
+/// Whether a method provably neither writes through its receiver nor keeps it.
+///
+/// An allow list, and short on purpose: everything not named here is assumed to
+/// write, which is the same default the rest of this scan takes. Each of these
+/// answers a number or a bool computed from the receiver's current contents and
+/// holds on to nothing.
+///
+/// `user_methods` is what makes the list safe rather than a guess. A name an
+/// `impl` in this module defines could dispatch to anything — a type may have
+/// its own `contains` that sorts first — so a name that is also a user method is
+/// not treated as the builtin it resembles.
+#[cfg(feature = "aot")]
+fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> bool {
+    //
+    // Every name here has to be a method the language actually has, or the
+    // entry is a comment that looks like code: `char_at` and `find` sat in this
+    // list long after one became `get` (the accessor every sequence spells) and
+    // the other `index_of`, so neither had matched anything for as long as it
+    // had been written. `get` does *not* replace `char_at` here — on a list it
+    // answers an element, and an element can be a handle into the receiver,
+    // which is exactly the "keeps it" case this list excludes.
+    const PURE_READS: &[&str] = &[
+        "len",
+        "byte_at",
+        "starts_with",
+        "ends_with",
+        "contains",
+        "index_of",
+        "count",
+        "is_empty",
+        // The four method names only a `String` has (`builtin_method_sig`'s
+        // table is the source: every other name is shared with a list, a map or
+        // a set, and on one of those the same name may hand back a window into
+        // the receiver). A string is immutable and each of these builds a fresh
+        // value, so neither the write nor the retain this list guards against
+        // is possible.
+        //
+        // `fn label(c: Cfg) -> String { return c.name.upper(); }` is what
+        // needed them: reading a field of a parameter taints the result, so an
+        // ordinary string method on a struct field made the module unbundlable.
+        "upper",
+        "lower",
+        "trim",
+        "chars",
+    ];
+    PURE_READS.contains(&name) && !user_methods.contains(name)
+}
+
 /// Whether any function in a module can mutate or retain a container that came
 /// in as a parameter.
 ///
@@ -1319,6 +2029,39 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
 /// a method on one (the method table is not enumerated here, so an unknown
 /// method is assumed to mutate), or passing one to a function that does — the
 /// last of which is why this is a fixpoint over the module's own functions.
+#[cfg(feature = "aot")]
+/// Builtins that provably cannot keep or write through an argument.
+///
+/// Every operator LK desugars into a call, plus the handful that only look at a
+/// value. Listed rather than inferred, and in the safe direction: a name missing
+/// from here costs a module that is needlessly not bundled, a name wrongly in it
+/// costs a wrong answer.
+fn builtin_only_reads(name: &str) -> bool {
+    matches!(
+        name,
+        "__lk_shl"
+            | "__lk_shr"
+            | "__lk_shr_u"
+            | "__lk_bit_and"
+            | "__lk_bit_or"
+            | "__lk_bit_xor"
+            | "__lk_bit_not"
+            | "__lk_lt_u"
+            | "__lk_div_u"
+            | "__lk_mod_u"
+            | "__lk_u64_to_float"
+            | "__lk_u64_str"
+            | "typeof"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "print"
+            | "println"
+            | "panic"
+            | "error"
+    )
+}
+
 #[cfg(feature = "aot")]
 fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
     use lk_core::vm::{Instr, Opcode};
@@ -1371,6 +2114,38 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
         })
         .collect();
 
+    // Every method name an `impl` in this module defines.
+    //
+    // A name in here is not necessarily the builtin it looks like: nothing stops
+    // a type from having its own `len` that rearranges the receiver, and the
+    // bytecode carries no types, so a name that could dispatch to user code has
+    // to be treated as if it does.
+    let user_methods: std::collections::HashSet<&str> = module
+        .type_info
+        .impls
+        .iter()
+        .flat_map(|decl| decl.methods.iter().map(|method| method.name.as_str()))
+        .collect();
+
+    // Every function index a user method of that name compiles to.
+    //
+    // A call to one is not automatically a write: the method's own body is in
+    // this module, and the fixpoint below is already deciding whether *its*
+    // receiver is safe. Assuming the worst instead meant that a module with
+    // one function calling a trait method on a parameter — `fn describe(v:
+    // Shape) { return v.area(); }`, the whole point of a trait — could not be
+    // bundled at all, and every name it exports stopped resolving.
+    let method_bodies: std::collections::HashMap<&str, Vec<usize>> =
+        module.type_info.impls.iter().flat_map(|decl| decl.methods.iter()).fold(
+            std::collections::HashMap::new(),
+            |mut acc, method| {
+                acc.entry(method.name.as_str())
+                    .or_insert_with(Vec::new)
+                    .push(method.function as usize);
+                acc
+            },
+        );
+
     loop {
         let mut changed = false;
         for (fi, function) in module.functions.iter().enumerate() {
@@ -1379,6 +2154,9 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                 .filter_map(|i| u8::try_from(i).ok().map(|reg| (reg, i as usize)))
                 .filter(|(reg, _)| container_regs[fi].contains(reg))
                 .collect();
+            // Which global name a register was loaded from, for the indirect
+            // call below.
+            let mut global_of: std::collections::HashMap<u8, &str> = std::collections::HashMap::new();
             let mark = |slot: usize, unsafe_params: &mut Vec<Vec<bool>>, changed: &mut bool| {
                 if let Some(flag) = unsafe_params[fi].get_mut(slot)
                     && !*flag
@@ -1387,7 +2165,7 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     *changed = true;
                 }
             };
-            for raw in &function.code {
+            for (pc, raw) in function.code.iter().enumerate() {
                 let Ok(instr) = Instr::try_from_raw(*raw) else {
                     continue;
                 };
@@ -1396,6 +2174,42 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     // anything else that writes a register produces a *new*
                     // value, so it does not.
                     Opcode::Move => {
+                        if let Some(&slot) = tainted.get(&instr.b()) {
+                            tainted.insert(instr.a(), slot);
+                        } else {
+                            tainted.remove(&instr.a());
+                        }
+                        // Which global a register came from travels with it: a
+                        // call's callee is *moved* into the window's base, so
+                        // without this the call below cannot name what it calls.
+                        match global_of.get(&instr.b()).copied() {
+                            Some(name) => global_of.insert(instr.a(), name),
+                            None => global_of.remove(&instr.a()),
+                        };
+                    }
+                    Opcode::GetGlobal => {
+                        // The slot is the compiler's fact where there is one;
+                        // the instruction's `bx` is a placeholder the executor
+                        // also declines to trust
+                        // (`global_slot_from_fact_cache_or_instr`).
+                        let slot = function
+                            .performance
+                            .global_op(pc)
+                            .map(|fact| fact.slot)
+                            .unwrap_or_else(|| instr.bx());
+                        match module.globals.get(slot as usize) {
+                            Some(name) => global_of.insert(instr.a(), name.as_str()),
+                            None => global_of.remove(&instr.a()),
+                        };
+                        tainted.remove(&instr.a());
+                    }
+                    // A container *read out of* a tainted container is part of
+                    // it: `self.items` is the caller's list, so a push through
+                    // it is a write to the parameter. Without this the taint
+                    // stopped at the first field access, and a method whose
+                    // body only ever touches `self.<field>` looked as though it
+                    // left `self` alone.
+                    Opcode::GetFieldK | Opcode::GetIndex | Opcode::GetList | Opcode::GetIndexStrI => {
                         if let Some(&slot) = tainted.get(&instr.b()) {
                             tainted.insert(instr.a(), slot);
                         } else {
@@ -1418,10 +2232,90 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     // their own, so what reaches here is the long tail — and
                     // the safe assumption about a method this does not know is
                     // that it writes.
+                    //
+                    // Except for the ones that provably do not. What bundling
+                    // changes is that the module gets the caller's container
+                    // rather than a copy of it, and that difference is
+                    // observable only through a *write* — either this function's
+                    // own, or someone else's through a handle it kept. A method
+                    // that reads and returns a number can do neither.
+                    //
+                    // Without this, a bundled module could not have a function
+                    // that takes a `String` and looks at it: strings are
+                    // immutable, so every string method is a read, and
+                    // `fn log(message: String)` in a driver is the most ordinary
+                    // thing there is. It was `uart_text(text: String)` calling
+                    // `text.byte_at(i)` that found this.
                     Opcode::CallMethodK => {
-                        if let Some(&slot) = tainted.get(&instr.a()) {
+                        // `b`, not `bx`: the receiver is `a` and the argument
+                        // count is `c`, so the method-name constant only has a
+                        // byte to live in.
+                        let name = function
+                            .consts
+                            .strings
+                            .get(instr.b() as usize)
+                            .map(|s| s.as_ref())
+                            .unwrap_or("");
+                        // A user method whose every body leaves its receiver
+                        // alone is a read, whatever its name suggests.
+                        let user_method_is_safe = method_bodies.get(name).is_some_and(|bodies| {
+                            bodies.iter().all(|&body| {
+                                unsafe_params
+                                    .get(body)
+                                    .is_none_or(|params| params.first() != Some(&true))
+                            })
+                        });
+                        if !reads_only(name, &user_methods)
+                            && !user_method_is_safe
+                            && let Some(&slot) = tainted.get(&instr.a())
+                        {
                             mark(slot, &mut unsafe_params, &mut changed);
                         }
+                    }
+                    // A fresh scalar written into a register replaces whatever
+                    // was there, taint included.
+                    //
+                    // Nothing used to say so: taint was dropped only where it
+                    // was also propagated (`Move` and the container reads), so a
+                    // register that had once held an element read out of a
+                    // parameter stayed tainted through every later use of that
+                    // register — and the bytecode reuses registers hard.
+                    //
+                    // Listed, not inferred, and in the safe direction: a missed
+                    // mutation is a wrong answer, an extra one only a refusal.
+                    // So this names opcodes whose `a` is a value they have just
+                    // computed, and leaves alone every opcode whose `a` is a
+                    // *receiver*.
+                    Opcode::LoadInt
+                    | Opcode::LoadFloat
+                    | Opcode::LoadString
+                    | Opcode::AddInt
+                    | Opcode::SubInt
+                    | Opcode::MulInt
+                    | Opcode::DivInt
+                    | Opcode::ModInt
+                    | Opcode::AddIntI
+                    | Opcode::MulIntI
+                    | Opcode::ModIntI
+                    | Opcode::AddFloat
+                    | Opcode::SubFloat
+                    | Opcode::MulFloat
+                    | Opcode::DivFloat
+                    | Opcode::ModFloat
+                    | Opcode::CmpInt
+                    | Opcode::CmpNeInt
+                    | Opcode::CmpLtInt
+                    | Opcode::CmpLeInt
+                    | Opcode::CmpGtInt
+                    | Opcode::CmpGeInt
+                    | Opcode::Not
+                    | Opcode::Neg
+                    | Opcode::Len
+                    | Opcode::Contains
+                    | Opcode::ToString
+                    | Opcode::ConcatString => {
+                        tainted.remove(&instr.a());
+                        global_of.remove(&instr.a());
                     }
                     // A direct call passes registers `b+1..b+1+argc`; taint
                     // flows to the callee's parameter of the same position.
@@ -1443,6 +2337,21 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     }
                     // An indirect call could be anything, including a closure
                     // that keeps the handle.
+                    // A call through a register: the callee is whatever that
+                    // register holds, so an argument handed to it is assumed to
+                    // be kept — unless the register can be named and names a
+                    // builtin that provably only reads.
+                    //
+                    // The operators are why this matters. `(bits >> shift) & 1`
+                    // desugars to calls of `__lk_shr` and `__lk_bit_and`, so a
+                    // value read out of a container parameter and then shifted
+                    // looked exactly like one handed to an unknown function —
+                    // and `drivers/text`, whose own comment reads "`font` is
+                    // only ever read, which is what keeps this module
+                    // bundlable", could not be bundled. That is what stopped
+                    // `bare-metal-x86` from building.
+                    Opcode::Call | Opcode::CallNamed
+                        if global_of.get(&instr.a()).copied().is_some_and(builtin_only_reads) => {}
                     Opcode::Call | Opcode::CallNamed => {
                         let base = instr.a();
                         for offset in 1..=instr.c() {
@@ -1474,6 +2383,29 @@ enum BundledConst {
     Str(String),
     Bool(bool),
     Nil,
+}
+
+/// One integer operand of a top-level fold, or a diagnostic naming what it was.
+///
+/// A register holding a float or a string here is not a bug in the scan — it is
+/// a module whose top level does arithmetic this does not evaluate, and saying
+/// which register held what is the difference between "fix your constant" and
+/// "the bundler is broken".
+#[cfg(feature = "aot")]
+fn int_operand(
+    reg_const: &std::collections::HashMap<u8, BundledConst>,
+    reg: u8,
+    import_path: &str,
+) -> anyhow::Result<i64> {
+    match reg_const.get(&reg) {
+        Some(BundledConst::Int(value)) => Ok(*value),
+        Some(other) => anyhow::bail!(
+            "bundled import '{import_path}' does integer arithmetic at its top level on a {other:?}, which is not a constant this can evaluate"
+        ),
+        None => anyhow::bail!(
+            "bundled import '{import_path}' does integer arithmetic at its top level on a value that is not a constant"
+        ),
+    }
 }
 
 /// Rewrites every `GetGlobal` of a bundled constant into a load of its value.

@@ -93,14 +93,15 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 2. Install dependencies: `npm --prefix ecosystem/vsc-ext/lsp install`
 3. Compile the extension: `npm --prefix ecosystem/vsc-ext/lsp run compile`
 4. Build the LK LSP server: `cargo build -p lk-lsp`
-5. Run `make install` to install the LK CLI, `lk-lsp`, and the packaged VSIX into VS Code. Run `make debug-lsp-ext` to open an Extension Development Host, or run `make vsix` to only build the single VSIX package. In an interactive shell, `make vsix` asks whether to install the generated VSIX with VS Code's CLI; use `make vsix INSTALL_VSIX=1` to install without prompting, or `make vsix INSTALL_VSIX=1 VSCODE_CLI=/path/to/code` when the CLI is not on `PATH`. If VS Code refuses to reinstall an active extension, restart VS Code and rerun the printed install command.
+5. Run `make install` to install the LK CLI, `lk-lsp`, and the packaged VSIX. The VSIX step installs into every VS Code-family editor it finds — VS Code, Insiders, VSCodium, Cursor, Windsurf — on macOS, Linux and Windows, and prefers the remote server's own CLI under WSL / SSH remote / devcontainers so the extension lands on the same side as `lk-lsp` (it falls back to the server's offline `code-server` CLI when no window is attached). Use `make vsix` to only build the package, `make install-vsix` to build and install it, `make install-vsix VSCODE_CLI=/path/to/code` to target one specific editor, and `make debug-lsp-ext` to open an Extension Development Host.
 
 ## Development
 
 - `npm run compile`: Compile the TypeScript source
 - `npm run watch`: Compile in watch mode
-- `make install`: Install the LK CLI, `lk-lsp`, and the VS Code extension package
-- `make vsix`: Build the merged VS Code extension package from `ecosystem/vsc-ext/lsp` and prompt to install the generated VSIX
+- `make install`: Install the LK CLI, `lk-lsp`, the VS Code extension, and print the Zed dev-extension step (`install-cli` / `install-lsp` / `install-vsix` / `install-zed` run the steps individually)
+- `make vsix`: Build the merged VS Code extension package from `ecosystem/vsc-ext/lsp`
+- `make install-vsix`: Build the package and install it into every VS Code-family editor found
 - `make debug-lsp-ext`: Launch VS Code with the merged extension and a repo-local `lk-lsp`
 
 ## LK Language Features

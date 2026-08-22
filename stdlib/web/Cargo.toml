@@ -21,5 +21,4 @@ lk-stdlib-iter = { path = "../crates/iter" }
 lk-stdlib-math = { path = "../crates/math" }
 lk-stdlib-path = { path = "../crates/path" }
 lk-stdlib-regex = { path = "../crates/regex" }
-lk-stdlib-slice = { path = "../crates/slice" }
 lk-stdlib-string = { path = "../crates/string" }

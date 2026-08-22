@@ -12,6 +12,7 @@ use core::fmt::{self, Display};
 impl Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Stmt::Defer { body, .. } => write!(f, "defer {body}"),
             Stmt::Attributed { attributes, item } => {
                 for attr in attributes {
                     writeln!(f, "#[{}]", format_attribute_tokens(&attr.tokens))?;
@@ -90,7 +91,7 @@ impl Display for Stmt {
                 };
                 write!(f, "{} {} {};", name, op_str, value)
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 write!(f, "{} = {};", name, value)
             }
             Stmt::Break => {
@@ -124,7 +125,7 @@ impl Display for Stmt {
             Stmt::TypeAlias { name, target } => {
                 write!(f, "type {} = {};", name, target.display())
             }
-            Stmt::Trait { name, methods } => {
+            Stmt::Trait { name, methods, .. } => {
                 write!(f, "trait {} {{", name)?;
                 for (i, (m, ty)) in methods.iter().enumerate() {
                     if i > 0 {
@@ -139,7 +140,10 @@ impl Display for Stmt {
                 target_type,
                 methods,
             } => {
-                write!(f, "impl {} for {} {{", trait_name, target_type.display())?;
+                match trait_name {
+                    Some(trait_name) => write!(f, "impl {} for {} {{", trait_name, target_type.display())?,
+                    None => write!(f, "impl {} {{", target_type.display())?,
+                }
                 for m in methods {
                     if let Stmt::Function {
                         name,
@@ -206,27 +210,12 @@ impl Display for Stmt {
                     write!(f, "fn {}({}) {{ {} }}", name, parts.join(", "), body_summary)
                 }
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 write!(f, "{};", expr)
             }
             Stmt::Block { statements } => {
                 writeln!(f, "{{")?;
                 for stmt in statements {
-                    writeln!(f, "  {}", stmt)?;
-                }
-                write!(f, "}}")
-            }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                writeln!(f, "try {{")?;
-                for stmt in body {
-                    writeln!(f, "  {}", stmt)?;
-                }
-                writeln!(f, "}} catch {catch_var} {{")?;
-                for stmt in handler {
                     writeln!(f, "  {}", stmt)?;
                 }
                 write!(f, "}}")

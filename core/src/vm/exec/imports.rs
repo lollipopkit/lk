@@ -1,13 +1,11 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
+use crate::util::value_map::{ValueMap, value_map_new};
 use alloc::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
-use crate::val::{
-    CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap,
-};
+use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap};
 
 use super::{RuntimeCallable, runtime_value_to_callable_shared};
 use crate::vm::{Module, RuntimeExport};
@@ -85,15 +83,9 @@ fn import_heap_value(
             source_module,
             source_state,
         )?),
-        HeapValue::Set(values) => HeapValue::Set(import_runtime_set(
-            values,
-            source_heap,
-            dest_heap,
-            source_module,
-            source_state,
-        )?),
+        HeapValue::Set(values) => HeapValue::Set(import_runtime_set(values)),
         HeapValue::Object(object) => {
-            let mut fields = fast_hash_map_new();
+            let mut fields = value_map_new();
             for (key, value) in &object.fields {
                 fields.insert(
                     Arc::clone(key),
@@ -136,8 +128,32 @@ fn import_heap_value(
         }
         HeapValue::Task(value) => HeapValue::Task(Arc::clone(value)),
         HeapValue::Channel(value) => HeapValue::Channel(Arc::clone(value)),
-        HeapValue::Stream(value) => HeapValue::Stream(Arc::clone(value)),
-        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(Arc::clone(value)),
+        // Same reason as the copy in `runtime_callable::copy_runtime_value_with`
+        // — a stream's callbacks and buffered values are handles into the heap
+        // that built it, and an id shared across heaps does not carry them.
+        // This is the path an *import* takes, and the REPL's, where each input
+        // is its own module: the pipeline came back with its filter silently
+        // skipped.
+        HeapValue::Stream(value) => {
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cannot be imported from another module: this one's pipeline holds a \
+                     callback or a value that lives in the heap of the module that built it. Collect \
+                     it first (`stream.collect`) and pass the list, or build the stream on this side"
+                );
+            }
+            HeapValue::Stream(Arc::clone(value))
+        }
+        HeapValue::StreamCursor(value) => {
+            if value.roots.iter().any(|root| matches!(root, RuntimeVal::Obj(_))) {
+                bail!(
+                    "a stream cursor cannot be imported from another module: this one reads from a \
+                     pipeline that lives in the heap of the module that built it. Drain it first and \
+                     pass the values"
+                );
+            }
+            HeapValue::StreamCursor(Arc::clone(value))
+        }
         HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
             source: import_runtime_value(
                 &value.source,
@@ -146,7 +162,6 @@ fn import_heap_value(
                 source_module,
                 source_state.clone(),
             )?,
-            kind: value.kind,
             start: value.start,
             len: value.len,
         })),
@@ -177,24 +192,11 @@ fn import_heap_value(
     })
 }
 
-fn import_runtime_set(
-    values: &RuntimeSet,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    source_module: Arc<Module>,
-    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
-) -> Result<RuntimeSet> {
-    let mut out = fast_hash_set_new();
-    for key in values.entries() {
-        out.insert(import_runtime_map_key(
-            key,
-            source_heap,
-            dest_heap,
-            Arc::clone(&source_module),
-            source_state.clone(),
-        )?);
-    }
-    Ok(RuntimeSet::from_entries(out))
+/// A set crosses heaps as itself: its members are `RuntimeMapKey`s, and none of
+/// those carries a heap handle — a long string is an `Arc<str>` held inline, and
+/// a container cannot be a member at all (see `RuntimeMapKey::from_value`).
+fn import_runtime_set(values: &RuntimeSet) -> RuntimeSet {
+    values.clone()
 }
 
 fn import_typed_list(
@@ -234,16 +236,10 @@ fn import_typed_map(
 ) -> Result<TypedMap> {
     Ok(match values {
         TypedMap::Mixed(values) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in values {
                 out.insert(
-                    import_runtime_map_key(
-                        key,
-                        source_heap,
-                        dest_heap,
-                        Arc::clone(&source_module),
-                        source_state.clone(),
-                    )?,
+                    key.clone(),
                     import_runtime_value(
                         value,
                         source_heap,
@@ -256,7 +252,7 @@ fn import_typed_map(
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(values) => {
-            let mut out = fast_hash_map_new();
+            let mut out = value_map_new();
             for (key, value) in values {
                 out.insert(
                     Arc::clone(key),
@@ -277,42 +273,14 @@ fn import_typed_map(
     })
 }
 
-fn import_runtime_map_key(
-    key: &RuntimeMapKey,
-    source_heap: &HeapStore,
-    dest_heap: &mut HeapStore,
-    source_module: Arc<Module>,
-    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
-) -> Result<RuntimeMapKey> {
-    Ok(match key {
-        RuntimeMapKey::Nil => RuntimeMapKey::Nil,
-        RuntimeMapKey::Bool(value) => RuntimeMapKey::Bool(*value),
-        RuntimeMapKey::Int(value) => RuntimeMapKey::Int(*value),
-        RuntimeMapKey::ShortStr(value) => RuntimeMapKey::ShortStr(*value),
-        RuntimeMapKey::String(value) => RuntimeMapKey::String(Arc::clone(value)),
-        RuntimeMapKey::Obj(handle) => {
-            match import_runtime_value(
-                &RuntimeVal::Obj(*handle),
-                source_heap,
-                dest_heap,
-                source_module,
-                source_state,
-            )? {
-                RuntimeVal::Obj(handle) => RuntimeMapKey::Obj(handle),
-                _ => unreachable!("object map key use must stay an object"),
-            }
-        }
-    })
-}
-
 fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
     let mut out = Vec::with_capacity(values.len());
     out.extend_from_slice(values);
     out
 }
 
-fn copy_string_map_values<T: Copy>(values: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
-    let mut out = fast_hash_map_new();
+fn copy_string_map_values<T: Copy>(values: &ValueMap<Arc<str>, T>) -> ValueMap<Arc<str>, T> {
+    let mut out = value_map_new();
     for (key, value) in values {
         out.insert(Arc::clone(key), *value);
     }

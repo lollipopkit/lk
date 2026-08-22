@@ -46,10 +46,14 @@ fn uart_putc(byte: Int) {
     // Spin while the transmit FIFO is full. This read has to happen on every
     // iteration — it is the canonical access a non-volatile load would let the
     // compiler hoist, hanging the loop.
-    let full = 1;
+    // `u32`, because that is what the register answers in and what the mask is
+    // applied at. Written as `let full = 1;` this was an `Int` that the loop
+    // then assigned a `u32` to — which the checker refuses, correctly: machine
+    // integers do not mix, and the width of a status flag is the register's.
+    let full: u32 = 1;
     while (full != 0) {
         let flags = unsafe { volatile_read_u32((UART0_BASE + REG_FR) as *mut u32) };
-        full = flags & FR_TX_FULL;
+        full = flags & (FR_TX_FULL as u32);
     }
     unsafe { volatile_write_u32((UART0_BASE + REG_DR) as *mut u32, byte as u32); };
 }
@@ -115,8 +119,8 @@ for i in 0..10 {
 let irq = unsafe { cpu_irq_save() };
 // "native LK drives the PL011: sum(fib(0..9)) = "
 uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
-            32, 116, 104, 101, 32, 80, 76, 48, 49, 49, 58, 32, 115, 117, 109, 40,
-            102, 105, 98, 40, 48, 46, 46, 57, 41, 41, 32, 61, 32]);
+    32, 116, 104, 101, 32, 80, 76, 48, 49, 49, 58, 32, 115, 117, 109, 40,
+    102, 105, 98, 40, 48, 46, 46, 57, 41, 41, 32, 61, 32]);
 uart_put_int(total);
 uart_putc(10);
 unsafe { cpu_irq_restore(irq); };

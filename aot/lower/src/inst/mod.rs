@@ -13,9 +13,9 @@
 use crate::*;
 
 mod call;
-mod container;
+pub(crate) mod container;
 mod control;
-mod global;
+pub(crate) mod global;
 mod scalar;
 mod string;
 
@@ -35,6 +35,9 @@ pub(crate) struct LowerCtx<'a> {
     pub(crate) sig: &'a mut SigInfer,
     /// The function being lowered (constant pools, performance facts).
     pub(crate) func: &'a FunctionData,
+    /// Its index in `funcs` — what a fact recorded *about this function* is
+    /// keyed by (see [`SigInfer::cell_captures`]).
+    pub(crate) func_index: u32,
     /// Every function in the module (call targets, capture counts).
     pub(crate) funcs: &'a [FunctionData],
     /// The module's entry function index.
@@ -66,19 +69,23 @@ pub(crate) fn lower_inst(
     match instr.opcode() {
         LoadInt | LoadFloat | LoadBool | LoadNil | Move | Move2 | IsNil | IsList | IsMap | Not | AddInt | SubInt
         | MulInt | DivInt | ModInt | MidInt | MinInt | MaxInt | AddMulInt | Add2Int | AddListInt | SubListInt
-        | AddIntI | MulIntI | ModIntI | AddFloat | SubFloat | MulFloat | DivFloat | ModFloat | CmpInt | CmpNeInt
-        | CmpLtInt | CmpLeInt | CmpGtInt | CmpGeInt | CastTo => scalar::lower(ctx, block, insts, instr, pc),
+        | AddIntI | MulIntI | ModIntI | Neg | FloorDivInt | AddFloat | SubFloat | MulFloat | DivFloat | ModFloat
+        | CmpInt | CmpNeInt | CmpLtInt | CmpLeInt | CmpGtInt | CmpGeInt | CastTo => {
+            scalar::lower(ctx, block, insts, instr, pc)
+        }
 
         LoadString | ToString | ConcatString | ConcatN | ListJoin | StringSplit => {
             string::lower(ctx, block, insts, instr, pc)
         }
 
-        CallMethodK | CallDirect | LoadFunction | MakeClosure | Call => call::lower(ctx, block, insts, instr, pc),
+        CallMethodK | CallDirect | CallNamed | LoadFunction | MakeClosure | Call => {
+            call::lower(ctx, block, insts, instr, pc)
+        }
 
         LoadCapture | LoadCellVal | StoreCellVal | SetGlobal | GetGlobal => global::lower(ctx, block, insts, instr, pc),
 
-        NewList | GetIndexStrI | SetIndexStrI | LoadHeapConst | Len | SliceFrom | NewRange | ToIter | NewObject
-        | ListPush | GetList | GetIndex | SetIndex | GetFieldK | SetFieldK | Contains | MapRest => {
+        NewList | NewMap | GetIndexStrI | SetIndexStrI | LoadHeapConst | Len | SliceFrom | NewRange | ToIter
+        | NewObject | ListPush | GetList | GetIndex | SetIndex | GetFieldK | SetFieldK | Contains | MapRest => {
             container::lower(ctx, block, insts, instr, pc)
         }
 

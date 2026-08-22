@@ -1,5 +1,154 @@
 #[cfg(test)]
 mod tests {
+    /// The keyword somebody arrives with from another language gets named.
+    ///
+    /// `function f() { … }`, `def f(): …`, `func f() int { … }` and `elif`
+    /// each reported "Unexpected tokens at end" pointing at the word itself —
+    /// a message that names neither the mistake nor the spelling that works,
+    /// for the word that is the first thing anybody types. Same reason
+    /// `export fn` (#201) and `let mut` are named.
+    ///
+    /// The negative half matters as much: these are ordinary identifiers, so
+    /// a variable or a function actually called `def` must be unaffected.
+    #[test]
+    fn a_function_keyword_from_another_language_is_named() {
+        for (source, expected) in [
+            ("function f() { return 1; }\n", "the keyword is `fn`"),
+            ("def f(): return 1\n", "the keyword is `fn`"),
+            ("func f() -> Int { return 1; }\n", "the keyword is `fn`"),
+            (
+                "let a = 1;\nif a > 0 { println(1); } elif a < 0 { println(2); }\n",
+                "`else if`",
+            ),
+            ("let f = (x) => x + 1;\n", "`|x| x + 1`"),
+        ] {
+            let error = crate::syntax::parse_program_source(source, Default::default())
+                .expect_err("this is a syntax error")
+                .to_string();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+
+        for source in [
+            "let function = 1;\nprintln(function);\n",
+            "fn def(x: Int) -> Int { return x; }\nprintln(def(1));\n",
+            "let func = |x: Int| x + 1;\nprintln(func(1));\n",
+        ] {
+            crate::syntax::parse_program_source(source, Default::default()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+
+    /// A header expression's leftover tokens used to be dropped in silence.
+    ///
+    /// `if a = 2 { … }` as the *last* statement of a file went through the
+    /// tail-expression path, whose sub-parser stops at the first token it
+    /// cannot continue with and whose leftovers nothing checked. The program
+    /// parsed as `if a { … }`, type-checked, and ran with the assignment gone
+    /// — the `=`-for-`==` slip, accepted as a wrong answer. One statement
+    /// earlier the same line was a syntax error, because that path parses the
+    /// condition with `Parser::parse`, which does check.
+    ///
+    /// Both halves are asserted: the shape is refused wherever it appears, and
+    /// the refusal names `==` rather than only reporting a stray token.
+    #[test]
+    fn an_assignment_in_a_condition_is_refused_and_named() {
+        let shapes = [
+            "let a = 1;\nif a = 2 { println(1); }\n",
+            "let a = 1;\nif a = 2 { println(1); }\nprintln(a);\n",
+            "fn f() -> Int {\n  let a = 1;\n  if a = 2 { println(1); }\n  return a;\n}\n",
+            "let a = 1;\nwhile a = 2 { break; }\n",
+        ];
+        for source in shapes {
+            let error = crate::syntax::parse_program_source(source, Default::default())
+                .expect_err("an assignment cannot be a condition")
+                .to_string();
+            assert!(error.contains("`==`"), "{source}: {error}");
+        }
+
+        // The negative half: a condition that *is* an expression still parses,
+        // including the one whose header ends in a call.
+        for source in [
+            "let a = 1;\nif a > 0 { println(1); }\n",
+            "let xs = [1];\nif xs.len() > 0 { println(1); }\n",
+            "let a = 1;\nmatch a { _ => { println(1); } }\n",
+        ] {
+            crate::syntax::parse_program_source(source, Default::default()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+
+    /// Deeply nested statements used to abort the process.
+    ///
+    /// Two parsers, one budget. `if c { … }` alternates between the statement
+    /// parser and the expression parser, and each crossing used to build a
+    /// sub-parser starting back at depth zero, so neither counter ever
+    /// accumulated — 400 levels walked straight off a libtest thread's 2MiB
+    /// stack (`fatal runtime error: stack overflow`, exit 134: no line, no
+    /// message, and on bare metal no guard page to trap it either).
+    ///
+    /// Three assertions, because no two of them are satisfiable by one
+    /// mistake: the depth a program may reach is accepted; one past the bound
+    /// is a *syntax error*; and so is a depth far past it, which is the case a
+    /// per-parser budget got wrong.
+    #[test]
+    fn deeply_nested_statements_error_instead_of_overflowing_the_stack() {
+        // Two shapes, because they are refused by different halves of the one
+        // budget: `if` carries a condition, so its nest is refused by the
+        // expression parser, while a bare block has no expression in it at all
+        // and is refused by the statement parser.
+        fn nested_blocks(levels: usize) -> String {
+            let mut src = String::from("fn main() -> Int {\n");
+            for _ in 0..levels {
+                src.push_str("{\n");
+            }
+            src.push_str("println(1);\n");
+            for _ in 0..levels {
+                src.push_str("}\n");
+            }
+            src.push_str("return 0;\n}\n");
+            src
+        }
+
+        fn nested(levels: usize) -> String {
+            let mut src = String::from("fn main() -> Int {\n");
+            for _ in 0..levels {
+                src.push_str("if true {\n");
+            }
+            src.push_str("println(1);\n");
+            for _ in 0..levels {
+                src.push_str("}\n");
+            }
+            src.push_str("return 0;\n}\n");
+            src
+        }
+
+        // Not a formula: a source level costs a little over two frames of
+        // budget (the construct, the block it takes as a body, and the
+        // crossings between the two parsers), so where exactly the bound lands
+        // is measured. The deepest brace nesting in this repository's own `.lk`
+        // corpus, counting the `fn`/`impl`/`struct` levels, is 6.
+        // A quarter of the budget, which is comfortably inside it either way:
+        // one source level costs a little over two frames, so the deepest
+        // accepted nest is 30 levels at the `std` value and 7 at bare metal's.
+        let real_code = crate::ast::parser::MAX_PARSE_DEPTH / 4;
+        crate::syntax::parse_program_source(&nested(real_code), Default::default())
+            .expect("a program may nest deeper than anything real code does");
+
+        // The last of these is also the regression test for the *time* it
+        // takes: the speculative tail-expression parse used to swallow the
+        // failure and let the statement path retry, doubling the work at every
+        // level, and 256 levels did not finish in five minutes.
+        // The whole budget, which is past the bound for either shape: a bare
+        // block spends one frame per level and an `if` a little over two.
+        let past_the_bound = crate::ast::parser::MAX_PARSE_DEPTH;
+        for levels in [past_the_bound, past_the_bound * 8] {
+            for source in [nested(levels), nested_blocks(levels)] {
+                let error = crate::syntax::parse_program_source(&source, Default::default())
+                    .expect_err("past the bound is refused, not aborted")
+                    .to_string();
+                assert!(error.contains("nesting too deep"), "{levels} levels: {error}");
+            }
+        }
+    }
+
     #[cfg(not(feature = "std"))]
     use crate::compat::prelude::*;
     use crate::vm::ProgramExec;
@@ -231,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_complex_program() {
-        // 简化程序，避免无限循环
+        // Kept small so the loop terminates.
         let program = parse_program(
             r#"
             let n = 3;
@@ -809,7 +958,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.to_string()
-                .contains("For loop iterable must be List, String, Map, or Set")
+                .contains("For loop iterable must be List, String, Map, Set, Bytes, Slice or Tuple")
         );
     }
 
@@ -893,7 +1042,8 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        expect_result_int(&result, 5);
+        // `/` yields a Float, so `/=` does too: `15 / 3` is `5.0`, not `5`.
+        expect_result_float(&result, 5.0);
     }
 
     #[test]
@@ -966,12 +1116,12 @@ mod tests {
             x += 5;   // x = 15
             x *= 2;   // x = 30
             x -= 10;  // x = 20
-            x /= 4;   // x = 5
+            x /= 4;   // x = 5.0 — `/` yields a Float
             return x;
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        expect_result_int(&result, 5);
+        expect_result_float(&result, 5.0);
     }
 
     #[test]
@@ -1121,15 +1271,17 @@ mod tests {
         "#,
         );
         let mut checker = TypeChecker::new_strict();
-        assert!(program.type_check(&mut checker).is_ok());
+        let outcome = program.type_check(&mut checker);
+        assert!(outcome.is_ok(), "strict check failed: {:?}", outcome.err());
     }
+
     /// `go <expr>;` is parse-time sugar: a zero-param closure over the
     /// operand handed to the `spawn` builtin, handle discarded.
     #[test]
     fn go_statement_desugars_to_spawn_closure() {
         use crate::expr::Expr;
         let program = parse_program("go f(1, 2);");
-        let Stmt::Expr(call) = program.statements[0].as_ref() else {
+        let Stmt::Expr { value: call, .. } = program.statements[0].as_ref() else {
             panic!("go must desugar to an expression statement");
         };
         let Expr::Call(name, args) = call.as_ref() else {
@@ -1137,7 +1289,7 @@ mod tests {
         };
         assert_eq!(name, "spawn");
         assert_eq!(args.len(), 1);
-        let Expr::Closure { params, body } = args[0].as_ref() else {
+        let Expr::Closure { params, body, .. } = args[0].as_ref() else {
             panic!("spawn argument must be a closure");
         };
         assert!(params.is_empty());
@@ -1156,5 +1308,30 @@ mod tests {
     fn go_prefixed_identifiers_still_parse() {
         let program = parse_program("let golang = 1; let gopher = golang + 1; return gopher;");
         assert_eq!(program.statements.len(), 3);
+    }
+
+    /// A keyword names a field and a method, and the statements it belongs to
+    /// still parse. A *top-level* `fn` keeps the restriction, because a call to
+    /// one is a bare name where `select(1)` could not be told from the `select`
+    /// statement — and says so.
+    #[test]
+    fn a_keyword_can_name_a_field_and_a_method() {
+        let (result, _) = execute_source_with_ctx(
+            r#"
+            struct Row { type: String, select: Int }
+            impl Row { fn match(self) -> Int { return self.select * 2; } }
+            trait Runner { fn go(self) -> Int; }
+            impl Runner for Row { fn go(self) -> Int { return self.select; } }
+            let r = Row { type: "t", select: 21 };
+            return r.match() + r.go() + r.select;
+            "#,
+        );
+        assert_eq!(result, RuntimeVal::Int(42 + 21 + 21));
+
+        let error = crate::syntax::parse_program_source("fn select() -> Int { return 1; }", Default::default())
+            .expect_err("a top-level `fn` keeps the restriction");
+        let text = alloc::format!("{error:#}");
+        assert!(text.contains("`select` is a keyword"), "{text}");
+        assert!(text.contains("method or a field"), "{text}");
     }
 }

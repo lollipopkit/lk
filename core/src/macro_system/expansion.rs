@@ -1,7 +1,7 @@
 use crate::compat::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::token::token_lexeme;
+use crate::token::{TemplateSegment, split_template_string, token_lexeme};
 
 use crate::{
     ast::Parser as ExprParser,
@@ -207,6 +207,7 @@ fn capture_fragment(
                 Token::Str(_)
                     | Token::TemplateString(_)
                     | Token::Int(_)
+                    | Token::UInt { .. }
                     | Token::Float(_)
                     | Token::Bool(_)
                     | Token::Nil
@@ -249,12 +250,73 @@ fn capture_expr_fragment(
     pos: usize,
     next_literal: Option<&Token>,
 ) -> Option<(usize, Vec<SourceToken>)> {
-    let tokens = source_tokens_to_tokens(&input[pos..]);
+    // A macro call is an expression, and composing macros is most of what
+    // macros are for — `twice!(twice!(1))`. Expansion is token-level, so at
+    // this point the inner call is still `Id ! ( … )`, which the expression
+    // parser does not know.
+    //
+    // Collapsing each call to a single name lets the *real* parser decide where
+    // the expression ends, so a call composes like any other operand. Taking the
+    // call itself as the whole fragment — which is what this did — stopped at
+    // the call: `twice!(n)` matched and `twice!(n) * 2` "matched a prefix but
+    // left unexpected `*`". The captured tokens are the originals, expanded on a
+    // later round like any other output.
+    let (tokens, widths) = collapse_macro_calls(input, pos);
     let mut parser = ExprParser::new(&tokens);
     let Ok((_, consumed)) = parser.parse_prefix() else {
         return None;
     };
+    let consumed = widths.get(..consumed)?.iter().sum();
     capture_parser_prefix(input, pos, consumed, next_literal)
+}
+
+/// The tokens of `input[pos..]` with every macro invocation collapsed to one
+/// identifier, plus how many original tokens each rewritten token stands for.
+///
+/// Summing the widths of the tokens a parser consumed gives the length in the
+/// original stream.
+fn collapse_macro_calls(input: &[SourceToken], pos: usize) -> (Vec<Token>, Vec<usize>) {
+    let mut tokens = Vec::with_capacity(input.len() - pos);
+    let mut widths = Vec::with_capacity(input.len() - pos);
+    let mut index = pos;
+    while index < input.len() {
+        match macro_invocation_prefix_len(input, index) {
+            Some(len) => {
+                tokens.push(Token::Id("__lk_macro_operand".into()));
+                widths.push(len);
+                index += len;
+            }
+            None => {
+                tokens.push(input[index].token.clone());
+                widths.push(1);
+                index += 1;
+            }
+        }
+    }
+    (tokens, widths)
+}
+
+/// The token length of a macro invocation starting at `pos`, if there is one.
+///
+/// The shape is the language's own rule for telling a macro call from a force
+/// unwrap: `name!` immediately followed by `(`, `[` or `{` (see
+/// `docs/semantics.md`). The delimiter group is balanced, so the whole call is
+/// taken as one fragment.
+fn macro_invocation_prefix_len(input: &[SourceToken], pos: usize) -> Option<usize> {
+    if !matches!(input.get(pos).map(|t| &t.token), Some(Token::Id(_))) {
+        return None;
+    }
+    if !matches!(input.get(pos + 1).map(|t| &t.token), Some(Token::Not)) {
+        return None;
+    }
+    if !matches!(
+        input.get(pos + 2).map(|t| &t.token),
+        Some(Token::LParen | Token::LBracket | Token::LBrace)
+    ) {
+        return None;
+    }
+    let (_, close) = super::find_group(input, pos + 2).ok()?;
+    Some(close + 1 - pos)
 }
 
 fn capture_stmt_fragment(
@@ -566,6 +628,105 @@ fn collect_repeated_capture_names(elems: &[PatternElem], names: &mut Vec<String>
     }
 }
 
+/// Substitute `$name` metavariables that sit inside a template string's `${…}`.
+///
+/// A `TemplateString` in a macro body is one token, and the body is a list of
+/// tokens, so `$e` inside `"value = ${$e}"` was never a `TemplateElem::MetaVar`
+/// to substitute — it stayed in the text and the parser, tokenizing the interior
+/// much later, reported `Unexpected token: Dollar`. Formatting an argument into a
+/// message is close to the whole reason to write a macro in this language, so
+/// that hole covered the common case.
+///
+/// Only `${…}` interiors are rewritten. A `$e` in the literal part of a template
+/// is the two characters `$` and `e`, exactly as `"$e"` is outside a macro.
+fn substitute_inside_template_string(
+    token: &SourceToken,
+    captures: &HashMap<String, Capture>,
+    repeat_path: &[usize],
+    call_span: &Span,
+) -> Result<SourceToken, ParseError> {
+    let Token::TemplateString(content) = &token.token else {
+        return Ok(token.clone());
+    };
+    if !content.contains('$') {
+        return Ok(token.clone());
+    }
+    let Ok(segments) = split_template_string(content) else {
+        return Ok(token.clone());
+    };
+
+    let mut rebuilt = String::with_capacity(content.len());
+    let mut changed = false;
+    for segment in &segments {
+        match segment {
+            TemplateSegment::Literal(text) => rebuilt.push_str(text),
+            TemplateSegment::Expr(text) => {
+                rebuilt.push_str("${");
+                let (rewritten, hit) = substitute_metavars_in_text(text, captures, repeat_path, call_span)?;
+                changed |= hit;
+                rebuilt.push_str(&rewritten);
+                rebuilt.push('}');
+            }
+        }
+    }
+    if !changed {
+        return Ok(token.clone());
+    }
+    let mut rewritten = token.clone();
+    rewritten.token = Token::TemplateString(rebuilt);
+    rewritten.lexeme = token_lexeme(&rewritten.token);
+    Ok(rewritten)
+}
+
+/// Replace every `$name` in one interpolation's text with its captured tokens.
+///
+/// An unknown `$name` is an error rather than a pass-through: the same name
+/// outside the template would be, and a template that silently kept `$typo`
+/// would fail later as a parse error naming a `$` the program did not write.
+fn substitute_metavars_in_text(
+    text: &str,
+    captures: &HashMap<String, Capture>,
+    repeat_path: &[usize],
+    call_span: &Span,
+) -> Result<(String, bool), ParseError> {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut index = 0usize;
+    while index < text.len() {
+        if bytes[index] != b'$' {
+            let ch = text[index..].chars().next().expect("index is a char boundary");
+            out.push(ch);
+            index += ch.len_utf8();
+            continue;
+        }
+        let name_start = index + 1;
+        let name_end = name_start
+            + text[name_start..]
+                .find(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                .unwrap_or(text.len() - name_start);
+        if name_end == name_start {
+            out.push('$');
+            index += 1;
+            continue;
+        }
+        let name = &text[name_start..name_end];
+        let capture = captures
+            .get(name)
+            .ok_or_else(|| ParseError::with_span(format!("Unknown macro metavariable `${name}`"), call_span.clone()))?;
+        let replacement = capture_tokens_at_path(capture, repeat_path, name, call_span)?;
+        let rendered = replacement
+            .iter()
+            .map(|token| token.lexeme.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push_str(&rendered);
+        changed = true;
+        index = name_end;
+    }
+    Ok((out, changed))
+}
+
 fn substitute_template(
     template: &[TemplateElem],
     captures: &HashMap<String, Capture>,
@@ -586,7 +747,7 @@ fn substitute_template_at(
     for elem in template {
         match elem {
             TemplateElem::Token(token) => output.push(ExpandedToken {
-                token: token.clone(),
+                token: substitute_inside_template_string(token, captures, repeat_path, call_span)?,
                 from_capture: false,
                 origin_kind: MacroOriginKind::Definition,
             }),

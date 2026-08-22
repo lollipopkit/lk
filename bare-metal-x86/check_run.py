@@ -19,10 +19,11 @@ import io
 import os
 import socket
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
+
+from kernel import kernel_image
 
 SECTOR = 512
 SECTORS = 64
@@ -38,6 +39,34 @@ ANSWER = "385"
 # `fn` with no body and no closing brace: a parse failure, not a runtime one, so
 # the kernel has to survive the stage that runs *before* any of the program does.
 BROKEN = b"fn (((\n"
+# The language, not the library.
+#
+# `try`/`catch` is syntax: the parser desugars it into a call to a hidden
+# `try$call` primitive, and the host has to have registered one. This kernel's
+# did not — its global list was written before try/catch existed — so every
+# program using it parsed, type-checked, and then failed at run time with
+# "undefined function". The stage code said `failed 5`, which is "it ran and
+# raised", and nothing said which name was missing.
+#
+# Here rather than in a Rust test because this is the only place the *bare* host
+# is asked to run a program at all.
+LANGUAGE = b"""try {
+    error("boom");
+} catch e {
+    println("CAUGHT");
+}
+let squares = [];
+for i in 1..=3 {
+    squares = squares.chain([i * i]);
+}
+println("SQUARES " + squares.len());
+// And one that is *not* caught, last, so the two assertions above still print.
+// `RAISED HERE` is a string no part of the kernel contains, so seeing it come
+// back proves the message travelled from the interpreter rather than being a
+// stage code the kernel already knew how to print.
+error("RAISED HERE");
+"""
+LANGUAGE_ANSWERS = ["CAUGHT", "SQUARES 3"]
 
 
 def send_line(connection, text):
@@ -53,14 +82,12 @@ def send_line(connection, text):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         disk = os.path.join(workdir, "disk.img")
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-            for name, body in [("sq.lk", PROGRAM), ("bad.lk", BROKEN)]:
+            for name, body in [("sq.lk", PROGRAM), ("bad.lk", BROKEN), ("lang.lk", LANGUAGE)]:
                 info = tarfile.TarInfo(name)
                 info.size = len(body)
                 info.mtime = 0
@@ -99,6 +126,7 @@ def main():
             send_line(connection, "run sq.lk")
             send_line(connection, "run nope.lk")
             send_line(connection, "run bad.lk")
+            send_line(connection, "run lang.lk")
             # The shell must still be answering afterwards.
             send_line(connection, "keys")
             connection.sendall(b"quit\n")
@@ -114,6 +142,25 @@ def main():
             failures.append("the program's own output is missing")
         if ANSWER not in transcript:
             failures.append(f"the interpreter did not compute {ANSWER}")
+        # A raise says *what* raised, not only that something did.
+        #
+        # `bad.lk` fails to parse, so it reports stage 3 and nothing else — a
+        # parse failure has no message to carry. A program that runs and raises
+        # does, and the kernel prints it through the same console the program
+        # would have printed through. Without that, "failed 5" reads the same
+        # whether the fault is the program's or the host's, which is exactly the
+        # confusion that hid a missing `error` global for a whole round.
+        if "RAISED HERE" not in transcript:
+            failures.append(
+                "no `run: …` line — a program that raises must say what raised, not only that "
+                "it did"
+            )
+        for answer in LANGUAGE_ANSWERS:
+            if answer not in transcript:
+                failures.append(
+                    f"the interpreter did not print {answer!r} — the bare host is missing a "
+                    f"language primitive, not a module"
+                )
         if "no file" not in transcript:
             failures.append("`run nope.lk` did not report a missing file")
         # -3 is the parse stage (see `kernel_run` in src/main.rs).

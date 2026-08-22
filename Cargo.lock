@@ -1206,6 +1206,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lk-api-cabi"
+version = "0.1.3"
+dependencies = [
+ "lk-api",
+]
+
+[[package]]
 name = "lk-cli"
 version = "0.1.3"
 dependencies = [
@@ -1214,6 +1221,7 @@ dependencies = [
  "clap",
  "libc",
  "lk-aot",
+ "lk-aot-lower",
  "lk-completion",
  "lk-core",
  "lk-stdlib",
@@ -1248,6 +1256,7 @@ dependencies = [
  "dashmap 6.1.0",
  "futures",
  "hashbrown 0.15.5",
+ "indexmap",
  "itoa",
  "libm",
  "lk-values",
@@ -1294,6 +1303,7 @@ dependencies = [
  "chrono",
  "dashmap 6.1.0",
  "lk-core",
+ "lk-stdlib-bare",
  "lk-stdlib-bytes",
  "lk-stdlib-chan",
  "lk-stdlib-common",
@@ -1312,12 +1322,12 @@ dependencies = [
  "lk-stdlib-process",
  "lk-stdlib-random",
  "lk-stdlib-regex",
- "lk-stdlib-slice",
  "lk-stdlib-stream",
  "lk-stdlib-string",
  "lk-stdlib-task",
  "lk-stdlib-time",
  "lk-stdlib-uuid",
+ "lk-stdlib-web",
  "once_cell",
  "serde_json",
  "serde_yaml",
@@ -1338,7 +1348,6 @@ dependencies = [
  "lk-stdlib-hash",
  "lk-stdlib-iter",
  "lk-stdlib-math",
- "lk-stdlib-slice",
  "lk-stdlib-string",
 ]
 
@@ -1537,15 +1546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lk-stdlib-slice"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "lk-core",
- "lk-stdlib-common",
-]
-
-[[package]]
 name = "lk-stdlib-stream"
 version = "0.1.3"
 dependencies = [
@@ -1610,7 +1610,6 @@ dependencies = [
  "lk-stdlib-math",
  "lk-stdlib-path",
  "lk-stdlib-regex",
- "lk-stdlib-slice",
  "lk-stdlib-string",
 ]
 
@@ -1642,16 +1641,26 @@ dependencies = [
 name = "lkrt"
 version = "0.1.3"
 dependencies = [
+ "base64",
  "cc",
  "chrono",
+ "crc32fast",
  "hashbrown 0.15.5",
+ "hex",
+ "indexmap",
  "lk-aot-abi",
  "lk-core",
+ "rand",
+ "regex",
  "rustc-hash",
+ "serde",
  "serde_json",
  "serde_yaml",
+ "sha1",
+ "sha2",
  "spin",
  "toml",
+ "uuid",
 ]
 
 [[package]]

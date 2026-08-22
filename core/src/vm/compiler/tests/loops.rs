@@ -14,9 +14,7 @@ fn compiler_for_over_local_string_does_not_clone_iterable_local() {
     )
     .expect("compile source");
 
-    crate::vm::vm_runtime_metrics_reset();
     let result = execute(&function).expect("execute");
-    let metrics = crate::vm::vm_runtime_metrics_snapshot();
 
     assert!(
         !function.code.iter().any(|instr| instr.opcode() == Opcode::ToIter),
@@ -33,10 +31,6 @@ fn compiler_for_over_local_string_does_not_clone_iterable_local() {
         function.code
     );
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(19)]);
-    assert_eq!(
-        metrics.local_store_heap_clones, 0,
-        "readonly for iterable should use the local string slot directly"
-    );
 }
 
 #[test]
@@ -343,6 +337,45 @@ fn compiler_keeps_dynamic_for_range_step_sign_fallback() {
     );
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(10)]);
+}
+
+#[test]
+fn compiler_refuses_literal_zero_for_range_step() {
+    let error = compile_source(
+        r#"
+        for i in 0..3..0 {
+            println(i);
+        }
+        return 1;
+        "#,
+    )
+    .expect_err("a step of zero never advances the index");
+
+    assert!(
+        error.to_string().contains("Range step cannot be zero"),
+        "a `for` header should refuse a zero step in the same words as a range value: {error}"
+    );
+}
+
+#[test]
+fn compiler_refuses_dynamic_zero_for_range_step() {
+    let function = compile_source(
+        r#"
+        let step = 0;
+        let sum = 0;
+        for i in 0..5..step {
+            sum += i;
+        }
+        return sum;
+        "#,
+    )
+    .expect("compile source");
+
+    let error = execute(&function).expect_err("a zero step is refused on loop entry, not silently skipped");
+    assert!(
+        error.to_string().contains("Range step cannot be zero"),
+        "a dynamic zero step should raise rather than run the descending branch: {error}"
+    );
 }
 
 #[test]

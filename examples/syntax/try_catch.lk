@@ -38,4 +38,321 @@ try {
 }
 
 assert(log == ["ok", "caught", "code-404"]);
+
+// A closure written outside the region and called inside it. The body runs in
+// a frame of its own, so what crosses the boundary is the closure's *identity*
+// plus whatever it captured — one value per capture, and nothing at all for a
+// capture-free lambda.
+fn scale(v: Int) -> Int {
+    let factor = 3;
+    let apply = || -> Int { return v * factor; };
+    let plain = || -> Int { return 7; };
+    let out = 0;
+    try { out = apply() + plain(); } catch e { out = -1; }
+    return out;
+}
+assert(scale(2) == 13);
+
+// Two of them across one region, and a region the closure raises out of.
+fn probe(bad: Bool) -> Int {
+    let base = 10;
+    let ok = || -> Int { return base + 1; };
+    let boom = || -> Int { error("nope"); return 0; };
+    let out = 0;
+    try { out = if bad { boom() } else { ok() }; } catch e { out = -2; }
+    return out;
+}
+assert(probe(false) == 11);
+assert(probe(true) == -2);
+
+// A `try` inside a `try`. Each region's body becomes a function of its own, so
+// nesting is that same step taken twice — and what the inner body writes has to
+// travel out through *both* frames, including on a path where the outer one
+// then raises.
+fn layered(k: Int) -> String {
+    let trace = "";
+    try {
+        trace = trace + "a";
+        try {
+            if k == 1 { error("inner"); }
+            trace = trace + "b";
+        } catch e {
+            trace = trace + "B";
+        }
+        if k == 2 { error("outer"); }
+        trace = trace + "c";
+    } catch e {
+        trace = trace + "A";
+    }
+    return trace;
+}
+assert(layered(0) == "abc");
+assert(layered(1) == "aBc");
+assert(layered(2) == "abA");
+
+// What an inner region writes has to reach the frame that reads it, however
+// many frames away that is, and whatever the reader looks like. Both halves of
+// that sentence were wrong once: a write two regions deep was reported to
+// nobody, and a read spelled `xs.push(v)` rather than `let t = v;` swallowed the
+// report that would have fixed it.
+fn relay(n: Int) -> Int {
+    let seen = [];
+    let value = 0;
+    let bump = || -> Int { return n + 1; };
+    try {
+        try { value = bump(); } catch inner { value = 0 - 1; }
+    } catch outer {
+        value = 0 - 2;
+    }
+    seen.push(value);
+    return value + seen.len();
+}
+assert(relay(0) == 2);
+assert(relay(4) == 6);
+
+// The same shape with the captured variable *itself* crossing the boundary and
+// being written on the far side: one cell, three frames, and the closure called
+// after the write sees it.
+fn accumulate(step: Int) -> Int {
+    let total = 1;
+    let add = || -> Int { return total + step; };
+    try { total = total * 10; total = add(); } catch e { total = 0 - 1; }
+    return total;
+}
+assert(accumulate(0) == 10);
+assert(accumulate(3) == 13);
+
+// A `try` whose region reads a value that occupies *two* machine registers:
+// a `Maybe` (a list's loop variable is one — the element read is bounds
+// checked) and a boxed `Dyn`. The region's inputs travel through a buffer of
+// machine words, so those cross as two words and are put back together inside.
+// Unwrapping at the boundary would have been wrong, which the absent case here
+// is the witness for: it aborts, where the body only asked `?? default`.
+fn tally(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { error("negative"); }
+            total = total + v;
+        } catch e {
+            total = total + 1;
+        }
+    }
+    return total;
+}
+assert(tally([10, 20, 30]) == 60);
+assert(tally([10, 0 - 5, 30]) == 41);
+
+fn defaulted(present: Bool) -> Int {
+    let lookup = {"a": 7};
+    let found = if present { lookup["a"] } else { lookup["missing"] };
+    let out = 0;
+    try { out = found ?? 42; } catch e { out = 0 - 1; }
+    return out;
+}
+assert(defaulted(true) == 7);
+assert(defaulted(false) == 42);
+
+// A region in the module does not change what the rest of it compiles to.
+// It did once: outlining a `try` body appends a function, and the tables that
+// answer "what does parameter *k* of function *n* hold" are parallel arrays
+// indexed by function. Outlining pushed to some of them and not the others, so
+// every later entry was recorded under the previous function's index — and a
+// lambda handed to a function stopped being erased for the whole module.
+fn apply_to(xs: List<Int>, f: (Int) -> Int) -> List<Int> {
+    return xs.map(f);
+}
+fn fold_with(xs: List<Int>, f: (Int, Int) -> Int) -> Int {
+    return xs.reduce(0, f);
+}
+assert(apply_to([1, 2, 3], |x| x + 1) == [2, 3, 4]);
+assert(fold_with([1, 2, 3], |a, b| a + b) == 6);
+
+// A loop and a region, both ways round. The body of a `try` becomes a function
+// of its own when it is compiled natively, so a `break` written in it belongs to
+// a loop that function does not have. Both directions are here because they
+// lower by different means and only running them says so: a loop *written
+// inside* the `try` keeps its own jumps, and one that *encloses* the `try`
+// reports which way it left through the same channel a `return` uses
+// (`docs/aot/aot-gaps-and-lkrt.md` §47).
+fn scan(values: List<Int>) -> Int {
+    let seen = 0;
+    try {
+        for v in values {
+            if v < 0 { break; }
+            if v == 0 { continue; }
+            seen = seen + v;
+        }
+    } catch e {
+        seen = 0 - 1;
+    }
+    return seen;
+}
+assert(scan([1, 2, 3]) == 6);
+assert(scan([1, 0, 2]) == 3);
+assert(scan([1, 0 - 5, 9]) == 1);
+
+// The region inside the loop, with the jump belonging to the region's own body.
+fn tally_each(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { error("negative"); }
+            total = total + v;
+        } catch e {
+            total = total + 100;
+        }
+    }
+    return total;
+}
+assert(tally_each([1, 2]) == 3);
+assert(tally_each([1, 0 - 1, 2]) == 103);
+
+// The jump belonging to the loop *outside* the region: one `break`, one
+// `continue`, and a raise in between, so the handler runs on the way past. Each
+// distinct destination is one more outcome the body reports, so the two here
+// and the ordinary fall-through are three answers on one flag.
+fn until_negative(values: List<Int>) -> Int {
+    let total = 0;
+    for v in values {
+        try {
+            if v < 0 { break; }
+            if v == 0 { continue; }
+            if v == 13 { error("unlucky"); }
+            total = total + v;
+        } catch e {
+            total = total + 100;
+        }
+    }
+    return total;
+}
+assert(until_negative([1, 2, 3]) == 6);
+assert(until_negative([1, 0, 2]) == 3);
+assert(until_negative([1, 0 - 5, 9]) == 1);
+assert(until_negative([1, 13, 2]) == 103);
+
+// A `while` loop, where `continue` jumps *backwards* to the condition rather
+// than forwards to a latch — the same channel, a different destination.
+fn skip_evens(limit: Int) -> Int {
+    let total = 0;
+    let i = 0;
+    while i < limit {
+        i = i + 1;
+        try {
+            if i % 2 == 0 { continue; }
+            if i > 7 { break; }
+            total = total + i;
+        } catch e {
+            total = 0 - 1;
+        }
+    }
+    return total;
+}
+assert(skip_evens(10) == 16);
+assert(skip_evens(3) == 4);
+
+// And with a `return` in the same body: the flag carries four answers now, and
+// the one that returns also carries a value.
+fn first_over(values: List<Int>, bound: Int) -> Int {
+    let seen = 0;
+    for v in values {
+        try {
+            if v == 0 { continue; }
+            if v < 0 { break; }
+            if v > bound { return v; }
+            seen = seen + 1;
+        } catch e {
+            seen = 0;
+        }
+    }
+    return 0 - seen;
+}
+assert(first_over([1, 2, 9], 5) == 9);
+assert(first_over([1, 0, 2], 5) == 0 - 2);
+assert(first_over([1, 0 - 3, 9], 5) == 0 - 1);
+
+// A region that crosses a lot: eight inputs of five different kinds, five
+// variables the body assigns and the function reads afterwards, and an outcome
+// channel carrying `continue`, `break` and `return`. The body of this one is a
+// function of twenty-nine parameters when it is compiled natively, which is only
+// interesting because the count used to be capped at eight.
+fn crowded(a: Int, b: Int, c: Int, d: Float, flag: Bool, tag: String) -> Int {
+    let p = 0;
+    let q = 0;
+    let r = 0;
+    let s = 0;
+    let t = 0;
+    for i in 0..5 {
+        try {
+            p = p + a + i;
+            q = q + b;
+            r = r + c;
+            s = s + tag.len();
+            if flag { t = t + 1; }
+            if d > 1.5 { t = t + 10; }
+            if i == 2 { continue; }
+            if i == 4 { break; }
+            if p > 900 { return 0 - 1; }
+        } catch e {
+            p = 0 - 99;
+        }
+    }
+    return p + q + r + s + t;
+}
+assert(crowded(1, 2, 3, 2.5, true, "abcd") == 115);
+assert(crowded(9, 8, 7, 0.5, false, "xy") == 140);
+
+// A region inside a *closure*, reading what the closure captured. The body is
+// outlined into a function of its own, and that function has no captures of its
+// own — so a capture read inside it has to be handed the enclosing closure's,
+// positionally, or index 0 means something else entirely. Three kinds here,
+// because they cross differently: a number, a string, and a container.
+fn scaled_report(count: Int, factor: Int, label: String) -> String {
+    let bounds = [2, 20];
+    let out = "";
+    let describe = |v| {
+        let text = "";
+        try {
+            let scaled = v * factor;
+            if scaled < bounds[0] { error("under"); }
+            if scaled > bounds[1] { error("over"); }
+            text = label + ":" + scaled;
+        } catch e {
+            text = label + ":-";
+        }
+        return text;
+    };
+    let i = 0;
+    while i < count {
+        out = out + describe(i) + " ";
+        i = i + 1;
+    }
+    return out;
+}
+assert(scaled_report(3, 4, "x") == "x:- x:4 x:8 ");
+assert(scaled_report(2, 30, "y") == "y:- y:- ");
+
+// A handler with nothing in it, and a body that returns on one path only.
+//
+// The compiler emits no jump over an empty handler, because there is nothing to
+// jump over — and "the region's fallthrough is its handler" is *also* what a
+// body that returns on every path looks like. Reading the second from the first
+// is a mistake this shape is the witness for: the path that did *not* return
+// went straight to the return block and read a value nobody had parked. Every
+// other `try` above has a statement in its handler, which is why none of them
+// caught it.
+fn maybe_early(values: List<Int>, stop: Int) -> Int {
+    let seen = 0;
+    for v in values {
+        try {
+            if v == stop { return 0 - v; }
+            seen = seen + v;
+        } catch e { }
+    }
+    return seen;
+}
+assert(maybe_early([1, 2, 3], 9) == 6);
+assert(maybe_early([1, 2, 3], 2) == 0 - 2);
+assert(maybe_early([], 1) == 0);
+
 println("try/catch: ok");

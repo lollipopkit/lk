@@ -89,9 +89,21 @@ mod tests {
         assert_eq!(tokens, expected);
     }
 
+    /// `||` between two operands is the logical operator.
+    ///
+    /// The input used to be an operator soup (`>=<= && || == != ! > <`) with
+    /// nothing between the operators, where `||` sits exactly where a *value*
+    /// is expected — which is where it opens a zero-parameter closure. Real
+    /// code has operands, so the test has them now: the question the lexer
+    /// answers is "is a value expected here", and soup cannot ask it.
     #[test]
     fn punctuations() {
-        let t2 = Tokenizer::tokenize(">=<= && || == != ! > <");
+        let t2 = Tokenizer::tokenize("a >= b <= c && d || e == f != g ! h > i < j");
+        let operators: Vec<Token> = t2
+            .unwrap()
+            .into_iter()
+            .filter(|token| !matches!(token, Token::Id(_)))
+            .collect();
         let e2 = vec![
             Token::Ge,
             Token::Le,
@@ -103,7 +115,7 @@ mod tests {
             Token::Gt,
             Token::Lt,
         ];
-        assert_eq!(t2.unwrap(), e2);
+        assert_eq!(operators, e2);
     }
 
     #[test]
@@ -172,6 +184,44 @@ mod tests {
         // Test unknown escape sequence (should keep both backslash and character)
         let t = Tokenizer::tokenize(r#""Unknown\xEscape""#).unwrap();
         assert_eq!(t, vec![Token::Str("Unknown\\xEscape".to_string())]);
+    }
+
+    /// A character by code point — the only way to write one that cannot be
+    /// typed: a zero-width joiner, a non-breaking space, an astral emoji.
+    /// There was no such escape, and an unknown one is kept verbatim, so
+    /// `"\u{4e2d}"` used to print itself back.
+    #[test]
+    fn braced_unicode_escape() {
+        for (source, expected) in [
+            (r#""\u{4e2d}""#, "\u{4e2d}"),
+            (r#""\u{41}""#, "A"),
+            (r#""\u{1F600}""#, "\u{1F600}"),
+            (r#""a\u{4e2d}b""#, "a\u{4e2d}b"),
+        ] {
+            let tokens = Tokenizer::tokenize(source).expect(source);
+            assert_eq!(tokens, vec![Token::Str(expected.to_string())], "{source}");
+        }
+
+        for source in [
+            r#""\u4e2d""#,      // no braces
+            r#""\u{}""#,        // no digits
+            r#""\u{1234567}""#, // more than six
+            r#""\u{zz}""#,      // not hex
+            r#""\u{D800}""#,    // a surrogate is not a character
+            r#""\u{110000}""#,  // past the last code point
+            r#""\u{4e2d""#,     // unterminated
+        ] {
+            assert!(Tokenizer::tokenize(source).is_err(), "{source} should not lex");
+        }
+    }
+
+    /// An unknown escape keeps its backslash rather than failing, and that is
+    /// load-bearing: a regex pattern is an ordinary string here, so `"\d"` has
+    /// to survive to reach the engine.
+    #[test]
+    fn unknown_escapes_survive_for_regex_patterns() {
+        let tokens = Tokenizer::tokenize(r#""\d+\s*\w""#).expect("lex");
+        assert_eq!(tokens, vec![Token::Str("\\d+\\s*\\w".to_string())]);
     }
 
     #[test]
@@ -901,12 +951,73 @@ line2""#,
 
     /// A full-width mask is a bit pattern, not an out-of-range number. Refusing
     /// the top bit would make `0xFFFF_FFFF_FFFF_FFFF` unwritable.
+    ///
+    /// It comes back as `UInt` rather than a wrapped `Int`, and that is the whole
+    /// point: as an `i64` carrier it is `-1`, indistinguishable from the `-1` a
+    /// programmer wrote — and this language has no unary minus to tell the two
+    /// apart by shape. The parser turns `UInt` into `… as u64`, which is why
+    /// `let x: u64 = 0xFFFF_FFFF_FFFF_FFFF` is accepted and `let x: u8 = -1`
+    /// stays refused.
+    /// The *decimal* spelling of the same numbers reaches `UInt` too.
+    ///
+    /// It did not: `0xFFFF_FFFF_FFFF_FFFF` was accepted and
+    /// `18446744073709551615` was `Invalid int` — one number, one spelling
+    /// taken and the other refused, in a language that has a `u64` type. The
+    /// radix travels with the token so re-rendering (`lk macro expand`) gives
+    /// the text back instead of re-spelling a mask in decimal or a decimal
+    /// number in hex.
+    #[test]
+    fn a_decimal_literal_above_i64_max_is_a_u64_too() {
+        assert_eq!(
+            Tokenizer::tokenize("18446744073709551615").unwrap(),
+            vec![Token::UInt {
+                value: u64::MAX,
+                radix: 10
+            }]
+        );
+        assert_eq!(
+            Tokenizer::tokenize("9223372036854775808").unwrap(),
+            vec![Token::UInt {
+                value: 1 << 63,
+                radix: 10
+            }]
+        );
+        // One below still fits the signed carrier, so nothing changes there.
+        assert_eq!(
+            Tokenizer::tokenize("9223372036854775807").unwrap(),
+            vec![Token::Int(i64::MAX)]
+        );
+        // Past `u64` is out of range, and says so — it used to say the literal
+        // was invalid, which it is not.
+        let message = Tokenizer::tokenize("99999999999999999999999999")
+            .expect_err("past u64")
+            .to_string();
+        assert!(message.contains("out of range"), "got: {message}");
+        // A negative one is refused by both parses, which is what keeps
+        // `let y: u8 = -1` refused.
+        assert!(Tokenizer::tokenize("-18446744073709551615").is_err());
+    }
+
     #[test]
     fn radix_literals_accept_the_full_bit_pattern() {
-        assert_eq!(Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(), vec![Token::Int(-1)]);
+        assert_eq!(
+            Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(),
+            vec![Token::UInt {
+                value: u64::MAX,
+                radix: 16
+            }]
+        );
         assert_eq!(
             Tokenizer::tokenize("0x8000000000000000").unwrap(),
-            vec![Token::Int(i64::MIN)]
+            vec![Token::UInt {
+                value: 1 << 63,
+                radix: 16
+            }]
+        );
+        // One below is still an `Int`: the carrier has room, so nothing is lost.
+        assert_eq!(
+            Tokenizer::tokenize("0x7FFFFFFFFFFFFFFF").unwrap(),
+            vec![Token::Int(i64::MAX)]
         );
     }
 
@@ -915,4 +1026,61 @@ line2""#,
         assert!(Tokenizer::tokenize("0x").is_err());
         assert!(Tokenizer::tokenize("0b").is_err());
     }
+
+    /// A lexer error is one line, and an unterminated string says where it
+    /// opened.
+    ///
+    /// It used to be three: `"Syntax error:\n{msg}\nLine {n}: {source}"`, with
+    /// the near context copied raw, so a newline inside it broke the message
+    /// again, and with `Line {n}` naming the line the *scan* reached — at end
+    /// of input that is one past the file, so the field printed empty. The
+    /// caller renders the offending line with a caret itself; this only has to
+    /// say what is wrong and where the quote is.
+    #[test]
+    fn an_unterminated_string_names_its_opening_quote_on_one_line() {
+        let error = Tokenizer::tokenize("let s = \"abc\nlet b = 2;\n")
+            .expect_err("an unterminated string is an error")
+            .to_string();
+        assert!(!error.contains('\n'), "the message is one line: {error}");
+        assert!(error.contains("1:9"), "it names the opening quote: {error}");
+        assert!(error.contains("String not closed"), "{error}");
+    }
+}
+
+/// A keyword may name a **member** — a field or a method — because a member is
+/// only ever reached through `.` or declared inside a `struct`/`impl`/`trait`
+/// body, and none of those positions can start a statement. Reserving them
+/// everywhere was more than the grammar needed: `db.select()`,
+/// `parser.match(x)` and `struct Row { type: String }` were syntax errors.
+#[test]
+fn every_keyword_can_name_a_member() {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
+    use crate::token::{Token, keyword_as_name};
+
+    for (token, word) in [
+        (Token::Select, "select"),
+        (Token::Match, "match"),
+        (Token::Try, "try"),
+        (Token::Go, "go"),
+        (Token::Use, "use"),
+        (Token::Type, "type"),
+        (Token::As, "as"),
+        (Token::Impl, "impl"),
+        (Token::Trait, "trait"),
+        (Token::Defer, "defer"),
+        (Token::Fn, "fn"),
+        (Token::Return, "return"),
+    ] {
+        assert_eq!(keyword_as_name(&token), Some(word), "{token:?}");
+    }
+
+    // The value literals are values, not keywords: `p.nil` reads as nothing.
+    assert_eq!(keyword_as_name(&Token::Nil), None);
+    assert_eq!(keyword_as_name(&Token::Bool(true)), None);
+    // Nor is punctuation a name.
+    assert_eq!(keyword_as_name(&Token::LBrace), None);
+    assert_eq!(keyword_as_name(&Token::Comma), None);
+    // An identifier goes down the ordinary path, not this one.
+    assert_eq!(keyword_as_name(&Token::Id("select".to_string())), None);
 }

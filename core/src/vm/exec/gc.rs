@@ -16,23 +16,35 @@ impl Executor {
         // Ancestor frames' captures (plan M2.5 sub-step ①: flattened LK→LK
         // calls no longer keep them alive implicitly on the Rust stack) must
         // be rooted explicitly here, same as the current frame's `captures`.
-        let frame_roots = self.frames.iter().flat_map(|frame| frame.captures.iter());
+        let frame_roots = self
+            .frames
+            .iter()
+            .flat_map(|frame| frame.captures.iter().flat_map(|captures| captures.iter()));
         self.state
-            .gc_roots(self.captures.iter().chain(frame_roots).chain(handler_roots))
+            .gc_roots(
+                self.captures
+                    .iter()
+                    .flat_map(|captures| captures.iter())
+                    .chain(frame_roots)
+                    .chain(handler_roots),
+            )
             .into_refs()
     }
 
+    /// The collection itself, reached only once a safepoint has decided there
+    /// is something to do.
+    ///
+    /// The test used to live *inside* this function while the function was
+    /// `#[cold]`, which put the outline boundary in the wrong place: every
+    /// safepoint made a real call into the cold section just to load two bools
+    /// and come back. A call/return pair passes two safepoints, so the empty
+    /// call benchmark spent ~3% of its time there. [`Executor::safepoint`] now
+    /// holds the test and this stays cold, which is what `#[cold]` is for.
     #[cold]
-    #[inline]
-    pub(super) fn collect_pending_garbage(&mut self) {
-        // Stress mode collects at every safepoint (not at allocation sites —
-        // fresh handles are only rooted once the handler writes them to a
-        // register), so a missed root fails deterministically in any test run.
-        if self.gc_pending || self.gc_stress {
-            let roots = self.root_refs();
-            self.state.heap.collect(roots);
-            self.gc_pending = false;
-        }
+    fn collect_now(&mut self) {
+        let roots = self.root_refs();
+        self.state.heap.collect(roots);
+        self.gc_pending = false;
     }
 
     pub(super) fn sync_heap_gc_threshold(&mut self) {
@@ -47,21 +59,26 @@ impl Executor {
     /// and only fails if the *reachable* set is still over budget.
     #[cold]
     pub(super) fn force_collect(&mut self) {
-        let roots = self.root_refs();
-        self.state.heap.collect(roots);
-        self.gc_pending = false;
+        self.collect_now();
     }
 
-    /// GC safepoint run after allocation-heavy opcodes: reclaim pending garbage,
-    /// then enforce the process **byte** budget (plan M2.6, `LK_MAX_HEAP_BYTES`).
-    /// A non-allocating hot loop never reaches a safepoint, so it pays nothing;
+    /// GC safepoint run after allocation-heavy opcodes and at call boundaries:
+    /// reclaim pending garbage, then enforce the process **byte** budget (plan
+    /// M2.6, `LK_MAX_HEAP_BYTES`).
+    /// A non-allocating, non-calling hot loop never reaches a safepoint, so it
+    /// pays nothing;
     /// [`mem::over_limit`](crate::mem::over_limit) short-circuits to a single
     /// atomic load when the limit is unset. When over budget, collect once more
     /// (returning freed VM memory to the allocator) and abort execution (a hard
     /// sandbox stop, like fuel) only if the *reachable* footprint is still over.
     #[inline]
     pub(super) fn safepoint(&mut self) -> anyhow::Result<()> {
-        self.collect_pending_garbage();
+        // Stress mode collects at every safepoint (not at allocation sites —
+        // fresh handles are only rooted once the handler writes them to a
+        // register), so a missed root fails deterministically in any test run.
+        if self.gc_pending || self.gc_stress {
+            self.collect_now();
+        }
         if crate::mem::over_limit() {
             self.enforce_memory_limit()?;
         }
@@ -110,7 +127,7 @@ mod tests {
             RuntimeVal::Obj(inactive_stack),
         ];
         executor.state.stack_top = 2;
-        executor.captures = Arc::new(vec![RuntimeVal::Obj(capture)]);
+        executor.captures = Some(Arc::new(vec![RuntimeVal::Obj(capture)]));
 
         assert_eq!(executor.root_refs(), vec![global, stack, capture]);
     }

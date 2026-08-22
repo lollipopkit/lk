@@ -8,8 +8,8 @@ use crate::vm::analysis::{
 };
 
 use super::{
-    Executor, heap_kind, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str,
-    set_list_value, with_string_int_key,
+    Executor, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str, set_list_value,
+    with_string_int_key,
 };
 
 /// A small, stack-allocated key representation that avoids String allocation
@@ -42,6 +42,39 @@ impl SmallKey {
     }
 }
 
+/// A string key on its way into a map.
+///
+/// The two carry the same text and differ in what storing it costs. A typed
+/// string carrier keys by `Arc<str>`, so inserting a *new* key had to allocate
+/// one — and a constant key already is one, sitting in the function's const
+/// pool. Passing the pooled `Arc` makes the insert a refcount bump, and the
+/// map's later death a decrement rather than a free.
+///
+/// One parameter rather than a `&str` plus an optional `Arc` beside it: the
+/// two would have to agree, and nothing would check that they did.
+enum KeyText<'a> {
+    /// Text the caller only borrows — a key read out of a register.
+    Borrowed(&'a str),
+    /// The pooled constant.
+    Shared(&'a Arc<str>),
+}
+
+impl KeyText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+
+    fn to_arc(&self) -> Arc<str> {
+        match self {
+            Self::Borrowed(text) => Arc::<str>::from(*text),
+            Self::Shared(text) => Arc::clone(text),
+        }
+    }
+}
+
 impl Executor {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
@@ -53,14 +86,14 @@ impl Executor {
         value_reg: u8,
         move_key: bool,
         move_value: bool,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<()> {
         let handle = {
             let target = self.read(target_reg)?;
             let RuntimeVal::Obj(handle) = target else {
-                bail!("SetIndex target expected Obj, got {:?}", target.kind());
+                bail!("{} cannot be indexed for assignment", self.value_type_name(target));
             };
             *handle
         };
@@ -135,6 +168,8 @@ impl Executor {
             }
         };
 
+        let key = self.resolve_negative_list_key(handle, key)?;
+
         if let Some(done) = self.try_set_string_list(handle, &key, value)? {
             self.maybe_bump_shape(handle, has_static_fact);
             return Ok(done);
@@ -150,14 +185,17 @@ impl Executor {
                 let RuntimeMapKey::Int(index) = key else {
                     bail!("SetIndex list key must be Int");
                 };
-                let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
+                let index = usize::try_from(index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
                 set_list_value(list, index, value)
             }
             HeapValue::Map(map) => {
                 map.set(key, value);
                 Ok::<(), anyhow::Error>(())
             }
-            other => bail!("SetIndex target object changed while writing: {:?}", heap_kind(other)),
+            other => bail!(
+                "SetIndex target object changed while writing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
         Ok(())
@@ -195,7 +233,7 @@ impl Executor {
         );
         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
         with_string_int_key(prefix, suffix, |key| {
-            if self.try_set_typed_string_map(handle, key, &value, known_value_kind)? {
+            if self.try_set_typed_string_map(handle, KeyText::Borrowed(key), &value, known_value_kind)? {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                 return Ok(());
             }
@@ -213,7 +251,7 @@ impl Executor {
                 }
                 other => bail!(
                     "SetIndexStrI target object changed while writing map: {:?}",
-                    heap_kind(other)
+                    HeapValue::type_name(other)
                 ),
             }
         })??;
@@ -232,6 +270,53 @@ impl Executor {
         }
     }
 
+    /// A write index resolved against the list's length: **negative counts from
+    /// the end**, exactly as the read does.
+    ///
+    /// `xs[-1]` read the last element and `xs[-1] = 9` answered "list index must
+    /// be non-negative" — the same expression, one direction. Out of range
+    /// after resolving is still an error: writing past the end is not something
+    /// you can mean, unlike reading past it (which is nil).
+    ///
+    /// The length lookup happens only for a negative index, so the ordinary
+    /// write pays one predictable compare.
+    ///
+    /// **Out of range is reported here, naming the index as written.** The
+    /// resolved value is what the rest of the write path carries, so raising
+    /// further down could only say `-6` for `xs.set(-9, v)` on a three-element
+    /// list — a number the program never wrote, and one the native build
+    /// (which still has the original) did not print either. Both ends of the
+    /// range now say `list index N out of bounds` with the same `N`.
+    #[inline]
+    pub(super) fn negative_list_index_from_end(&self, handle: HeapRef, index: i64) -> Result<i64> {
+        if index >= 0 {
+            return Ok(index);
+        }
+        match self.state.heap.get(handle) {
+            Some(HeapValue::List(list)) => {
+                let resolved = index + list.len() as i64;
+                if resolved < 0 {
+                    bail!("list index {index} out of bounds");
+                }
+                Ok(resolved)
+            }
+            // Not a list: the caller's own dispatch reports what it is.
+            _ => Ok(index),
+        }
+    }
+
+    /// [`Self::negative_list_index_from_end`] for the dynamic path, where the
+    /// key has already been built and the target may not be a list at all.
+    #[inline]
+    fn resolve_negative_list_key(&self, handle: HeapRef, key: RuntimeMapKey) -> Result<RuntimeMapKey> {
+        match key {
+            RuntimeMapKey::Int(index) if index < 0 => {
+                Ok(RuntimeMapKey::Int(self.negative_list_index_from_end(handle, index)?))
+            }
+            other => Ok(other),
+        }
+    }
+
     pub(super) fn set_list_index_handle(
         &mut self,
         handle: HeapRef,
@@ -241,7 +326,8 @@ impl Executor {
         known_value_kind: Option<PerfValueKind>,
         has_static_fact: bool,
     ) -> Result<()> {
-        let index = self.int_key_from_register_or_value(key_reg, moved_key)?;
+        let index =
+            self.negative_list_index_from_end(handle, self.int_key_from_register_or_value(key_reg, moved_key)?)?;
         let key = RuntimeMapKey::Int(index);
         if matches!(
             self.state.heap.get(handle),
@@ -251,7 +337,7 @@ impl Executor {
             self.maybe_bump_shape(handle, has_static_fact);
             return Ok(done);
         }
-        let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
+        let index = usize::try_from(index).map_err(|_| anyhow!("list index {index} out of bounds"))?;
         if self.try_set_typed_list_index(handle, index, &value, known_value_kind)? {
             return Ok(());
         }
@@ -264,7 +350,7 @@ impl Executor {
             HeapValue::List(list) => set_list_value(list, index, value),
             other => bail!(
                 "SetIndex target object changed while writing list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
@@ -322,7 +408,7 @@ impl Executor {
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::List(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing list: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }
@@ -335,7 +421,7 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         known_value_kind: Option<PerfValueKind>,
         has_static_fact: bool,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
@@ -345,7 +431,7 @@ impl Executor {
         if let Some(key_str) = known_string_key {
             record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
             record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
-            if self.try_set_typed_string_map(handle, key_str, &value, known_value_kind)? {
+            if self.try_set_typed_string_map(handle, KeyText::Shared(key_str), &value, known_value_kind)? {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                 return Ok(());
             }
@@ -369,7 +455,7 @@ impl Executor {
                     VmIndexKeyMetric::DynamicShortStringKey,
                 );
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
-                if self.try_set_typed_string_map(handle, key_str, &value, known_value_kind)? {
+                if self.try_set_typed_string_map(handle, KeyText::Borrowed(key_str), &value, known_value_kind)? {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                     return Ok(());
                 }
@@ -408,7 +494,7 @@ impl Executor {
             }
             other => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
@@ -423,7 +509,7 @@ impl Executor {
         key_reg: u8,
         moved_key: Option<RuntimeVal>,
         value: RuntimeVal,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<()> {
         self.set_map_index_handle(
@@ -508,7 +594,7 @@ impl Executor {
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::Map(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }
@@ -519,10 +605,11 @@ impl Executor {
     fn try_set_typed_string_map(
         &mut self,
         handle: HeapRef,
-        key_str: &str,
+        key: KeyText<'_>,
         value: &RuntimeVal,
         known_value_kind: Option<PerfValueKind>,
     ) -> Result<bool> {
+        let key_str = key.as_str();
         match (
             known_value_kind.unwrap_or_default(),
             self.state
@@ -535,7 +622,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *iv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *iv);
+                    values.insert(key.to_arc(), *iv);
                 }
                 Ok(true)
             }
@@ -543,7 +630,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *fv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *fv);
+                    values.insert(key.to_arc(), *fv);
                 }
                 Ok(true)
             }
@@ -551,7 +638,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *bv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *bv);
+                    values.insert(key.to_arc(), *bv);
                 }
                 Ok(true)
             }
@@ -559,7 +646,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *iv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *iv);
+                    values.insert(key.to_arc(), *iv);
                 }
                 Ok(true)
             }
@@ -567,7 +654,7 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *fv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *fv);
+                    values.insert(key.to_arc(), *fv);
                 }
                 Ok(true)
             }
@@ -575,14 +662,14 @@ impl Executor {
                 if let Some(existing) = values.get_mut(key_str) {
                     *existing = *bv;
                 } else {
-                    values.insert(Arc::<str>::from(key_str), *bv);
+                    values.insert(key.to_arc(), *bv);
                 }
                 Ok(true)
             }
             (PerfValueKind::Unknown, _, _) | (_, HeapValue::Map(_), _) => Ok(false),
             (_, other, _) => bail!(
                 "SetIndex target object changed while writing map: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
         }
     }

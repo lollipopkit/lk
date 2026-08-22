@@ -6,8 +6,8 @@
 //!
 //! Semantics contract: every operation here must match the VM (the
 //! differential gates compare stdout byte-for-byte). Type errors are the
-//! VM's loud failures — `flush_and_abort()` (the contract compares only
-//! `success()` + stdout, not stderr text).
+//! VM's loud failures — a raise that, uncaught, exits 1 (the contract
+//! compares only `success()` + stdout, not stderr text).
 
 // `alloc`, not the std prelude: this module is part of the computation-only
 // subset that builds without an OS.
@@ -34,6 +34,269 @@ pub const DYN_F64: i64 = 3;
 pub const DYN_STR: i64 = 4;
 pub const DYN_LIST: i64 = 5;
 pub const DYN_MAP: i64 = 6;
+/// A **raw handle** parked in a cell — not a value, and never produced by
+/// boxing.
+///
+/// A `try` region carries a register the body assigns back out through a cell,
+/// and a cell holds an `LkDyn`. That works by *boxing*, which for a typed
+/// container is an element-wise conversion: the round trip would hand back a
+/// copy and lose the body's writes. So a typed handle is parked as-is under this
+/// tag instead, and the two cell families (`cell_get` / `cell_get_raw`) check
+/// the tag rather than trusting the caller — reading a raw handle as a value, or
+/// the reverse, is a *loud* failure and not a `Vec<i64>` walked as
+/// `Vec<LkDyn>`.
+pub const DYN_RAW: i64 = 7;
+
+/// A `Set` handle, boxed.
+///
+/// `Set` and `Bytes` had no tag, so they could not be *boxed* at all — and
+/// boxing is how a value enters a mixed container, a struct field, a bridged
+/// return, or anything else that holds `LkDyn`. `[s]` and `{"k": s}` therefore
+/// had no lowering, for a reason that had nothing to do with sets: the dynamic
+/// carrier simply did not cover every value the language has.
+pub const DYN_SET: i64 = 8;
+/// A `Bytes` handle, boxed. See [`DYN_SET`].
+pub const DYN_BYTES: i64 = 9;
+
+/// A **typed map** handle, boxed in place — one tag per carrier.
+///
+/// `DYN_MAP` means a `str -> Dyn` map, so a typed carrier used to box by
+/// *rebuilding* into one. That is a re-representation, and the fresh table's
+/// iteration order is not the original's once the history includes deletions:
+/// `println([m])` printed entries in an order the VM never would. A wrong
+/// answer, not a fallback — and the rule against it was already written down on
+/// [`DYN_RAW`].
+///
+/// Five tags rather than one because there are five carriers; the tag is the
+/// only thing that says which. `lkmap::KIND_*` is the same numbering, minus the
+/// base.
+pub const DYN_TMAP_BASE: i64 = 10;
+/// One past the last typed-map tag.
+pub const DYN_TMAP_END: i64 = 15;
+
+/// A **typed list** handle, boxed in place — one tag per carrier.
+///
+/// The same rule [`DYN_TMAP_BASE`] states, for the other container: boxing must
+/// not re-represent. A typed list used to box by rebuilding element-wise into a
+/// `Vec<LkDyn>`, and that copy is a *different list*, so both directions of
+/// aliasing broke — `let xs = [1]; let c = [xs]; xs.push(2); c[0].len()` answered
+/// 1 where the VM answers 2, and `c[0].push(9)` appended to the copy. Wrong
+/// answers on programs that compiled fully native.
+///
+/// Three tags rather than one because there are three carriers; the tag is the
+/// only thing that says which. The numbering below is the `kind` argument of
+/// [`lkrt_dyn_from_typed_list`], and matches the lowering's carrier order.
+pub const DYN_TLIST_BASE: i64 = 16;
+/// `Vec<i64>` — `DYN_TLIST_BASE + 0`.
+pub const TLIST_I64: i64 = 0;
+/// `Vec<f64>` — `DYN_TLIST_BASE + 1`.
+pub const TLIST_F64: i64 = 1;
+/// `Vec<*const c_char>` — `DYN_TLIST_BASE + 2`.
+pub const TLIST_STR: i64 = 2;
+/// One past the last typed-list tag.
+pub const DYN_TLIST_END: i64 = 19;
+
+/// A **window** handle (`xs.slice(a, b)`), boxed in place. See [`DYN_SET`] for
+/// why a carrier without a tag cannot be boxed at all, and therefore cannot
+/// enter a list, a map, a struct field, or a `try` region's value.
+///
+/// In place, not materialized: a window *is* a range of its source, and boxing
+/// it by copying would make `[w]` hold something that stops tracking the list
+/// it windows — which the VM's `HeapValue::Slice` does not do either.
+pub const DYN_SLICE: i64 = DYN_TMAP_END;
+
+/// A closure as a **runtime value**: the payload is an `LkClosure` handle (see
+/// `lkclosure`). Every other closure in the native build is a compile-time
+/// reference, which is why storing one in a container had no form at all.
+pub const DYN_CLOSURE: i64 = 20;
+
+/// A channel and a task, as **runtime values**: the payload is the `i64` id the
+/// runtime keys them by.
+///
+/// A tag of their own rather than the bare id, because the id is an `Int` and a
+/// channel is not: `typeof` answered `Int`, display wrote `1`, and `chan(1) ==
+/// 1` was *true*. Tracking which `i64`s were really handles caught the direct
+/// cases and lost the fact wherever the value escaped — into a list, into a
+/// typed parameter — which is most of what a program does with a channel. The
+/// tag travels with the value instead.
+pub const DYN_CHAN: i64 = 21;
+pub const DYN_TASK: i64 = 22;
+
+/// A stream, as a **runtime value**: the payload is the dyn-list handle this
+/// side materializes it into.
+///
+/// The materialization is what makes a finite pipeline cheap, and it is sound
+/// only where the difference cannot be seen. A tag is how it stays unseen:
+/// without one `typeof` answered `List`, display wrote the elements, and a
+/// trait dispatched to `impl … for List`. Marking the *value* instead could not
+/// work for `stream.from_list(xs)`, whose result is the caller's own list —
+/// marking it marked `xs`. A box is a value of its own.
+pub const DYN_STREAM: i64 = 23;
+
+/// Boxes a materialized stream from its list handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_stream(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_STREAM,
+        payload: handle as i64,
+    }
+}
+
+/// The list behind a stream — `stream.collect`, and the receiver of every
+/// stream operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_stream_list(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_STREAM {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
+/// Boxes a channel id.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_chan(id: i64) -> LkDyn {
+    LkDyn {
+        tag: DYN_CHAN,
+        payload: id,
+    }
+}
+
+/// Boxes a task id.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_task(id: i64) -> LkDyn {
+    LkDyn {
+        tag: DYN_TASK,
+        payload: id,
+    }
+}
+
+/// The id behind a boxed channel or task.
+///
+/// Its own entry rather than [`lkrt_dyn_as_i64`], which would then accept a
+/// channel wherever an `Int` is required — `xs[c]` would quietly index by the
+/// id where the interpreter refuses.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_handle(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_CHAN | DYN_TASK => v.payload,
+        // The id unboxed, for the paths that still hand one over directly.
+        DYN_I64 => v.payload,
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
+/// Whether a tag denotes a map of any representation.
+pub(crate) fn is_map_tag(tag: i64) -> bool {
+    tag == DYN_MAP || (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag)
+}
+
+/// Whether a tag denotes a list of any representation.
+pub(crate) fn is_list_tag(tag: i64) -> bool {
+    tag == DYN_LIST || (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag)
+}
+
+/// `IsList` / `IsMap` on a boxed value.
+///
+/// One tag comparison is not the question: a list has five representations
+/// (the boxed one and four typed carriers) and a map six, and the interpreter
+/// also answers **true** for a `String` — `let [a, b] = "ab"` is a list
+/// destructuring there. Native lowering compared the tag against `DYN_LIST`
+/// alone, so a list that happened to be in a typed carrier answered `false`,
+/// compiled clean, and skipped the arm that should have run.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_is_list(v: LkDyn) -> i64 {
+    i64::from(is_list_tag(v.tag) || v.tag == DYN_STR)
+}
+
+/// The map half of [`lkrt_dyn_is_list`]. A `String` is not a map.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_is_map(v: LkDyn) -> i64 {
+    // A struct instance rides the `Map<str, Dyn>` carrier and is *not* a map:
+    // the interpreter's `runtime_value_is_map` is `HeapValue::Map` alone, and an
+    // `Object` is a different variant. It shows in `let {p: c} = P { p: 3 };` —
+    // a map pattern, which the interpreter refuses and this side matched.
+    i64::from(is_map_tag(v.tag) && lkrt_dyn_obj_type_id(v) == 0)
+}
+
+/// Boxes a typed list handle under its carrier's tag. `kind` is `TLIST_*`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_typed_list(handle: *mut c_void, kind: i64) -> LkDyn {
+    if !(0..DYN_TLIST_END - DYN_TLIST_BASE).contains(&kind) {
+        crate::panic::raise_str("runtime type error");
+    }
+    LkDyn {
+        tag: DYN_TLIST_BASE + kind,
+        payload: handle as i64,
+    }
+}
+
+/// A boxed list's elements, whatever carrier holds them.
+///
+/// A `DYN_LIST` borrows its `Vec<LkDyn>`; a typed carrier has to box each
+/// element, which is a copy — sound because every caller of this reads. The
+/// callers that *write* (`push`) go to [`lkrt_dyn_list_push`] instead, which
+/// reaches the carrier itself.
+pub(crate) fn dyn_list_values<'a>(v: LkDyn) -> alloc::borrow::Cow<'a, [LkDyn]> {
+    use alloc::borrow::Cow;
+    if v.tag == DYN_LIST {
+        return Cow::Borrowed(dyn_list(v));
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    Cow::Owned(crate::lklist::typed_list_boxed(
+        v.tag - DYN_TLIST_BASE,
+        v.payload as *mut c_void,
+    ))
+}
+
+/// Boxes a typed map handle under its carrier's tag. `kind` is `lkmap::KIND_*`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_typed_map(handle: *mut c_void, kind: i64) -> LkDyn {
+    if !(0..DYN_TMAP_END - DYN_TMAP_BASE).contains(&kind) {
+        crate::panic::raise_str("runtime type error");
+    }
+    LkDyn {
+        tag: DYN_TMAP_BASE + kind,
+        payload: handle as i64,
+    }
+}
+
+/// Boxes a `Set` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_set(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_SET,
+        payload: handle as i64,
+    }
+}
+
+/// Boxes a `Bytes` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_bytes(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_BYTES,
+        payload: handle as i64,
+    }
+}
+
+/// Boxes a window handle. See [`DYN_SLICE`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_slice(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_SLICE,
+        payload: handle as i64,
+    }
+}
+
+/// The window back out of the box, or a loud failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_slice(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_SLICE {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
 
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for
 /// Bool, the integer itself for I64, `f64::to_bits` for F64, a `*const
@@ -52,7 +315,7 @@ impl LkDyn {
         payload: 0,
     };
 
-    fn f64_value(self) -> f64 {
+    pub(crate) fn f64_value(self) -> f64 {
         f64::from_bits(self.payload as u64)
     }
 
@@ -104,7 +367,7 @@ unsafe fn dyn_str<'a>(v: LkDyn) -> &'a str {
     unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
 }
 
-fn dyn_list<'a>(v: LkDyn) -> &'a [LkDyn] {
+pub(crate) fn dyn_list<'a>(v: LkDyn) -> &'a [LkDyn] {
     let handle = v.payload as *mut c_void;
     if handle.is_null() {
         return &[];
@@ -205,6 +468,115 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
     i64::from(!(v.tag == DYN_NIL || (v.tag == DYN_BOOL && v.payload == 0)))
 }
 
+/// `-x` on a boxed value: an Int wraps at `i64::MIN` and a Float gets a real
+/// `fneg`, exactly as `Executor::dispatch_neg` does. Anything else is the
+/// VM's loud type error.
+/// The type name a *caught* type error names its operand by.
+///
+/// The VM used to format `RuntimeVal::kind()`, which reports the
+/// **representation**: a string of <= 7 bytes was `String` and a longer one
+/// `Object`, as was every list, map and set. Its own doc said a caller with the
+/// heap should use `HeapValue::type_name` — so the VM now does, and this is the
+/// mirror of *that*: the language's type name, one per kind.
+pub(crate) fn kind_name_of(v: LkDyn) -> String {
+    kind_name(v)
+}
+
+pub(crate) fn kind_name(v: LkDyn) -> String {
+    // A marked struct instance answers the name it was *declared* with. The
+    // mirrored function got this right and this one did not, so `typeof(p)` on
+    // a struct read `Map` compiled and `P` interpreted, and a type error
+    // naming that operand said `Map` too. Third layer of the same rule: the
+    // language's name for a struct instance is the struct's name.
+    if let Some(name) = struct_type_name(v) {
+        return name;
+    }
+    match v.tag {
+        DYN_NIL => "Nil",
+        DYN_BOOL => "Bool",
+        DYN_I64 => "Int",
+        DYN_F64 => "Float",
+        DYN_STR => "String",
+        DYN_CHAN => "Channel",
+        DYN_TASK => "Task",
+        DYN_STREAM => "Stream",
+        tag if is_list_tag(tag) => "List",
+        DYN_SET => "Set",
+        DYN_BYTES => "Bytes",
+        DYN_SLICE => "Slice",
+        DYN_CLOSURE => "Function",
+        tag if is_map_tag(tag) => "Map",
+        _ => "Object",
+    }
+    .to_string()
+}
+
+/// The declared name of a marked struct instance, or `None` for anything else
+/// (including a struct whose declaration never reached this runtime).
+/// Whether a value is a marked struct instance rather than an ordinary map.
+fn is_struct_instance(v: LkDyn) -> bool {
+    lkrt_dyn_obj_type_id(v) != 0
+}
+
+/// Refuses a **struct instance** where a map *collection* operation is asked.
+///
+/// A struct rides the `Map<str, Dyn>` carrier, so every one of these would
+/// otherwise answer for the fields: `s.len()` was the field count, `s.keys()`
+/// the field names, `"p" in s` true. The interpreter has a different heap value
+/// and refuses each of them, naming the struct — so these are its words.
+///
+/// Reading a *field* is not among them: `p.x` is what a struct is for, and the
+/// carrier is how it is read.
+fn reject_struct_receiver(v: LkDyn, method: &str) {
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("{name} has no method '{method}'"));
+    }
+}
+
+fn struct_type_name(v: LkDyn) -> Option<String> {
+    let type_id = lkrt_dyn_obj_type_id(v);
+    if type_id == 0 {
+        return None;
+    }
+    with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone()))
+}
+
+/// `typeof(x)` on a boxed value — the VM's `RuntimeVal::type_name_in`.
+///
+/// The lowering answers from the proven MIR type where it can; a `Dyn` or a
+/// `MapStrDyn` cannot be decided statically (either may be a struct instance at
+/// run time), so it asks here.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_type_name(v: LkDyn) -> *mut c_char {
+    arena_c_string(CString::new(kind_name(v)).unwrap_or_default())
+}
+
+/// `list.sum()`'s refusal, in the VM's wording — the message names the element
+/// that is not a number, which is the only thing that makes it actionable.
+pub(crate) fn raise_sum_wants_numbers(value: LkDyn) -> ! {
+    crate::panic::raise_str(&format!(
+        "list.sum() adds numbers, and this list holds a {}",
+        kind_name(value)
+    ))
+}
+
+/// A binary type error in the VM's wording. `verb` is the operator as the VM
+/// spells it — the source operator where one exists (`operator_symbol`), which
+/// is now every case the AOT can reach. `Sub` is the one that still names an
+/// opcode, and it does so in the VM too.
+fn binary_type_error(verb: &str, tail: &str, a: LkDyn, b: LkDyn) -> ! {
+    crate::panic::raise_str(&format!("{verb} {tail}, got {} and {}", kind_name(a), kind_name(b)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_neg(v: LkDyn) -> LkDyn {
+    match v.tag {
+        DYN_I64 => from_i64(v.payload.wrapping_neg()),
+        DYN_F64 => from_f64(-v.f64_value()),
+        _ => crate::panic::raise_str(&format!("unary '-' expects Int or Float, got {}", kind_name(v))),
+    }
+}
+
 /// `!x`: a Bool negates, Nil is `true`, anything else is the VM's loud
 /// type error.
 #[unsafe(no_mangle)]
@@ -212,7 +584,7 @@ pub extern "C" fn lkrt_dyn_not(v: LkDyn) -> i64 {
     match v.tag {
         DYN_NIL => 1,
         DYN_BOOL => i64::from(v.payload == 0),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => crate::panic::raise_str(&format!("Not expected Bool or Nil, got {}", kind_name(v))),
     }
 }
 
@@ -236,8 +608,11 @@ pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
         DYN_F64 => v.f64_value() as i64,
         DYN_BOOL => v.payload,
         DYN_STR => crate::panic::raise_str("cannot cast String to an integer"),
-        DYN_LIST => crate::panic::raise_str("cannot cast List to an integer"),
+        tag if is_list_tag(tag) => crate::panic::raise_str("cannot cast List to an integer"),
         DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
+        DYN_SET => crate::panic::raise_str("cannot cast Set to an integer"),
+        DYN_BYTES => crate::panic::raise_str("cannot cast Bytes to an integer"),
+        DYN_SLICE => crate::panic::raise_str("cannot cast Slice to an integer"),
         _ => crate::panic::raise_str("cannot cast Nil to an integer"),
     }
 }
@@ -283,43 +658,307 @@ pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
 // identity lives in a side registry keyed by the arena handle. Handles are
 // never freed before process exit, so a mark can't dangle or alias.
 
-// Thread-local under std, a spin-locked global on bare metal (no TLS there).
-#[cfg(feature = "std")]
-std::thread_local! {
-    static OBJ_TYPE_MARKS: core::cell::RefCell<crate::lkmap::FxMap<usize, i64>> =
-        core::cell::RefCell::new(crate::lkmap::FxMap::default());
-}
-
-#[cfg(not(feature = "std"))]
-static OBJ_TYPE_MARKS_CELL: spin::Mutex<Option<crate::lkmap::FxMap<usize, i64>>> = spin::Mutex::new(None);
-
-/// Runs `f` with the object type-mark table, however it is stored.
-#[cfg(feature = "std")]
-fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
-    OBJ_TYPE_MARKS.with(|marks| f(&mut marks.borrow_mut()))
-}
-
-#[cfg(not(feature = "std"))]
-fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
-    let mut slot = OBJ_TYPE_MARKS_CELL.lock();
-    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
+/// The declared-struct id a live `str -> Dyn` map handle carries, or `0`.
+///
+/// # Safety
+/// `handle` must be a live `StrDynMap` handle, or null.
+unsafe fn handle_type_id(handle: *mut c_void) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    // SAFETY: as documented.
+    unsafe { (*(handle as *mut crate::lkmap::StrDynMap)).type_id }
 }
 
 /// Marks a freshly built struct-instance map with its lowering-assigned
-/// type id (`NewObject` of a type that has trait impls).
+/// type id (`NewObject` of a declared struct).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
-    with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
+    if !handle.is_null() {
+        // SAFETY: a marked handle is a live `Map<str, Dyn>`.
+        unsafe {
+            (*(handle as *mut crate::lkmap::StrDynMap)).type_id = type_id;
+        }
+    }
 }
 
-/// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
-/// instance, or a type with no trait impls).
+/// Marks a map as an instance of the struct *named* `name`.
+///
+/// The hybrid bridge's need: a struct coming back from the embedded VM arrives
+/// as a name and a field map, and the type ids are assigned by the lowering, so
+/// only the runtime registry can turn one into the other. Returns 0 when the
+/// name is not a declared struct here — the caller then has a plain map, which
+/// is what it would have had anyway.
+///
+/// # Safety
+/// `handle` must be a live `Map<str, Dyn>` handle or null; `name` a
+/// NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_obj_mark_by_name(handle: *mut c_void, name: *const c_char) -> i64 {
+    if handle.is_null() || name.is_null() {
+        return 0;
+    }
+    // SAFETY: as documented.
+    let name = unsafe { core::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    let Some(type_id) = with_struct_types(|types| types.iter().find(|(_, desc)| desc.name == name).map(|(id, _)| *id))
+    else {
+        return 0;
+    };
+    lkrt_lkmap_obj_mark(handle, type_id);
+    type_id
+}
+
+/// [`lkrt_lkmap_obj_mark`], and then measures what is already in the map
+/// against the declaration.
+///
+/// For the construction that *builds* the map first — `P { ..base }`, which
+/// rebuilds a map and marks the copy — where the sets happened before this
+/// handle was a struct at all, so there is no earlier moment to check them.
+///
+/// The ordinary `P { x: 1 }` uses the plain mark: the lowering emits a check per
+/// field before the mark, and elides the ones a value's own type already
+/// settles. Doing both meant every construction also copied every key into an
+/// owned `String` and re-checked every field — 7% of a loop building one struct,
+/// plus its share of the allocation traffic, for an answer already known.
+///
+/// # Safety
+/// `handle` must be a live `Map<str, Dyn>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_obj_mark_checked(handle: *mut c_void, type_id: i64) {
+    lkrt_lkmap_obj_mark(handle, type_id);
+    if handle.is_null() || type_id == 0 {
+        return;
+    }
+    // SAFETY: a marked handle is a live `Map<str, Dyn>`.
+    let entries: Vec<(String, LkDyn)> = unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
+        .iter()
+        .map(|(key, &value)| (String::from(key.as_str()), value))
+        .collect();
+    for (key, value) in entries {
+        check_declared_value(type_id, &key, value);
+    }
+}
+
+/// One struct type as `display` needs it: its name, and its field names in
+/// **declaration order**.
+///
+/// The lowering knows both, but it cannot spell the rendering out at the display
+/// site: a *field* holding another struct is a bare `str→Dyn` map by then, and
+/// whether a field holds one is not decidable there. So the knowledge has to be
+/// available at runtime, where the mark is — and then nesting recurses through
+/// the same display for free. (An earlier attempt inlined it and printed a
+/// nested struct as a hash-ordered map; see `docs/aot/aot-gaps-and-lkrt.md`.)
+#[derive(Default)]
+struct StructTypeDesc {
+    name: String,
+    /// `(field name, declared-type code)` — see [`DECLARED_ANY`] and friends.
+    fields: Vec<(String, i64)>,
+}
+
+/// The declared-type codes `obj_ty.field` carries, mirroring the scalar set
+/// `val::value_satisfies_declared` checks. Anything else is `DECLARED_ANY`: a
+/// container's element type is not something one value carries, so it is not a
+/// thing a store can be measured against.
+pub const DECLARED_ANY: i64 = 0;
+pub const DECLARED_INT: i64 = 1;
+pub const DECLARED_FLOAT: i64 = 2;
+pub const DECLARED_BOOL: i64 = 3;
+pub const DECLARED_STR: i64 = 4;
+/// Added to a code to say the field is nullable, so `nil` satisfies it.
+pub const DECLARED_NULLABLE: i64 = 16;
+
+// One table for the process, not one per thread. The generated entry prologue
+// registers every declared struct once, on the main thread; a task runs on
+// another, and with a thread-local table it found no description at all — so a
+// struct handed to a task printed as a map even once its id travelled with it.
+//
+// Every caller copies what it needs out of the closure and raises afterwards
+// (a raise `longjmp`s past drops, so a guard held across one never unlocks).
+#[cfg(feature = "std")]
+static STRUCT_TYPES: std::sync::Mutex<Option<crate::lkmap::FxMap<i64, StructTypeDesc>>> = std::sync::Mutex::new(None);
+
+#[cfg(not(feature = "std"))]
+static STRUCT_TYPES_CELL: spin::Mutex<Option<crate::lkmap::FxMap<i64, StructTypeDesc>>> = spin::Mutex::new(None);
+
+#[cfg(feature = "std")]
+fn with_struct_types<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<i64, StructTypeDesc>) -> R) -> R {
+    let mut slot = match STRUCT_TYPES.lock() {
+        Ok(slot) => slot,
+        // A raise inside a *different* thread's registration would poison this;
+        // the description is still readable, and refusing to print is worse
+        // than printing what is there.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_struct_types<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<i64, StructTypeDesc>) -> R) -> R {
+    let mut slot = STRUCT_TYPES_CELL.lock();
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
+}
+
+/// Opens a type's description: `type_id`'s name is `name`, no fields yet.
+///
+/// Called from the generated entry prologue, once per declared struct, followed
+/// by one [`lkrt_struct_type_field`] per field in declaration order. A sequence
+/// of calls rather than a static table because that needs nothing new from
+/// codegen — the pieces are the `StrPtr`/`I64` shapes the ABI already has.
+///
+/// # Safety
+/// `name` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_struct_type_begin(type_id: i64, name: *const c_char) {
+    // SAFETY: the caller passes a NUL-terminated string constant.
+    let name = if name.is_null() {
+        String::new()
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    with_struct_types(|types| {
+        types.insert(
+            type_id,
+            StructTypeDesc {
+                name,
+                fields: Vec::new(),
+            },
+        )
+    });
+}
+
+/// Appends one field name to `type_id`'s description. See
+/// [`lkrt_struct_type_begin`].
+///
+/// # Safety
+/// `field` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_struct_type_field(type_id: i64, field: *const c_char, declared: i64) {
+    // SAFETY: as above.
+    let field = if field.is_null() {
+        String::new()
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(field) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    with_struct_types(|types| {
+        if let Some(desc) = types.get_mut(&type_id) {
+            desc.fields.push((field, declared));
+        }
+    });
+}
+
+/// Renders a marked struct instance the way the VM does — `Name{f1:v1,f2:v2}`,
+/// fields in declaration order, each value quoted as a nested one.
+///
+/// `false` (nothing written) when the value is not a marked struct or its type
+/// was never described, so the caller falls through to the map rendering — which
+/// is also what the VM does for a struct whose declaration is out of reach.
+fn display_marked_struct(out: &mut String, v: LkDyn, raise_on_unknown: bool, depth: u32) -> bool {
+    if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
+        return false;
+    }
+    // SAFETY: a non-null `DYN_MAP` payload is a live `StrDynMap`.
+    let type_id = unsafe { handle_type_id(v.payload as *mut c_void) };
+    if type_id == 0 {
+        return false;
+    }
+    let Some((name, fields)) =
+        with_struct_types(|types| types.get(&type_id).map(|desc| (desc.name.clone(), desc.fields.clone())))
+    else {
+        return false;
+    };
+    let entries = dyn_map(v);
+    out.push_str(&name);
+    out.push('{');
+    for (i, (field, _)) in fields.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(field);
+        out.push(':');
+        match entries.iter().find(|(k, _)| *k == field.as_str()) {
+            Some((_, value)) => display_into_at(out, *value, true, raise_on_unknown, depth),
+            None => out.push_str("nil"),
+        }
+    }
+    out.push('}');
+    true
+}
+
+/// Reads a boxed value's struct type mark; `0` = not a struct instance.
+///
+/// This used to say "or a type with no trait impls", which stopped being true
+/// when `trait_env_prescan` started giving *every* declared struct an id (a
+/// struct with no methods still has to print). The distinction matters:
+/// equality reads the mark to tell two structurally-identical structs apart,
+/// and it can only do that if being unmarked means "not a struct".
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     if v.tag != DYN_MAP {
         return 0;
     }
-    with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0))
+    // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+    unsafe { handle_type_id(v.payload as *mut c_void) }
+}
+
+/// Where the built-in dispatch codes start, above any arena type mark.
+///
+/// A struct instance carries a mark; a value of a built-in type does not, and
+/// `impl S for Int` is a real impl whose arm has to be reachable. So dispatch
+/// asks for *this* id rather than the mark: a marked receiver answers its mark,
+/// and everything else answers a code for its language type.
+///
+/// The lowering mirrors these nine numbers (`aot/lower/src/trait_env.rs`),
+/// because it is what assigns the arm ids. `examples/syntax/trait_builtin.lk`
+/// is the conformance check: a disagreement is a wrong answer there, on every
+/// kind, immediately.
+pub const DISPATCH_BUILTIN_BASE: i64 = 1 << 40;
+
+/// The language type of a value, as a small code — the built-in half of
+/// [`lkrt_dyn_dispatch_type_id`]. Collapses the four list carriers to `List`
+/// and the six map carriers to `Map`, because that is what an impl target can
+/// name (`impl List<Int>` is refused by the language).
+fn dispatch_builtin_code(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_NIL => 1,
+        DYN_BOOL => 2,
+        DYN_I64 => 3,
+        DYN_F64 => 4,
+        DYN_STR => 5,
+        DYN_SET => 7,
+        DYN_BYTES => 8,
+        // A window is its own type for dispatch — the interpreter's
+        // `heap_dispatch_type` answers `Slice<Any>`, not `List<Any>` — so
+        // `impl Describe for List` must not catch one.
+        DYN_SLICE => 10,
+        DYN_CHAN => 11,
+        DYN_TASK => 12,
+        DYN_STREAM => 13,
+        tag if is_list_tag(tag) => 6,
+        tag if is_map_tag(tag) => 9,
+        _ => 0,
+    }
+}
+
+/// The id trait dispatch matches an arm against.
+///
+/// A marked struct instance answers its mark; anything else answers
+/// [`DISPATCH_BUILTIN_BASE`] plus its type code. Without the second half a
+/// receiver of a built-in type matched no arm and fell through to
+/// [`lkrt_dyn_method_missing`], so `fn show(v: S) -> String { return v.s(); }`
+/// raised "runtime type error" for every `impl S for Int` in the program.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_dispatch_type_id(v: LkDyn) -> i64 {
+    let mark = lkrt_dyn_obj_type_id(v);
+    if mark != 0 {
+        return mark;
+    }
+    DISPATCH_BUILTIN_BASE + dispatch_builtin_code(v)
 }
 
 /// Dispatch fall-through: no registered impl matched the receiver's mark —
@@ -335,28 +974,188 @@ pub extern "C" fn lkrt_dyn_method_missing() {
 /// Str payloads must be live NUL-terminated strings (arena or interned).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
-    if a.tag == DYN_STR && b.tag == DYN_STR {
-        let joined = format!("{}{}", unsafe { dyn_str(a) }, unsafe { dyn_str(b) });
+    // `Executor::dynamic_add`, in its order — and the order is the rule, not a
+    // detail: a list operand wins over a string one, so `"p=" + [1, 2]` is the
+    // list `["p=", 1, 2]` and not the text `p=[1,2]`.
+    //
+    // Only the first and last cases were here before, under the belief that the
+    // VM "only accepts Str + Str"; everything else raised. `"v=" + x` with a
+    // boxed Int aborted the program where the VM prints `v=1`.
+
+    // 1. Numbers.
+    if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
+        return match (x, y) {
+            (Numeric::Int(x), Numeric::Int(y)) => from_i64(x.wrapping_add(y)),
+            _ => from_f64(x.as_f64() + y.as_f64()),
+        };
+    }
+    // 2. Two maps merge, the right side winning.
+    //
+    // The **fill sequence** is the VM's, replayed: the left's entries in the
+    // left's own order minus the keys the right also has, then the right's
+    // entries in the right's own order (`merge_typed_maps` +
+    // `typed_map_without_merge_keys`). A merge builds a new table, and a new
+    // table's iteration order is decided by the order it was filled — so
+    // "the same members" is not the same answer. This used to merge two
+    // *unordered* views into a third, which is three different orders.
+    // A struct instance rides the map carrier and `+` does not accept one: the
+    // VM's `dynamic_add` sees a different heap value and falls through to
+    // "Add expected numbers or strings, got P and Map". Falling through here
+    // reaches that same message, which `kind_name` already spells with the
+    // struct's name.
+    if is_map_tag(a.tag) && is_map_tag(b.tag) && !is_struct_instance(a) && !is_struct_instance(b) {
+        let left = crate::lkmap::map_entries_ordered(a);
+        let right = crate::lkmap::map_entries_ordered(b);
+        let replaced: crate::lkmap::FxSet<_> = right.iter().map(|(key, _)| key.clone()).collect();
+        let mut merged: Vec<_> = left.into_iter().filter(|(key, _)| !replaced.contains(key)).collect();
+        merged.extend(right);
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_ordered(merged) as i64,
+        };
+    }
+    // 3. A list on *either* side concatenates; the other operand is one element.
+    if is_list_tag(a.tag) || is_list_tag(b.tag) {
+        let mut out: Vec<LkDyn> = Vec::new();
+        for side in [a, b] {
+            if is_list_tag(side.tag) {
+                out.extend_from_slice(&dyn_list_values(side));
+            } else {
+                out.push(side);
+            }
+        }
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(out) as i64,
+        };
+    }
+    // 4. A string on either side: display-concatenate. Both operands are
+    //    scalars by now, which is what makes the bare display exact.
+    if a.tag == DYN_STR || b.tag == DYN_STR {
+        let mut joined = String::new();
+        display_into(&mut joined, a, false);
+        display_into(&mut joined, b, false);
         let ptr = arena_c_string(CString::new(joined).unwrap_or_default());
         return LkDyn {
             tag: DYN_STR,
             payload: ptr as i64,
         };
     }
-    match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_add(y)),
-        (Some(x), Some(y)) => from_f64(x.as_f64() + y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+    // The one arm of this family that still said "runtime type error", while
+    // `sub`, `mul`, `div` and `mod` next door all name the operands through
+    // `binary_type_error`. `nil + 1` therefore read
+    // `Add expected numbers or strings, got Nil and Int` on the interpreter and
+    // `runtime error` compiled — the same program, two sentences, and the
+    // compiled one says nothing a reader can act on. It went unnoticed because
+    // nothing reached it: boxing a bounds-checked element refused to lower at
+    // all until `to_dyn` learned the nullable carriers.
+    binary_type_error("Add", "expected numbers or strings", a, b)
+}
+
+/// A map of any representation as `(key, value)` pairs under the general key,
+/// for the merge above. A copy, and sound for the same reason
+/// `lkmap::typed_map_keyed` is: the result is a *new* map either way.
+pub(crate) fn map_entries(v: LkDyn) -> crate::lkmap::FxMap<crate::lkmap::MapKey, LkDyn> {
+    if v.tag == DYN_MAP {
+        crate::lkmap::boxed_map_keyed(v.payload as *mut c_void)
+    } else {
+        crate::lkmap::typed_map_keyed(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
-    match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_sub(y)),
-        (Some(x), Some(y)) => from_f64(x.as_f64() - y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+    if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
+        return match (x, y) {
+            (Numeric::Int(x), Numeric::Int(y)) => from_i64(x.wrapping_sub(y)),
+            (x, y) => from_f64(x.as_f64() - y.as_f64()),
+        };
     }
+    // `-` removes, which this had never implemented — while its own error text
+    // said "expected numbers or list/map lhs", borrowing the VM's rule to
+    // describe an ability it did not have. The VM's `dynamic_sub` drops every
+    // element of `b` from a list and every key of `b` from a map.
+    //
+    // Order, as everywhere else: the answer keeps the left's own order, since
+    // removal takes entries away and never adds one.
+    if is_list_tag(a.tag) && is_list_tag(b.tag) {
+        let drop = dyn_list_values(b);
+        let kept: Vec<LkDyn> = dyn_list_values(a)
+            .iter()
+            .filter(|value| !drop.iter().any(|other| dyn_eq_inner(**value, *other)))
+            .copied()
+            .collect();
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(kept) as i64,
+        };
+    }
+    if is_map_tag(a.tag) && is_map_tag(b.tag) && !is_struct_instance(a) && !is_struct_instance(b) {
+        let drop: crate::lkmap::FxSet<_> = crate::lkmap::map_entries_ordered(b)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
+            .into_iter()
+            .filter(|(key, _)| !drop.contains(key))
+            .collect();
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+        };
+    }
+    // The single-value forms, which the VM has as their own arms beside the two
+    // above: `xs - v` drops the *first* element equal to `v` and `m - k` drops
+    // that one key. Nothing could reach them here, because the checker refused
+    // the shape before either executor saw it — so all three places had to be
+    // opened together or the fix would have been a divergence.
+    if is_list_tag(a.tag) {
+        let mut removed = false;
+        let kept: Vec<LkDyn> = dyn_list_values(a)
+            .iter()
+            .filter(|value| {
+                if !removed && dyn_eq_inner(**value, b) {
+                    removed = true;
+                    return false;
+                }
+                true
+            })
+            .copied()
+            .collect();
+        return LkDyn {
+            tag: DYN_LIST,
+            payload: arena_handle(kept) as i64,
+        };
+    }
+    // As in `lkrt_dyn_add`: `-` takes a map, not a struct instance.
+    if is_map_tag(a.tag) && !is_struct_instance(a) {
+        // A value that cannot be a key cannot be in the map, so removing it
+        // removes nothing — the same answer `m.delete(k)` gives, because they
+        // are two spellings of one operation. Removal looks a key up and drops
+        // it; it does not build one, which is the line `m[k]` and `m.set(k, v)`
+        // stay on the other side of.
+        // A value that cannot be a key removes nothing — but the answer still
+        // has to come back under the tag the caller unboxes: returning `a`
+        // handed a *typed* map back where `dyn.as_map` wants the boxed one, and
+        // `{"a": 1} - []` raised where the interpreter answered `{"a": 1}`. The
+        // present-key path below rebuilds for the same reason.
+        let Some(drop) = crate::vm_mirror::key_from_dyn_opt(b) else {
+            let kept = crate::lkmap::map_entries_ordered(a);
+            return LkDyn {
+                tag: DYN_MAP,
+                payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+            };
+        };
+        let kept: Vec<_> = crate::lkmap::map_entries_ordered(a)
+            .into_iter()
+            .filter(|(key, _)| *key != drop)
+            .collect();
+        return LkDyn {
+            tag: DYN_MAP,
+            payload: crate::lkmap::str_dyn_from_ordered(kept) as i64,
+        };
+    }
+    binary_type_error("Sub", "expected numbers or list/map lhs", a, b)
 }
 
 #[unsafe(no_mangle)]
@@ -364,47 +1163,72 @@ pub extern "C" fn lkrt_dyn_mul(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_mul(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() * y.as_f64()),
-        _ => crate::panic::raise_str("runtime type error"),
+        _ => binary_type_error("*", "expects Int or Float", a, b),
     }
 }
 
-/// `/` always produces Float in LK (docs/semantics.md 数值), zero divisor is
+/// `/` always produces Float in LK (docs/semantics.md, the numeric adjudication), zero divisor is
 /// a loud failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
-        (Some(x), Some(y)) => {
-            let rhs = y.as_f64();
-            if rhs == 0.0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_f64(x.as_f64() / rhs)
-        }
-        _ => crate::panic::raise_str("runtime type error"),
+        // `/` yields a `Float` for every numeric pair, and `f64` division by
+        // zero is an infinity or a NaN rather than a raise — the same as the
+        // VM, which this file exists to mirror.
+        (Some(x), Some(y)) => from_f64(x.as_f64() / y.as_f64()),
+        _ => binary_type_error("/", "expects Int or Float", a, b),
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_mod(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
-        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => {
-            if y == 0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_i64(x.wrapping_rem(y))
-        }
-        (Some(x), Some(y)) => {
-            let rhs = y.as_f64();
-            if rhs == 0.0 {
-                crate::panic::raise_str("runtime type error");
-            }
-            from_f64(x.as_f64() % rhs)
-        }
-        _ => crate::panic::raise_str("runtime type error"),
+        (Some(Numeric::Int(_)), Some(Numeric::Int(0))) => crate::panic::raise_str("ModInt divisor is zero"),
+        (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_rem(y)),
+        (Some(x), Some(y)) => from_f64(x.as_f64() % y.as_f64()),
+        _ => binary_type_error("%", "expects Int or Float", a, b),
     }
 }
 
 // ── Equality / ordering ────────────────────────────────────────────────
+
+/// [`lkrt_dyn_as_i64`] / [`lkrt_dyn_as_str`] for a value used as a **map key**.
+///
+/// A key of a type no map can hold is refused by name — the interpreter's
+/// wording, which `vm_mirror::key_from_dyn` also raises for a boxed map. A
+/// typed carrier does not go through that function (it stores the key
+/// unboxed), so without these two it answered the generic "runtime type error"
+/// for `m[|x| x] = 1`.
+fn reject_non_key(v: LkDyn) {
+    match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_STR => {}
+        DYN_F64 => crate::panic::raise_str("Float cannot be a map key or set member"),
+        _ => crate::panic::raise_str(&alloc::format!(
+            "{} cannot be a map key or set member: only nil, Bool, Int and String can",
+            kind_name_of(v)
+        )),
+    }
+}
+
+/// An `Int`-carrier map's key.
+///
+/// # Safety
+/// As [`lkrt_dyn_as_i64`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_as_key_i64(v: LkDyn) -> i64 {
+    reject_non_key(v);
+    lkrt_dyn_as_i64(v)
+}
+
+/// A `String`-carrier map's key.
+///
+/// # Safety
+/// As [`lkrt_dyn_as_str`]: the returned pointer borrows `v`'s payload.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_as_key_str(v: LkDyn) -> *const c_char {
+    reject_non_key(v);
+    lkrt_dyn_as_str(v)
+}
 
 /// VM equality: Int/Float compare numerically across tags (`1 == 1.0`),
 /// strings by content, lists elementwise; distinct non-numeric tags are
@@ -416,12 +1240,102 @@ pub unsafe extern "C" fn lkrt_dyn_eq(a: LkDyn, b: LkDyn) -> i64 {
     i64::from(dyn_eq_inner(a, b))
 }
 
-fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
+pub(crate) fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
+    dyn_eq_at(a, b, 0)
+}
+
+/// [`dyn_eq_inner`], counting how deep it has gone.
+///
+/// The interpreter's equality refuses past [`MAX_VALUE_DEPTH`] with "comparison
+/// nested deeper than … levels; the values are cyclic or too deeply nested to
+/// compare". This had no bound at all, so a value 520 levels deep compared
+/// `true` compiled and stopped the program interpreted — the two back ends
+/// disagreed about whether the program has an answer.
+///
+/// Relying on the stack instead is not the same thing twice: where it lands
+/// depends on the build and on how much stack the caller had left, so the
+/// threshold is not a property of the language. The message it produced said so
+/// out loud — "a native binary is bounded by the real stack, not by
+/// LK_MAX_CALL_DEPTH" — which is true of LK recursion and was not what had
+/// happened here.
+fn dyn_eq_at(a: LkDyn, b: LkDyn, depth: u32) -> bool {
+    // One value is equal to itself without being walked, which is what the
+    // interpreter does — `d == d` and `[d, d].unique()` answer for a value 2000
+    // levels deep there. Without this the depth bound below turned those into
+    // refusals, and every comparison of a container against itself paid for a
+    // full traversal it could not fail.
+    if a.tag == b.tag && a.payload == b.payload {
+        // Except a Float: `NaN != NaN`, and two NaNs are the same bits.
+        if a.tag != DYN_F64 || !a.f64_value().is_nan() {
+            return true;
+        }
+    }
+    if depth >= MAX_VALUE_DEPTH {
+        crate::panic::raise_str(&alloc::format!(
+            "comparison nested deeper than {MAX_VALUE_DEPTH} levels; the values are cyclic or too deeply nested to compare"
+        ));
+    }
+    let depth = depth + 1;
     if let (Some(x), Some(y)) = (a.as_numeric(), b.as_numeric()) {
         return match (x, y) {
             (Numeric::Int(x), Numeric::Int(y)) => x == y,
             _ => x.as_f64() == y.as_f64(),
         };
+    }
+    // Two maps compare whatever their representations are — a typed carrier
+    // against a boxed one is `{"a": 1} == {"a": 1, "b": "x"}` written twice,
+    // and the tag difference is a storage detail. Both sides take the general
+    // key view, which is a *copy*: sound only because `==` over maps is
+    // order-free (see `lkmap::typed_map_keyed`).
+    if is_map_tag(a.tag) && is_map_tag(b.tag) {
+        // A struct is a marked map and its type is part of its identity; a
+        // typed carrier is never a struct, so its mark is 0.
+        if lkrt_dyn_obj_type_id(a) != lkrt_dyn_obj_type_id(b) {
+            return false;
+        }
+        let keyed = |v: LkDyn| {
+            if v.tag == DYN_MAP {
+                crate::lkmap::boxed_map_keyed(v.payload as *mut c_void)
+            } else {
+                crate::lkmap::typed_map_keyed(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+            }
+        };
+        let (xs, ys) = (keyed(a), keyed(b));
+        return xs.len() == ys.len()
+            && xs
+                .iter()
+                .all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_at(v, w, depth)));
+    }
+    // A window compares by *content*, against another window or against a
+    // list: the VM says `xs.slice(0, 2) == [3, 1]`, because a window is a range
+    // of a list and not a distinct kind of value. Element-wise rather than
+    // handle-wise, and across the tag difference, for the same reason the two
+    // map representations compare across theirs.
+    if (a.tag == DYN_SLICE || b.tag == DYN_SLICE)
+        && (b.tag == DYN_SLICE || is_list_tag(b.tag))
+        && (a.tag == DYN_SLICE || is_list_tag(a.tag))
+    {
+        let boxed = |v: LkDyn| -> alloc::vec::Vec<LkDyn> {
+            if v.tag == DYN_SLICE {
+                // SAFETY: a `DYN_SLICE` payload is a live window handle.
+                unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) }
+                    .iter()
+                    .map(|value| lkrt_dyn_from_i64(*value))
+                    .collect()
+            } else {
+                dyn_list_values(v).into_owned()
+            }
+        };
+        let (xs, ys) = (boxed(a), boxed(b));
+        return xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, y)| dyn_eq_at(x, y, depth));
+    }
+    // Two lists compare element-wise across representations, for the same
+    // reason the two map representations do: `[1]` written as a typed carrier
+    // and the same list boxed are one value, and which representation a program
+    // happens to hold is not something it can see.
+    if is_list_tag(a.tag) && is_list_tag(b.tag) {
+        let (xs, ys) = (dyn_list_values(a), dyn_list_values(b));
+        return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(&x, &y)| dyn_eq_at(x, y, depth));
     }
     if a.tag != b.tag {
         return false;
@@ -430,25 +1344,54 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
         DYN_NIL => true,
         DYN_BOOL => a.payload == b.payload,
         DYN_STR => unsafe { dyn_str(a) == dyn_str(b) },
-        DYN_LIST => {
-            let (xs, ys) = (dyn_list(a), dyn_list(b));
-            xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| dyn_eq_inner(x, y))
-        }
         DYN_MAP => {
+            // A struct instance is a marked map, and its *type* is part of
+            // its identity: the VM says `P{x:1} != Q{x:1}` and
+            // `P{x:1} != {"x":1}`, both of which are structurally equal. The
+            // mark answers all three cases at once — every declared struct
+            // gets an id (`trait_env_prescan`), and a plain map has none, so
+            // comparing ids first is exactly the VM's rule.
+            //
+            // Checked before the null guard so a marked-but-empty struct is
+            // not equal to `{}`.
+            if lkrt_dyn_obj_type_id(a) != lkrt_dyn_obj_type_id(b) {
+                return false;
+            }
             if (a.payload as *mut c_void).is_null() || (b.payload as *mut c_void).is_null() {
                 return a.payload == b.payload;
             }
             let (xs, ys) = (dyn_map(a), dyn_map(b));
             // Structural, order-free (hash iteration order is not portable,
             // but key-lookup equality is).
-            xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)))
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_at(v, w, depth)))
         }
+        // Both compare by *content*, the same rule their unboxed spellings
+        // follow (`set.eq` is order-free; `bytes.eq` is byte-wise).
+        // SAFETY: a `DYN_SET`/`DYN_BYTES` payload is a live handle of that
+        // kind — the tag is only ever set by `from_set`/`from_bytes`.
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_eq(a.payload as *mut c_void, b.payload as *mut c_void) != 0 },
+        DYN_BYTES => unsafe {
+            crate::lkbytes::lkrt_lkbytes_eq(a.payload as *mut c_void, b.payload as *mut c_void) != 0
+        },
+        // By reference, which is the VM's rule for a callable: `let g = f`
+        // makes one closure two names, and two lambdas written the same way
+        // are two closures. Structural equality would call the second pair
+        // equal. Native lowering keeps that rule by building a lambda used as
+        // a value *once*, at its definition (`inst/call.rs::bind_lambda`).
+        DYN_CLOSURE => a.payload == b.payload,
+        // A channel and a task compare by identity, which is what the
+        // interpreter's handle equality is. A tag mismatch already answered
+        // `false` above, so `chan(1) == 1` is false here without an arm.
+        DYN_CHAN | DYN_TASK | DYN_STREAM => a.payload == b.payload,
         _ => false,
     }
 }
 
 macro_rules! dyn_ord {
-    ($name:ident, $op:tt) => {
+    ($name:ident, $op:tt, $vm_name:literal) => {
         /// # Safety
         /// Str payloads must be live NUL-terminated strings.
         #[unsafe(no_mangle)]
@@ -462,15 +1405,15 @@ macro_rules! dyn_ord {
             match (a.as_numeric(), b.as_numeric()) {
                 (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => i64::from(x $op y),
                 (Some(x), Some(y)) => i64::from(x.as_f64() $op y.as_f64()),
-                _ => crate::panic::raise_str("runtime type error"),
+                _ => binary_type_error($vm_name, "expected Int, Float, or String", a, b),
             }
         }
     };
 }
-dyn_ord!(lkrt_dyn_lt, <);
-dyn_ord!(lkrt_dyn_le, <=);
-dyn_ord!(lkrt_dyn_gt, >);
-dyn_ord!(lkrt_dyn_ge, >=);
+dyn_ord!(lkrt_dyn_lt, <, "<");
+dyn_ord!(lkrt_dyn_le, <=, "<=");
+dyn_ord!(lkrt_dyn_gt, >, ">");
+dyn_ord!(lkrt_dyn_ge, >=, ">=");
 
 // ── Display (two modes, matching the VM's two display paths) ───────────
 
@@ -484,11 +1427,59 @@ pub(crate) fn display_for_diagnostics(v: LkDyn) -> String {
     out
 }
 
+/// The interpreter's sentence for calling something that is not a function.
+///
+/// Two shapes, and which one a value gets is its *representation*: a scalar —
+/// `nil`, a Bool, an Int, a Float, or a string short enough to be inline — is
+/// named by its display, and anything on the heap is named by its type. The
+/// seven-byte cut is the same one `vm_mirror::str_key` makes, and it is visible
+/// here because a caught error is printed output.
+pub(crate) fn not_a_function_message(v: LkDyn) -> String {
+    let inline = match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64 => true,
+        DYN_STR => {
+            let ptr = v.payload as *const c_char;
+            // SAFETY: a `DYN_STR` payload is a NUL-terminated arena string.
+            !ptr.is_null() && unsafe { CStr::from_ptr(ptr) }.to_bytes().len() <= 7
+        }
+        _ => false,
+    };
+    if inline {
+        let mut text = String::new();
+        display_into(&mut text, v, false);
+        return alloc::format!("{text} is not a function");
+    }
+    // The nudge the interpreter attaches to a map, because `use chan;` binds
+    // the module — which is a map of its members — over the `chan()` global.
+    let hint = if is_map_tag(v.tag) {
+        " — an imported module is a map of its members, so call one of them (`m.f(…)`)"
+    } else {
+        ""
+    };
+    alloc::format!("this value is not a function: it is a {}{hint}", kind_name(v))
+}
+
 fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
     display_into_impl(out, v, quoted, true)
 }
 
 fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool) {
+    display_into_at(out, v, quoted, raise_on_unknown, 0)
+}
+
+/// [`display_into_impl`], counting how deep it has gone.
+///
+/// The interpreter refuses to print past [`MAX_VALUE_DEPTH`] — "value nested
+/// deeper than … levels; it is cyclic or too deeply nested to print" — and this
+/// had no bound, so `println(deep)` printed the value compiled and stopped the
+/// program interpreted.
+fn display_into_at(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool, depth: u32) {
+    if depth >= MAX_VALUE_DEPTH {
+        crate::panic::raise_str(&alloc::format!(
+            "value nested deeper than {MAX_VALUE_DEPTH} levels; it is cyclic or too deeply nested to print"
+        ));
+    }
+    let depth = depth + 1;
     match v.tag {
         DYN_NIL => out.push_str("nil"),
         DYN_BOOL => out.push_str(if v.payload != 0 { "true" } else { "false" }),
@@ -506,22 +1497,28 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                 out.push_str(s);
             }
         }
-        DYN_LIST => {
-            // VM quirk pinned by the differential gate: *mixed* lists render
-            // their string elements bare (`[1,a b,2]`), unlike typed string
-            // lists (`["a","b c"]` via the `{:?}` path). VM is the reference.
+        tag if is_list_tag(tag) => {
+            // A string inside a container is quoted, whatever the container's
+            // representation is. This used to pass `false` here, mirroring a VM
+            // quirk: a *mixed* list rendered its strings bare (`[1,a b,2]`)
+            // while a typed string list quoted them (`["a","b c"]`) — the same
+            // value shown two ways, decided by an internal representation no
+            // program can see. The VM stopped doing that; this follows, and the
+            // differential gate is what noticed.
             out.push('[');
-            for (i, &e) in dyn_list(v).iter().enumerate() {
+            for (i, &e) in dyn_list_values(v).iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                display_into_impl(out, e, false, raise_on_unknown);
+                display_into_at(out, e, true, raise_on_unknown, depth);
             }
             out.push(']');
         }
+        DYN_MAP if display_marked_struct(out, v, raise_on_unknown, depth) => {}
         DYN_MAP => {
-            // VM format: quoted keys, bare values (`{"k":1,"s":txt}`). The
-            // entry order is the Fx layout order — the mirror discipline
+            // Quoted keys *and* values (`{"k":1,"s":"txt"}`) — a value in a
+            // map is inside a container too, and the keys were already quoted.
+            // The entry order is the Fx layout order — the mirror discipline
             // (vm_mirror + insert-order replay) makes it the VM's own order,
             // for bridged returns and mirror-built maps alike. Statically
             // typed map display stays *out of the lowering subset*
@@ -534,13 +1531,44 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                     if i > 0 {
                         out.push(',');
                     }
-                    out.push_str(&format!("{k:?}"));
+                    // `k.as_str()`, not `k`: the key carries whether it is
+                    // borrowed from the program image, and `{:?}` on the key
+                    // itself printed that (`Owned("x")`) instead of the text.
+                    out.push_str(&format!("{:?}", k.as_str()));
                     out.push(':');
-                    display_into_impl(out, e, false, raise_on_unknown);
+                    display_into_at(out, e, true, raise_on_unknown, depth);
                 }
             }
             out.push('}');
         }
+        // Rendered through the same function the unboxed spelling calls, so a
+        // set in a list and a set on its own cannot drift apart.
+        // Rendered straight off the carrier — no copy, so the order is the
+        // map's own. This is the arm the rebuild used to route through.
+        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => {
+            out.push_str(&crate::lkmap::typed_map_text(
+                tag - DYN_TMAP_BASE,
+                v.payload as *mut c_void,
+            ));
+        }
+        DYN_SET => out.push_str(&crate::lkset::set_text(v.payload as *mut c_void)),
+        DYN_BYTES => out.push_str(&crate::lkbytes::bytes_text(v.payload as *mut c_void)),
+        // A window renders as the list it windows, which is what the VM shows.
+        DYN_SLICE => out.push_str(&crate::lkslice::slice_text(v.payload as *mut c_void)),
+        // SAFETY: the tag is only set by `lkrt_closure_new`.
+        //
+        // Which is in `lkclosure`, and that module is `std`-only: a closure
+        // *value* is deep-copied the way a channel payload is, and the deep-copy
+        // model lives with the channels. So without `std` this tag can never be
+        // set, and naming the module here made the whole crate fail to compile
+        // for a bare-metal target — the x86 kernel links `lkrt` without `std`
+        // and did not build at all.
+        #[cfg(feature = "std")]
+        DYN_CLOSURE => out.push_str(&unsafe { crate::lkclosure::closure_text(v) }),
+        // The interpreter's rendering: the identity is not part of it.
+        DYN_CHAN => out.push_str("<Channel>"),
+        DYN_TASK => out.push_str("<Task>"),
+        DYN_STREAM => out.push_str("<Stream>"),
         other => {
             if raise_on_unknown {
                 crate::panic::raise_str("runtime type error");
@@ -574,8 +1602,18 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
 /// Unicode scalar count; scalars are the VM's loud failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
+    // `len()` has its own wording, which names the struct rather than the
+    // method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("`len()` has no answer for {name}"));
+    }
     match v.tag {
         DYN_LIST => dyn_list(v).len() as i64,
+        // Counted off the carrier — no boxing, which is the whole point of a
+        // tag that names one.
+        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => {
+            crate::lklist::typed_list_len(tag - DYN_TLIST_BASE, v.payload as *mut c_void)
+        }
         DYN_MAP => {
             if (v.payload as *mut c_void).is_null() {
                 0
@@ -584,18 +1622,120 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
             }
         }
         DYN_STR => unsafe { dyn_str(v) }.chars().count() as i64,
-        _ => crate::panic::raise_str("runtime type error"),
+        // SAFETY: as in `dyn_eq_inner`, the tag guarantees the handle kind.
+        tag if (DYN_TMAP_BASE..DYN_TMAP_END).contains(&tag) => {
+            crate::lkmap::typed_map_len(tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+        }
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_len(v.payload as *mut c_void) },
+        DYN_BYTES => unsafe { crate::lkbytes::lkrt_lkbytes_len(v.payload as *mut c_void) },
+        // SAFETY: a `DYN_SLICE` payload is a live window handle — the tag is
+        // only ever set by `from_slice`.
+        DYN_SLICE => unsafe { crate::lkslice::lkrt_lkslice_i64_len(v.payload as *mut c_void) },
+        // The interpreter names the operation and what it got, and writes `nil`
+        // in lower case there. A caught error is printed output, so "runtime
+        // type error" was a wrong answer and not merely a poor message.
+        _ => crate::panic::raise_str(&alloc::format!(
+            "`len()` works on a String, List, Map, Set, Bytes or Slice, got {}",
+            match kind_name(v).as_str() {
+                "Nil" => alloc::string::String::from("nil"),
+                _ => kind_name(v),
+            }
+        )),
     }
 }
 
-/// Guarded list unboxing: the handle behind a `DYN_LIST` tag (loud failure
-/// otherwise — iterating a non-container is a VM error).
+/// Guarded list unboxing: a `Vec<LkDyn>` handle for a boxed list of either
+/// representation (loud failure otherwise — a method on a non-list is a VM
+/// error).
+///
+/// **Read-only.** A `DYN_LIST` hands back its own handle, so a write through it
+/// would be visible; a typed carrier has to box its elements, so a write
+/// through *that* one would be lost. The two cannot both be served here, and
+/// every name that reaches this guard — `map`, `filter`, `reduce`, `take`,
+/// `skip`, `concat`, `unique`, `sort`, `reverse` — builds a new list and leaves
+/// the receiver alone (`sort` and `reverse` answer new lists in this language;
+/// they do not sort in place). `push` is the one mutating consumer and it goes
+/// to [`lkrt_dyn_list_push`], which reaches the carrier itself.
+///
+/// `no_unbox_list_name_mutates_its_receiver` in the lowering is what keeps
+/// that true: a mutating name given `unbox_list` would silently start dropping
+/// writes here.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_list(v: LkDyn) -> *mut c_void {
-    if v.tag != DYN_LIST {
+    if v.tag == DYN_LIST {
+        return v.payload as *mut c_void;
+    }
+    if !is_list_tag(v.tag) {
         crate::panic::raise_str("runtime type error");
     }
-    v.payload as *mut c_void
+    arena_handle(crate::lklist::typed_list_boxed(
+        v.tag - DYN_TLIST_BASE,
+        v.payload as *mut c_void,
+    ))
+}
+
+/// `xs.push(e)` where `xs` is boxed — appends to the carrier behind the tag, so
+/// the box and the original stay one list.
+///
+/// The counterpart to [`lkrt_dyn_as_list`]'s read-only rule. `ListPush` used to
+/// unbox through that guard, which for a typed carrier meant appending to a
+/// materialized copy: `c[0].push(9)` answered as if nothing had been pushed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_push(v: LkDyn, value: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`, uniquely
+        // reachable through this call for its duration.
+        unsafe { (*(v.payload as *mut Vec<LkDyn>)).push(value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_push(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, value);
+}
+
+/// `xs.insert(i, v)` / `xs.remove_at(i)` / `pop`'s drop half where `xs` is
+/// boxed — the mutating siblings of [`lkrt_dyn_list_push`], and boxed for the
+/// same reason: `dyn.as_list` is read-only, so a write through it would land
+/// in a materialized copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_insert(v: LkDyn, index: i64, value: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`.
+        unsafe { crate::lklist::lkrt_lklist_dyn_insert(v.payload as *mut c_void, index, value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_insert(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index, value);
+}
+
+/// See [`lkrt_dyn_list_insert`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_remove_at(v: LkDyn, index: i64) -> LkDyn {
+    if v.tag == DYN_LIST {
+        // SAFETY: as above.
+        return unsafe { crate::lklist::lkrt_lklist_dyn_remove_at(v.payload as *mut c_void, index) };
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_remove_at(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index)
+}
+
+/// See [`lkrt_dyn_list_insert`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_list_drop_last(v: LkDyn) {
+    if v.tag == DYN_LIST {
+        // SAFETY: as above.
+        unsafe { crate::lklist::lkrt_lklist_dyn_drop_last(v.payload as *mut c_void) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_drop_last(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void);
 }
 
 #[unsafe(no_mangle)]
@@ -612,16 +1752,23 @@ fn dyn_map<'a>(v: LkDyn) -> &'a crate::lkmap::StrDynMap {
     unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
 }
 
-/// Constant-string field read on a Dyn: a Map tag looks the key up (missing
-/// key → Nil, the VM's nil-on-missing); any non-map tag is the VM's loud
-/// failure on member access.
+/// Constant-string field read on a Dyn: a map tag of **either** representation
+/// looks the key up (missing key → Nil, the VM's nil-on-missing); any non-map
+/// tag is the VM's loud failure on member access.
+///
+/// The typed arm is why this dispatches rather than unboxing. A typed map boxed
+/// in place keeps its own carrier, so `dyn.as_map` — which hands back a
+/// `str_dyn` handle — cannot serve it, and a member read through that guard
+/// raised `runtime type error` on a program the VM answers. Every read of a
+/// boxed value has to know both representations; only `len`, display and
+/// equality did.
 ///
 /// # Safety
 /// `key` must be a NUL-terminated string; a Map payload must be a live
 /// `map_h str_dyn` handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
-    if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
+    if !is_map_tag(v.tag) || (v.payload as *mut c_void).is_null() {
         crate::panic::raise_str("runtime type error");
     }
     let key = if key.is_null() {
@@ -629,7 +1776,41 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
     } else {
         unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")
     };
-    dyn_map(v).get(key).copied().unwrap_or(LkDyn::NIL)
+    if v.tag == DYN_MAP {
+        return dyn_map(v).get(key).copied().unwrap_or(LkDyn::NIL);
+    }
+    map_entries(v)
+        .get(&crate::vm_mirror::str_key(key))
+        .copied()
+        .unwrap_or(LkDyn::NIL)
+}
+
+/// [`lkrt_dyn_field`] read by **position**, with the key as the check.
+///
+/// The boxed twin of `lkrt_lkmap_str_dyn_get_at`, for the shape a member chain
+/// produces: `nodes[i].next` reads its element as a boxed value, so the field
+/// read goes through the tag check rather than through a typed map handle.
+/// Only the boxed `Map<str, Dyn>` representation has a position to read; a
+/// typed carrier is never a struct, and falls through to the keyed path.
+///
+/// # Safety
+/// As [`lkrt_dyn_field`], plus `key_len` bytes readable at `key`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_field_at(v: LkDyn, index: i64, key: *const c_char, key_len: i64) -> LkDyn {
+    if !is_map_tag(v.tag) || (v.payload as *mut c_void).is_null() {
+        crate::panic::raise_str("runtime type error");
+    }
+    if v.tag == DYN_MAP
+        && index >= 0
+        && let Some((found, value)) = dyn_map(v).get_index(index as usize)
+        && found.len() == key_len as usize
+        // SAFETY: `key_len` bytes are readable at `key`, as documented.
+        && found.as_bytes() == unsafe { core::slice::from_raw_parts(key as *const u8, key_len as usize) }
+    {
+        return *value;
+    }
+    // SAFETY: as documented.
+    unsafe { lkrt_dyn_field(v, key) }
 }
 
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
@@ -638,8 +1819,10 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
 /// `container[key]` where *both* are boxed.
 ///
 /// The static types say nothing about which access this is, so the tag decides
-/// — which is what the VM does. An integer key indexes, a string key reads a
-/// field, and anything else is the VM's error.
+/// — which is what the VM does. A string key reads a field; an integer key
+/// indexes a sequence but *looks up* in a map, because an integer-keyed map's
+/// keys are keys and not positions (`{3: "a"}[3]` is `"a"`, and there is no
+/// element 3).
 ///
 /// # Safety
 ///
@@ -650,16 +1833,519 @@ pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
     match key.tag {
         DYN_I64 => lkrt_dyn_index(v, key.payload),
         DYN_STR => unsafe { lkrt_dyn_field(v, key.payload as *const c_char) },
+        // A map's subscript is a **key**, and `nil` and a Bool are keys — the
+        // interpreter stores them (`m[nil] = 1` gives `{nil:1}`) and answers a
+        // miss with nil, where this raised "runtime type error". A Float is not
+        // a key at all and `key_from_dyn` raises with the interpreter's own
+        // wording for that and for every other non-key kind.
+        //
+        // The keyed view is built per lookup, which is what the typed branch of
+        // `lkrt_dyn_map_has` already does; only `nil` and `Bool` keys reach it,
+        // and an Int or a String key still takes its own direct path above.
+        _ if is_map_tag(v.tag) => {
+            let key = crate::vm_mirror::key_from_dyn(key);
+            map_entries(v).get(&key).copied().unwrap_or(LkDyn::NIL)
+        }
         _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
+/// `c.clear()` on a boxed container, dispatched on the tag.
+///
+/// Every carrier has its own `clear`, and the static type usually says which.
+/// A receiver that reached two call sites with different carriers is a `Dyn`
+/// and has none — `fn empty(c) { c.clear(); }` called with two maps was the
+/// shape with no arm, so the whole module fell back.
+///
+/// # Safety
+/// `v` must be a live boxed container.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
-    if v.tag != DYN_LIST {
+pub unsafe extern "C" fn lkrt_dyn_clear(v: LkDyn) {
+    reject_struct_receiver(v, "clear");
+    let handle = v.payload as *mut c_void;
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: the payload is a live handle of the carrier its tag names.
+    unsafe {
+        match v.tag {
+            DYN_LIST => crate::lklist::lkrt_lklist_dyn_clear(handle),
+            DYN_MAP => crate::lkmap::lkrt_lkmap_str_dyn_clear(handle),
+            DYN_SET => crate::lkset::lkrt_lkset_clear(handle),
+            tag if is_map_tag(tag) => crate::lkmap::typed_map_clear(tag - DYN_TMAP_BASE, handle),
+            tag if is_list_tag(tag) => crate::lklist::typed_list_clear(tag - DYN_TLIST_BASE, handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `m.get(k, default)` where the key is boxed.
+///
+/// The key kinds split three ways, which is what makes this its own entry
+/// rather than `dyn.get` plus a nil test. A key kind a map cannot hold —
+/// a Float, a container — *raises*, and the interpreter prefixes that refusal
+/// with the call (`map.get() key: …`). A key that is a key but absent answers
+/// the default. And so does a key whose stored value is nil: the interpreter
+/// cannot tell those apart either, so `{"k": nil}.get("k", 9)` is `9`.
+///
+/// `m.has(k)` with a boxed key needs no entry of its own — `dyn.contains`'s
+/// map arm is already that question, and total the same way. `m.delete(k)`
+/// does need one and does not have it: removing a key of another kind means
+/// reaching a carrier by a key it is not indexed by, which is the general-key
+/// representation §62 describes.
+///
+/// # Safety
+/// `v` must be a live boxed map; `key` and `default` live `LkDyn` values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_get_or(v: LkDyn, key: LkDyn, default: LkDyn) -> LkDyn {
+    reject_struct_receiver(v, "get");
+    if !is_map_tag(v.tag) {
         crate::panic::raise_str("runtime type error");
     }
-    let values = dyn_list(v);
+    let key = crate::vm_mirror::key_from_dyn_in(key, "map.get() key");
+    match map_entries(v).get(&key).copied() {
+        Some(found) if found.tag != DYN_NIL => found,
+        _ => default,
+    }
+}
+
+/// `for pair in m` / `m.keys()` / `m.values()` / `m.has(k)` / `m.delete(k)` on
+/// a **boxed** map, dispatched on the tag.
+///
+/// The unboxed spellings reach a carrier-specific symbol because the static
+/// type names the carrier. A boxed map has no static carrier — the tag is the
+/// only thing that says which — and `dyn.as_map`, which hands back a `str_dyn`
+/// handle, cannot serve a typed one. Unboxing through that guard is what made
+/// `c[0].keys()` raise `runtime type error` on a program the VM answers.
+///
+/// Materializing a `str_dyn` copy inside the guard would answer the reads and
+/// silently drop `delete`, so the dispatch is per operation rather than per
+/// unbox.
+///
+/// # Safety
+/// A map payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_pairs(v: LkDyn) -> *mut c_void {
+    reject_struct_receiver(v, "keys");
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+        return unsafe { crate::lkmap::lkrt_lkmap_str_dyn_iter_pairs(v.payload as *mut c_void) };
+    }
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lkmap::typed_map_pair_list(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void)
+}
+
+/// The `n`th component of every `[key, value]` pair — 0 for `.keys()`, 1 for
+/// `.values()`. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+unsafe fn dyn_map_pair_column(v: LkDyn, column: usize) -> *mut c_void {
+    reject_struct_receiver(v, if column == 0 { "keys" } else { "values" });
+    let pairs = unsafe { lkrt_dyn_map_pairs(v) };
+    let column: Vec<LkDyn> = dyn_slice(pairs)
+        .iter()
+        .map(|pair| dyn_list(*pair).get(column).copied().unwrap_or(LkDyn::NIL))
+        .collect();
+    arena_handle(column)
+}
+
+/// `for x in v` where `v` is boxed — the VM's `to_iter` normalization, decided
+/// by the tag.
+///
+/// The loop lowering used to call `dyn.as_list` here, which is a *list* guard:
+/// every other iterable answered `runtime type error` once boxed, including
+/// every map. `to_iter` is not "unwrap a list", it is "what does this value
+/// iterate as", and each carrier already has that answer.
+///
+/// # Safety
+/// The payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_to_iter(v: LkDyn) -> *mut c_void {
+    // A struct instance is not iterable, and its carrier is a map, which is.
+    // The VM's wording names the object rather than a method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("ToIter target object is not iterable: {name:?}"));
+    }
+    if is_map_tag(v.tag) {
+        return unsafe { lkrt_dyn_map_pairs(v) };
+    }
+    match v.tag {
+        DYN_LIST => v.payload as *mut c_void,
+        // A typed carrier snapshots, which is what the VM's `to_iter` does for
+        // every map too: the loop reads elements as values, and a value read
+        // out of an `i64` carrier has to be boxed to be one.
+        tag if (DYN_TLIST_BASE..DYN_TLIST_END).contains(&tag) => arena_handle(crate::lklist::typed_list_boxed(
+            tag - DYN_TLIST_BASE,
+            v.payload as *mut c_void,
+        )),
+        // A window iterates as itself; `len` and indexing on the loop handle
+        // are window-relative, which is what the loop wants.
+        DYN_SLICE => v.payload as *mut c_void,
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_iter(v.payload as *mut c_void) },
+        // The i64 list the unboxed spelling also iterates: byte values, in
+        // order, boxed one per element so the loop variable is a value.
+        DYN_BYTES => {
+            let values: Vec<LkDyn> = crate::lkbytes::bytes_slice(v.payload as *mut c_void)
+                .iter()
+                .map(|byte| lkrt_dyn_from_i64(i64::from(*byte)))
+                .collect();
+            arena_handle(values)
+        }
+        DYN_STR => unsafe { crate::lkstr::lkrt_str_chars(v.payload as *const c_char) },
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
+/// `needle in v` where `v` is boxed — the tag decides what membership means.
+///
+/// A map answers **key** membership (a stored nil still counts, which is why it
+/// is not get-then-test); every other container answers element membership
+/// under [`dyn_eq_inner`] — with a byte string excepted below, the only carrier
+/// the VM searches by a different rule. Both are what the unboxed spellings
+/// already do; this
+/// is the one entry point that can pick between them at run time, which is what
+/// a boxed haystack needs — `"a" in c[0]` used to drop the whole program to the
+/// VM because the lowering had no arm for a `Dyn` haystack at all.
+///
+/// How deep a value may nest before the comparison stops descending.
+///
+/// Mirrors `core::val::MAX_VALUE_DEPTH`. The VM's comparator answers rather
+/// than reports past this bound, and has to: `sort_by` wants an `Ordering`, and
+/// raising half way through a sort would leave the list rearranged anyway.
+const MAX_VALUE_DEPTH: u32 = 512;
+
+/// Where a value's *kind* sits in the sort order.
+///
+/// The VM keeps two tables — one over `RuntimeVal`, one over `HeapValue` — and
+/// reaches the second only for two heap values. Flattening them is sound
+/// because the two agree wherever both apply: a short string is
+/// `RuntimeVal::ShortStr` (4) against any heap value (5), and a long one is a
+/// heap `String` (0) against `Bytes` (1), `List` (2), `Map` (3) — the same
+/// relative order either way. Which representation a string happens to have is
+/// not something a program can see, and this is why.
+fn kind_rank(v: LkDyn) -> u8 {
+    // Checked before the map test: `DYN_SLICE` shares a value with
+    // `DYN_TMAP_END`, and `is_map_tag` excludes the end of the range for
+    // exactly that reason. A window is a list here as it is everywhere else.
+    if is_list_tag(v.tag) || v.tag == DYN_SLICE {
+        return 5;
+    }
+    if is_map_tag(v.tag) {
+        // A struct instance is a *marked map* in this runtime and a
+        // `HeapValue::Object` in the VM, which ranks above `Map`:
+        // `[{"k": 1}, P { x: 1 }].sort()` keeps that order and the other
+        // spelling reverses. The tag cannot tell the two apart; the mark can.
+        return if lkrt_dyn_obj_type_id(v) != 0 { 8 } else { 6 };
+    }
+    match v.tag {
+        DYN_NIL => 0,
+        DYN_BOOL => 1,
+        DYN_I64 | DYN_F64 => 2,
+        DYN_STR => 3,
+        DYN_BYTES => 4,
+        DYN_SET => 7,
+        DYN_CLOSURE => 9,
+        DYN_CHAN => 11,
+        DYN_TASK => 12,
+        DYN_STREAM => 13,
+        _ => 10,
+    }
+}
+
+/// A sequence's elements, whether it is a list carrier or a window.
+fn sequence_elements<'a>(v: LkDyn) -> alloc::borrow::Cow<'a, [LkDyn]> {
+    if v.tag == DYN_SLICE {
+        // SAFETY: a `DYN_SLICE` payload is a live window handle.
+        return alloc::borrow::Cow::Owned(
+            unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) }
+                .iter()
+                .map(|value| lkrt_dyn_from_i64(*value))
+                .collect(),
+        );
+    }
+    dyn_list_values(v)
+}
+
+/// The VM's `compare_runtime_values`, mirrored — the order `sort`, `min` and
+/// `max` use on a list whose elements are not all one carrier.
+///
+/// This is the mirror the boxed carrier was declined for, and the reasons it
+/// was declined are the three things below that a copy would have got wrong:
+/// the two rank tables are not one table until you check that they agree, a
+/// window is a list but shares a tag value with the end of the map range, and a
+/// struct is a marked map here and a distinct heap kind there.
+///
+/// Everything that is not nil, a bool, a number, a string or a sequence
+/// compares **by kind alone** — two maps are equal, two byte strings are equal,
+/// two structs are equal. That is the VM's rule and it is deliberate there: a
+/// map has no order against another map, and grouping them deterministically
+/// beats calling the comparison a failure.
+pub(crate) fn dyn_compare(a: LkDyn, b: LkDyn) -> core::cmp::Ordering {
+    dyn_compare_at(a, b, 0)
+}
+
+fn dyn_compare_at(a: LkDyn, b: LkDyn, depth: u32) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let (rank_a, rank_b) = (kind_rank(a), kind_rank(b));
+    if rank_a != rank_b {
+        return rank_a.cmp(&rank_b);
+    }
+    match rank_a {
+        0 => Ordering::Equal,
+        1 => (a.payload != 0).cmp(&(b.payload != 0)),
+        // Int and Float share a rank and compare as numbers, so `1 < 1.5 < 2`
+        // holds however each was written. Two Ints stay exact; anything else
+        // goes through the total float order, which is where NaN and `-0.0`
+        // are decided (see `lklist::compare_floats`).
+        2 => {
+            if a.tag == DYN_I64 && b.tag == DYN_I64 {
+                a.payload.cmp(&b.payload)
+            } else {
+                let as_f64 = |v: LkDyn| {
+                    if v.tag == DYN_I64 {
+                        v.payload as f64
+                    } else {
+                        v.f64_value()
+                    }
+                };
+                crate::lklist::compare_floats(as_f64(a), as_f64(b))
+            }
+        }
+        // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+        3 => unsafe { dyn_str(a).as_bytes().cmp(dyn_str(b).as_bytes()) },
+        // Lexicographic, and a prefix sorts before what extends it — which is
+        // what `==` already treats a list as.
+        5 => {
+            if depth >= MAX_VALUE_DEPTH {
+                return Ordering::Equal;
+            }
+            let (xs, ys) = (sequence_elements(a), sequence_elements(b));
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                let ordering = dyn_compare_at(*x, *y, depth + 1);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            xs.len().cmp(&ys.len())
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+/// `receiver.contains(needle)` — the *method*, which is not `needle in receiver`.
+///
+/// The two differ on exactly one carrier and it matters: the VM gives a map
+/// `in` (asking after a key) and gives it no `contains` method at all, so
+/// `m.contains("k")` raises there. `lkrt_dyn_contains` is the operator and
+/// answers for a map; lowering it for the method would have made a native
+/// build answer `true` where the VM stops the program.
+///
+/// Every other carrier the operator accepts, the method accepts too, so this
+/// rejects the map tag and defers.
+///
+/// # Safety
+/// `v` and `needle` must be live `LkDyn` values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_seq_contains(v: LkDyn, needle: LkDyn) -> i64 {
+    if is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    unsafe { lkrt_dyn_contains(v, needle) }
+}
+
+/// # Safety
+/// The payload must be a live handle of the carrier its tag names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_contains(v: LkDyn, needle: LkDyn) -> i64 {
+    // `in` names the object rather than a method.
+    if let Some(name) = struct_type_name(v) {
+        crate::panic::raise_str(&alloc::format!("Contains haystack object is not searchable: {name:?}"));
+    }
+    if is_map_tag(v.tag) {
+        if needle.tag == DYN_STR {
+            return unsafe { lkrt_dyn_map_has(v, needle.payload as *const c_char) };
+        }
+        // Total, the way the interpreter's `map_contains` is: a needle that
+        // cannot be a key is not a member.
+        let Some(key) = crate::vm_mirror::key_from_dyn_opt(needle) else {
+            return 0;
+        };
+        return i64::from(map_entries(v).contains_key(&key));
+    }
+    if is_list_tag(v.tag) {
+        return i64::from(dyn_list_values(v).iter().any(|&e| dyn_eq_inner(e, needle)));
+    }
+    if !matches!(v.tag, DYN_STR | DYN_SET | DYN_SLICE | DYN_BYTES) {
+        // The interpreter's own sentence for a haystack that is not one.
+        crate::panic::raise_str(&alloc::format!(
+            "Contains haystack expected string/list/map/set/bytes/slice, got {}",
+            kind_name(v)
+        ));
+    }
+    match v.tag {
+        // A string's members are its substrings, which is what the unboxed
+        // spelling answers; it was the one carrier `in` did not reach here.
+        DYN_STR => unsafe { crate::lkstr::lkrt_str_contains(v.payload as *const c_char, lkrt_dyn_as_str(needle)) },
+        DYN_SET => unsafe { crate::lkset::lkrt_lkset_has(v.payload as *mut c_void, needle) },
+        DYN_SLICE => {
+            // SAFETY: a `DYN_SLICE` payload is a live window handle.
+            let window = unsafe { crate::lkslice::window_elements(v.payload as *mut c_void) };
+            i64::from(window.iter().any(|&e| dyn_eq_inner(lkrt_dyn_from_i64(e), needle)))
+        }
+        // A byte string is the one carrier whose membership is *not* `==`:
+        // the VM asks `RuntimeVal::Int(byte)` and answers false for everything
+        // else, so `97.0 in "ab".bytes()` is false while `97.0 in [97]` is
+        // true. Spelled out rather than delegated, because delegating is
+        // exactly what made it wrong the other way.
+        DYN_BYTES => {
+            let bytes = crate::lkbytes::bytes_slice(v.payload as *mut c_void);
+            let Some(byte) = (if needle.tag == DYN_I64 {
+                u8::try_from(needle.payload).ok()
+            } else {
+                None
+            }) else {
+                return 0;
+            };
+            i64::from(bytes.contains(&byte))
+        }
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
+/// `m.keys()` on a boxed map. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_keys(v: LkDyn) -> *mut c_void {
+    unsafe { dyn_map_pair_column(v, 0) }
+}
+
+/// `m.values()` on a boxed map. See [`lkrt_dyn_map_pairs`].
+///
+/// # Safety
+/// As [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_values(v: LkDyn) -> *mut c_void {
+    unsafe { dyn_map_pair_column(v, 1) }
+}
+
+/// `m.has(k)` on a boxed map — presence, which is order-free, so it reads the
+/// keyed view rather than the ordered snapshot.
+///
+/// # Safety
+/// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_has(v: LkDyn, key: *const c_char) -> i64 {
+    reject_struct_receiver(v, "has");
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    let key = if key.is_null() {
+        ""
+    } else {
+        unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")
+    };
+    if v.tag == DYN_MAP {
+        return i64::from(dyn_map(v).contains_key(key));
+    }
+    i64::from(map_entries(v).contains_key(&crate::vm_mirror::str_key(key)))
+}
+
+/// `m.delete(k)` / `m.remove(k)` on a boxed map — removes **in place**, so the
+/// box and the original stay one map, and answers the removed value or nil.
+///
+/// # Safety
+/// `key` must be NUL-terminated; the payload as [`lkrt_dyn_map_pairs`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_map_delete(v: LkDyn, key: *const c_char) -> LkDyn {
+    reject_struct_receiver(v, "delete");
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; `key` is the
+        // caller's NUL-terminated key.
+        return unsafe { crate::lkmap::lkrt_lkmap_str_dyn_delete(v.payload as *mut c_void, key) };
+    }
+    if !is_map_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lkmap::typed_map_delete(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void, key)
+}
+
+/// `c[k] = v` where `c` is boxed — stores into the carrier behind the tag, so
+/// the box and the original stay one container.
+///
+/// One entry point for both containers, because the key rule is one rule: an
+/// integer key on a map is a *key*, not a position (the same adjudication
+/// [`lkrt_dyn_index`] states for reads). The key travels boxed so this side can
+/// apply it; a key of the wrong shape for the carrier raises.
+///
+/// The store twin of [`lkrt_dyn_list_push`]: `dyn.as_list` and `dyn.as_map` are
+/// read-only, and a write through either would land in a materialized copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_index_set(v: LkDyn, key: LkDyn, value: LkDyn) {
+    if is_map_tag(v.tag) {
+        if v.tag == DYN_MAP {
+            // SAFETY: a boxed string key is a live NUL-terminated string.
+            unsafe { check_declared_field(v, lkrt_dyn_as_str(key), value) };
+            // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`; the key
+            // pointer is the boxed key's own NUL-terminated string.
+            unsafe { crate::lkmap::lkrt_lkmap_str_dyn_set(v.payload as *mut c_void, lkrt_dyn_as_str(key), value) };
+            return;
+        }
+        crate::lkmap::typed_map_set(v.tag - DYN_TMAP_BASE, v.payload as *mut c_void, key, value);
+        return;
+    }
+    let index = lkrt_dyn_as_i64(key);
+    if v.tag == DYN_LIST {
+        // SAFETY: a `DYN_LIST` payload is a live `Vec<LkDyn>`.
+        unsafe { lkrt_lklist_dyn_set(v.payload as *mut c_void, index, value) };
+        return;
+    }
+    if !is_list_tag(v.tag) {
+        crate::panic::raise_str("runtime type error");
+    }
+    crate::lklist::typed_list_set(v.tag - DYN_TLIST_BASE, v.payload as *mut c_void, index, value);
+}
+
+/// An integer key on a map is a *key*, not a position.
+///
+/// `{3: 4}[3]` is `4` and there is no element 3 — so a map tag of either
+/// representation looks up here rather than indexing. This is the same
+/// entry point a constant integer key lowers to directly, which is why the
+/// rule lives here and not only in [`lkrt_dyn_get`].
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
+    if is_map_tag(v.tag) {
+        return map_entries(v)
+            .get(&crate::vm_mirror::RtKey::Int(index))
+            .copied()
+            .unwrap_or(LkDyn::NIL);
+    }
+    // A string indexes by character, which is what `s[0]` does on a *typed*
+    // `Str` already. It reaches here whenever the same string is boxed —
+    // `[a, b]` destructuring one, for instance, since `IsList` calls a string
+    // list-like the way the interpreter does.
+    if v.tag == DYN_STR {
+        // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+        return unsafe { crate::lkstr::lkrt_str_char_at(v.payload as *const c_char, index) };
+    }
+    if !is_list_tag(v.tag) {
+        // Two wordings, and which one a value gets is whether it lives on the
+        // heap: a scalar is named plainly, a heap value is named in quotes by
+        // the object's type. `dyn_list_values` raises here too, but it is
+        // shared by every carrier walk and can only say "runtime type error" —
+        // which is what `nil[0]` used to answer where the interpreter says
+        // "Nil is not indexable".
+        let name = kind_name(v);
+        if matches!(v.tag, DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64) {
+            crate::panic::raise_str(&alloc::format!("{name} is not indexable"));
+        }
+        crate::panic::raise_str(&alloc::format!("index target object is not indexable: {name:?}"));
+    }
+    let values = dyn_list_values(v);
     let len = values.len() as i64;
     let idx = if index < 0 { len + index } else { index };
     if idx < 0 || idx >= len {
@@ -730,6 +2416,40 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_push(handle: *mut c_void, value: LkDyn)
     unsafe { (*(handle as *mut Vec<LkDyn>)).push(value) };
 }
 
+/// Joins a boxed list with `separator`, each element written bare.
+///
+/// `display_into(.., quoted = false)` is the same renderer `lkrt_dyn_display`
+/// uses, which is the one the VM's `join` uses too: a string element joins
+/// unquoted, while the *quoted* form is what an element gets when it is printed
+/// inside a list. Sharing the renderer is the point — the alternative is a
+/// second opinion on how `2.0` or `nil` looks.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null;
+/// `separator` a valid C string, or null for empty.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
+    let sep = if separator.is_null() {
+        ""
+    } else {
+        // SAFETY: caller guarantees a valid C string.
+        unsafe { core::ffi::CStr::from_ptr(separator) }.to_str().unwrap_or("")
+    };
+    if handle.is_null() {
+        return arena_c_string(CString::default());
+    }
+    // SAFETY: `handle` addresses a `Vec<LkDyn>` from `lkrt_lklist_dyn_new`.
+    let values = unsafe { &*(handle as *mut Vec<LkDyn>) };
+    let mut out = String::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push_str(sep);
+        }
+        display_into(&mut out, *value, false);
+    }
+    arena_c_string(CString::new(out).unwrap_or_default())
+}
+
 /// VM indexing semantics: negative counts from the tail, out-of-bounds reads
 /// yield nil (not an error) — the Dyn carrier holds the nil itself.
 /// # Safety
@@ -753,18 +2473,15 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_at(handle: *mut c_void, index: i64) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_set(handle: *mut c_void, index: i64, value: LkDyn) {
     if handle.is_null() {
-        return;
+        crate::panic::raise_str("runtime error");
     }
     let values = unsafe { &mut *(handle as *mut Vec<LkDyn>) };
-    let len = values.len() as i64;
-    let idx = if index < 0 { len + index } else { index };
-    if idx < 0 {
-        return;
-    }
-    let idx = idx as usize;
-    if idx >= values.len() {
-        values.resize(idx + 1, LkDyn::NIL);
-    }
+    // Out of range is a halt, matching the VM's `list index N out of bounds`.
+    // This used to *grow* the list to fit (and silently ignore an index before
+    // the start), so `xs[9] = 1` on a three-element list raised interpreted and
+    // appended six nils compiled. The wording comes from the one helper the
+    // typed lists use, because a caught error is printed output.
+    let idx = crate::lklist::store_index_or_raise(index, values.len());
     values[idx] = value;
 }
 
@@ -795,34 +2512,14 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_eq(a: *mut c_void, b: *mut c_void) -> i
     i64::from(lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(&x, &y)| dyn_eq_inner(x, y)))
 }
 
-/// The VM's `Contains` (`in`) equality on a Mixed list is `RuntimeVal`'s
-/// *derived* `PartialEq` — strictly same-variant: no Int/Float coercion
-/// (`1.0 in [1, 2]` is false, unlike `==`), floats by value (`0.0 == -0.0`,
-/// `NaN != NaN`, unlike `unique()`'s to_bits), ShortStr (≤7 bytes) by
-/// content, heap objects (lists/maps/longer strings) by handle.
-fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
-    if a.tag != b.tag {
-        return false;
-    }
-    match a.tag {
-        DYN_NIL => true,
-        DYN_BOOL | DYN_I64 => a.payload == b.payload,
-        DYN_F64 => a.f64_value() == b.f64_value(),
-        DYN_STR => {
-            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
-            if sa.len() <= 7 && sb.len() <= 7 {
-                sa == sb
-            } else {
-                a.payload == b.payload
-            }
-        }
-        DYN_LIST | DYN_MAP => a.payload == b.payload,
-        _ => false,
-    }
-}
-
-/// `needle in xs` under [`contains_eq`] (the `in` operator's semantics —
-/// *not* `dyn_eq_inner`, which is the `==` operator's).
+/// `needle in xs` under [`dyn_eq_inner`].
+///
+/// `in` and `==` were two rules here and are one in the VM: `list_contains`'s
+/// mixed arm calls `runtime_values_equal`, the function `==` calls, and says
+/// above itself that it used to be handle identity and that
+/// `[1, 2] in [[1, 2], [3]]` answered false for it. This mirror kept the rule
+/// the VM had dropped, so that line — and `-`, and `index_of` — answered false
+/// compiled and true interpreted.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
@@ -831,7 +2528,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_contains(handle: *mut c_void, value: Lk
         return 0;
     }
     let values = unsafe { &*(handle as *mut Vec<LkDyn>) };
-    i64::from(values.iter().any(|&e| contains_eq(e, value)))
+    i64::from(values.iter().any(|&e| dyn_eq_inner(e, value)))
 }
 
 fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {
@@ -856,24 +2553,16 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: 
     arena_handle(tail)
 }
 
-/// `xs.take(n)` — the first `n` elements (mirrors `lkrt_lklist_i64_take`).
+/// Range slice of a boxed list, sharing `lklist::slice_bounds` — one rule, not
+/// a fourth copy of "negative counts from the tail and everything clamps".
+///
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_dyn_take(handle: *mut c_void, n: i64) -> *mut c_void {
+pub unsafe extern "C" fn lkrt_lklist_dyn_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
     let values = dyn_slice(handle);
-    let count = (n as usize).min(values.len());
-    arena_handle(values[..count].to_vec())
-}
-
-/// `xs.skip(n)` — without the first `n` (zero/negative copies everything).
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_dyn_skip(handle: *mut c_void, n: i64) -> *mut c_void {
-    let values = dyn_slice(handle);
-    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
-    arena_handle(values[start..].to_vec())
+    let (start, end) = crate::lklist::slice_bounds(values.len(), start, end);
+    arena_handle(values[start..end].to_vec())
 }
 
 /// `xs.chain(ys)` / `xs.concat(ys)` — a fresh concatenation.
@@ -894,12 +2583,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_chain(a: *mut c_void, b: *mut c_void) -
 /// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "C" fn(LkDyn) -> LkDyn) -> *mut c_void {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -924,12 +2607,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
     handle: *mut c_void,
     p: extern "C" fn(LkDyn) -> bool,
 ) -> *mut c_void {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -957,12 +2634,6 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     init: LkDyn,
     f: extern "C" fn(LkDyn, LkDyn) -> LkDyn,
 ) -> LkDyn {
-    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
-    // which can push to *this* list (reallocating its buffer) or raise and
-    // longjmp past the borrow — either way a slice held across the call is
-    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
-    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
-    // is just a third way to hold one.
     // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
     // code, which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past a borrow, so none may be held across the call. Re-deref rather
@@ -979,15 +2650,103 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     acc
 }
 
+/// `xs.map(f)` where `f` is a closure *value* rather than a compiled address.
+///
+/// The three `*_fn` helpers above take a raw function pointer, which is only
+/// available when the lowering knows which lambda the callback register names.
+/// A callback read out of a container or passed through a parameter is a
+/// `DYN_CLOSURE`, and these three are the same folds called through it.
+///
+/// # Safety
+/// `handle` must be a live dyn-list handle (or null); `callee` a `DYN_CLOSURE`.
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_map_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
+    // Indexed, re-dereferencing the handle each step, for the reason the `*_fn`
+    // helpers document: the callback re-enters generated code.
+    let len = dyn_slice(handle).len();
+    let mut mapped: Vec<LkDyn> = Vec::with_capacity(len);
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        mapped.push(unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![value]) });
+    }
+    arena_handle(mapped)
+}
+
+/// `xs.filter(p)` with a closure value.
+///
+/// The predicate's result is judged the way the interpreter judges it
+/// (`core_methods::list_filter`): a `Bool` is itself, `nil` is false, anything
+/// else is true. The `*_fn` path cannot do that — it demands a `Bool`-returning
+/// callback at compile time — but a closure's return type is not known here.
+///
+/// # Safety
+/// As [`lkrt_lklist_dyn_map_closure`].
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_filter_closure(handle: *mut c_void, callee: LkDyn) -> *mut c_void {
+    let len = dyn_slice(handle).len();
+    let mut kept: Vec<LkDyn> = Vec::new();
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        let verdict = unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![value]) };
+        let keep = match verdict.tag {
+            DYN_BOOL => verdict.payload != 0,
+            DYN_NIL => false,
+            _ => true,
+        };
+        if keep {
+            kept.push(value);
+        }
+    }
+    arena_handle(kept)
+}
+
+/// `xs.reduce(init, f)` with a closure value.
+///
+/// # Safety
+/// As [`lkrt_lklist_dyn_map_closure`].
+// `std`-only for the reason the closure arm of `display_into` is: a closure
+// value cannot exist without `lkclosure`, which is where the deep-copy model
+// that owns its captures lives.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_closure(handle: *mut c_void, init: LkDyn, callee: LkDyn) -> LkDyn {
+    let len = dyn_slice(handle).len();
+    let mut acc = init;
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        // SAFETY: as documented.
+        acc = unsafe { crate::lkclosure::call_with(callee, &mut alloc::vec![acc, value]) };
+    }
+    acc
+}
+
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.
-/// `size <= 0` is a VM error (loud failure).
+/// `size <= 0` raises the interpreter's sentence.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
     if size <= 0 {
-        crate::rt_eprintln!("list.chunk() size must be positive");
-        crate::panic::raise_str("runtime type error");
+        // The message *is* the error, as it is in the interpreter. Printing it
+        // and raising "runtime type error" put the explanation on stderr and a
+        // different sentence in the `catch`.
+        crate::panic::raise_str("list.chunk() size must be positive");
     }
     let chunks: Vec<LkDyn> = dyn_slice(handle)
         .chunks(size as usize)
@@ -1022,41 +2781,22 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_zip(a: *mut c_void, b: *mut c_void) -> 
     arena_handle(pairs)
 }
 
-/// The VM's `runtime_values_equal` (core_methods.rs) — used by `unique()`,
-/// and deliberately *not* `dyn_eq_inner`: numerics compare by `to_bits`
-/// (`0.0 != -0.0`, `1 == 1.0`), strings compare by content only when both
-/// fit the VM's 7-byte `ShortStr` inline form (longer strings are heap
-/// objects there and compare by handle), lists/maps compare by handle.
-fn unique_eq(a: LkDyn, b: LkDyn) -> bool {
-    match (a.tag, b.tag) {
-        (DYN_NIL, DYN_NIL) => true,
-        (DYN_BOOL, DYN_BOOL) | (DYN_I64, DYN_I64) | (DYN_F64, DYN_F64) => a.payload == b.payload,
-        (DYN_I64, DYN_F64) => (a.payload as f64).to_bits() == b.payload as u64,
-        (DYN_F64, DYN_I64) => a.payload as u64 == (b.payload as f64).to_bits(),
-        (DYN_STR, DYN_STR) => {
-            // Longer strings are heap objects in the VM with no stable
-            // identity across list representations (typed String lists
-            // re-alloc every element on read, so `[s, s].unique()` keeps
-            // both) — and native constants intern, so pointer identity
-            // over-merges literals. "Never equal" matches the VM on every
-            // shape except a Mixed-list variable repeat (docs/semantics.md).
-            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
-            sa.len() <= 7 && sb.len() <= 7 && sa == sb
-        }
-        (DYN_LIST, DYN_LIST) | (DYN_MAP, DYN_MAP) => a.payload == b.payload,
-        _ => false,
-    }
-}
-
-/// `xs.unique()` — order-preserving dedup under [`unique_eq`]. O(n²) like
-/// the VM.
+/// `xs.unique()` — order-preserving dedup under `==`. O(n²), like the VM's
+/// mixed-list path.
+///
+/// This used to call a `unique_eq` of its own: numerics by `to_bits`, strings
+/// "never equal" past seven bytes, lists and maps by handle. That mirrored the
+/// VM *of the time*; once the VM's equality became heap-aware, the two drifted
+/// apart with nothing to catch it — `[s, s].unique()` and `[[1], [1]].unique()`
+/// answered differently on the two backends, and the differential corpus
+/// deliberately did not cover them.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_unique(handle: *mut c_void) -> *mut c_void {
     let mut unique: Vec<LkDyn> = Vec::new();
     for &item in dyn_slice(handle) {
-        if !unique.iter().any(|&seen| unique_eq(seen, item)) {
+        if !unique.iter().any(|&seen| dyn_eq_inner(seen, item)) {
             unique.push(item);
         }
     }
@@ -1071,8 +2811,8 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_unique(handle: *mut c_void) -> *mut c_v
 pub unsafe extern "C" fn lkrt_lklist_dyn_flatten(handle: *mut c_void) -> *mut c_void {
     let mut flat: Vec<LkDyn> = Vec::new();
     for &item in dyn_slice(handle) {
-        if item.tag == DYN_LIST {
-            flat.extend_from_slice(dyn_list(item));
+        if is_list_tag(item.tag) {
+            flat.extend_from_slice(&dyn_list_values(item));
         } else {
             flat.push(item);
         }
@@ -1091,6 +2831,140 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_display(handle: *mut c_void) -> *mut c_
     let mut out = String::new();
     display_into(&mut out, dyn_v, true);
     arena_c_string(CString::new(out).unwrap_or_default())
+}
+
+/// Refuses a store into a declared field whose type the value does not satisfy.
+///
+/// The native half of the interpreter's rule (`val::value_satisfies_declared`):
+/// a `struct P { v: Int }` whose `v` can hold a String makes the declaration
+/// decorative, and the type checker only sees the stores it can type. A store
+/// through an untyped binding reaches here.
+///
+/// Scalars only, and `DECLARED_ANY` for everything else, so the common store
+/// costs one table lookup and one tag test.
+///
+/// # Safety
+/// `key` must be a NUL-terminated string.
+pub(crate) unsafe fn check_declared_field(target: LkDyn, key: *const c_char, value: LkDyn) {
+    // SAFETY: as documented.
+    unsafe { check_declared_field_of(lkrt_dyn_obj_type_id(target), key, value) }
+}
+
+/// The declared-field check for a store whose struct type only the *mark*
+/// knows — a write through a value the lowering could not name.
+///
+/// # Safety
+/// `key` must be a NUL-terminated string; `handle` a live map handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_marked_field(handle: *mut c_void, key: *const c_char, value: LkDyn) {
+    // SAFETY: as documented.
+    let type_id = unsafe { handle_type_id(handle) };
+    // SAFETY: as documented.
+    unsafe { check_declared_field_of(type_id, key, value) }
+}
+
+/// [`lkrt_check_marked_field`] with the field name as a boxed string — a store
+/// whose key is computed (`p[name] = v`).
+///
+/// # Safety
+/// `handle` must be a live map handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_marked_field_dyn(handle: *mut c_void, key: LkDyn, value: LkDyn) {
+    if key.tag != DYN_STR {
+        return;
+    }
+    // SAFETY: a `DYN_STR` payload is a live NUL-terminated string.
+    unsafe { lkrt_check_marked_field(handle, key.payload as *const c_char, value) }
+}
+
+/// The declared-field check with the declaration **passed in**.
+///
+/// The lowering knows the struct's type and the field's declared code, so a
+/// store it cannot rule out statically needs no table lookup at run time: the
+/// code is a constant and this is a tag compare. The table-driven form above is
+/// for a store through a value whose struct type only the mark knows.
+///
+/// # Safety
+/// `type_name` and `key` must be NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_check_declared_field(
+    type_name: *const c_char,
+    key: *const c_char,
+    declared: i64,
+    value: LkDyn,
+) {
+    if satisfies_declared(declared, value) {
+        return;
+    }
+    // SAFETY: as documented.
+    let (type_name, key) = unsafe {
+        (
+            core::ffi::CStr::from_ptr(type_name).to_string_lossy().into_owned(),
+            core::ffi::CStr::from_ptr(key).to_string_lossy().into_owned(),
+        )
+    };
+    raise_declared_field(&type_name, &key, declared, value);
+}
+
+/// # Safety
+/// As [`check_declared_field`].
+unsafe fn check_declared_field_of(type_id: i64, key: *const c_char, value: LkDyn) {
+    if type_id == 0 || key.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    let key = unsafe { core::ffi::CStr::from_ptr(key) }.to_string_lossy().into_owned();
+    check_declared_value(type_id, &key, value);
+}
+
+/// The check itself, once the field name is a `str`.
+fn check_declared_value(type_id: i64, key: &str, value: LkDyn) {
+    let Some(declared) = with_struct_types(|types| {
+        types
+            .get(&type_id)
+            .and_then(|desc| desc.fields.iter().find(|(name, _)| name == key).map(|(_, code)| *code))
+    }) else {
+        return;
+    };
+    if satisfies_declared(declared, value) {
+        return;
+    }
+    let type_name = with_struct_types(|types| types.get(&type_id).map(|desc| desc.name.clone())).unwrap_or_default();
+    raise_declared_field(&type_name, key, declared, value);
+}
+
+/// Whether `value` may be stored in a field declared with `declared`.
+fn satisfies_declared(declared: i64, value: LkDyn) -> bool {
+    if declared == DECLARED_ANY {
+        return true;
+    }
+    if declared & DECLARED_NULLABLE != 0 && value.tag == DYN_NIL {
+        return true;
+    }
+    match declared & !DECLARED_NULLABLE {
+        DECLARED_INT => value.tag == DYN_I64,
+        // An `Int` satisfies a `Float` field: the language never coerces at a
+        // typed boundary, so it stays an `Int` and the field holds one.
+        DECLARED_FLOAT => value.tag == DYN_I64 || value.tag == DYN_F64,
+        DECLARED_BOOL => value.tag == DYN_BOOL,
+        DECLARED_STR => value.tag == DYN_STR,
+        _ => true,
+    }
+}
+
+fn raise_declared_field(type_name: &str, key: &str, declared: i64, value: LkDyn) -> ! {
+    let declared_name = match declared & !DECLARED_NULLABLE {
+        DECLARED_INT => "Int",
+        DECLARED_FLOAT => "Float",
+        DECLARED_BOOL => "Bool",
+        DECLARED_STR => "String",
+        _ => "Any",
+    };
+    let suffix = if declared & DECLARED_NULLABLE != 0 { "?" } else { "" };
+    crate::panic::raise_str(&alloc::format!(
+        "field `{key}` of {type_name} is declared {declared_name}{suffix}, and a {} cannot be stored in it",
+        kind_name_of(value)
+    ))
 }
 
 #[cfg(test)]
@@ -1138,10 +3012,17 @@ mod tests {
         let mixed = unsafe { lkrt_dyn_add(lkrt_dyn_from_i64(2), lkrt_dyn_from_f64(0.5)) };
         assert_eq!(mixed.tag, DYN_F64);
         assert_eq!(mixed.f64_value(), 2.5);
-        // `/` always yields Float (semantics.md 数值).
+        // `/` yields a Float, even for two Ints — the rule the checker always
+        // stated and that both executors now implement.
         let div = lkrt_dyn_div(lkrt_dyn_from_i64(20), lkrt_dyn_from_i64(4));
         assert_eq!(div.tag, DYN_F64);
         assert_eq!(div.f64_value(), 5.0);
+        let fractional = lkrt_dyn_div(lkrt_dyn_from_i64(7), lkrt_dyn_from_i64(2));
+        assert_eq!(fractional.f64_value(), 3.5);
+        // And `f64` division by zero is an infinity rather than a raise.
+        let infinite = lkrt_dyn_div(lkrt_dyn_from_i64(1), lkrt_dyn_from_i64(0));
+        assert_eq!(infinite.tag, DYN_F64);
+        assert!(infinite.f64_value().is_infinite());
         let cat = unsafe { lkrt_dyn_add(s("foo"), s("bar")) };
         assert_eq!(cat.tag, DYN_STR);
         assert_eq!(text(cat.payload as *mut c_char), "foobar");
@@ -1174,32 +3055,44 @@ mod tests {
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_bool(1));
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_nil());
         }
-        // Comma-separated no spaces; strings {:?}-quoted; 2.0 → "2" (Rust
-        // to_string); bare-vs-quoted only differs for strings.
-        // Mixed lists render string elements bare (VM's Mixed-list path).
-        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,b c,2,true,nil]");
+        // Comma-separated no spaces; `2.0` → "2" (Rust to_string); a string
+        // inside a container is `{:?}`-quoted, whatever the container's
+        // representation is. This asserted the bare form, mirroring a VM quirk
+        // where a *mixed* list rendered strings bare and a typed string list
+        // quoted them — one value, two renderings, decided by an internal
+        // representation no program can see.
+        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,\"b c\",2,true,nil]");
         assert_eq!(text(unsafe { lkrt_dyn_display(s("b c")) }), "b c");
         assert_eq!(text(unsafe { lkrt_dyn_display_quoted(s("b c")) }), "\"b c\"");
     }
 
+    /// `unique()` dedups by `==`, like everything else.
+    ///
+    /// This test used to pin a `unique_eq` of its own — numerics by `to_bits`,
+    /// strings "never equal" past seven bytes, lists by handle — described as
+    /// "VM handle semantics". It *was* the VM's rule once; the VM's equality
+    /// later became heap-aware and this did not follow, so the two backends
+    /// disagreed about `[s, s].unique()` and `[[1], [1]].unique()` with nothing
+    /// to catch it. There is one equality now.
     #[test]
-    fn unique_eq_is_vm_handle_semantics() {
-        // Numerics by to_bits: 1 == 1.0 dedups, 0.0 vs -0.0 does not.
-        assert!(unique_eq(lkrt_dyn_from_i64(1), lkrt_dyn_from_f64(1.0)));
-        assert!(!unique_eq(lkrt_dyn_from_f64(0.0), lkrt_dyn_from_f64(-0.0)));
-        // ShortStr (≤7 bytes) by content; longer strings never dedup
-        // (docs/semantics.md unique() 裁决).
-        assert!(unique_eq(s("ab"), s("ab")));
-        assert!(!unique_eq(s("longer-than-seven"), s("longer-than-seven")));
-        // Lists by handle, not structure.
+    fn unique_dedups_by_the_same_equality_as_everything_else() {
+        // Numerics by value: `1 == 1.0` dedups, and so do the two zeros.
+        assert!(dyn_eq_inner(lkrt_dyn_from_i64(1), lkrt_dyn_from_f64(1.0)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_f64(0.0), lkrt_dyn_from_f64(-0.0)));
+        // …and no NaN equals any NaN, so a list of them never dedups.
+        assert!(!dyn_eq_inner(lkrt_dyn_from_f64(f64::NAN), lkrt_dyn_from_f64(f64::NAN)));
+        // Strings by content, at any length.
+        assert!(dyn_eq_inner(s("ab"), s("ab")));
+        assert!(dyn_eq_inner(s("longer-than-seven"), s("longer-than-seven")));
+        // Lists structurally, not by handle.
         let xs = lkrt_lklist_dyn_new();
         let ys = lkrt_lklist_dyn_new();
         unsafe {
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_i64(7));
             lkrt_lklist_dyn_push(ys, lkrt_dyn_from_i64(7));
         }
-        assert!(unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(xs)));
-        assert!(!unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(ys)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(xs)));
+        assert!(dyn_eq_inner(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(ys)));
         // The chunk/enumerate/zip/flatten family (VM core_methods shapes).
         let src = lkrt_lklist_dyn_new();
         unsafe {
@@ -1227,5 +3120,104 @@ mod tests {
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, 1) }.payload, 20);
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, -1) }.payload, 20); // tail
         assert_eq!(unsafe { lkrt_lklist_dyn_at(xs, 9) }.tag, DYN_NIL); // OOB → nil
+    }
+
+    /// A marked struct renders `Name{f:v,…}` in declaration order, with nested
+    /// values quoted — and a **nested struct** renders as a struct, which is the
+    /// whole reason the type description lives here rather than at the display
+    /// site (see `docs/aot/aot-gaps-and-lkrt.md`).
+    #[test]
+    fn a_marked_struct_displays_like_the_vm() {
+        // struct P { name: String, v: Int }
+        unsafe {
+            lkrt_struct_type_begin(101, c"P".as_ptr());
+            lkrt_struct_type_field(101, c"name".as_ptr(), DECLARED_ANY);
+            lkrt_struct_type_field(101, c"v".as_ptr(), DECLARED_ANY);
+            // struct Outer { inner: P, tag: String }
+            lkrt_struct_type_begin(102, c"Outer".as_ptr());
+            lkrt_struct_type_field(102, c"inner".as_ptr(), DECLARED_ANY);
+            lkrt_struct_type_field(102, c"tag".as_ptr(), DECLARED_ANY);
+        }
+
+        let inner = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe {
+            crate::lkmap::lkrt_lkmap_str_dyn_set(inner, c"name".as_ptr(), s("a, b"));
+            crate::lkmap::lkrt_lkmap_str_dyn_set(inner, c"v".as_ptr(), lkrt_dyn_from_i64(-3));
+        }
+        lkrt_lkmap_obj_mark(inner, 101);
+        let inner_dyn = lkrt_dyn_from_map(inner);
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(inner_dyn) }),
+            r#"P{name:"a, b",v:-3}"#,
+            "declaration order, string field quoted"
+        );
+
+        let outer = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe {
+            crate::lkmap::lkrt_lkmap_str_dyn_set(outer, c"inner".as_ptr(), inner_dyn);
+            crate::lkmap::lkrt_lkmap_str_dyn_set(outer, c"tag".as_ptr(), s("x"));
+        }
+        lkrt_lkmap_obj_mark(outer, 102);
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(lkrt_dyn_from_map(outer)) }),
+            r#"Outer{inner:P{name:"a, b",v:-3},tag:"x"}"#,
+            "a nested struct is a struct, not a hash-ordered map"
+        );
+
+        // An unmarked map is still a map: order is the layout's, and that is
+        // deliberately outside the lowering subset.
+        let plain = crate::lkmap::lkrt_lkmap_str_dyn_new();
+        unsafe { crate::lkmap::lkrt_lkmap_str_dyn_set(plain, c"k".as_ptr(), lkrt_dyn_from_i64(1)) };
+        assert_eq!(
+            text(unsafe { lkrt_dyn_display(lkrt_dyn_from_map(plain)) }),
+            r#"{"k":1}"#
+        );
+    }
+
+    /// `in` finds every heap carrier, and finds it by content.
+    ///
+    /// Two separate defects met here. A catch-all arm answered `false` for any
+    /// tag added after it was written, so a `Set`, a `Bytes`, a window or a
+    /// typed map was never in any list at all. Under it, the arms that did
+    /// answer compared heap values by *handle* — which the VM had already
+    /// stopped doing, so `[1, 2] in [[1, 2], [3]]` was false compiled and true
+    /// interpreted.
+    ///
+    /// Both are gone by delegating to `dyn_eq_inner`, so the assertion that
+    /// matters is the one this test could not make before: a carrier equals a
+    /// *different* handle holding the same bytes.
+    #[test]
+    fn every_heap_carrier_is_found_by_content() {
+        // SAFETY: both pointers are live NUL-terminated literals.
+        let (bytes, other_bytes) = unsafe {
+            (
+                crate::lkbytes::lkrt_lkbytes_from_str(c"ab".as_ptr()),
+                crate::lkbytes::lkrt_lkbytes_from_str(c"cd".as_ptr()),
+            )
+        };
+        let set = crate::lkset::lkrt_lkset_new();
+        let slice_src = crate::lklist::lkrt_lklist_i64_new();
+        let window = unsafe { crate::lkslice::lkrt_lkslice_i64_new(slice_src, 0, 0) };
+        let tmap = crate::lkmap::lkrt_lkmap_str_i64_new();
+
+        for boxed in [
+            lkrt_dyn_from_bytes(bytes),
+            lkrt_dyn_from_set(set),
+            lkrt_dyn_from_slice(window),
+            lkrt_dyn_from_typed_map(tmap, crate::lkmap::KIND_STR_I64),
+        ] {
+            assert!(dyn_eq_inner(boxed, boxed), "tag {} must find itself", boxed.tag);
+        }
+
+        // A second handle over the same bytes is the same value — the VM says
+        // `"ab".bytes() in ["ab".bytes()]`, two allocations, is true.
+        let same = unsafe { crate::lkbytes::lkrt_lkbytes_from_str(c"ab".as_ptr()) };
+        assert!(dyn_eq_inner(lkrt_dyn_from_bytes(bytes), lkrt_dyn_from_bytes(same)));
+
+        // …and different bytes are still not it.
+        assert!(!dyn_eq_inner(
+            lkrt_dyn_from_bytes(bytes),
+            lkrt_dyn_from_bytes(other_bytes)
+        ));
     }
 }

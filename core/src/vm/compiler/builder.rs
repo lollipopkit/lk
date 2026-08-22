@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::expr::Expr;
 use anyhow::{Result, anyhow, bail};
 
 use crate::vm::analysis::{
@@ -9,7 +10,79 @@ use crate::vm::analysis::{
 
 use super::{Compiler, ConstHeapValue, Function, Instr, Opcode, support::*};
 
+/// Everything the compiler knows *by name* about the code it is inside.
+///
+/// Set aside as a unit by [`Compiler::take_name_environment`] so an expression
+/// can be lowered in a scope that is not the surrounding one. The module-level
+/// tables are deliberately absent: they are shared by every scope in the
+/// module, and an expression lowered elsewhere should still see them.
+#[derive(Debug, Default)]
+pub(super) struct NameEnvironment {
+    locals: crate::compat::collections::HashMap<String, u16>,
+    local_scopes: crate::compat::collections::HashMap<String, u32>,
+    cell_locals: crate::compat::collections::HashSet<String>,
+    capture_names: crate::compat::collections::HashMap<String, u16>,
+    capture_cells: crate::compat::collections::HashSet<String>,
+    capture_machine_widths: crate::compat::collections::HashMap<String, crate::val::IntKind>,
+    single_char_string_locals: crate::compat::collections::HashMap<String, u16>,
+    const_map_locals: crate::compat::collections::HashMap<
+        String,
+        crate::util::value_map::ValueMap<crate::val::RuntimeMapKey, super::ConstRuntimeValue>,
+    >,
+    local_struct_types: crate::compat::collections::HashMap<String, String>,
+}
+
+/// How many registers the top level may spend caching its global-backed
+/// bindings before it stops.
+///
+/// Not a tuning number so much as a division of a fixed budget. Registers are
+/// `u8` in the instruction encoding, so a function has 256 of them and the top
+/// level is a function; half is more working set than any single statement here
+/// has ever needed, and the other half is what a program gets to keep. Below
+/// this nothing changes at all.
+const TOP_LEVEL_CACHE_LIMIT: u16 = 128;
+
 impl Compiler {
+    /// Whether a top-level binding may keep its register as a cache of the
+    /// global slot it was just written to.
+    ///
+    /// Worth caching, and it was cached unconditionally right up until a
+    /// program had more than 255 top-level bindings. A kernel reaches that the
+    /// ordinary way: `bare-metal-x86/program.lk` plus the drivers bundled into
+    /// it declare 256 constants between them, none of the files anywhere near
+    /// unusual, and the failure was `Compiler global dst register 256 exceeds
+    /// u8 encoding` naming whichever `const` happened to be added last.
+    ///
+    /// So the cache gets an eviction rule. Past the limit the binding is *only*
+    /// a global — reads cost a `GetGlobal` and the register goes back. Nothing
+    /// about the meaning changes: the value was already in the global slot,
+    /// which is the one place a *function* could ever see it from.
+    ///
+    /// Asked *before* the initializer is lowered, never after. The register
+    /// file runs out on the temporaries of the statement that follows the last
+    /// binding, not on the binding itself, so a check that comes afterwards
+    /// still overflows — which is how the first version of this failed.
+    pub(super) fn top_level_binding_is_cacheable(&self, name: &str, is_const: bool) -> bool {
+        // A **mutable** name a callable can see lives in its global slot, and
+        // the top-level body must read and write *that* — not a register copy.
+        //
+        // The copy made one name into two variables that agreed only until the
+        // first write on either side: `let n = 0; fn bump() { n = n + 1; }` then
+        // `bump()` left the function's view at 1 and the top level's at 0, and a
+        // top-level `n = 5` was invisible to the function. Both backends did it,
+        // so nothing caught it — it is a language bug, not a divergence.
+        //
+        // A `const` keeps its cache: nothing can write it, so the register and
+        // the global cannot come apart. That is not only an optimisation — the
+        // register is where a machine-integer *width* is recorded, and a
+        // global-only `const PAGE_NX: u64 = 0x8000000000000000` prints as a
+        // negative `i64`.
+        if self.top_level && !is_const && self.user_let_globals.contains(name) {
+            return false;
+        }
+        !self.top_level || self.next_reg < TOP_LEVEL_CACHE_LIMIT || !self.global_names.contains_key(name)
+    }
+
     #[inline]
     pub(super) fn alloc_reg(&mut self) -> u16 {
         let reg = self.next_reg;
@@ -17,12 +90,40 @@ impl Compiler {
         if self.next_reg > self.peak_reg {
             self.peak_reg = self.next_reg;
         }
+        // The same for the performance facts, which are the other table keyed by
+        // register — and the one that decides which *opcode* is emitted, so a
+        // fact that outlives its value picks an instruction for a type the
+        // register no longer holds.
+        //
+        // The invariant was already being maintained here, by hand: `call.rs`
+        // clears the destination at a dozen call sites because a call result's
+        // type is unknown. Doing it where the register changes hands makes it
+        // hold by construction instead of by remembering. Measured on the
+        // example corpus before the change: 28 reads of a fact belonging to a
+        // register's previous occupant, one of them claiming `List`.
+        self.function.performance.clear_register(reg);
+        // A width fact belongs to the value in the register, and handing the
+        // register to a new value ends it.
+        //
+        // Registers are recycled at every statement boundary, and the fact
+        // outliving its value is a wrong answer rather than a missed
+        // optimisation: `let z: u8 = 0; println(z - 1)` answered -1 instead of
+        // 255 when the literal `1` happened to land on a register an `i8` had
+        // used two statements earlier. The literal takes the *other* operand's
+        // width only if its own register claims none — and that register was
+        // still claiming `i8`, so the two disagreed and nothing was wrapped.
+        // Nothing about the failing program mentioned `i8`.
+        self.machine_regs.remove(&reg);
         reg
     }
 
     pub(super) fn alloc_regs(&mut self, count: usize) -> Result<u16> {
         let count = u16::try_from(count).map_err(|_| anyhow!("Compiler register block too large: {count}"))?;
         let base = self.next_reg;
+        // Same reason as `alloc_reg`, for the whole block.
+        for reg in base..base.saturating_add(count) {
+            self.machine_regs.remove(&reg);
+        }
         self.next_reg = self
             .next_reg
             .checked_add(count)
@@ -56,6 +157,24 @@ impl Compiler {
         if dst == src {
             return Ok(());
         }
+        // A machine int keeps its width when it is moved, and a register that
+        // receives a value of no particular width stops claiming one.
+        //
+        // Both halves in one place, because a width fact is only ever about the
+        // value *currently* in a register: the second half is what makes a
+        // stale width impossible rather than merely absent. Every site that
+        // wrote a register used to be responsible for remembering, and the
+        // comment in `emit_bin_op_to_register_with_flavor` says what forgetting
+        // costs — "a stale width fact that a later, unrelated value in the same
+        // register would inherit".
+        match self.machine_regs.get(&src).copied() {
+            Some(kind) => {
+                self.machine_regs.insert(dst, kind);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
         let pc = self.function.code.len();
         self.emit(Instr::abc(
             Opcode::Move,
@@ -75,11 +194,104 @@ impl Compiler {
         Ok(())
     }
 
+    /// Whether `target` is a plain local that is *not* yet a capture cell —
+    /// the one shape whose register a later operand can change underneath a
+    /// reference already taken to it.
+    pub(super) fn plain_local_receiver(&self, target: &Expr) -> Option<String> {
+        let Expr::Var(name) = target else { return None };
+        (self.locals.contains_key(name.as_str()) && !self.cell_locals.contains(name.as_str())).then(|| name.to_string())
+    }
+
+    /// Re-reads a target when lowering the operands after it promoted it.
+    ///
+    /// A target that is a plain local is the local's *register*, not a copy.
+    /// Capturing that local in a closure boxes it in place
+    /// (`promote_captured_local` moves the cell over the register), so an
+    /// operand containing such a closure changes what the already-taken target
+    /// points at — and the instruction then runs against the cell:
+    ///
+    /// ```text
+    /// xs.map(|x| x + xs.len())     → UpvalCell has no method 'map'
+    /// xs[0] = || xs.len()          → SetIndex target object changed … "UpvalCell"
+    /// ```
+    ///
+    /// Re-reading is free in every other case (a set lookup) and costs nothing
+    /// semantically here: the target is a variable, so reading it twice has no
+    /// effect the first read did not.
+    pub(super) fn reread_promoted_receiver(
+        &mut self,
+        target: &Expr,
+        receiver: u16,
+        was_plain: Option<String>,
+    ) -> Result<u16> {
+        match was_plain {
+            Some(name) if self.cell_locals.contains(&name) => self.lower_readonly_operand(target),
+            _ => Ok(receiver),
+        }
+    }
+
+    /// Take every name the surrounding code has bound, leaving none.
+    ///
+    /// Pairs with [`Self::restore_name_environment`]. Only names go: registers,
+    /// the function being built and the module's own tables stay, because the
+    /// expression to be lowered still belongs to this function's code.
+    pub(super) fn take_name_environment(&mut self) -> NameEnvironment {
+        NameEnvironment {
+            locals: core::mem::take(&mut self.locals),
+            local_scopes: core::mem::take(&mut self.local_scopes),
+            cell_locals: core::mem::take(&mut self.cell_locals),
+            capture_names: core::mem::take(&mut self.capture_names),
+            capture_cells: core::mem::take(&mut self.capture_cells),
+            capture_machine_widths: core::mem::take(&mut self.capture_machine_widths),
+            single_char_string_locals: core::mem::take(&mut self.single_char_string_locals),
+            const_map_locals: core::mem::take(&mut self.const_map_locals),
+            local_struct_types: core::mem::take(&mut self.local_struct_types),
+        }
+    }
+
+    pub(super) fn restore_name_environment(&mut self, saved: NameEnvironment) {
+        self.locals = saved.locals;
+        self.local_scopes = saved.local_scopes;
+        self.cell_locals = saved.cell_locals;
+        self.capture_names = saved.capture_names;
+        self.capture_cells = saved.capture_cells;
+        self.capture_machine_widths = saved.capture_machine_widths;
+        self.single_char_string_locals = saved.single_char_string_locals;
+        self.const_map_locals = saved.const_map_locals;
+        self.local_struct_types = saved.local_struct_types;
+    }
+
     pub(super) fn insert_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
         let name = name.into();
         self.single_char_string_locals.remove(&name);
         self.function.performance.mark_local_slot(reg);
+        self.local_scopes.insert(name.clone(), self.scope_depth);
         self.locals.insert(name, reg)
+    }
+
+    /// Opens a nested scope, answering what [`Self::exit_scope`] needs back.
+    ///
+    /// The bindings themselves are saved by the callers (each has its own rule
+    /// for `cell_locals` and the const-map cache); this pairs with them to keep
+    /// the *depth* consistent, which is what tells a `let` whether the name it
+    /// is binding belongs to this scope or an enclosing one.
+    pub(super) fn enter_scope(&mut self) -> crate::compat::collections::HashMap<String, u32> {
+        self.scope_depth += 1;
+        self.local_scopes.clone()
+    }
+
+    pub(super) fn exit_scope(&mut self, saved: crate::compat::collections::HashMap<String, u32>) {
+        self.scope_depth -= 1;
+        self.local_scopes = saved;
+    }
+
+    /// Whether `name`'s live binding was declared in the scope being lowered.
+    ///
+    /// A `let` may reuse the register of a binding it *replaces* in the same
+    /// scope; shadowing one from an enclosing scope must not, or the value the
+    /// outer scope resumes reading is the inner one.
+    pub(super) fn local_declared_in_current_scope(&self, name: &str) -> bool {
+        self.local_scopes.get(name) == Some(&self.scope_depth)
     }
 
     /// Binds a *fresh declaration*: a new binding is a plain value, so any
@@ -272,8 +484,13 @@ impl Compiler {
     }
 
     pub(super) fn emit_pattern_assert(&mut self, condition: u16) -> Result<()> {
+        self.emit_assert(condition, "Pattern does not match value")
+    }
+
+    /// Raise `message` unless `condition` holds.
+    pub(super) fn emit_assert(&mut self, condition: u16, message: &str) -> Result<()> {
         let skip_raise = self.emit_test_placeholder(condition)?;
-        self.emit_raise("Pattern does not match value")?;
+        self.emit_raise(message)?;
         let end = self.function.code.len();
         self.patch_test_true_jump(skip_raise, end)
     }

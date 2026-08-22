@@ -1,6 +1,5 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::util::fast_map::fast_hash_map_new;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -8,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stmt::import::ImportStmt,
-    val::{HeapRef, RuntimeMapKey, ShortStr},
+    val::{RuntimeMapKey, ShortStr},
 };
 
 use super::{
@@ -38,7 +37,7 @@ use super::{
 // consumer with an empty table rather than a wrong one — still a semantic
 // difference, hence the bump.
 // Version 11: `ModuleData.type_scope` carries the identity of the module as a
-// declarer of types (see `super::TypeScope`). A v10 artifact has no scope, so a
+// declarer of types (see `crate::val::TypeScope`). A v10 artifact has no scope, so a
 // v11 consumer would file every one of its declared types under the anonymous
 // scope and collide them with the host program's — exactly the wrong-dispatch
 // bug the scope exists to close, hence a rejection rather than a default.
@@ -47,7 +46,25 @@ use super::{
 // `false` is the *permissive* answer — a v11 artifact would let a
 // global-writing method run against a temporary copy of its module's globals
 // and silently drop the write, so this one cannot degrade quietly either.
-pub const MODULE_ARTIFACT_VERSION: u32 = 12;
+// Version 15: `TypeInfo.structs` carries each `struct`'s field names in
+// declaration order, which is what `display` prints an instance's fields in. It
+// decodes to empty, and empty means "fall back to sorting by name" — so a v14
+// artifact would print its structs in a different order than the source it was
+// built from. Cosmetic, but a golden-output comparison is not.
+// Version 16: `ImplDecl.trait_name` is optional — an inherent `impl Type { … }`
+// names no trait. A v15 artifact encodes it as a bare string, which a v16
+// consumer cannot read as an `Option`; a v15 consumer cannot read the `null` a
+// v16 producer writes. Neither direction degrades quietly, but the version says
+// so first.
+// Version 17: `LoadNative` was removed and the opcodes above it were renumbered
+// to close the hole — see `opcodes_are_contiguous` for why the hole could not
+// simply be left.
+/// Bumped to 18 when `StructDecl.fields` became `Vec<StructFieldDecl>` — a
+/// field's *declared type* travels with its name now, because that is the only
+/// thing that says what a field read produces. A v17 artifact encodes the
+/// fields as bare strings, which a v18 consumer cannot read as records, and the
+/// other direction is the same mismatch.
+pub const MODULE_ARTIFACT_VERSION: u32 = 18;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -59,9 +76,6 @@ pub struct ModuleArtifact {
 
 impl ModuleArtifact {
     pub fn new(imports: Vec<ImportStmt>, module: &Module) -> Result<Self> {
-        if !module.natives.is_empty() {
-            bail!("Module artifact cannot encode inline native entries");
-        }
         Ok(Self {
             format: "lk.module".to_string(),
             version: MODULE_ARTIFACT_VERSION,
@@ -118,11 +132,11 @@ pub struct ModuleData {
     #[serde(default, skip_serializing_if = "super::TypeInfo::is_empty")]
     pub type_info: super::TypeInfo,
     /// Identity of this module as a declarer of types; see
-    /// [`super::TypeScope`]. Not skippable — an absent scope would silently
+    /// [`crate::val::TypeScope`]. Not skippable — an absent scope would silently
     /// mean "anonymous", which is a *different* type identity, not a missing
     /// one.
     #[serde(default)]
-    pub type_scope: super::TypeScope,
+    pub type_scope: crate::val::TypeScope,
 }
 
 impl ModuleData {
@@ -177,7 +191,6 @@ impl ModuleData {
             type_info: self.type_info,
             type_scope: self.type_scope,
             functions,
-            natives: Vec::new(),
             globals: {
                 let mut globals = Vec::with_capacity(self.globals.len());
                 for name in self.globals {
@@ -253,7 +266,6 @@ impl FunctionData {
                 }
                 code
             },
-            analyses: Vec::new(),
             performance: self.performance,
             register_count: self.register_count,
             param_count: self.param_count,
@@ -290,7 +302,7 @@ impl ConstPoolData {
         Self {
             ints: pool.ints.clone(),
             floats: pool.floats.clone(),
-            strings: pool.strings.clone(),
+            strings: pool.strings.iter().map(|s| s.to_string()).collect(),
             heap_values,
         }
     }
@@ -299,7 +311,7 @@ impl ConstPoolData {
         Ok(ConstPool {
             ints: self.ints,
             floats: self.floats,
-            strings: self.strings,
+            strings: self.strings.into_iter().map(Arc::<str>::from).collect(),
             heap_values: {
                 let mut values = Vec::with_capacity(self.heap_values.len());
                 for value in self.heap_values {
@@ -393,7 +405,7 @@ impl ConstHeapValueData {
                 ConstHeapValue::List(out)
             }
             Self::Map(values) => {
-                let mut map = fast_hash_map_new();
+                let mut map = crate::util::value_map::value_map_new();
                 for (key, value) in values {
                     map.insert(key.into_runtime_key()?, value.into_runtime_value()?);
                 }
@@ -411,7 +423,6 @@ pub enum RuntimeMapKeyData {
     Int(i64),
     ShortStr(String),
     String(String),
-    Obj(u32),
 }
 
 impl RuntimeMapKeyData {
@@ -422,7 +433,6 @@ impl RuntimeMapKeyData {
             RuntimeMapKey::Int(value) => Self::Int(*value),
             RuntimeMapKey::ShortStr(value) => Self::ShortStr(value.as_str().to_string()),
             RuntimeMapKey::String(value) => Self::String(value.to_string()),
-            RuntimeMapKey::Obj(value) => Self::Obj(value.index()),
         }
     }
 
@@ -435,7 +445,6 @@ impl RuntimeMapKeyData {
                 ShortStr::new(&value).ok_or_else(|| anyhow!("artifact short string key exceeds inline limit"))?,
             ),
             Self::String(value) => RuntimeMapKey::String(Arc::<str>::from(value)),
-            Self::Obj(value) => RuntimeMapKey::Obj(HeapRef::new(value)),
         })
     }
 }
@@ -490,7 +499,7 @@ return 1;\n";
         assert_eq!(info.traits.len(), 1, "the trait declaration is recorded");
         assert_eq!(info.traits[0].name, "Show");
         assert_eq!(info.impls.len(), 1, "the impl block is recorded");
-        assert_eq!(info.impls[0].trait_name, "Show");
+        assert_eq!(info.impls[0].trait_name.as_deref(), Some("Show"));
         assert_eq!(info.impls[0].type_name, "Point");
         assert_eq!(info.impls[0].methods.len(), 1);
         assert_eq!(info.impls[0].methods[0].name, "show");
@@ -513,7 +522,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 12);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 18);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");

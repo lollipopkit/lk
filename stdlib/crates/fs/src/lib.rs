@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapStore, HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -74,7 +74,7 @@ impl FsModule {
     fn metadata(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = path_arg(args.get(0).expect("checked arity"), runtime, "fs.metadata path")?;
         let meta = std::fs::metadata(path.as_ref()).map_err(|err| anyhow!("failed to stat '{}': {err}", path))?;
-        let mut map = fast_hash_map_new();
+        let mut map = value_map_new();
         map.insert(Arc::<str>::from("len"), RuntimeVal::Int(meta.len() as i64));
         map.insert(Arc::<str>::from("is_file"), RuntimeVal::Bool(meta.is_file()));
         map.insert(Arc::<str>::from("is_dir"), RuntimeVal::Bool(meta.is_dir()));
@@ -87,7 +87,7 @@ impl FsModule {
         ))
     }
 
-    #[stdlib_export(params(path: String), returns = List[String])]
+    #[stdlib_export(params(path: String), returns = List<String>)]
     fn read_dir(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = path_arg(args.get(0).expect("checked arity"), runtime, "fs.read_dir path")?;
         let mut entries = Vec::new();
@@ -138,7 +138,7 @@ impl FsModule {
         remove_path(path.as_ref(), |path| std::fs::remove_dir_all(path))
     }
 
-    #[stdlib_export(params(from: String, to: String), returns = Bool)]
+    #[stdlib_export(params(from: String, to: String), named(to), returns = Bool)]
     fn rename(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let from = path_arg(args.get(0).expect("checked arity"), runtime, "fs.rename from")?;
         let to = path_arg(args.get(1).expect("checked arity"), runtime, "fs.rename to")?;
@@ -146,7 +146,7 @@ impl FsModule {
         Ok(RuntimeVal::Bool(true))
     }
 
-    #[stdlib_export(params(from: String, to: String), returns = Int)]
+    #[stdlib_export(params(from: String, to: String), named(to), returns = Int)]
     fn copy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let from = path_arg(args.get(0).expect("checked arity"), runtime, "fs.copy from")?;
         let to = path_arg(args.get(1).expect("checked arity"), runtime, "fs.copy to")?;

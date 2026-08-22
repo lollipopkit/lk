@@ -1,0 +1,45 @@
+// A map iterates, and prints, in the order its keys were first written.
+//
+// Not the hash table's order, which is a property of *how the map was built*
+// rather than of what it holds: the two maps below are `==`, and used to render
+// their fields differently. It is also what makes the interpreter and the
+// compiled build agree structurally — both append to a vector — instead of by
+// both landing on the same hash layout.
+
+// Written as a literal, and built one key at a time: same content, same order.
+let literal = {"zebra": 1, "apple": 2, "mango": 3, "kiwi": 4, "pear": 5, "fig": 6};
+let built = {};
+built["zebra"] = 1;
+built["apple"] = 2;
+built["mango"] = 3;
+built["kiwi"] = 4;
+built["pear"] = 5;
+built["fig"] = 6;
+
+assert(literal == built);
+let order = ["zebra", "apple", "mango", "kiwi", "pear", "fig"];
+assert(literal.keys() == order);
+assert(built.keys() == order);
+assert("{}".format(literal) == "{}".format(built));
+
+// Rewriting a key updates it in place and keeps its position.
+built["mango"] = 30;
+assert(built.keys() == order);
+assert(built["mango"] == 30);
+
+// A new key goes to the end.
+built["quince"] = 7;
+assert(built.keys() == ["zebra", "apple", "mango", "kiwi", "pear", "fig", "quince"]);
+
+// Integer keys are ordered the same way.
+let ints = {};
+ints[30] = 3;
+ints[10] = 1;
+ints[20] = 2;
+assert(ints.keys() == [30, 10, 20]);
+assert(ints.values() == [3, 1, 2]);
+
+// Values follow the keys.
+assert(literal.values() == [1, 2, 3, 4, 5, 6]);
+
+println("map order: all assertions passed");

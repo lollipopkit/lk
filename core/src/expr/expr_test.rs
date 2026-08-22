@@ -12,8 +12,8 @@ mod test {
         expect_env("user.name + 'pt'", "lkpt");
         expect_env("user.age + list.0 == 19", "true");
         expect_env("user.name + user.age", "lk18");
-        expect("[1, 2, 3] + [2]", "[1, 2, 3, 2]");
-        expect("[1, 2, 3] - [2]", "[1, 3]");
+        expect("[1, 2, 3] + [2]", "[1,2,3,2]");
+        expect("[1, 2, 3] - [2]", "[1,3]");
         expect_env("list.2 / 2.0", "1.5");
         panic_env("user.name / list");
     }
@@ -52,9 +52,18 @@ mod test {
         expect_env("pub && (user.age > 17 || user.name == 'john')", "true");
         expect_env("pub || (user.age < 17 && user.name == 'john')", "true");
 
-        // Short-circuit evaluation (RHS not evaluated)
-        expect("false && nonexistent.field", "false");
-        expect("true || nonexistent.field", "true");
+        // Short-circuit evaluation (RHS not evaluated).
+        //
+        // Probed with `% 0`, which raises, rather than with an undefined name:
+        // an undefined name is caught before execution, and these two lines
+        // used to pass only because parse-time folding deleted the RHS outright
+        // — which tested the folder, not the executor.
+        //
+        // Not `/ 0`: `/` is float division and `1 / 0` is `inf` (see
+        // docs/semantics.md), so it never raises and the probe would pass
+        // whether the RHS ran or not.
+        expect_source("let z = 0;\nreturn false && (1 % z == 1);", "false");
+        expect_source("let z = 0;\nreturn true || (1 % z == 1);", "true");
     }
 
     #[test]
@@ -66,8 +75,9 @@ mod test {
         // With bound variables
         expect_env("pub ? user.name : 'guest'", "lk");
 
-        // Short-circuit: only selected branch should evaluate
-        expect("false ? (nonexistent.field) : 42", "42");
+        // Short-circuit: only the selected branch evaluates. Same reason as in
+        // `logical_operators` for probing with `% 0` rather than a name or `/`.
+        expect_source("let z = 0;\nreturn false ? (1 % z) : 42;", "42");
 
         // Precedence with arithmetic on else branch
         expect("true ? 1 : 2 + 3", "1");
@@ -148,16 +158,16 @@ mod test {
         expect("[]", "[]");
 
         // Simple list
-        expect("[1, 2, 3]", "[1, 2, 3]");
+        expect("[1,2,3]", "[1,2,3]");
 
         // Mixed types
-        expect(r#"[1, "hello", true]"#, "[1, hello, true]");
+        expect(r#"[1, "hello", true]"#, "[1,\"hello\",true]");
 
         // Nested lists
-        expect("[[1, 2], [3, 4]]", "[[1, 2], [3, 4]]");
+        expect("[[1,2],[3,4]]", "[[1,2],[3,4]]");
 
         // List with expressions
-        expect("[1 + 2, 3 * 4]", "[3, 12]");
+        expect("[1 + 2,3 * 4]", "[3,12]");
 
         // List with variable access
         expect_source(
@@ -166,7 +176,7 @@ mod test {
             let list = [1, 2, 3];
             return [user.age, list.0];
             "#,
-            "[18, 1]",
+            "[18,1]",
         );
     }
 
@@ -253,7 +263,7 @@ mod test {
     #[test]
     fn trailing_commas() {
         // List with trailing comma
-        expect("[1, 2, 3,]", "[1, 2, 3]");
+        expect("[1,2,3,]", "[1,2,3]");
 
         // Map with trailing comma
         expect(r#"{"a": 1, "b": 2,}.a"#, "1");
@@ -276,6 +286,45 @@ mod test {
         panic("1.0 % 0.0");
     }
 
+    /// Folding is a shortcut, not a second language. It runs before the type
+    /// checker, so anything it answers differently is unreachable by any
+    /// diagnostic.
+    #[test]
+    fn constant_folding_answers_what_the_executors_answer() {
+        // Int arithmetic wraps in both executors. The folder used the bare
+        // operators, which panic in a debug build — so this crashed the parser
+        // with `attempt to add with overflow`.
+        expect("9223372036854775807 + 1", "-9223372036854775808");
+        expect("-9223372036854775807 - 2", "9223372036854775807");
+        expect("9223372036854775807 * 2", "-2");
+        // `i64::MIN % -1` is 0, not a panic — the executors were fixed for this
+        // and the folder was not.
+        expect("(-9223372036854775807 - 1) % -1", "0");
+
+        // `*` does not repeat a string: the checker rejects it and names
+        // `text.repeat(count)`. The folder implemented it anyway, so the rule a
+        // program met depended on whether the count was a literal.
+        let folded = Expr::try_from(r#""ha" * 3"#).expect("parses");
+        assert!(
+            !matches!(&folded, Expr::Literal(_)),
+            "`\"ha\" * 3` must reach the type checker, not fold to a string: {folded:?}"
+        );
+
+        // `??` requires its two sides to unify, so folding `a ?? b` to `a`
+        // deletes the side the checker needs. `7 ?? "ab"` answered 7 while
+        // `maybe_int() ?? "ab"` is `Cannot unify Int with String`.
+        let folded = Expr::try_from(r#"7 ?? "ab""#).expect("parses");
+        assert!(
+            !matches!(&folded, Expr::Literal(_)),
+            "`7 ?? \"ab\"` must reach the type checker: {folded:?}"
+        );
+        // `nil ?? e` still folds — it discards only the literal `nil`.
+        assert!(matches!(
+            Expr::try_from(r#"nil ?? "ab""#).expect("parses"),
+            Expr::Literal(_)
+        ));
+    }
+
     #[test]
     fn test_nil_handling() {
         expect("nil == nil", "true");
@@ -283,7 +332,7 @@ mod test {
         expect("nil", "nil");
     }
 
-    // 缺失 Optional Chanining 测试
+    // TODO(coverage): optional chaining has no case here.
 
     #[test]
     fn optional_chaining_access_and_index() {
@@ -360,10 +409,10 @@ mod test {
     #[test]
     fn range_expressions() {
         // Exclusive range
-        expect("1..5", "[1, 2, 3, 4]");
+        expect("1..5", "[1,2,3,4]");
 
         // Inclusive range
-        expect("1..=5", "[1, 2, 3, 4, 5]");
+        expect("1..=5", "[1,2,3,4,5]");
 
         // Single element inclusive range
         expect("1..=1", "[1]");
@@ -372,10 +421,10 @@ mod test {
         expect("5..5", "[]");
 
         // Negative ranges
-        expect("-3..=3", "[-3, -2, -1, 0, 1, 2, 3]");
+        expect("-3..=3", "[-3,-2,-1,0,1,2,3]");
     }
 
-    // 缺失 Closure 测试
+    // TODO(coverage): closures have no case here.
 
     #[test]
     fn template_strings() {

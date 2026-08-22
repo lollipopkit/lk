@@ -31,22 +31,81 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert(fs.exists(fs.temp_dir()));
+// `temp_dir()` is declared `String?`; `??` supplies the String it is
+// declared to maybe not be.
+assert(fs.exists(fs.temp_dir() ?? "/tmp"));
 assert(path.sep() != "");
 
 // Builtin Set
 let my_set = Set(["a", "b", "a"]);
-assert(my_set.has("a"));
+assert(my_set.contains("a"));
 assert(my_set.contains("b"));
 assert_eq(my_set.len(), 2);
 my_set.add("c");
 assert_eq(my_set.len(), 3);
 my_set.delete("a");
-assert(!my_set.has("a"));
+
+// A member a set cannot hold says *what it is*, and says it the same way from
+// either end. The type checker turns most of these away — `Set([[1, 2]])` never
+// runs — so the ones that reach the runtime are the types it types as `Any`:
+// `Bytes`, and a function. The compiled build used to answer "Float" for both.
+let refused_bytes = "";
+try { Set(["ab".bytes()]); } catch e { refused_bytes = "{}".format(e); }
+assert(refused_bytes == "Set() item: Bytes cannot be a map key or set member: only nil, Bool, Int and String can");
+
+let refused_fn = "";
+try { Set([|x| x + 1]); } catch e { refused_fn = "{}".format(e); }
+assert(refused_fn == "Set() item: Function cannot be a map key or set member: only nil, Bool, Int and String can");
+
+// The type checker turns `my_set.add("zz".bytes())` away outright, whatever the
+// element type — so the add path's own wording is only reachable through a
+// parameter typed `Any`.
+fn add_member(s, v) { s.add(v); }
+let refused_add = "";
+try { add_member(my_set, "zz".bytes()); } catch e { refused_add = "{}".format(e); }
+assert(
+    refused_add == "set.add() value: Bytes cannot be a map key or set member: only nil, Bool, Int and String can"
+);
+assert(!my_set.contains("a"));
 
 // List methods remain available without importing a list module.
 assert_eq(xs.first(), 3);
 assert_eq(xs.last(), 6);
-assert_eq(xs.slice(1, 4), [1, 4, 1]);
+// `slice` is a window over `xs` rather than a copy of part of it, so it is
+// compared element by element. `to_list()` would say the same thing in one
+// line, but it has no native lowering yet and this file is in the AOT
+// coverage gate.
+let window = xs.slice(1, 4);
+assert_eq(window.len(), 3);
+assert_eq(window[0], 1);
+assert_eq(window[1], 4);
+assert_eq(window[2], 1);
 
 println("stdlib comprehensive test: all assertions passed");
+
+// `clear()` hands the receiver back, empty — the same handle, for a map as for
+// a list. The compiled build answered `nil` for the map, so
+// `println(m.clear())` printed two different things.
+let cleared_map = {"a": 1, "b": 2};
+assert(cleared_map.clear() == {});
+assert(cleared_map.len() == 0);
+let cleared_list = [1, 2];
+assert(cleared_list.clear() == []);
+let cleared_set = Set([1, 2]);
+assert(cleared_set.clear() == Set([]));
+assert(cleared_set.len() == 0);
+
+// A map has `delete`, and does not have `remove`. The compiled build accepted
+// `remove` as a second spelling — so a program the interpreter refuses to run
+// ran, on one backend, and answered.
+let with_key = {"a": 1};
+assert(with_key.delete("a") == 1);
+assert(with_key.len() == 0);
+
+// A refusal's message *is* the error, not something printed on the way to a
+// different one. `chunk(0)` used to print "size must be positive" on stderr and
+// then raise `runtime type error`, so the explanation and the catchable
+// sentence were two different strings.
+let chunk_error = "";
+try { [1, 2, 3].chunk(0); } catch e { chunk_error = "{}".format(e); }
+assert(chunk_error == "list.chunk() size must be positive");

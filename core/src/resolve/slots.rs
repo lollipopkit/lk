@@ -143,13 +143,19 @@ impl FnCtx {
         if let Some(top) = self.scopes.last_mut() {
             top.insert(name.clone(), idx);
         }
-        self.decls.push(Decl {
-            name,
-            index: idx,
-            is_param,
-            block_depth: self.block_depth(),
-            span: None,
-        });
+        // A desugar's temporary gets a slot like any other local — the code
+        // has to run — but it is not something the writer declared, so it does
+        // not go in the list tools read. The editor's outline used to list
+        // `__optcall0` and `__unwrap1` beside the real variables.
+        if !crate::ast::is_desugar_local(&name) {
+            self.decls.push(Decl {
+                name,
+                index: idx,
+                is_param,
+                block_depth: self.block_depth(),
+                span: None,
+            });
+        }
         idx
     }
 
@@ -238,7 +244,7 @@ impl ResolverCore {
 
     fn resolve_stmt(&mut self, stmt: &Stmt, children_out: &mut Vec<FunctionLayout>) {
         match stmt {
-            Stmt::Attributed { item, .. } => {
+            Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
                 self.resolve_stmt(item, children_out);
             }
             Stmt::Import(_) => {
@@ -312,7 +318,7 @@ impl ResolverCore {
             Stmt::CompoundAssign { value, .. } => {
                 self.resolve_expr(value);
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 self.resolve_expr(value);
                 let name = name.clone();
                 self.current_fn().define(name, false);
@@ -339,7 +345,7 @@ impl ResolverCore {
 
                 children_out.push(child_layout);
             }
-            Stmt::Expr(expr) => {
+            Stmt::Expr { value: expr, .. } => {
                 self.resolve_expr(expr);
             }
             Stmt::Struct { .. } => {
@@ -370,26 +376,6 @@ impl ResolverCore {
             Stmt::Block { statements } => {
                 self.current_fn().push_block();
                 for s in statements {
-                    self.resolve_stmt(s, children_out);
-                }
-                self.current_fn().pop_block();
-            }
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => {
-                // Two sibling scopes. The caught name is bound only in the
-                // second one: the body cannot see it, and the handler's binding
-                // must not outlive its block.
-                self.current_fn().push_block();
-                for s in body {
-                    self.resolve_stmt(s, children_out);
-                }
-                self.current_fn().pop_block();
-                self.current_fn().push_block();
-                self.current_fn().define(catch_var.clone(), false);
-                for s in handler {
                     self.resolve_stmt(s, children_out);
                 }
                 self.current_fn().pop_block();
@@ -491,7 +477,7 @@ impl ResolverCore {
                     }
                 }
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 // Nested anonymous function
                 let child = self.with_new_function(|this| {
                     for p in params {
@@ -506,7 +492,7 @@ impl ResolverCore {
                                 &mut Vec::new(),
                             );
                         }
-                        _ => this.resolve_stmt(&Stmt::Expr(body.clone()), &mut Vec::new()),
+                        _ => this.resolve_stmt(&Stmt::expr(body.clone()), &mut Vec::new()),
                     }
                 });
                 // Attach as an anonymous child of the current function
@@ -523,10 +509,32 @@ impl ResolverCore {
                     self.current_fn().pop_block();
                 }
             }
-            // Block expressions in general expression position (today only
-            // synthesized — e.g. the `select` desugar; closure bodies take
-            // the dedicated path above): resolve their statements in a block
-            // scope of their own, same as a statement-level block.
+            // Block expressions in general expression position — both branches
+            // of an `if` used for its value, and the synthesized bodies of the
+            // `select` / `?.` desugars; closure bodies take the dedicated path
+            // above. Resolve their statements in a block scope of their own,
+            // same as a statement-level block, so a `let` inside a branch does
+            // not leak past it.
+            // Two scopes, and the handler's is the one that binds the caught
+            // name — same shape as the compiler's lowering.
+            Expr::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                self.resolve_stmt(
+                    &Stmt::Block {
+                        statements: body.clone(),
+                    },
+                    &mut Vec::new(),
+                );
+                self.current_fn().push_block();
+                self.current_fn().define(catch_var.clone(), /*is_param=*/ false);
+                for stmt in handler {
+                    self.resolve_stmt(stmt, &mut Vec::new());
+                }
+                self.current_fn().pop_block();
+            }
             Expr::Block(statements) => {
                 self.resolve_stmt(
                     &Stmt::Block {

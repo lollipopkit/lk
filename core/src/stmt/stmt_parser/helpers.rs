@@ -10,6 +10,21 @@ use crate::{
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
+    /// An expression parser over a token sub-slice that continues *this*
+    /// parser's nesting budget.
+    ///
+    /// Statement and expression nesting interleave — `if c { if c { … } }`
+    /// alternates between the two parsers — so starting each crossing back at
+    /// zero would leave the combined nesting unbounded, one slice at a time.
+    pub(crate) fn expr_parser<'b>(&self, tokens: &'b [Token], spans: Option<&'b [Span]>) -> ExprParser<'b> {
+        let mut parser = match spans {
+            Some(spans) => ExprParser::new_with_spans(tokens, spans),
+            None => ExprParser::new(tokens),
+        };
+        parser.depth = self.depth;
+        parser
+    }
+
     pub(super) fn eof(&self) -> bool {
         self.pos >= self.len
     }
@@ -23,7 +38,7 @@ impl<'a> StmtParser<'a> {
 
         if core::mem::discriminant(&self.tokens[self.pos]) != core::mem::discriminant(&expected) {
             return Err(anyhow!(
-                self.err(&format!("Expected {:?}, found {:?}", expected, self.tokens[self.pos]))
+                self.err(&format!("Expected `{}`", crate::token::token_lexeme(&expected)))
             ));
         }
 
@@ -50,96 +65,33 @@ impl<'a> StmtParser<'a> {
         }
     }
 
+    /// The `: T` of a `let`, a parameter, or a field.
+    ///
+    /// The collecting and rendering live in [`crate::type_syntax`], shared with
+    /// the closure parser — this had been the only copy until a lambda needed
+    /// the same thing in a position that cannot reach this parser.
     pub(super) fn parse_type_annotation(&mut self) -> Result<Type> {
-        let mut type_tokens = Vec::new();
-        let mut paren: i32 = 0;
-        let mut bracket: i32 = 0;
-        let mut brace: i32 = 0;
-        let mut angle: i32 = 0;
-
-        // Collect tokens that make up the type annotation until we hit a token that can't be part of a type
-        while !self.eof() {
-            match &self.tokens[self.pos] {
-                Token::LParen => {
-                    paren += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RParen => {
-                    if paren > 0 {
-                        paren -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::LBracket => {
-                    bracket += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RBracket => {
-                    if bracket > 0 {
-                        bracket -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::LBrace => {
-                    brace += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::RBrace => {
-                    if brace > 0 {
-                        brace -= 1;
-                        type_tokens.push(&self.tokens[self.pos]);
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                Token::Lt => {
-                    angle += 1;
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::Gt => {
-                    if angle > 0 {
-                        angle -= 1;
-                    }
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                Token::Assign if paren == 0 && bracket == 0 && brace == 0 && angle == 0 => break,
-                Token::Id(_)
-                | Token::Comma
-                | Token::Colon
-                | Token::Assign
-                | Token::FnArrow
-                | Token::Question
-                // `*` starts a pointer type (`*u8`, `*mut u32`). It is the same
-                // token as multiplication, but a type position never contains
-                // one, so there is nothing to disambiguate.
-                | Token::Mul
-                | Token::Pipe => {
-                    type_tokens.push(&self.tokens[self.pos]);
-                    self.pos += 1;
-                }
-                _ => break,
+        let Some((ty, end)) =
+            crate::type_syntax::parse_type_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union)
+        else {
+            // Two different reports, told apart by whether anything
+            // type-shaped was there at all — an empty position is a missing
+            // annotation, a non-empty one is a bad type.
+            // One rule, said the same way from every type position: a
+            // Rust-shaped `fn(Int) -> Int` is the mis-spelling worth naming,
+            // and which collector ran decides nothing about the message.
+            if let Some(hint) = crate::type_syntax::function_type_hint(self.tokens, self.pos) {
+                return Err(anyhow!(self.err(hint)));
             }
-        }
-
-        if type_tokens.is_empty() {
-            return Err(anyhow!(self.err("Expected type annotation")));
-        }
-
-        let type_str = self.tokens_to_type_string(&type_tokens);
-        let parsed_type = Type::parse(&type_str);
-        parsed_type.ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+            let spelled = crate::type_syntax::spelling_at(self.tokens, self.pos, crate::type_syntax::StopAt::Union);
+            return Err(anyhow!(if spelled.is_empty() {
+                self.err("Expected type annotation")
+            } else {
+                self.err(&format!("Invalid type: {spelled}"))
+            }));
+        };
+        self.pos = end;
+        Ok(ty)
     }
 
     pub(super) fn parse_inline_type_until_param_delim(&mut self) -> Result<Type> {
@@ -212,7 +164,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_type_until_semicolon(&mut self) -> Result<Type> {
@@ -288,7 +250,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_type_until_block_start(&mut self) -> Result<Type> {
@@ -353,7 +325,17 @@ impl<'a> StmtParser<'a> {
         }
 
         let type_str = self.tokens_to_type_string(&tokens);
-        Type::parse(&type_str).ok_or_else(|| anyhow!(self.err(&format!("Invalid type: {}", type_str))))
+        if let Some(ty) = Type::parse(&type_str) {
+            return Ok(ty);
+        }
+        // Rewind to the type's first token before reporting: the collector
+        // stopped at whatever ended the annotation, and both the `found …`
+        // context and the span come from the position — so without this the
+        // message pointed at the `,` or the `)` that is not the problem.
+        self.pos = start_pos;
+        let message = crate::type_syntax::function_type_hint(self.tokens, start_pos)
+            .map_or_else(|| alloc::format!("Invalid type: {type_str}"), String::from);
+        Err(anyhow!(self.err(&message)))
     }
 
     pub(super) fn parse_inline_expr_until_named_delim(&mut self) -> Result<Expr> {
@@ -414,13 +396,8 @@ impl<'a> StmtParser<'a> {
             return Err(anyhow!(self.err("Expected expression for default value")));
         }
 
-        let expr_tokens = &self.tokens[start_pos..end_pos];
         let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
-        let mut expr_parser = if let Some(spans) = expr_spans {
-            ExprParser::new_with_spans(expr_tokens, spans)
-        } else {
-            ExprParser::new(expr_tokens)
-        };
+        let mut expr_parser = self.expr_parser(&self.tokens[start_pos..end_pos], expr_spans);
         let expr = expr_parser.parse()?;
         self.pos = end_pos;
         Ok(expr)
@@ -428,11 +405,23 @@ impl<'a> StmtParser<'a> {
 
     pub(super) fn err(&self, msg: &str) -> String {
         let ctx = if let Some(c) = self.tokens.get(self.pos) {
-            format!("found {:?}", c)
+            // `token_lexeme`, not `{:?}`: a reader is told what they typed, so
+            // the message has to spell it the way they typed it. Every
+            // statement-level syntax error used to name the *variant* —
+            // `found Semicolon`, `found LBrace`, `found Fn`.
+            format!("found `{}`", crate::token::token_lexeme(c))
         } else {
             "found end of input".to_string()
         };
         format!("Syntax error: {} ({})", msg, ctx)
+    }
+
+    /// The span covering tokens `from..=to`.
+    pub(super) fn span_covering(&self, from: usize, to: usize) -> Option<Span> {
+        let spans = self.token_spans.as_ref()?;
+        let start = spans.get(from)?;
+        let end = spans.get(to.max(from))?;
+        Some(Span::new(start.start.clone(), end.end.clone()))
     }
 
     pub(super) fn current_span(&self) -> Option<Span> {
@@ -478,8 +467,7 @@ impl<'a> StmtParser<'a> {
 
         // Use AST parser to parse the pattern
         let pattern_tokens = &self.tokens[start_pos..end_pos];
-        let mut ast_parser = ExprParser::new(pattern_tokens);
-        let pattern = ast_parser.parse_pattern()?;
+        let pattern = ExprParser::parse_whole_pattern(pattern_tokens)?;
 
         // Update position
         self.pos = end_pos;
@@ -487,57 +475,18 @@ impl<'a> StmtParser<'a> {
         Ok(pattern)
     }
 
+    /// The written form of a collected type annotation.
+    ///
+    /// Three positions still collect their own tokens with their own stop rules
+    /// (`parse_inline_type_until_param_delim` and the two in `function.rs`);
+    /// they render through the shared spelling, which is what the rest of the
+    /// parser uses. There used to be a second copy here, with its own token
+    /// table — and that table listed no keyword at all, so a spelling holding
+    /// one rendered as the Debug name (`Fn(Int) -> Int`, `Nil`).
+    ///
+    /// TODO(remove): give each of the three a `StopAt` variant and this
+    /// forwarding method goes away with them.
     pub(super) fn tokens_to_type_string(&self, tokens: &[&Token]) -> String {
-        let mut result = String::new();
-
-        for (i, token) in tokens.iter().enumerate() {
-            if i > 0 {
-                match token {
-                    Token::Pipe => result.push_str(" | "),
-                    Token::Lt => result.push('<'),
-                    Token::Gt | Token::Comma | Token::RParen | Token::RBracket | Token::RBrace => {
-                        result.push_str(&self.token_to_string(token));
-                    }
-                    _ => {
-                        if !matches!(tokens.get(i - 1), Some(Token::Lt)) {
-                            result.push(' ');
-                        }
-                        result.push_str(&self.token_to_string(token));
-                    }
-                }
-            } else {
-                result.push_str(&self.token_to_string(token));
-            }
-        }
-
-        result
-    }
-
-    pub(super) fn token_to_string(&self, token: &Token) -> String {
-        match token {
-            Token::Id(name) => name.clone(),
-            Token::Str(s) => format!("\"{}\"", s),
-            Token::Int(i) => i.to_string(),
-            Token::Float(f) => f.to_string(),
-            Token::Bool(b) => b.to_string(),
-            Token::LParen => "(".to_string(),
-            Token::RParen => ")".to_string(),
-            Token::LBrace => "{".to_string(),
-            Token::RBrace => "}".to_string(),
-            Token::LBracket => "[".to_string(),
-            Token::RBracket => "]".to_string(),
-            Token::Comma => ",".to_string(),
-            Token::Colon => ":".to_string(),
-            Token::ColonColon => "::".to_string(),
-            Token::Assign => "=".to_string(),
-            Token::Pipe => "|".to_string(),
-            Token::Question => "?".to_string(),
-            Token::FnArrow => "->".to_string(),
-            Token::Lt => "<".to_string(),
-            Token::Gt => ">".to_string(),
-            // Pointer types: `*u8`, `*mut u32`.
-            Token::Mul => "*".to_string(),
-            _ => format!("{:?}", token),
-        }
+        crate::type_syntax::spelling(tokens)
     }
 }

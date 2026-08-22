@@ -16,7 +16,7 @@ pub(super) fn lower(
     match instr.opcode() {
         Opcode::Raise => {
             // `bx` = the raised message string constant. The raise unwinds to
-            // the nearest native `try` frame (`try$call` — plan G); with no
+            // the nearest native `try` frame (plan G); with no
             // handler it aborts, exactly the VM's uncaught raise (the
             // differential harness treats VM exit-1 and a native SIGABRT as
             // matching failures).

@@ -52,6 +52,10 @@ pub enum Ty {
     /// A growable `List<i64>` handle (opaque `ptr` at the ABI). Phase 2 container
     /// handle-ification; more element types follow.
     ListI64,
+    /// A window over a `List<i64>` (opaque `ptr`): what `xs.slice(a, b)`
+    /// returns. Not a list — it borrows one, and the distinction is the point
+    /// (`lkrt::lkslice`, the VM's `HeapValue::Slice`).
+    SliceI64,
     /// A growable `List<f64>` handle (opaque `ptr` at the ABI).
     ListF64,
     /// A growable `List<str>` handle (elements are `Str` pointers; opaque `ptr`).
@@ -68,6 +72,13 @@ pub enum Ty {
     /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
     MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
+    /// A native `Bytes` handle (`*mut c_void` → an arena-owned `Vec<u8>`),
+    /// mirroring the VM's `HeapValue::Bytes`. Opaque pointer.
+    ///
+    /// A distinct type rather than a bare handle integer because *display* and
+    /// *equality* depend on knowing it is bytes: `println(b)` is
+    /// `Bytes([104,105])`, not a pointer, and `==` compares content.
+    Bytes,
     /// A mutable capture cell (`rt.cell_*`, the VM's `UpvalCell`): an
     /// arena-owned boxed-Dyn slot passed by pointer, so a `try` body's
     /// assignment to an outer local writes through. Opaque pointer.
@@ -154,6 +165,22 @@ pub enum Const {
     Nil,
 }
 
+/// Which register of a two-register carrier [`Inst::CarrierWord`] extracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarrierHalf {
+    Lo,
+    Hi,
+}
+
+impl CarrierHalf {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Lo => "lo",
+            Self::Hi => "hi",
+        }
+    }
+}
+
 /// A single SSA instruction: it defines at most one value (`dst`) from its inputs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inst {
@@ -181,6 +208,15 @@ pub enum Inst {
         lhs: ValueId,
         rhs: ValueId,
     },
+    /// `dst = bitcast(src)` — the same eight bytes read as an `F64`.
+    ///
+    /// Not a conversion: `1` becomes `5e-324`, not `1.0`. The one use is the
+    /// `try`-region trampoline, which calls a body through a
+    /// `(long long, …)` signature (`lkrt/src/try_trampoline.c`) — so every
+    /// input arrives in an integer register, and a float one has to be read
+    /// back out of those bits. Passing it *as* a float without this is what
+    /// segfaulted.
+    BitsToFloat { dst: ValueId, src: ValueId },
     /// `dst = sitofp(src)` — widen an `I64` value to `F64`.
     IntToFloat { dst: ValueId, src: ValueId },
     /// `dst = fptosi(src)` — an `F64` truncated toward zero into `I64`.
@@ -211,6 +247,12 @@ pub enum Inst {
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
     Not { dst: ValueId, src: ValueId },
+    /// `dst = -src` — float negation (`fneg`).
+    ///
+    /// Not `0.0 - src`: IEEE has two zeros, and `0.0 - 0.0` is `+0.0` where
+    /// `-(0.0)` is `-0.0`. The VM does a real negation, so this does too, or
+    /// the two backends disagree on a value a program can print.
+    FloatNeg { dst: ValueId, src: ValueId },
     /// `dst = lhs & rhs` on `Bool` (`and i1`). Used by fused conjunction
     /// branches (`TestEqIntI2`).
     BoolAnd { dst: ValueId, lhs: ValueId, rhs: ValueId },
@@ -242,6 +284,30 @@ pub enum Inst {
     /// VM equivalent: an interpreter has no code addresses to hand out, so the
     /// builtin refuses there rather than inventing one.
     SymbolAddr { dst: ValueId, symbol: String },
+    /// `dst = volatile load.uN [addr]` — a device read, zero-extended to `I64`.
+    ///
+    /// A real machine load, not a call into the runtime. What made this a call
+    /// before was that Cranelift has no volatile flag and its alias analysis
+    /// will collapse two loads of one address into one — for a device register,
+    /// whose two reads can legitimately differ and whose reads can have side
+    /// effects, a miscompile. The way out is not a flag but a *`sequence_point`
+    /// before each access*: it emits no machine code at all, and the alias pass
+    /// treats it as a fence, so the second load's "last store" differs from the
+    /// first's and the two are no longer the same memory location to it.
+    ///
+    /// `bits` is the width of the *access*, which is not a property of the
+    /// value: the VM carries every machine integer in an `i64`, so the width
+    /// has to ride on the instruction. That is the distinction this enum's
+    /// `IntTruncate` doc anticipated.
+    VolatileLoad { dst: ValueId, addr: ValueId, bits: u8 },
+    /// `volatile store.uN [addr], value` — a device write.
+    ///
+    /// As [`Inst::VolatileLoad`], and the elimination it has to survive is the
+    /// mirror image: the alias pass drops a store of a value a location is
+    /// already known to hold. Two identical writes to one port — a command
+    /// register that counts them, say — are not one write, and the preceding
+    /// `sequence_point` is what keeps them two.
+    VolatileStore { addr: ValueId, value: ValueId, bits: u8 },
     /// Calls through an address held in a value, with a fixed integer
     /// signature. The other half of a driver table.
     CallIndirect {
@@ -261,25 +327,31 @@ pub enum Inst {
         arg_tys: Vec<Ty>,
         ret: Ty,
     },
-    /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
-    /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
-    /// call of the try-body function (which returns `Dyn`), joining into the
-    /// `[ok, value]` dyn-list the desugared destructuring consumes. A raise
-    /// inside the body longjmps back to the `_setjmp`.
-    TryCall {
+    /// `dst = try.region f{func}` — run a `try` body under a fresh handler.
+    ///
+    /// The statement form of `try`, where the body produces no value: `dst` is
+    /// 1 when it returned and 0 when it raised, and the caught value is read
+    /// separately (`rt.current_error`) on the path that wants it. Codegen calls
+    /// `lkrt`'s trampoline, which does the `setjmp` in a C frame — Cranelift
+    /// cannot emit one.
+    TryRegionCall {
         dst: ValueId,
         func: FuncId,
+        /// The enclosing function's registers the body reads, as machine words.
         args: Vec<ValueId>,
     },
-    /// `dst = trait.dispatch(self, arms)` — a runtime trait-method dispatch
-    /// over a boxed struct instance (plan J1): codegen reads the receiver's
-    /// arena type mark (`lkrt_dyn_obj_type_id`) and expands an `icmp` chain
-    /// calling the matching impl. Every arm takes the boxed `self` and
-    /// returns `Dyn` (the lowering forces `dyn_rets`), so one rendered
+    /// `dst = trait.dispatch(self, args, arms)` — a runtime trait-method
+    /// dispatch over a boxed struct instance (plan J1): codegen reads the
+    /// receiver's arena type mark (`lkrt_dyn_obj_type_id`) and expands an
+    /// `icmp` chain calling the matching impl. Every arm takes the boxed `self`
+    /// followed by the boxed arguments and returns `Dyn` (the lowering forces
+    /// `dyn_rets` and observes every parameter as `Dyn`), so one rendered
     /// signature serves all arms; no matching mark raises.
     TraitDispatch {
         dst: ValueId,
         self_arg: ValueId,
+        /// The method's own arguments, each already boxed to `Dyn`.
+        args: Vec<ValueId>,
         /// `(runtime type id, impl function)` in registration order.
         arms: Vec<(i64, FuncId)>,
     },
@@ -308,6 +380,21 @@ pub enum Inst {
     /// [`Inst::Call`]) because its `{i64, i64}` return is outside the scalar ABI
     /// vocabulary; codegen renders it specially.
     ListGetMaybe {
+        dst: ValueId,
+        handle: ValueId,
+        index: ValueId,
+    },
+    /// `dst = lkrt_str_byte_at(s, index)` — one byte of a string as a
+    /// [`Ty::MaybeI64`]: absent past either end, the same nil the VM answers.
+    StrByteAtMaybe {
+        dst: ValueId,
+        handle: ValueId,
+        index: ValueId,
+    },
+    /// `dst = lkrt_lkslice_i64_get_pair(handle, index)` — the [`Ty::SliceI64`]
+    /// analogue of [`Inst::ListGetMaybe`], and a dedicated instruction for the
+    /// same reason: the `{i64, i64}` return is outside the scalar ABI.
+    SliceGetMaybe {
         dst: ValueId,
         handle: ValueId,
         index: ValueId,
@@ -383,6 +470,34 @@ pub enum Inst {
     /// `dst = {src, 1}` — wraps a plain scalar into a present `Maybe` carrier
     /// (the dual of [`Inst::MaybeValue`] for mixed phi edges).
     MaybeWrap { dst: ValueId, src: ValueId, maybe_ty: Ty },
+    /// One half of a two-register carrier (`Dyn`, the four `Maybe`s), as a raw
+    /// `I64` word — `half` selects which.
+    ///
+    /// What such a value needs to cross a boundary that carries *machine
+    /// words*: it occupies two registers, so it travels as two and is put back
+    /// together by [`Inst::CarrierFromParts`]. The `try`-region trampoline is
+    /// that boundary, and without this a `try` inside `for x in <a list>` did
+    /// not compile at all — a list's loop variable is a carrier — and there was
+    /// no correct way to make it one word. Unwrapping a `Maybe` aborts when
+    /// absent, and the body may only have asked `x ?? default`.
+    ///
+    /// Raw halves rather than the typed accessors (`MaybeValue`/`MaybePresent`
+    /// and the `dyn.as_*` family): those *interpret*, and what has to survive a
+    /// round trip is the bits. Deliberately blind to which half means what —
+    /// taking both and putting them back in the same order cannot get the
+    /// convention wrong, and there is no convention to keep in step.
+    CarrierWord {
+        dst: ValueId,
+        src: ValueId,
+        half: CarrierHalf,
+    },
+    /// The inverse: rebuild a `ty`-typed carrier from its two words.
+    CarrierFromParts {
+        dst: ValueId,
+        lo: ValueId,
+        hi: ValueId,
+        ty: Ty,
+    },
     /// `dst = select cond, then_v, else_v` over values of type `ty`.
     Select {
         dst: ValueId,
@@ -521,11 +636,15 @@ pub enum MirError {
     UnknownAbi { module: &'static str, name: &'static str },
     /// A `GlobalGet`/`GlobalSet` names a mutable global outside the module table.
     UnknownGlobal { func: FuncId, gvar: u32 },
-    /// The module/function references a missing entry block/function.
+    /// The module references no entry, or a function has no entry block.
     MissingEntry,
+    /// An instruction references a function absent from the MIR module.
+    UnknownFunction { func: FuncId, callee: FuncId },
     /// A call or branch passes a different number of arguments than the
     /// callee's parameters / the target block's params expect.
     ArityMismatch { func: FuncId },
+    /// The entry function returns a type its top-level printer cannot consume.
+    UnsupportedEntryReturn { ty: Ty },
 }
 
 /// Validates structural well-formedness: single-assignment, define-before-use
@@ -535,8 +654,11 @@ pub enum MirError {
 /// topological-ish order for the simple straightline/if shapes we lower first);
 /// it is a cheap guard that catches lowering bugs long before LLVM would.
 pub fn validate(module: &MirModule) -> Result<(), MirError> {
-    if module.function(module.entry).is_none() {
+    let Some(entry) = module.function(module.entry) else {
         return Err(MirError::MissingEntry);
+    };
+    if matches!(entry.ret, Ty::Cell) {
+        return Err(MirError::UnsupportedEntryReturn { ty: entry.ret });
     }
     for func in &module.functions {
         if func.block(func.entry).is_none() {
@@ -590,9 +712,12 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         gvar: *gvar,
                     });
                 }
-                if let Inst::CallFn { func: callee, args, .. } = inst {
+                if let Inst::CallFn { func: callee, args, .. } | Inst::TryRegionCall { func: callee, args, .. } = inst {
                     let Some(target) = module.function(*callee) else {
-                        return Err(MirError::MissingEntry);
+                        return Err(MirError::UnknownFunction {
+                            func: func.id,
+                            callee: *callee,
+                        });
                     };
                     if args.len() != target.params.len() {
                         return Err(MirError::ArityMismatch { func: func.id });
@@ -612,14 +737,14 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
-                if let Inst::TraitDispatch { arms, .. } = inst {
+                if let Inst::TraitDispatch { args, arms, .. } = inst {
                     for (_, callee) in arms {
                         let Some(target) = module.function(*callee) else {
                             return Err(MirError::MissingEntry);
                         };
-                        // One boxed `self` parameter — the rendered arm call
-                        // shape.
-                        if target.params.len() != 1 {
+                        // Boxed `self` plus the method's own boxed arguments —
+                        // the rendered arm call shape, the same for every arm.
+                        if target.params.len() != 1 + args.len() {
                             return Err(MirError::ArityMismatch { func: func.id });
                         }
                     }
@@ -718,7 +843,9 @@ pub fn render(module: &MirModule) -> String {
     out
 }
 
-fn ty_name(ty: Ty) -> &'static str {
+/// A type's name, for a diagnostic. Public because the lowering's own errors
+/// name types too, and one spelling beats two.
+pub fn ty_name(ty: Ty) -> &'static str {
     match ty {
         Ty::I64 => "i64",
         Ty::F64 => "f64",
@@ -726,6 +853,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::Str => "str",
         Ty::Nil => "nil",
         Ty::ListI64 => "list<i64>",
+        Ty::SliceI64 => "slice<i64>",
         Ty::ListF64 => "list<f64>",
         Ty::ListStr => "list<str>",
         Ty::MapStrI64 => "map<str,i64>",
@@ -741,6 +869,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::ListDyn => "list<dyn>",
         Ty::MapStrDyn => "map<str,dyn>",
         Ty::Set => "set",
+        Ty::Bytes => "bytes",
         Ty::Cell => "cell",
     }
 }
@@ -798,6 +927,7 @@ fn render_inst(inst: &Inst) -> String {
                 v(*rhs)
             )
         }
+        Inst::BitsToFloat { dst, src } => format!("{} = bitcast.f64 {}", v(*dst), v(*src)),
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
         Inst::FloatToInt { dst, src } => format!("{} = fptosi {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
@@ -809,6 +939,7 @@ fn render_inst(inst: &Inst) -> String {
             if *signed { "signed" } else { "unsigned" }
         ),
         Inst::Not { dst, src } => format!("{} = not {}", v(*dst), v(*src)),
+        Inst::FloatNeg { dst, src } => format!("{} = fneg {}", v(*dst), v(*src)),
         Inst::BoolAnd { dst, lhs, rhs } => format!("{} = bool.and {}, {}", v(*dst), v(*lhs), v(*rhs)),
         Inst::MaybePresent { dst, src, maybe_ty } => {
             format!("{} = maybe.present<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
@@ -821,6 +952,11 @@ fn render_inst(inst: &Inst) -> String {
             }
         }
         Inst::SymbolAddr { dst, symbol } => format!("{} = symbol.addr {symbol}", v(*dst)),
+        Inst::VolatileLoad { dst, addr, bits } => format!("{} = volatile.load.u{bits} [{}]", v(*dst), v(*addr)),
+        Inst::VolatileStore { addr, value, bits } => format!("volatile.store.u{bits} [{}], {}", v(*addr), v(*value)),
+        Inst::TryRegionCall { dst, func, args: a } => {
+            format!("{} = try.region f{}({})", v(*dst), func.0, args(a))
+        }
         Inst::CallIndirect { dst, callee, args: a } => {
             let call = format!("call.indirect v{}({})", callee.0, args(a));
             match dst {
@@ -862,17 +998,32 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
-        Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
-        Inst::TraitDispatch { dst, self_arg, arms } => {
+        Inst::TraitDispatch {
+            dst,
+            self_arg,
+            args: a,
+            arms,
+        } => {
             let arm_list = arms
                 .iter()
                 .map(|(tid, f)| format!("{tid} => f{}", f.0))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{} = trait.dispatch {}, [{arm_list}]", v(*dst), v(*self_arg))
+            format!(
+                "{} = trait.dispatch {}({}), [{arm_list}]",
+                v(*dst),
+                v(*self_arg),
+                args(a)
+            )
         }
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
+        }
+        Inst::SliceGetMaybe { dst, handle, index } => {
+            format!("{} = slice.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
+        }
+        Inst::StrByteAtMaybe { dst, handle, index } => {
+            format!("{} = str.byte_at_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
         Inst::UnwrapMaybeI64 { dst, src } => format!("{} = maybe.i64.unwrap {}", v(*dst), v(*src)),
         Inst::ListGetMaybeF64 { dst, handle, index } => {
@@ -907,6 +1058,12 @@ fn render_inst(inst: &Inst) -> String {
         } => format!("{} = select {}, {}, {}", v(*dst), v(*cond), v(*then_v), v(*else_v)),
         Inst::MaybeValue { dst, src, maybe_ty } => {
             format!("{} = maybe.value<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
+        }
+        Inst::CarrierWord { dst, src, half } => {
+            format!("{} = carrier.{} {}", v(*dst), half.name(), v(*src))
+        }
+        Inst::CarrierFromParts { dst, lo, hi, ty } => {
+            format!("{} = carrier.parts.{} {}, {}", v(*dst), ty_name(*ty), v(*lo), v(*hi))
         }
         Inst::MaybeWrap { dst, src, maybe_ty } => {
             format!("{} = maybe.wrap<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
@@ -948,14 +1105,18 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::IntBin { dst, .. }
         | Inst::FloatBin { dst, .. }
         | Inst::Cmp { dst, .. }
+        | Inst::BitsToFloat { dst, .. }
         | Inst::IntToFloat { dst, .. }
         | Inst::FloatToInt { dst, .. }
         | Inst::ZextBool { dst, .. }
         | Inst::IntTruncate { dst, .. }
         | Inst::Not { dst, .. }
+        | Inst::FloatNeg { dst, .. }
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
         | Inst::ListGetMaybe { dst, .. }
+        | Inst::SliceGetMaybe { dst, .. }
+        | Inst::StrByteAtMaybe { dst, .. }
         | Inst::UnwrapMaybeI64 { dst, .. }
         | Inst::ListGetMaybeF64 { dst, .. }
         | Inst::UnwrapMaybeF64 { dst, .. }
@@ -967,15 +1128,17 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MapGetMaybeI64F64 { dst, .. }
         | Inst::MaybeValue { dst, .. }
         | Inst::MaybeWrap { dst, .. }
+        | Inst::CarrierWord { dst, .. }
+        | Inst::CarrierFromParts { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::SymbolAddr { dst, .. } => Some(*dst),
+        Inst::SymbolAddr { dst, .. } | Inst::TryRegionCall { dst, .. } | Inst::VolatileLoad { dst, .. } => Some(*dst),
         Inst::CallIndirect { dst, .. } => *dst,
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
             *dst
         }
-        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
-        Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::VolatileStore { .. } => None,
+        Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
 
@@ -988,11 +1151,13 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::BoolAnd { lhs, rhs, .. } => {
             vec![*lhs, *rhs]
         }
-        Inst::IntToFloat { src, .. }
+        Inst::BitsToFloat { src, .. }
+        | Inst::IntToFloat { src, .. }
         | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
+        | Inst::FloatNeg { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::UnwrapMaybeI64 { src, .. }
         | Inst::UnwrapMaybeF64 { src, .. }
@@ -1002,6 +1167,8 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*src]
         }
         Inst::ListGetMaybe { handle, index, .. }
+        | Inst::SliceGetMaybe { handle, index, .. }
+        | Inst::StrByteAtMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => {
             vec![*handle, *index]
@@ -1013,6 +1180,9 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*handle, *key]
         }
         Inst::SymbolAddr { .. } => vec![],
+        Inst::VolatileLoad { addr, .. } => vec![*addr],
+        Inst::VolatileStore { addr, value, .. } => vec![*addr, *value],
+        Inst::TryRegionCall { args, .. } => args.clone(),
         Inst::CallIndirect { callee, args, .. } => {
             let mut values = vec![*callee];
             values.extend(args.iter().copied());
@@ -1021,9 +1191,14 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         Inst::Call { args, .. }
         | Inst::CallFn { args, .. }
         | Inst::CallExtern { args, .. }
-        | Inst::CallVm { args, .. }
-        | Inst::TryCall { args, .. } => args.clone(),
-        Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],
+        | Inst::CallVm { args, .. } => args.clone(),
+        Inst::CarrierWord { src, .. } => vec![*src],
+        Inst::CarrierFromParts { lo, hi, .. } => vec![*lo, *hi],
+        Inst::TraitDispatch { self_arg, args, .. } => {
+            let mut operands = vec![*self_arg];
+            operands.extend(args.iter().copied());
+            operands
+        }
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..
@@ -1149,6 +1324,30 @@ mod tests {
             Err(MirError::UnknownBlock {
                 func: FuncId(0),
                 block: BlockId(7)
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_entry_return_is_rejected_before_codegen() {
+        let mut m = div_module();
+        m.functions[0].ret = Ty::Cell;
+        assert_eq!(validate(&m), Err(MirError::UnsupportedEntryReturn { ty: Ty::Cell }));
+    }
+
+    #[test]
+    fn unknown_try_region_body_is_rejected() {
+        let mut m = div_module();
+        m.functions[0].blocks[0].insts.push(Inst::TryRegionCall {
+            dst: ValueId(3),
+            func: FuncId(7),
+            args: vec![],
+        });
+        assert_eq!(
+            validate(&m),
+            Err(MirError::UnknownFunction {
+                func: FuncId(0),
+                callee: FuncId(7),
             })
         );
     }

@@ -214,3 +214,36 @@ fn rejects_nested_matcher_repetition_with_missing_template_depth() {
         "{message}"
     );
 }
+
+/// Expansion is collect-then-expand, and a `macro_rules!` an *expansion*
+/// produces is not in the input the collection pass read. So a macro that
+/// defines a macro left the inner definition in the token stream as ordinary
+/// tokens, and the parser failed on `macro_rules` itself — the origin stack the
+/// only hint that a macro had put it there. Rounds now repeat until a pass
+/// produces no new definitions.
+#[test]
+fn a_macro_can_define_a_macro() {
+    let result = execute_source(
+        r#"
+        macro_rules! define_answer {
+            () => { macro_rules! answer { () => { 42 }; } };
+        }
+        define_answer!();
+        return answer!();
+        "#,
+    )
+    .expect("nested macro definition");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+
+    // …and it composes, because each round expands what the last produced.
+    let deep = execute_source(
+        r#"
+        macro_rules! a { () => { macro_rules! b { () => { macro_rules! c { () => { 5 }; } }; } }; }
+        a!();
+        b!();
+        return c!();
+        "#,
+    )
+    .expect("three levels of definition");
+    assert_eq!(deep.returns, vec![crate::val::RuntimeVal::Int(5)]);
+}

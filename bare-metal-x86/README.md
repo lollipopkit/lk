@@ -11,15 +11,18 @@ configuration space and draw to its framebuffer.
 ```bash
 rustup target add x86_64-unknown-none
 cargo build -p lk-cli --features aot   # from the repo root
-LK_BIN=../target/debug/lk ./run.sh
+./run.sh                               # builds the image and boots it
+python3 check_pci.py                   # any check builds its own image too
 ```
 
 ```
-.display at pci slot 2
+half 44
+display at pci 2.0
 framebuffer 0xfd000000
 pixels 00001428 00ffc040
-....lkos
-keys 4 last 115
+ABBA.BAB.ABA.BABA.BABA.BABAB.ABAB.ABABA. ...
+keys 0 last 0
+[lk returned to the board]
 ```
 
 ...and on the screen, a shell:
@@ -60,6 +63,107 @@ runs before there is a heap or after, which is the property a kernel wants.
 than setting a flag someone has to remember to check.
 
 ## Tasks
+
+The table is the program's, and so is everything that decides with it.
+`drivers/tasks.lk` holds what a task *is* — three words: where its stack pointer
+is while it is not running, which address space it runs in, and which ring-0
+stack an interrupt from it lands on. `program.lk` holds spawning, the starting
+frame, and the switch bookkeeping:
+
+```lk
+#[export("lk_schedule_from_interrupt")]
+fn schedule_from_interrupt(rsp: Int) -> Int {
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
+    …
+}
+```
+
+What is left in `src/tasks.rs` is 154 lines: the register spill either side of
+that call, and the software interrupt a task uses to ask for it. Those are the
+one thing a language cannot say — *return on a different stack* — and the
+trampoline is where it is said.
+
+Task stacks come from the page allocator too, so `TASK_CAPACITY` is now a
+property of the table's fixed region rather than of five static arrays.
+
+### The one interrupt path that did not save SSE
+
+Found by reading, not by a check: `SAVE_TASK` — the timer's — saved fifteen
+integer registers and **no** XMM registers, and it was the only interrupt path
+here that did not. Every other one says why beside itself: a compiled LK handler
+may clobber any XMM register under the System V ABI, LK numbers are `f64`, and
+the interrupted computation may hold one.
+
+The timer path calls two compiled LK functions a thousand times a second, and it
+is also the one that switches tasks — so a task's SSE state was not part of what
+travelled with it either. Nothing had gone wrong because today's tick and
+scheduler do integer work only, which is a property of the *handlers*, not of
+the boundary.
+
+The alignment question that made this look hard dissolves once stated properly.
+`sub rsp, 256` is a multiple of sixteen, so it *preserves* whatever alignment
+the pushes above produced — and that alignment already works, because this path
+calls compiled LK today. The device path's 264 is 256 plus the eight its nine
+pushes need; neither number has to be derived from first principles, and trying
+to derive them was the whole difference between "hard" and "ten minutes".
+
+The half that is easy to forget is the other one: a task that has never run
+needs the same area reserved on its starting frame, because the board restores
+from that frame before it `iretq`s and restores the SSE registers *first*, from
+the lowest addresses. So `task_prepare_frame` now asks the board how many words
+its save sequence leaves (`lk_task_saved_words`) rather than counting them again
+in LK. That is the one number that must not drift: a frame short by a word is
+not an error anything reports, it is a resume that reads its RIP out of whatever
+the next slot held.
+
+### The ceiling this hit, and what was actually behind it
+
+Adding `drivers/tasks.lk` did not compile:
+
+```
+bundled import 'drivers/serial': function index overflow
+```
+
+`CallDirect` and `MakeClosure` name their target in the instruction's `b` field,
+which is a byte. With the new driver, `program.lk` and its drivers came to 260
+functions.
+
+It turned out to be **three** limits wearing one error message, and none of them
+is the one the message named.
+
+**The merge numbered functions as they arrived.** A dep's instructions are
+already emitted by the time it renumbers them — rewriting one into two would
+move every jump offset after it — so anything a dep calls directly has to land
+below 256. But most functions are not called that way: of the 159 driver
+functions here, **52** are, and the rest are reached by name from the importing
+program, which the lowering resolves through a `u32`. So directly-called
+functions are numbered first, and what is bounded is now "the importing file's
+functions, plus the ones a dep calls directly" — 144 here, against 256.
+
+**A call past index 255 did not lower natively.** The compiler handles it
+correctly: past 255 it emits `LoadFunction` + `Call` instead of `CallDirect`.
+The native lowering rejected that shape, so 256 functions was a ceiling on the
+native path too, by a completely different mechanism. The function value in the
+register now carries the function it names, which is the same devirtualization a
+capture-free closure already got.
+
+**Reachability did not follow `LoadFunction`.** With the call lowering fixed,
+the callee turned out never to have been lowered at all: the prescan followed
+`CallDirect` and `MakeClosure` and nothing else, so a function reached only the
+new way was pruned, and the module then failed MIR validation with a function
+that had no entry block. The edge is there now — except for the one shape that
+is *not* a call, `LoadFunction` immediately followed by `SetGlobal`, which is
+how the compiler publishes a top-level `fn`. Following those would mark every
+declared function reachable and leave the pass nothing to prune.
+
+Three tests pin the three, each isolating one: a bundle past 256 with no direct
+calls at all, a bundle whose dep-local indices all fit but whose *merged* ones
+do not, and a single file with no bundling where the 300th function is called.
+Each compares the native build against the VM, because a numbering invented
+wrongly computes a different answer without failing anything.
+
+
 
 Two tasks, preempted by the timer. The shell is one; the other spins a glyph in
 the top-right corner and never yields — the CPU is taken away from it.
@@ -123,8 +227,9 @@ draws as it goes. Same arithmetic, no intermediate list.
 and a native build calls that symbol.
 
 ```lk
-#[extern("kernel_yield")]
-fn task_yield() {
+#[extern("kernel_run")]
+fn kernel_run(address: Int, length: Int) -> Int {
+    return 0 - 1;
 }
 ```
 
@@ -133,11 +238,27 @@ implementation — so a fallback goes there. That also makes this the one
 construct whose two back ends are not checked against each other: the thing
 being called is not in the program.
 
-`kernel_yield` is a software interrupt (`int 0x30`) rather than a plain call.
-The switch needs a complete interrupt frame on the stack, because that is what
-the resume path expects to find; `int` builds one and a `call` does not. The
-vector is past the PIC's remapped range, so nothing but an `int` can raise it
-— there is no device to acknowledge.
+**Yield used to be one of these, and is not any more.** It was
+`#[extern("kernel_yield")]` calling a Rust function containing `int 0x30`,
+because `int` takes its vector as an *immediate* — there is no operand to pass
+one in through, so the number lived twice: once where this file installs the
+gate, once inside that stub, in two languages, with nothing checking they agreed.
+
+The runtime answers that with 256 stubs, each `int n` and a return, so the vector
+becomes an index (`lkrt/src/isr.rs`, which now holds both directions of the same
+obstacle). `task_yield` is one line:
+
+```lk
+fn task_yield() {
+    unsafe { cpu_raise_interrupt(VECTOR_YIELD); };
+}
+```
+
+A kernel that can *handle* an interrupt but not raise one can answer a syscall
+and not define one. The switch needs a complete interrupt frame on the stack,
+because that is what the resume path expects to find; `int` builds one and a
+`call` does not. The vector is past the PIC's remapped range, so nothing but an
+`int` can raise it — there is no device to acknowledge.
 
 There is no privilege boundary here to cross: LK and the kernel are one binary
 at ring 0. What this is, is the direction `#[export]` did not cover — the
@@ -161,6 +282,24 @@ to still be background.
 
 Both halves of that check are load-bearing, and both have been seen to fail:
 replacing `window_put` with a direct `put_pixel` lights 35 of them.
+
+### Shift, and what a modifier is
+
+A modifier key is a key like any other: the controller has no notion of one, and
+reports a press and a release for `Shift` exactly as it does for `A`. What makes
+it a modifier is that the *program* keeps its state instead of translating it —
+which is why `drivers/keyboard.lk` only names the three scancodes and the
+handler does the rest.
+
+Both edges matter for `Shift`, and only one for `CapsLock`: the release is what
+ends a shift, while a lock that ended when you let go would be a shift key. And
+they compose differently — caps lock affects letters only (a keyboard where it
+turned `1` into `!` is one nobody could type on), so a letter asks "is exactly
+one of them in effect" while everything else asks only about shift.
+
+The shifted punctuation is a table of literals rather than arithmetic. There is
+no relation between `1` and `!` beyond a convention, and writing the convention
+down is the honest way to say so.
 
 ### Who gets the keyboard
 
@@ -422,6 +561,378 @@ stating:
   show the difference. `check_disk.py` therefore makes its third assertion from
   *outside*, after QEMU has exited: the image file must hold what was written.
 
+## The descriptor table, and how to tell whose it is
+
+`program.lk` builds the GDT the machine runs on — null, ring-0 code and data,
+ring-3 code and data, and the sixteen-byte TSS descriptor — loads it with
+`lgdt`, reloads CS through a far return, and points the task register at the
+TSS it just built.
+
+The boot stub still has a table, and always will: entering long mode takes a
+`lgdt` and a far jump through a 64-bit code descriptor, both before any compiled
+code exists to do them. What changed is that it is now **three entries** — null,
+ring-0 code, ring-0 data — and nothing else. Enough to reach the code that
+builds the real one.
+
+That shrink is what turns the ring-3 test from a demonstration into a proof.
+There is no ring-3 descriptor anywhere in the image except the one the program
+writes at run time; a user task that runs at all is a user task running on the
+program's table. `check_user.py` passes unchanged, which is the claim.
+
+The TSS is `drivers/tss.lk`, and it is one field wearing a hundred bytes of
+history: `rsp0`, the stack the CPU switches to when an interrupt takes the
+machine from ring 3 back to ring 0. The scheduler writes it on every switch —
+two user tasks sharing one kernel stack would have the second one's interrupt
+frame land on the first one's — so the board calls back into the program for
+that one word.
+
+The selectors travel the same way. `program.lk` defines the table, so it is the
+one place that knows what is at 0x18 and 0x20; `src/user.rs` asks it rather than
+naming them again. Two answers to that question that disagreed would mean an
+`iretq` into a segment other than the one intended, and if that segment happened
+to be a ring-0 descriptor there would be no ring boundary at all.
+
+### The second wall, which was also the compiler's
+
+The first was constants; this one was declarations. Publishing a top-level `fn`
+is `LoadFunction r; SetGlobal r, slot`, and the register is dead the instant the
+store lands — but it used to be a fresh register every time. `program.lk` with
+its drivers bundled in declares **236 functions**, out of the 256 a `u8`
+register field allows, so the top level had about twenty registers left for
+everything else. Adding the syscall constants used them up, and the error named
+a constant.
+
+The fix is one register shared by every declaration, rather than a register
+recycled after each. The difference is not stylistic. Recycling — handing it
+back for anything to use next — is wrong here for a reason outside the bytecode
+compiler entirely: **the AOT lowering tracks what a register means keyed by
+`(block, register)`, with no notion of time.** A register that once held a
+function value keeps that meaning, so a later `SetGlobal` from it reads as
+declaration bookkeeping and gets elided — a global write silently dropped.
+
+That was not hypothetical. The recycling version was written first, and it made
+`program.lk` stop lowering natively with "returns disagree on the value type" —
+the same stale-meaning problem surfacing as a signature conflict instead. A
+register that only ever holds a function value being published cannot have any
+of that happen to it, because its meaning never changes. There is a test for the
+shape, not just the outcome, and a TODO on the lowering.
+
+### The first wall, which was the compiler's
+
+Adding the GDT and TSS constants made `program.lk` stop compiling:
+
+```
+Compiler global dst register 256 exceeds u8 encoding
+```
+
+Registers are `u8` in the instruction encoding, so a function has 256 of them
+and the top level is a function. Every global-backed top-level binding kept one
+register permanently, as a *cache* of the global slot it had just been written
+to — worth having, and unconditional. `program.lk` plus the drivers bundled into
+it declare 256 constants between them; none of the files is anywhere near
+unusual, and the error named whichever constant was added last.
+
+The cache now has an eviction rule, which a cache should have had. Past 128
+registers a top-level binding is only a global: reads cost a `GetGlobal` and the
+register goes back. Nothing about the meaning changes — the value was already in
+the global slot, which is the one place a *function* could ever see it from.
+
+Two details are load-bearing. The question is asked *before* the initializer is
+lowered, because the register file runs out on the temporaries of the statement
+after the last binding rather than on the binding itself, and a check that comes
+afterwards still overflows — which is how the first attempt failed. And the
+limit is half the file rather than all of it, so what is left is one statement's
+working set. Below 128 nothing changes at all, which is why the benchmark
+workloads (five top-level bindings) emit byte-identical code.
+
+## What the board still answers, and what it stopped answering
+
+A row of small Rust functions used to exist only to tell the program where the
+linker had put something: the user section's bounds, the kernel's page
+directories, each ring-3 task's entry and stack. Every one of them was a
+question with an address for an answer, and `symbol_address` — which the window
+manager already used for its painter table — turns out to answer it directly:
+
+```lk
+let kernel_directories: Int = unsafe { symbol_address("__pd") };
+```
+
+It works on a *data* symbol as well as a function, which is the whole point:
+"where did the linker put this" is a question a systems language can ask. The
+two ring-3 task stacks moved from `static mut [u8; N]` in Rust into linker
+reservations for the same reason — a static array and a reserved range are the
+same thing, and only one of them has a name every language can say.
+
+Moving them tightened something, too. The task stacks now sit *outside*
+`__user_start..__user_end`, because each task maps its own at
+`USER_STACK_VIRTUAL` in its own address space and needs no U bit in the kernel's
+tables. That range is what `write(ptr, len)` checks against, so one ring-3 task
+can no longer hand the kernel a pointer into the other one's stack.
+
+`lk_enter_user` takes all four numbers now — what runs, on which stack, through
+which two descriptors — instead of asking the program back for the selectors.
+What the board contributes is the one thing that cannot be said in LK: `iretq`,
+which is the only way *into* ring 3, because no instruction lowers privilege
+directly.
+
+### A stack task 0 never had
+
+Task 0 pre-exists the table — it is the one already running when the first
+interrupt lands — so nothing ever published a ring-0 stack for it, and a switch
+*back* to it left `rsp0` pointing at whichever task ran last. The `user` command
+enters ring 3 from task 0, and an interrupt during that excursion would have
+pushed its frame onto another task's kernel stack.
+
+Now the table's slot 0 carries the boot ring-0 stack like any other, so every
+switch sets `rsp0` to a stack that belongs to the task being switched to. Found
+by asking what `lk_boot_kernel_stack` was still for once every other accessor
+had gone.
+
+## Ring 3
+
+Everything else here runs at ring 0, where a wrong address is a fault and a
+right one is whatever the hardware does. That was fine while all the code was
+the kernel's own — and stopped being fine the moment the kernel started running
+*programs*, because "the program cannot touch the framebuffer" was a fact about
+the program.
+
+```
+>user
+ring3
+USER
+!! exception #PF page fault vector=…e error=…7 rip=…10062e cr2=0000000000300000
+```
+
+`USER` is printed a byte at a time by ring-3 code through `int 0x80`, the only
+gate with DPL 3. What follows is the same program writing to `0x300000` — the
+shared page every interrupt handler uses — and the CPU refusing, with an error
+code whose bit 2 says the access came from ring 3.
+
+Three structures had to exist first, and two of them fail as a triple fault
+rather than an error when they do not:
+
+- a **TSS**, because the CPU needs a ring-0 stack to switch to when an interrupt
+  arrives during ring 3. Without `rsp0` it pushes the interrupt frame onto the
+  *user* stack, which the user can then rewrite. Its `io_map_base` points past
+  the segment on purpose: a bitmap that starts beyond the limit means "no ports
+  at all", where zero would point at the TSS's own fields and make a permission
+  map out of whatever was there.
+- **ring-3 descriptors**, because privilege is a property of the segment.
+- a **user-accessible page**. This one produced the first failure: the ring-3
+  program could not execute at all, faulting on its own first instruction with
+  error code 5 — a user-mode access to a page the tables do not mark user. The U
+  bit has to be set at *every* level of the walk, because the CPU takes their
+  conjunction.
+
+What ring 3 is granted is **its own pages, and nothing else**. The first 2 MiB
+has 4 KiB granularity — one page table instead of one big page — and the U bit
+is set only on the pages between `__user_start` and `__user_end`, a section the
+linker script page-aligns at both ends. Everything else in that range, which is
+most of the kernel, stays kernel-only.
+
+That granularity is what the check is aimed at. The forbidden access is a *read*
+of `0x100010` — the kernel's first instruction, in the same 2 MiB as the user
+program. While the range was one user-accessible page, that read succeeded and
+told nobody; now it faults. "Ring 3 cannot reach the shared page two megabytes
+away" is a much weaker claim than "ring 3 cannot reach the kernel", and only the
+second one is worth making.
+
+Two mistakes on the way, both instructive. An early version set the U bit on the
+second directory entry as well, and the forbidden write simply succeeded — which
+is why the check asserts the *error code*, not just the address: a fault there
+from ring 0 would be a kernel bug with the same `cr2`. And the U bit has to be
+set at every level of the walk, because the CPU takes their conjunction; a user
+page under a kernel-only directory is still kernel-only.
+
+### An address space of its own, built by the program
+
+`program.lk` builds it, out of pages from its own allocator:
+
+```lk
+fn build_user_space(stack_physical: Int) -> Int {
+    let pml4 = page_alloc(SHARED_PAGES);
+    …
+    table_set(pdpt, index_of(stack_virtual, SHIFT_PDPT), directory, shared);
+```
+
+Every index is *computed from the virtual address* rather than written down. The
+old version had `pdpt.add(1)`, `pd.write(…)`, `pt.write(…)` — 1, 0 and 0, all
+correct, and correct only because the stack happens to sit at the bottom of the
+second gigabyte. Numbers like that go on looking right after they stop being
+true.
+
+Two things follow from the pages coming out of the allocator. The linker script
+no longer reserves four sets of tables, so the ceiling on how many address
+spaces there can be is "how much memory is left" rather than a number nobody
+justified — the previous one was four, and four was only there because two had
+been. And `check_shell.py`'s expected page addresses moved by eight pages, which
+is the two spaces being allocated like anything else; that check asserts the
+*addresses* precisely so that a counter pretending to be an allocator would not
+pass it.
+
+### The failure that was not one
+
+Removing the linker reservations made `check_spawn.py` report both the spinner
+and the clock windows frozen — three runs in a row, deterministic-looking, and
+the reservation being the only difference. Restoring it passed. Doubling the
+kernel stack instead also passed. The obvious story was a stack that had been
+overflowing into 64 KiB of unused reservations and now overflowed into `__pt0`.
+
+It was none of that. The same build passes 4/4 on an idle machine. Every one of
+those failures happened with a `cargo build` running alongside, and
+`check_spawn` is the one check here that is wall-clock: four screenshots 1.4 s
+apart, asking whether a window that changes once a slice ever changed. A starved
+guest makes them all land in one phase.
+
+Recorded here and in the check itself because roughly forty minutes went into a
+hypothesis that a second look would have killed — and because the next person
+reading a red `check_spawn` should re-run it on a quiet host before believing
+it.
+
+### An address space of its own
+
+The ring-3 task's stack is at `0x4000_0000` — *in its own address space*. In the
+kernel's, that address is identity-mapped RAM that does not exist on this
+machine. Two spaces, not one with extra permissions, and the difference between
+a thread and a process is the one word per task that says which.
+
+Almost all of it is shared, and shared by *pointing* rather than copying: the
+task's PML4 names the kernel's own page directories for three of the four
+gigabytes. The kernel has to be mapped in every space — an interrupt during
+ring 3 lands in kernel code, and there would otherwise be nowhere for it to go —
+and copying the entries would work today and drift the first time a mapping is
+added to one and not the other. Only the second gigabyte is the task's own, and
+it holds one page: its stack.
+
+There are two of them, which is what makes it a claim rather than a permission:
+both tasks keep a stack at *the same* virtual address, each writes one letter
+into it, and each prints what it reads back — for ever, interleaved by the
+timer. `ABABAB…`. One address space would mean the second write landed on the
+first's page and both letters were the same from then on.
+
+That it works at all is the other half of the evidence. QEMU's default machine
+has 128 MiB, so `0x4000_0000` is backed by nothing in the kernel's identity map;
+a task running there means the tables that give it meaning are the ones in
+force.
+
+CR3 changes before the stack pointer is handed back, not after: the value the
+switch returns is read by the CPU *after* this returns, and it has to mean the
+same thing in whichever space is current by then. It does, because the kernel is
+mapped identically in both — which makes the order safe rather than lucky.
+
+### Whose list of holes it is
+
+The syscall dispatcher is `program.lk`'s. What a user task may ask for is a list
+of holes in the wall the ring boundary just built, and deciding what goes on
+that list is not the board's business — nor is deciding whether to believe a
+pointer:
+
+```lk
+fn user_range_is_valid(address: Int, length: Int) -> Bool {
+    if (length <= 0 || length > MAX_WRITE) { return false; }
+    let end = address + length;
+    if (end < address) { return false; }
+    return address >= user_section_start() && end <= user_section_end();
+}
+```
+
+An `Int` is signed, which does half the work for free: an address with its top
+bit set arrives negative and fails the lower bound. The other end still needs
+the wrap check — an address just under the maximum wraps `address + length` to a
+negative number, which would then pass `end <= limit`. LK's addition wraps
+rather than trapping, so the wrap is what that comparison looks for.
+
+The board answers where the user section is, because the linker is the only
+thing that knows and the board is the only side that can ask it.
+
+**The syscall trampoline now saves the SSE registers**, which it did not before.
+The handler is compiled LK, LK numbers are `f64`, and the System V ABI lets a
+called function clobber every XMM register — which the ring-3 caller never
+agreed to. Nothing would have gone wrong yet: the user programs here are
+assembly that touches no XMM at all. That is exactly why it is worth writing
+down rather than waiting for the first one that does.
+
+### A pointer the kernel does not believe
+
+The first syscall took a byte per call, which was slow and deliberate: a pointer
+from ring 3 is a *number*, and following one without checking is the shape of
+every "the kernel read out its own memory on request" bug there has ever been.
+
+There is a checked one now. `write(ptr, len)` verifies the range lies inside the
+user section — the only memory ring 3 can reach — before reading a byte of it,
+and the check is the kernel's, not a promise the caller makes. The arithmetic is
+checked too, because a length near `u64::MAX` wraps the end back below the start
+and makes any address look contained.
+
+The user program does both: it prints `str` through the checked call, then hands
+the same call the kernel's own address and prints what came back. `N` means
+refused. A `Y` there would mean the boundary is decoration.
+
+The kernel copies each byte out before using it rather than printing from user
+memory in place. One instruction shorter would leave a window between the check
+and the use — on one CPU a small one, on two a race.
+
+### And back again
+
+`user` has no way back — its only exits are a syscall (which returns *into* ring
+3) and a fault. A ring-3 *task* does: one is spawned at boot, prints `3` for
+ever, and never yields. The shell answers a command while it runs, which is the
+claim: the timer took the CPU away from ring 3 and gave it back.
+
+What that needed was one line in the scheduler and a stack per task. The frame a
+task starts on is the same shape either way — fifteen saved registers under the
+frame the CPU pushes — and the only difference between a kernel task and a user
+one is the four numbers in it. What is *not* the same is where an interrupt from
+ring 3 lands: the CPU takes that from the TSS, so `rsp0` is set to the next
+task's own kernel stack on every switch. Two user tasks sharing one would have
+the second's interrupt frame land on the first's, and the first would resume
+into whatever was left.
+
+### What a third one would need
+
+The tables are there for four address spaces and the task table holds six tasks,
+so a third user process costs nothing structural. What it needs is a *claim*: two
+tasks printing `A` and `B` prove they cannot see each other, and a third printing
+`C` proves nothing further unless it is arranged to fail differently — sharing a
+space with exactly one of the others, say, so the check can tell "isolated from
+everyone" from "isolated from the last one spawned".
+
+Adding the task is half an hour. Deciding what it would demonstrate is the part
+worth doing first.
+
+## The memory map, in one place
+
+Three things want RAM and none of them can ask: the kernel image, the Rust heap
+the interpreter allocates from, and the page allocator the LK program hands out.
+So the map has to be written down — and the place it is written down has to be
+one both languages can read. `link.ld` is that place:
+
+```
+__shared_base = 0x00300000;
+__source_base = 0x00380000;
+__heap_base   = 0x00400000;
+__heap_size   = 0x00400000;
+__run_heap_base = __heap_base + __heap_size;
+__page_arena_base = __run_heap_base + __run_heap_size;
+```
+
+Rust takes the address of an `extern static`; LK asks `symbol_address`. The
+relations are written as relations, so "the page arena starts where the run heap
+ends" is a statement rather than an arithmetic coincidence between two constants
+nobody recomputed.
+
+It used to be a table in a doc comment plus a literal in each language.
+`0x00380000` was written twice, and `kernel_run` cross-checked them by refusing
+any address but its own — which notices that the two have drifted rather than
+preventing it.
+
+The note that had to go with it was this file's own: that `program.lk` and the
+interrupt handlers agree on `0x300000` "by writing the number down, not by
+asking the linker — an interrupt handler cannot look anything up". That was true
+of a *run-time* lookup and never true of this one. A symbol's address is
+resolved when the image is linked, so what the handler executes is an immediate
+either way.
+
 ## Memory that comes back
 
 `drivers/pages.lk` never reclaims, which was honest while nothing freed.
@@ -621,9 +1132,51 @@ framebuffer back proves the writes reached the device's memory, but an
 unconfigured card accepts those too. Only what QEMU scans out shows that the
 mode was actually set.
 
+## What is Rust, and why — the whole list
+
+The point of this demo is what LK can be made to do, so the interesting number
+is what it still cannot. Every line below is here because of a specific thing
+the language cannot say, and the reason is the entry, not the file:
+
+| file | lines | why it is not LK |
+| --- | --- | --- |
+| `main.rs` | 346 | Hosts the *interpreter*: a Rust bump allocator, and the parse-and-run entry the `run` command calls. A language cannot be its own host. |
+| `boot.rs` | 205 | The multiboot header, and 32-bit code that reaches long mode. It runs before there is a stack, a GDT, or paging — before anything compiled could. |
+| `user.rs` | 182 | `iretq`, the syscall trampoline's register spill, and `ltr`'s frame. No instruction lowers privilege directly, and an interrupt is not a call. |
+| `interrupts.rs` | 144 | The 32 exception stubs, and a fault reporter whose whole design is to depend on as little as possible. |
+| `user_programs.rs` | 121 | Three ring-3 programs. Assembly because a ring-3 program must not reach for a runtime, and `int` takes its vector as an immediate. |
+| `tasks.rs` | 110 | Returning on a *different* stack, which is what a task switch is. |
+
+Against roughly 5,000 lines of LK: every driver, the interrupt table, the
+descriptor table, the task state segment, the page tables and address spaces,
+the task table, the scheduler, the syscall dispatcher, the window manager, the
+shell.
+
+Two of those rows are worth reading twice, because they are the ones that stopped
+being about the language:
+
+**`interrupts.rs` no longer has a trampoline per device.** `lkrt` carries 256
+stubs and a handler table, so installing a driver's interrupt is two stores from
+LK. What is left here is the *exception* stubs, which differ — each pushes a
+dummy error code where the CPU does not — and the reporter.
+
+**`user.rs` no longer answers questions.** It used to hold a row of small
+functions telling the program where the linker had put things. `symbol_address`
+works on data symbols, so the program asks the linker itself; and the memory map
+moved into `link.ld`, which is the one file both languages read.
+
 ## The drivers are modules
 
 ```
+drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
+drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
+drivers/gdt.lk           segment descriptors, `lgdt`, and reloading CS
+drivers/paging.lk        four-level page tables, CR3, and the TLB
+drivers/tasks.lk         the task table, and the frame a task starts life on
+
+`lkrt` supplies one thing no driver can: 256 interrupt stubs and a handler
+table, so a gate can reach a compiled LK function at all.
+drivers/tss.lk           the one field long mode kept: the ring-0 stack
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
 drivers/vbe.lk           the Bochs VBE display interface, including panning
@@ -673,6 +1226,71 @@ count()   // VM: 2 (the module kept its own copy).  Flattened: 3.
 Refusing the shape is what stops a native build computing something the VM
 would not. A container that is built inside a function is fine — it is fresh
 per call, so there is nothing to share.
+
+## The width that was only real if you typed it
+
+Giving `unsafe` blocks a type made a second thing visible, and it was worse than
+the first:
+
+```lk
+fn read() -> u32 { return 4000000000 as u32; }
+let a = read();  let b = read();  println(a + b);   // 8000000000
+let c: u32 = 4000000000;  let d: u32 = 4000000000;
+println(c + d);                                     // 3705032704
+```
+
+Same types, same values, two answers — and which one you got depended on whether
+the width had been *written down*. Machine-int arithmetic wraps to its width,
+and the wrap is emitted where the compiler can prove the width; proof came from
+exactly two places, an annotation and an `as` cast. Everything else was left
+unproven, on the stated grounds that not wrapping is the safe answer. It is not:
+it is a different answer, and the type checker had already decided which one is
+right.
+
+Proof now also comes from what the initializer *produces*: a call to a function
+that declares a machine return, a builtin whose name is a width
+(`volatile_read_u32`), and a read of a local already known to hold one. Nothing
+else — this widens what can be proven, it does not change what proof means.
+
+The first attempt looked correct and changed nothing, which is the part worth
+keeping. It matched `Expr::Call`, and by the time the compiler sees a call to a
+plain function, name resolution has rewritten it to `CallExpr(Var(name), …)`.
+The test that caught it is the one that compares the two spellings against each
+other rather than against a number.
+
+## `unsafe { … }` has a type now
+
+It used to have none — every `unsafe` block type-checked to `Any`, with a note
+in the checker saying a block that evaluates to a typed value was "a separate
+change". The executor had never agreed: it already evaluates a block to its last
+statement's value, trailing semicolon included, so `unsafe { 7; }` is 7. The
+type has caught up with the value.
+
+`Any` spreads, and where it spread was exactly the kind of code this demo is
+made of. Measuring the stride of an array of interrupt stubs is two addresses
+subtracted; with both of them `Any`, the result had no `as Int` out of it and
+the error named the cast rather than the missing type. It cost real time twice.
+
+The other half of that fix: `symbol_address` and `call_address_2` had no entry
+in the type checker at all, so a call to either produced `Any` and neither its
+arity nor its arguments were checked. They do now, and `symbol_address` also
+insists its name is a *literal* — a relocation is a name resolved when the image
+is linked, and there is nothing to look one up in at run time. Passing a
+variable used to type-check, run under the VM (which refuses), and fail to lower
+natively with a message about an opcode.
+
+Closing the hole immediately found two real errors, both in this repository's
+own test fixtures:
+
+```lk
+let a = unsafe { volatile_read_u32(reg) };
+let b = unsafe { volatile_read_u32(reg) };
+return a + b;              // from a function returning Int
+```
+
+A 32-bit read is a `u32`, and two of them added is not an `Int` until something
+says so. The drivers here had always written the cast; the fixtures had not,
+because `Any` did not make them.
 
 ## Port I/O
 
@@ -749,11 +1367,131 @@ fn on_tick() {
 }
 ```
 
-The board's share is an IDT, remapping the 8259 PIC away from the vectors the
-CPU reserves for exceptions, acknowledging the interrupt, and spilling every
-caller-saved register. What a tick *means* is the program's, and that part is
-LK — including programming the PIT's divisor, which `program.lk` does with the
-same `port_out_u8` its UART driver uses.
+**The table those interrupts come through is LK's too.** `drivers/idt.lk`
+builds all 256 gates and loads them with `cpu_load_idt`; `program.lk` decides
+which vector means what:
+
+```lk
+idt_set_gate(IDT_BASE, VECTOR_KEYBOARD,
+             unsafe { symbol_address("__keyboard_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+```
+
+That is not a rewrite for its own sake. A gate is sixteen bytes of *decision* —
+which vector, which handler, and which privilege level may raise it — and the
+only reason it used to be Rust is that there was no way to say `lidt` in LK.
+There is now, so the decisions live where the rest of the program's decisions
+do. The board's remaining share is the thing this genuinely cannot be: the
+trampolines. An interrupt is not a call — the code it lands in never agreed to
+lose its caller-saved registers — so a compiled handler has to be entered
+through a stub that spills all of them and leaves with `iretq`. That is
+assembly in any language.
+
+**### Adding an interrupt stopped being a Rust edit
+
+A gate points at a stub, not at a handler, and that will always be true: the
+code an interrupt lands in never agreed to lose its caller-saved registers, so
+something has to spill them and leave with `iretq`. What was *not* inevitable is
+that every vector needed its own hand-written stub in the board's Rust — adding
+a device meant editing a file the driver has nothing to do with.
+
+`lkrt` now carries 256 of them and a handler table, so installing one is two
+stores from LK:
+
+```lk
+fn install_device_handler(vector: Int, handler: Int) {
+    …
+    idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
+}
+```
+
+The keyboard's and the mouse's trampolines are gone from `src/interrupts.rs`.
+The timer's is not, and cannot be: returning on a *different* stack is what a
+task switch is, and no shared tail does that. Nor is the syscall's, which has to
+put a value back in `rax`.
+
+Two details in the shared tail are worth the words. Each stub pushes its vector
+as `push imm32`, not `imm8` — the byte form sign-extends, so vector 200 would
+arrive as −56, on exactly the vectors nobody tests. And a handler of zero is
+checked for rather than called: a vector arriving with nothing installed is a
+spurious interrupt, and answering it with a call to address zero turns a
+diagnosable event into a fault inside a fault.
+
+The 8259 is LK's too**, both halves of it — `drivers/pic.lk` holds the
+four-write initialisation sequence, the mask register, and the end-of-interrupt.
+Those had to move together: bringing the chip up decides which vector each line
+lands on, acknowledging decides which chip is told the handler is done, and
+split across the boundary they become two files naming one command port.
+
+The acknowledgement is a *wrapper* around each handler rather than its last
+line:
+
+```lk
+#[export("lk_key_isr")]
+fn isr_key() {
+    on_key();
+    pic_eoi_master();
+}
+```
+
+`on_key` returns early from four places. An end-of-interrupt a `return` can skip
+is one that will be skipped — and the symptom is a device that works once and
+then goes silent, which is what an unacknowledged 8259 line does. Written this
+way there is nowhere for it not to happen.
+
+Stopping is the program's as well. `program.lk` masks the flag and then the
+chip as its last act, in that order: the flag stops the CPU taking anything, the
+chip stops it raising anything, and a tick landing between the two would splice
+a `.` into the line the board prints afterwards.
+
+What is left in `src/interrupts.rs` is the trampolines and the exception
+reporter — the reporter because it runs *after* something has gone wrong, and
+the two things a handler must never do (allocate, take a lock) are exactly what
+formatting a report in LK would need.
+
+What a tick *means* has always been the program's, including programming the
+PIT's divisor, which `program.lk` does with the same `port_out_u8` its UART
+driver uses.
+
+### The stride that was derived wrong
+
+The 32 exception stubs are a `.rept` in the board's assembly, padded to a fixed
+stride, and `program.lk` computes a stub's address from it. It asks the
+assembler for the stride rather than naming 16 — `(ISR_STUBS_END - ISR_STUBS) /
+32` — because a copy of that number on the LK side is a copy nothing checks.
+
+Deriving it was right and the derivation was wrong. `.align 16` sits at the
+*top* of each iteration, so the array ended nine bytes into its final slot:
+span 505, stride 15, and every gate but the first pointed into the middle of the
+stub before it. The `fault-probe` build reported a page fault as **vector 2**,
+with the faulting address sitting in the error-code field.
+
+Two fixes, and the second is the useful one. The assembly now pads after the
+last stub as well. And `program.lk` checks that the span divides by 32 before
+dividing, which costs one modulo at boot and is the thing that would have said
+so out loud:
+
+```lk
+if ((span % EXCEPTION_COUNT) != 0) {
+    uart_write(/* "bad isr stride" */);
+    halt();
+}
+```
+
+### Which comes first
+
+The program installs its table before anything can fault, and the board no
+longer touches interrupts at boot at all — `kernel_main` calls `main()` and the
+program asks for the PIC when it is ready. Between the two there is a window
+with no gate for any vector, and a fault with no gate is a triple fault, which
+on this machine is a silent reset.
+
+That window is why the deliberate fault moved. It used to be a `write_volatile`
+in `kernel_main`, which is now *before* the table exists — the probe stopped
+reporting anything and the machine simply reset, which is exactly the failure
+the probe exists to make impossible. It is an `#[extern]` the program calls
+immediately after installing the table, so what it lands in is the table the
+program actually built.
 
 The handler and the main program share a device, so `program.lk` masks
 interrupts around the lines it does not want spliced:
@@ -782,7 +1520,7 @@ live below 2 MiB, so 0x0030_0000 is untouched. That is crude, and deliberately
 so — a kernel with no memory manager yet has exactly this much to work with,
 and pretending otherwise would hide what the program is actually doing.
 
-`check_keyboard.py` types at the machine through QEMU's monitor. `sendkey`
+`check_shell.py` types at the machine through QEMU's monitor. `sendkey`
 puts a real scancode into the emulated controller, so the test covers IRQ1, the
 LK handler, the scancode table and the echo — the one part memory inspection
 cannot show.
@@ -870,3 +1608,40 @@ kernels do.
 position independent — a bare-metal image is loaded at a fixed address and has
 no dynamic loader — so the link rejects its absolute relocations. Setting the
 relocation model in `.cargo/config.toml` is what makes the two agree.
+
+## What the checks cover
+
+Seventeen scripts, each *building* the image and booting it under QEMU, driving
+it through the monitor. They are listed here because a check nobody runs is a
+claim nobody holds, and five of these were written after the sections above.
+
+Building is `kernel.py`'s job and it is not a convenience: the image path used
+to be a bare default, so a script tested whatever happened to be on disk —
+including the kernel that `CARGO_FLAGS=--features=fault-probe ./run.sh` builds
+to page-fault deliberately, which made every check report a fault it had not
+caused, on every revision.
+
+| | what fails if it is wrong |
+| --- | --- |
+| `check_shell.py` | IRQ1 through the scancode table to the echo, a command answered, the scroll, and the page allocator's *addresses* — a counter would print two numbers just as happily |
+| `check_screen.py` | the framebuffer, by reading pixels back |
+| `check_mouse.py` · `check_focus.py` · `check_drag.py` · `check_stack.py` | the PS/2 mouse, and windows that own their pixels, their focus and their order |
+| `check_tasks.py` · `check_spawn.py` | two windows changing while the shell sits idle: a task that was never started and a scheduler that stopped reaching it are the same failure from outside |
+| `check_user.py` | ring 3 spoke through a syscall, was preempted while never yielding, and was refused the kernel page next to its own |
+| `check_disk.py` | a sector read, one written, and the medium checked *after* QEMU exits — a drive acknowledges a write long before it is on the platter |
+| `check_run.py` | a program loaded off that disk and interpreted, on the same machine that compiled the kernel |
+| `check_interpreted_driver.py` | a *driver* loaded off that disk and interpreted: it drives the CMOS clock through port I/O, on a kernel that was compiled before it existed. Everything else here proves LK can be compiled into this layer; this proves it can drive hardware without being compiled at all |
+| `check_pci.py` | a device found by walking configuration space, reached through its BAR, made to compute, made to DMA into RAM, and made to interrupt on a gate the driver installed for itself |
+| `check_net.py` | an Intel NIC: its MAC out of the EEPROM, two descriptor rings fed twelve exchanges past their wrap, a well-formed ARP request on the wire (checked from a pcap, not from the guest), the gateway's reply, every page given back, and the card's own interrupt reaching a handler |
+| `check_exit.py` | a task that *ends* — twenty of them through sixteen slots, every slot and every stack page returning — and one that sleeps for the time it asks for with the CPU halted throughout |
+| `check_clock.py` | the CMOS clock, against a base time QEMU was *told*, at a moment where a missing BCD conversion turns November into month 17 |
+| `check_hpet.py` | the high precision timer: its rate computed from the period the chip states about itself, and its 64-bit counter watched to advance — the one clock here that is neither counted nor coarse |
+
+The two that are not scripts:
+
+* **`CARGO_FLAGS=--features=fault-probe`** makes the kernel touch an address
+  36 bits wide right after installing its interrupt table. A reporter that is
+  never made to report is indistinguishable from one that cannot.
+* **`cargo run --release --bin lk-bare-metal`** in `../bare-metal` boots the
+  Cortex-M demo. It is the only thing that proves the no_std VM *works* rather
+  than merely compiles, and it is on a different architecture.

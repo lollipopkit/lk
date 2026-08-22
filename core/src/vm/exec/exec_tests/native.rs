@@ -1,7 +1,13 @@
 use super::*;
-use crate::util::fast_map::fast_hash_map_from_iter;
 use crate::vm::ProgramExec;
 use crate::vm::analysis::PerfGlobalFact;
+/// A native is called through the same `Call` opcode as anything else, and the
+/// argument window is cleared afterwards.
+///
+/// Written against an installed native rather than an inline `NativeEntry`: the
+/// inline table is a mechanism no binary reaches (see
+/// [`super::execute_source_with_natives`]), so this used to prove the property
+/// for a path that does not ship.
 #[test]
 fn execute_module_calls_native_function_with_same_call_opcode() {
     fn native_add(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -11,89 +17,57 @@ fn execute_module_calls_native_function_with_same_call_opcode() {
         Ok(RuntimeVal::Int(lhs + rhs))
     }
 
-    let entry = Function {
-        consts: ConstPool {
-            ints: vec![13, 29],
-            ..ConstPool::default()
-        },
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abx(Opcode::LoadInt, 1, 0),
-            Instr::abx(Opcode::LoadInt, 2, 1),
-            Instr::abc(Opcode::Call, 0, 0, 2),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 3,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "native_add".to_string(),
-            arity: 2,
-            function: NativeFunction::Plain(native_add),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-
-    let result = execute_module(&module).expect("execute module");
+    let result = super::execute_source_with_natives(
+        "return native_add(13, 29);",
+        &[("native_add", NativeFunction::Plain(native_add), 2)],
+    )
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    // The call window is cleared: the arguments do not outlive the call, which
+    // is what keeps a native's arguments from pinning heap values (see
+    // `clear_call_window_temps`).
+    // The same two slots the hand-built module asserted on: the argument window
+    // is cleared after the call, so `13` and `29` do not outlive it. Slot 0
+    // holds the callable the global was read into.
     assert_eq!(result.state.stack[1], RuntimeVal::Nil);
     assert_eq!(result.state.stack[2], RuntimeVal::Nil);
 }
 
+/// A native that allocates a value nobody keeps: the collector takes it.
+///
+/// Runs the program a user would write, with the collector set to run after
+/// every allocation — the hand-built module got that by seeding its own
+/// `HeapStore`, which is also why it could not reach an installed native.
 #[test]
 fn execute_module_collects_after_native_heap_allocation() {
     fn native_alloc_dead(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         runtime
             .heap_mut()
-            .alloc(HeapValue::String(Arc::<str>::from("native-dead")));
+            .alloc(HeapValue::String(Arc::<str>::from("dead-native-allocation")));
         Ok(RuntimeVal::Nil)
     }
 
-    let entry = Function {
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abc(Opcode::Call, 0, 0, 0),
-            Instr::abc(Opcode::Nop, 0, 0, 0),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 1,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "native_alloc_dead".to_string(),
-            arity: 0,
-            function: NativeFunction::Plain(native_alloc_dead),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-    let mut heap = HeapStore::new();
-    heap.set_gc_threshold(1);
+    // Five hundred allocations nobody keeps, collected as they go.
+    //
+    // The old form asserted an *empty* heap, which a hand-built module can have
+    // and a real program cannot — a program's heap holds its globals and the
+    // callable this native was read from. What still separates "collected" from
+    // "kept" is that the heap stays *bounded*: without the collector it would
+    // carry all five hundred strings.
+    let result = super::execute_source_with_natives_and_gc(
+        "let i = 0;\nwhile i < 500 { native_alloc_dead(); i = i + 1; }\nreturn i;",
+        &[("native_alloc_dead", NativeFunction::Plain(native_alloc_dead), 0)],
+        Some(1),
+    )
+    .expect("execute source");
 
-    let result = Executor::new(1)
-        .run_module_with_globals_and_heap(&module, Vec::new(), heap)
-        .expect("execute module");
-
-    assert_eq!(result.returns, vec![RuntimeVal::Nil]);
-    assert_eq!(result.state.heap.len(), 0);
+    assert_eq!(result.returns, vec![RuntimeVal::Int(500)]);
+    assert!(
+        result.state.heap.len() < 100,
+        "five hundred unreferenced allocations were not collected: heap holds {}",
+        result.state.heap.len()
+    );
     assert!(!result.state.heap.should_collect());
 }
 
@@ -131,50 +105,21 @@ fn execute_module_calls_full_state_native_with_named_args() {
         Ok(RuntimeVal::Int((*value).clamp(min, max)))
     }
 
-    let entry = Function {
-        consts: ConstPool {
-            ints: vec![52, 40, 50],
-            strings: vec!["min".to_string(), "max".to_string()],
-            ..ConstPool::default()
-        },
-        code: vec![
-            Instr::abx(Opcode::LoadNative, 0, 0),
-            Instr::abx(Opcode::LoadInt, 1, 0),
-            Instr::abx(Opcode::LoadString, 2, 0),
-            Instr::abx(Opcode::LoadInt, 3, 1),
-            Instr::abx(Opcode::LoadString, 4, 1),
-            Instr::abx(Opcode::LoadInt, 5, 2),
-            Instr::abx(Opcode::CallNamed, 0, (2 << 7) | 1),
-            Instr::abc(Opcode::Return, 0, 1, 0),
-        ],
-        register_count: 6,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-    let module = Module {
-        functions: vec![entry],
-        natives: vec![NativeEntry {
-            name: "full_state_clamp".to_string(),
-            arity: 1,
-            function: NativeFunction::FullState(full_state_clamp),
-        }],
-        globals: Vec::new(),
-        entry: 0,
-        type_info: Default::default(),
-        type_scope: Default::default(),
-    };
-
-    let result = execute_module(&module).expect("execute module");
+    // Named arguments to a native reached through a global, which is how every
+    // stdlib native with named parameters is called. The hand-built module
+    // spelled the same call in `CallNamed` operands against an inline table no
+    // binary fills.
+    let result = super::execute_source_with_natives(
+        "return full_state_clamp(52, min: 40, max: 50);",
+        &[(
+            "full_state_clamp",
+            NativeFunction::FullState(full_state_clamp),
+            crate::vm::NativeEntry::VARIADIC,
+        )],
+    )
+    .expect("execute source");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(50)]);
-    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[3], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[4], RuntimeVal::Nil);
-    assert_eq!(result.state.stack[5], RuntimeVal::Nil);
 }
 
 #[test]
@@ -224,7 +169,6 @@ fn execute_module_calls_runtime_callable_from_heap() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -352,12 +296,9 @@ fn direct_full_state_native_named_map_uses_heap_map_source() {
         arity: 1,
         function: NativeFunction::FullState(full_state_named),
     })));
-    let named = state
-        .heap
-        .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
-            Arc::<str>::from("increment"),
-            37,
-        )]))));
+    let named = state.heap.alloc(HeapValue::Map(TypedMap::StringInt(
+        crate::util::value_map::value_map_from_iter([(Arc::<str>::from("increment"), 37)]),
+    )));
 
     let mut ctx = VmContext::new_without_core_vm_builtins();
     let result = call_runtime_value_runtime_named_map(
@@ -416,6 +357,8 @@ fn direct_runtime_native_collects_after_heap_allocation() {
         state.heap.get(live),
         Some(HeapValue::String(value)) if value.as_ref() == "native-live"
     ));
+    // Handle 1: the string the native allocated before failing. Handle 0 is the
+    // callable itself, which the global keeps alive.
     assert!(state.heap.get(HeapRef::new(1)).is_none());
     assert!(matches!(
         state.heap.get(match callable {
@@ -504,7 +447,6 @@ fn execute_module_uses_global_slot_fact_for_get_and_set() {
     );
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![
             GlobalSlot { name: "unused".into() },
             GlobalSlot { name: "answer".into() },
@@ -549,7 +491,6 @@ fn execute_module_set_global_move_fact_consumes_source_register() {
     );
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -583,7 +524,6 @@ fn execute_module_set_global_without_move_fact_clones_source_register() {
     };
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -610,7 +550,6 @@ fn execute_module_falls_back_to_instr_global_slot_without_fact() {
     };
     let module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "answer".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -619,8 +558,9 @@ fn execute_module_falls_back_to_instr_global_slot_without_fact() {
 
     let result = execute_module_with_globals(&module, vec![RuntimeVal::Int(42)]).expect("execute module");
 
+    // The slot came off the instruction: this module carries no global fact,
+    // and reading `answer` still found slot 0.
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    assert_eq!(result.state.inline_caches.global(0), Some(0));
 }
 
 #[test]
@@ -636,7 +576,6 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -661,7 +600,6 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -694,7 +632,6 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -710,7 +647,7 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     let entry = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["y".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("y")],
             ..ConstPool::default()
         },
         code: vec![
@@ -730,7 +667,6 @@ fn execute_module_calls_runtime_callable_with_named_args() {
     };
     let caller_module = Module {
         functions: vec![entry],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -751,7 +687,7 @@ fn runtime_callable_error_keeps_shared_module_state() {
     let callee = Function {
         consts: ConstPool {
             ints: vec![41],
-            strings: vec!["boom".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("boom")],
             ..ConstPool::default()
         },
         code: vec![
@@ -768,7 +704,6 @@ fn runtime_callable_error_keeps_shared_module_state() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: vec![GlobalSlot { name: "counter".into() }],
         entry: 0,
         type_info: Default::default(),
@@ -807,7 +742,7 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
     }
 
     let callee = Function {
-        code: vec![Instr::abx(Opcode::LoadNative, 0, 0), Instr::abc(Opcode::Call, 0, 0, 0)],
+        code: vec![Instr::abx(Opcode::GetGlobal, 0, 0), Instr::abc(Opcode::Call, 0, 0, 0)],
         register_count: 1,
         param_count: 0,
         positional_param_count: 0,
@@ -817,17 +752,23 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
     };
     let callee_module = Arc::new(Module {
         functions: vec![callee],
-        natives: vec![NativeEntry {
-            name: "native_alloc_then_error".to_string(),
-            arity: 0,
-            function: NativeFunction::Plain(native_alloc_then_error),
+        globals: vec![crate::vm::GlobalSlot {
+            name: "native_alloc_then_error".into(),
         }],
-        globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
         type_scope: Default::default(),
     });
-    let mut state = RuntimeModuleState::new(HeapStore::new(), Vec::new());
+    // The native lives in the callable's *own* state, as a global holding a
+    // `RuntimeNative` — the shape a loaded module has. An inline `NativeEntry`
+    // plus `LoadNative` is a mechanism nothing but these tests builds.
+    let mut heap = HeapStore::new();
+    let native = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+        name: Arc::<str>::from("native_alloc_then_error"),
+        arity: 0,
+        function: NativeFunction::Plain(native_alloc_then_error),
+    })));
+    let mut state = RuntimeModuleState::new(heap, vec![native]);
     state.heap.set_gc_threshold(1);
     let callable = RuntimeCallable::with_state(
         Arc::clone(&callee_module),
@@ -860,7 +801,6 @@ fn direct_runtime_callable_restores_shared_state_stack_top() {
     };
     let module = Arc::new(Module {
         functions: vec![callee],
-        natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
@@ -898,6 +838,46 @@ fn execute_source_runs_public_source_entry_on_new_vm() {
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
 }
 
+/// A map's own methods win over a key of the same name — for every method,
+/// not just the one with its own opcode.
+///
+/// docs/semantics.md adjudicates "方法优先", and that was true of `len` alone:
+/// the compiler emits a dedicated opcode for it, so it never reached the
+/// dispatcher, where the key lookup ran *first*. `{"keys": 5, "z": 1}.keys()`
+/// answered `5` and `{"is_empty": 5}.is_empty()` answered `5` — which of the
+/// two you got depended on an implementation detail of the compiler.
+///
+/// The shadowed key keeps an unambiguous spelling (`m["len"]`), and a callable
+/// stored under a name no builtin uses is still called.
+#[test]
+fn a_map_method_is_not_shadowed_by_a_key_of_the_same_name() {
+    let result = execute_source(
+        r#"
+        let a = {"keys": 5, "z": 1};
+        let b = {"values": 5, "z": 1};
+        let c = {"len": 5, "z": 1};
+        let d = {"is_empty": 5};
+        let e = {"f": |x| { return x + 1; }, "n": 3};
+        return [a.keys().len(), b.values().len(), c.len(), d.is_empty(), c["len"], e.f(4), e.n];
+        "#,
+    )
+    .expect("execute source");
+
+    let [RuntimeVal::Obj(handle)] = result.returns.as_slice() else {
+        panic!("expected one list return");
+    };
+    let HeapValue::List(TypedList::Mixed(values)) = result.state.heap.get(*handle).expect("result list") else {
+        panic!("expected mixed list return");
+    };
+    assert_eq!(values[0], RuntimeVal::Int(2), "keys() is the method, not the key");
+    assert_eq!(values[1], RuntimeVal::Int(2), "values() is the method, not the key");
+    assert_eq!(values[2], RuntimeVal::Int(2), "len() already was");
+    assert_eq!(values[3], RuntimeVal::Bool(false), "is_empty() is the method");
+    assert_eq!(values[4], RuntimeVal::Int(5), "the shadowed key is still readable");
+    assert_eq!(values[5], RuntimeVal::Int(5), "a stored callable is still called");
+    assert_eq!(values[6], RuntimeVal::Int(3), "and a plain key still reads");
+}
+
 #[test]
 fn execute_source_uses_builtin_set_constructor_methods_and_iteration() {
     let result = execute_source(
@@ -910,7 +890,7 @@ fn execute_source_uses_builtin_set_constructor_methods_and_iteration() {
         for value in s {
             total += value;
         }
-        return [s.len(), s.has(2), added, duplicate, removed, 3 in s, total, typeof(s)];
+        return [s.len(), s.contains(2), added, duplicate, removed, 3 in s, total, typeof(s)];
         "#,
     )
     .expect("execute source");
@@ -941,7 +921,10 @@ fn execute_source_rejects_float_set_values() {
         "#,
     )
     .expect_err("float set value should fail");
-    assert!(err.to_string().contains("Float cannot be used as a key"));
+    assert!(
+        err.to_string().contains("Float cannot be a map key or set member"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -963,19 +946,18 @@ fn execute_module_context_native_can_use_vm_context() {
         Ok(RuntimeVal::Int(value))
     }
 
-    let module = Compiler::compile_source_module_with_natives(
-        "return add_seed(2);",
-        vec![NativeEntry {
-            name: "add_seed".to_string(),
-            arity: 1,
-            function: NativeFunction::Context(add_seed),
-        }],
-    )
-    .expect("compile module");
+    // Installed on the context and named as an external global: how a stdlib
+    // native reaches a program. Compiling one *into* the module was the
+    // `LoadNative` path, which no binary built.
+    let program = crate::syntax::parse_program_source("return add_seed(2);", Default::default()).expect("parse");
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
+    ctx.install_runtime_builtin("add_seed", NativeFunction::Context(add_seed), 1);
     ctx.define_runtime_value("seed", RuntimeVal::Int(40), HeapStore::new());
 
-    let result = execute_module_with_globals_and_ctx(&module, Vec::new(), &mut ctx).expect("execute module");
+    // The program path, because that is what seeds a module's globals from the
+    // context (`seed_module_globals`); `execute_module_with_globals_and_ctx`
+    // takes the values from its caller and this one has none to give.
+    let result = crate::vm::execute_program_with_ctx(&program, &mut ctx).expect("execute program");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(matches!(
@@ -1105,6 +1087,12 @@ fn program_execute_installs_core_method_helper_by_default() {
     assert_eq!(result.display_first_return(), "red|blue");
 }
 
+/// `typeof` on a struct instance names the struct.
+///
+/// It answered `Object` — the heap representation, which is not a type the
+/// language has, and the same answer for every struct in the program. That made
+/// `typeof` useless on exactly the values a program most wants to ask about.
+/// `HeapValue::type_name` is the carrier of that rule and had the hole itself.
 #[test]
 fn execute_program_imports_typeof_as_runtime_native() {
     let tokens = crate::token::Tokenizer::tokenize(
@@ -1118,5 +1106,23 @@ fn execute_program_imports_typeof_as_runtime_native() {
 
     let result = execute_program_with_ctx(&program, &mut ctx).expect("execute");
 
-    assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Object"));
+    assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Box"));
+}
+
+/// A `Set` is a map's key set, so it rejects what a map rejects. It used to
+/// take a list as a member and compare it by *handle*, so the member could
+/// never be found again and two equal lists both went in.
+#[test]
+fn execute_source_rejects_container_set_members_like_map_keys() {
+    for source in [
+        "let s = Set(); s.add([1, 2]); return s;",
+        "let s = Set([[1, 2]]); return s;",
+        "let m = {}; m.set([1, 2], 3); return m;",
+    ] {
+        let err = execute_source(source).expect_err("a list is not a key");
+        assert!(
+            err.to_string().contains("List cannot be a map key or set member"),
+            "{source} → {err}"
+        );
+    }
 }

@@ -6,7 +6,26 @@ use std::{
 };
 
 use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
-use anyhow::{Context, Result, anyhow};
+
+/// Where a `use <name>;` macro import finds package `name`'s module root.
+///
+/// Installed into `syntax::ParseOptions` as a
+/// [`crate::macro_system::PackageMacroModuleResolver`]. `imports.rs` used to
+/// call `PackageGraph::discover` itself; that edge ran *upward* — the package
+/// manager already hands proc-macro providers down to expansion — and the two
+/// modules could not be separated because of it.
+#[cfg(feature = "std")]
+pub fn macro_module_root(base_dir: &std::path::Path, name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let graph = PackageGraph::discover(base_dir).map_err(|error| error.to_string())?;
+    Ok(graph.and_then(|graph| {
+        graph
+            .modules
+            .into_iter()
+            .find(|module| module.name == name)
+            .map(|module| module.root)
+    }))
+}
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 // The centralized signing registry (server / publish / keyring / signed
@@ -84,7 +103,10 @@ pub struct DetailedDependency {
     pub branch: Option<String>,
     pub tag: Option<String>,
     pub rev: Option<String>,
-    #[serde(default)]
+    // Written only when true: `Lk.toml` is a file people read and edit, and
+    // `workspace = false` on every dependency `lk pkg add` writes is noise that
+    // says nothing.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub workspace: bool,
 }
 
@@ -111,13 +133,74 @@ pub struct PackageModule {
     pub root: PathBuf,
 }
 
+/// A dependency the graph could not turn into a module, and **why**.
+///
+/// The reason is the whole point. Both cases used to print
+/// "`<missing; run lk pkg fetch>`", and for a `path` dependency that advice is
+/// unactionable: the directory is right there, already on disk. What is absent
+/// is the package's *library entry* — `lk pkg init` scaffolds `src/main.lk`,
+/// which is an application entry, and a package used as a dependency needs
+/// `src/mod.lk` or `src/<name>.lk`. Telling someone to fetch a directory they
+/// can see is how a five-second fix becomes an afternoon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDependency {
+    pub name: String,
+    pub reason: MissingReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingReason {
+    /// No local checkout: a git/GitHub dependency that has not been fetched.
+    NotFetched,
+    /// A `path` dependency pointing at a directory that is not there. Fetching
+    /// cannot create it, so saying "run `lk pkg fetch`" is a wrong instruction
+    /// rather than an unhelpful one.
+    PathNotFound,
+    /// The directory exists; it has no `src/mod.lk` or `src/<name>.lk`.
+    NoLibraryEntry,
+}
+
+impl MissingDependency {
+    /// The one-line explanation a CLI prints after the dependency's name.
+    pub fn advice(&self) -> &'static str {
+        match self.reason {
+            MissingReason::NotFetched => "not fetched; run `lk pkg fetch`",
+            MissingReason::PathNotFound => "the `path` points at a directory that does not exist",
+            MissingReason::NoLibraryEntry => {
+                "found, but the package has no library entry; add `src/mod.lk` (or `src/<name>.lk`)"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PackageGraph {
     pub root: PathBuf,
     pub manifest_path: PathBuf,
     pub manifest: Manifest,
     pub modules: Vec<PackageModule>,
-    pub missing: Vec<String>,
+    pub missing: Vec<MissingDependency>,
+    /// The enclosing workspace, when this graph's subject is a *member*.
+    ///
+    /// Kept beside `manifest` rather than replacing it. `discover` used to walk
+    /// the ancestors and adopt the workspace manifest as the graph's subject,
+    /// so inside a member `lk pkg check` described the *workspace* and never
+    /// read the member's own `[dependencies]` — a member depending on something
+    /// outside the workspace got "package check ok" while the program failed
+    /// with `Module 'outside' not found`, which is the one thing `check` exists
+    /// to prevent.
+    ///
+    /// The workspace is still needed: it supplies the sibling members as
+    /// modules, and the table `workspace = true` inherits from.
+    pub workspace: Option<WorkspaceContext>,
+}
+
+/// An enclosing `[workspace]` and the directory its member globs resolve
+/// against.
+#[derive(Debug, Clone)]
+pub struct WorkspaceContext {
+    pub root: PathBuf,
+    pub section: WorkspaceSection,
 }
 
 impl Manifest {
@@ -252,27 +335,48 @@ impl PackageGraph {
         if manifests.is_empty() {
             return Ok(None);
         };
-        let mut manifest_path = manifests[0].clone();
+        // The *nearest* manifest is the subject; an ancestor's `[workspace]` is
+        // context, not a replacement. See `PackageGraph::workspace`.
+        let manifest_path = manifests[0].clone();
+        let mut workspace = None;
         for candidate in &manifests {
-            if Manifest::read(candidate)?.workspace.is_some() {
-                manifest_path = candidate.clone();
+            let manifest = Manifest::read(candidate)?;
+            if let Some(section) = manifest.workspace {
+                let root = candidate
+                    .parent()
+                    .ok_or_else(|| anyhow!("manifest has no parent: {}", candidate.display()))?
+                    .to_path_buf();
+                workspace = Some(WorkspaceContext { root, section });
             }
         }
-        Self::from_manifest_path(&manifest_path).map(Some)
+        Self::from_manifest_path_in(&manifest_path, workspace).map(Some)
     }
 
     pub fn from_manifest_path(manifest_path: &Path) -> Result<Self> {
+        Self::from_manifest_path_in(manifest_path, None)
+    }
+
+    fn from_manifest_path_in(manifest_path: &Path, workspace: Option<WorkspaceContext>) -> Result<Self> {
         let manifest = Manifest::read(manifest_path)?;
         let root = manifest_path
             .parent()
             .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest_path.display()))?
             .to_path_buf();
+        let manifest_workspace = manifest.workspace.clone();
         let mut graph = Self {
             root: root.clone(),
             manifest_path: manifest_path.to_path_buf(),
             manifest,
             modules: Vec::new(),
             missing: Vec::new(),
+            // A manifest that *is* the workspace is its own context, so running
+            // at the root behaves exactly as before.
+            workspace: workspace.or_else(|| {
+                manifest_workspace.map(|section| WorkspaceContext {
+                    root: root.clone(),
+                    section,
+                })
+            }),
         };
         graph.collect_workspace_modules()?;
         graph.collect_dependency_modules()?;
@@ -347,10 +451,12 @@ impl PackageGraph {
             self.modules.push(package_module(&self.root, &package.name, root));
         }
 
-        let Some(workspace) = self.manifest.workspace.as_ref() else {
+        let Some(workspace) = self.workspace.clone() else {
             return Ok(());
         };
-        for member in expand_members(&self.root, &workspace.members)? {
+        // Members resolve against the *workspace* directory, which is not this
+        // graph's root when the subject is a member.
+        for member in expand_members(&workspace.root, &workspace.section.members)? {
             let manifest_path = member.join(MANIFEST_FILE);
             if !manifest_path.exists() {
                 continue;
@@ -376,22 +482,35 @@ impl PackageGraph {
             if self.modules.iter().any(|module| module.name == name) {
                 continue;
             }
+            let mut from_path = false;
             let dep_dir = if spec.is_workspace() {
                 continue;
             } else if let Some(path) = spec.path() {
+                from_path = true;
                 self.root.join(path)
             } else if let Some(locked) = locked.get(&name) {
-                cache_dir_for_source(&locked.source)
+                cache_dir_for_source(&locked.source)?
             } else if let Some(url) = spec.git_url() {
-                cache_dir_for_source(&url)
+                cache_dir_for_source(&url)?
             } else {
-                self.missing.push(name);
+                self.missing.push(MissingDependency {
+                    name,
+                    reason: MissingReason::NotFetched,
+                });
                 continue;
             };
             if let Some(root) = package_entry(&dep_dir, &name) {
                 self.modules.push(package_module(&dep_dir, &name, root));
             } else {
-                self.missing.push(name);
+                // The directory is on disk (a `path` dependency, or a fetched
+                // checkout) and has no library entry — a different problem from
+                // not having fetched it, and `lk pkg fetch` cannot fix it.
+                let reason = match (dep_dir.exists(), from_path) {
+                    (true, _) => MissingReason::NoLibraryEntry,
+                    (false, true) => MissingReason::PathNotFound,
+                    (false, false) => MissingReason::NotFetched,
+                };
+                self.missing.push(MissingDependency { name, reason });
             }
         }
         Ok(())
@@ -401,10 +520,9 @@ impl PackageGraph {
         let mut deps = BTreeMap::new();
         for (name, spec) in &self.manifest.dependencies {
             let resolved = if spec.is_workspace() {
-                self.manifest
-                    .workspace
+                self.workspace
                     .as_ref()
-                    .and_then(|workspace| workspace.dependencies.get(name).cloned())
+                    .and_then(|workspace| workspace.section.dependencies.get(name).cloned())
             } else {
                 Some(spec.clone())
             };
@@ -471,7 +589,83 @@ pub fn github_url(repo: &str) -> String {
     }
 }
 
-pub fn cache_dir_for_source(source: &str) -> PathBuf {
+/// Where a git dependency is cloned: `~/.lk/git/` plus the source URL's own
+/// shape, so two dependencies from one host share a prefix and a reader can
+/// find a clone by eye.
+///
+/// **A `..` component is refused, not skipped.** The path is built from a
+/// string in `Lk.toml` (or, worse, in `Lk.lock`, which a dependency can
+/// contribute to), and `PathBuf::push("..")` walks *up* — so
+/// `git = "https://example.com/../../../../../../tmp/x"` had `git clone`
+/// writing to `/tmp/x`, outside the cache root entirely. Measured, with git's
+/// own message naming the escaped path.
+///
+/// Refusing rather than dropping the component: two different sources must not
+/// collapse onto one cache directory, and a source nobody meant to write is
+/// worth saying out loud. `.` and empty segments are dropped, because those
+/// *are* the same path.
+/// The one edition this language has.
+///
+/// A list rather than a constant because the *shape* of the check is what
+/// matters: when a second edition exists, the manifest field starts meaning
+/// something and this is where it is decided.
+const KNOWN_EDITIONS: &[&str] = &["2026"];
+
+/// Checks the three `[package]` fields that were written and never read.
+///
+/// `edition` is emitted by `lk pkg init` and read by **nothing** — `"1999"`,
+/// `"banana"` and a missing field were all "package check ok". `version` had no
+/// reader either, so `version = "not-a-version"` passed. And `name` was
+/// unconstrained: `name = "../evil"` and `name = ""` both passed, while the
+/// name is what `use <name>;` has to spell and what a workspace member is
+/// looked up by.
+///
+/// Checked here rather than at load: this is the command whose job is to answer
+/// "is this package well-formed", and a decorative field being wrong should not
+/// stop a program that does not read it from running.
+pub fn validate_package_section(package: &PackageSection) -> Result<()> {
+    let name = package.name.as_str();
+    if name.is_empty() {
+        bail!("`[package] name` is empty — it is the name `use <name>;` spells");
+    }
+    let head_ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let rest_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !head_ok || !rest_ok {
+        bail!(
+            "`[package] name = \"{name}\"` is not a name this language can spell — a package name \
+             is an identifier (letters, digits, `_`, `-`, not starting with a digit), because \
+             `use <name>;` has to lex"
+        );
+    }
+    if let Some(version) = &package.version
+        && !is_semver(version)
+    {
+        bail!("`[package] version = \"{version}\"` is not a version — write `major.minor.patch`");
+    }
+    if let Some(edition) = &package.edition
+        && !KNOWN_EDITIONS.contains(&edition.as_str())
+    {
+        bail!(
+            "`[package] edition = \"{edition}\"` is not an edition this build knows — {}",
+            KNOWN_EDITIONS.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `major.minor.patch`, with the optional `-pre` and `+build` tails.
+///
+/// Deliberately not a semver crate: the whole question here is whether someone
+/// typed a version or a sentence, and a dependency for that is not worth it.
+fn is_semver(version: &str) -> bool {
+    let core = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = core.split('.');
+    let numeric =
+        |part: Option<&str>| part.is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    numeric(parts.next()) && numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+}
+
+pub fn cache_dir_for_source(source: &str) -> Result<PathBuf> {
     let mut root = lk_home().join("git");
     let normalized = source
         .trim_end_matches(".git")
@@ -479,10 +673,19 @@ pub fn cache_dir_for_source(source: &str) -> PathBuf {
         .trim_start_matches("http://")
         .trim_start_matches("git@")
         .replace(':', "/");
-    for part in normalized.split('/').filter(|part| !part.is_empty()) {
+    for part in normalized.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            bail!(
+                "dependency source `{source}` has a `..` path segment — the clone directory is \
+                 built from the source, and that would put it outside the package cache"
+            );
+        }
         root.push(part);
     }
-    root
+    Ok(root)
 }
 
 fn resolve_proc_macro_command(manifest_dir: &Path, command: &str) -> PathBuf {
@@ -746,6 +949,63 @@ mod tests {
         Ok(())
     }
 
+    /// The clone directory is built from the source string, so a `..` in it
+    /// walks out of the cache.
+    ///
+    /// Measured before the guard: `git = "https://example.com/../../../../../../tmp/x"`
+    /// had git report `Cloning into '/home/…/.lk/git/example.com/../../../../../../tmp/x'`
+    /// — outside `~/.lk/git` entirely. A source with a clonable remote and a
+    /// `..` (a local path or `file://` remote) lands the checkout there.
+    ///
+    /// Refused rather than dropped: dropping would collapse two different
+    /// sources onto one directory.
+    #[test]
+    fn a_source_with_a_dotdot_segment_cannot_escape_the_cache() {
+        let error = cache_dir_for_source("https://example.com/../../../tmp/x")
+            .expect_err("`..` walks out of the cache root")
+            .to_string();
+        assert!(error.contains("`..` path segment"), "{error}");
+
+        // The shapes that must keep working, including the empty segments a
+        // scheme leaves behind and a `.` that means nothing.
+        let ok = cache_dir_for_source("https://github.com/owner/repo.git").expect("an ordinary source");
+        assert!(ok.ends_with("git/github.com/owner/repo"), "{}", ok.display());
+        let ssh = cache_dir_for_source("git@github.com:owner/repo.git").expect("an ssh source");
+        assert_eq!(ok, ssh, "the two spellings of one repository share a cache directory");
+        let dotted = cache_dir_for_source("https://example.com/./a").expect("a `.` segment is the same path");
+        assert!(dotted.ends_with("git/example.com/a"), "{}", dotted.display());
+    }
+
+    /// The three `[package]` fields that were written and never read.
+    #[test]
+    fn the_package_section_is_checked() {
+        let section = |name: &str, version: Option<&str>, edition: Option<&str>| PackageSection {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            edition: edition.map(str::to_string),
+            ..PackageSection::default()
+        };
+
+        validate_package_section(&section("pk", Some("0.1.0"), Some("2026"))).expect("an ordinary package");
+        validate_package_section(&section("pk", Some("1.2.3-rc.1+build5"), None)).expect("a pre-release version");
+        validate_package_section(&section("pk", None, None)).expect("both fields are optional");
+
+        for (name, version, edition, needle) in [
+            ("../evil", Some("0.1.0"), None, "is not a name"),
+            ("", Some("0.1.0"), None, "is empty"),
+            ("9pk", Some("0.1.0"), None, "is not a name"),
+            ("pk", Some("not-a-version"), None, "is not a version"),
+            ("pk", Some("1.2"), None, "is not a version"),
+            ("pk", Some("0.1.0"), Some("1999"), "is not an edition"),
+            ("pk", Some("0.1.0"), Some("banana"), "is not an edition"),
+        ] {
+            let error = validate_package_section(&section(name, version, edition))
+                .expect_err("refused")
+                .to_string();
+            assert!(error.contains(needle), "{name}/{version:?}/{edition:?}: {error}");
+        }
+    }
+
     #[test]
     fn macro_distribution_check_reports_bad_provider_metadata() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -841,5 +1101,66 @@ mod tests {
         assert!(modules.contains_key("util"));
         assert!(modules.contains_key("helper"));
         Ok(())
+    }
+
+    /// A workspace member's own dependencies are part of its graph.
+    ///
+    /// `discover` walked the ancestors and adopted the *workspace* manifest as
+    /// the subject, so inside a member `lk pkg check` described the workspace
+    /// and never read the member's `[dependencies]`. A member depending on
+    /// something outside the workspace got "package check ok" while the program
+    /// failed with `Module 'outside' not found` — the one question `check`
+    /// exists to answer, answered wrong.
+    #[test]
+    fn a_workspace_member_graph_is_rooted_at_the_member() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        std::fs::write(root.join(MANIFEST_FILE), "[workspace]\nmembers = [\"crates/*\"]\n").expect("workspace");
+
+        let sibling = root.join("crates/sibling");
+        std::fs::create_dir_all(sibling.join("src")).expect("sibling dirs");
+        std::fs::write(
+            sibling.join(MANIFEST_FILE),
+            "[package]\nname = \"sibling\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("sibling manifest");
+        std::fs::write(sibling.join("src/mod.lk"), "fn s() -> Int { return 1; }\n").expect("sibling entry");
+
+        let outside = root.join("outside");
+        std::fs::create_dir_all(outside.join("src")).expect("outside dirs");
+        std::fs::write(
+            outside.join(MANIFEST_FILE),
+            "[package]\nname = \"outside\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("outside manifest");
+        std::fs::write(outside.join("src/mod.lk"), "fn o() -> Int { return 2; }\n").expect("outside entry");
+
+        let member = root.join("crates/member");
+        std::fs::create_dir_all(member.join("src")).expect("member dirs");
+        std::fs::write(
+            member.join(MANIFEST_FILE),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n\n[dependencies.outside]\npath = \"../../outside\"\n",
+        )
+        .expect("member manifest");
+        std::fs::write(member.join("src/mod.lk"), "fn m() -> Int { return 3; }\n").expect("member entry");
+
+        let graph = PackageGraph::discover(&member).expect("discover").expect("a graph");
+        assert_eq!(
+            graph.manifest.package.as_ref().map(|package| package.name.as_str()),
+            Some("member"),
+            "the member is the subject, not the workspace"
+        );
+        let names: Vec<&str> = graph.modules.iter().map(|module| module.name.as_str()).collect();
+        assert!(names.contains(&"outside"), "the member's own dependency: {names:?}");
+        assert!(names.contains(&"sibling"), "and its workspace siblings: {names:?}");
+
+        // Remove the dependency: the graph must now say so rather than report ok.
+        std::fs::remove_dir_all(&outside).expect("remove outside");
+        let graph = PackageGraph::discover(&member).expect("discover").expect("a graph");
+        assert_eq!(
+            graph.missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["outside"]
+        );
+        assert_eq!(graph.missing[0].reason, MissingReason::PathNotFound);
     }
 }

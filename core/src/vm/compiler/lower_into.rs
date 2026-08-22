@@ -60,38 +60,98 @@ impl Compiler {
                 Ok(true)
             }
             Expr::Bin(lhs, op, rhs) => {
+                // The same concat rendering `lower_bin` does — a string sum
+                // reaches this path when it is lowered into a register.
+                if let Some((lhs, rhs)) = self.rendered_concat_operands(lhs, op, rhs) {
+                    let rewritten = Expr::Bin(Box::new(lhs), op.clone(), Box::new(rhs));
+                    return self.try_lower_expr_to_register(dst, &rewritten);
+                }
+                // `u64` compares and divides unsigned — the same rewrite
+                // `lower_bin` does, because a comparison that feeds a value (as
+                // in `println(a < b)`) arrives here instead. Two lowering paths
+                // for one shape is why the first version of this fixed division
+                // and left the comparison signed.
+                if self.lower_unsigned_bin_into(dst, lhs, op, rhs)?.is_some() {
+                    return Ok(true);
+                }
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);
+                // Whether each side is written as an integer literal, before the
+                // names are shadowed by the registers they lower into. A literal
+                // beside a machine integer takes that width — see below.
+                let lhs_is_literal = super::support::is_int_literal(lhs);
+                let rhs_is_literal = super::support::is_int_literal(rhs);
+                // The commuted attempt keeps the register it lowered — see the
+                // same shape in `lower_bin_op`: falling through to lower `rhs`
+                // again ran the expression twice, so `1 + f(x)` called `f` twice.
+                // This copy had the identical defect.
+                let mut commuted_rhs = None;
                 if static_flavor == super::support::NumericFlavor::Int
                     && let Some(immediate) = super::support::commuted_int_immediate_operand(op, lhs)
                 {
                     let rhs = self.lower_readonly_operand(rhs)?;
-                    if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+                    // Not for a machine integer: the immediate form skips the
+                    // width normalisation below, so `1 + reg` would answer at 64
+                    // bits while the type says otherwise.
+                    if self.function.performance.value_kind(rhs) == PerfValueKind::Int
+                        && !self.machine_regs.contains_key(&rhs)
+                    {
                         self.emit_int_immediate_to_register(dst, op, rhs, immediate)?;
                         return Ok(true);
                     }
+                    commuted_rhs = Some(rhs);
                 }
                 let lhs = self.lower_readonly_operand(lhs)?;
-                if let Some(immediate) = super::support::int_immediate_operand(op, rhs)
+                if commuted_rhs.is_none()
+                    && let Some(immediate) = super::support::int_immediate_operand(op, rhs)
                     && self.function.performance.value_kind(lhs) == PerfValueKind::Int
                     && static_flavor == super::support::NumericFlavor::Int
+                    && !self.machine_regs.contains_key(&lhs)
                 {
                     self.emit_int_immediate_to_register(dst, op, lhs, immediate)?;
                     return Ok(true);
                 }
-                let rhs = self.lower_readonly_operand(rhs)?;
+                let rhs = match commuted_rhs {
+                    Some(reg) => reg,
+                    None => self.lower_readonly_operand(rhs)?,
+                };
+                // A literal beside a machine integer takes its width.
+                //
+                // `reg + 1` is what driver code is made of, and the type checker
+                // now accepts it. What makes that *correct* is here: the literal
+                // is normalised to the same width first, so the wrap that
+                // follows the operation has two proven operands to agree about.
+                // Without it the checker would say `u8` while the arithmetic ran
+                // at 64 bits — `255u8 + 1` answering 256, which is the shape
+                // this whole path exists to prevent.
+                self.adopt_machine_width_for_literal(lhs, rhs, lhs_is_literal, rhs_is_literal)?;
                 let flavor = super::facts::numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs)
                     .unwrap_or(static_flavor);
                 self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)?;
                 Ok(true)
             }
-            Expr::CallExpr(callee, args)
-                if self.is_external_module_call(callee, args, "math", "floor", 1)
-                    && math_floor_arg_is_int_like(&args[0], &self.locals, &self.function.performance) =>
-            {
+            // `math.floor(x)` where `x` is already an integer is the identity,
+            // so the call can go. That is only true when it *is* one: `/`
+            // yields a `Float`, so `math.floor(subtotal / 10)` must keep its
+            // call. Eliding it there answered `11.4` for `math.floor(114 / 10)`
+            // — a wrong number from an optimisation, which the bench corpus
+            // caught as a checksum mismatch against Lua.
+            Expr::CallExpr(callee, args) if self.is_external_module_call(callee, args, "math", "floor", 1) => {
+                // The midpoint fusion computes `(lo + hi) / 2` floored in one
+                // opcode, so it is exact and stays.
                 if self.try_lower_int_midpoint_to_register(dst, &args[0])? {
                     return Ok(true);
                 }
-                self.try_lower_expr_to_register(dst, &args[0])
+                if math_floor_arg_is_int_like(&args[0], &self.locals, &self.function.performance) {
+                    return self.try_lower_expr_to_register(dst, &args[0]);
+                }
+                // `math.floor(a / b)` over two integers *is* integer division,
+                // and since `/` yields a `Float` it is the only way to write
+                // one. Fused so the idiom costs one instruction instead of a
+                // float divide plus a native call.
+                if self.try_lower_int_floor_div_to_register(dst, &args[0])? {
+                    return Ok(true);
+                }
+                Ok(false)
             }
             Expr::CallExpr(callee, args) => {
                 if self.is_external_module_call(callee, args, "map", "get", 2) {
@@ -134,6 +194,29 @@ impl Compiler {
             checked_u8("midpoint dst", dst)?,
             checked_u8("midpoint lhs", lhs)?,
             checked_u8("midpoint rhs", rhs)?,
+        ));
+        self.set_register_kind(dst, PerfValueKind::Int);
+        Ok(true)
+    }
+
+    /// `math.floor(a / b)` over two proven `Int`s → one `FloorDivInt`.
+    pub(super) fn try_lower_int_floor_div_to_register(&mut self, dst: u16, expr: &Expr) -> Result<bool> {
+        let Expr::Bin(numerator, BinOp::Div, divisor) = strip_parens(expr) else {
+            return Ok(false);
+        };
+        // No proven-`Int` requirement. The opcode answers for any numeric pair
+        // — two `Int`s take the integer path, anything else divides as `f64`
+        // and floors — which is exactly what the `math.floor` call it replaces
+        // did. Demanding a proof only meant the fusion missed the calls that
+        // needed it most: `math.floor(subtotal / 10)` where `subtotal` came
+        // out of a map, which no analysis here can type.
+        let lhs = self.lower_readonly_operand(numerator)?;
+        let rhs = self.lower_readonly_operand(divisor)?;
+        self.emit(Instr::abc(
+            Opcode::FloorDivInt,
+            checked_u8("floor div dst", dst)?,
+            checked_u8("floor div lhs", lhs)?,
+            checked_u8("floor div rhs", rhs)?,
         ));
         self.set_register_kind(dst, PerfValueKind::Int);
         Ok(true)
@@ -248,10 +331,11 @@ fn math_floor_arg_is_int_like(
         Expr::Bin(lhs, op, rhs)
             if matches!(
                 op,
+                // No `Div`: a quotient is a `Float`, so an expression
+                // containing one is not "already an integer".
                 crate::operator::BinOp::Add
                     | crate::operator::BinOp::Sub
                     | crate::operator::BinOp::Mul
-                    | crate::operator::BinOp::Div
                     | crate::operator::BinOp::Mod
             ) && super::support::numeric_flavor(lhs, op, rhs) == super::support::NumericFlavor::Int =>
         {

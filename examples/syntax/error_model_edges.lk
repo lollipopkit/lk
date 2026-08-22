@@ -51,7 +51,7 @@ try { deep1(); } catch deep {
 }
 
 // --- runtime errors (not error()) are recoverable too: division by zero ---
-fn div_zero() { return 1 / 0; }
+fn div_zero() { return 1 % 0; }
 let div_caught = false;
 try { div_zero(); } catch e { div_caught = true; }
 assert(div_caught);

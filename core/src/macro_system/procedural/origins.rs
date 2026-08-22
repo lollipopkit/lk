@@ -92,7 +92,7 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
             collect_generated_expr_origins_from_stmt(body, span, &mut origins);
             origins
         }
-        Stmt::Trait { name, methods } => {
+        Stmt::Trait { name, methods, .. } => {
             let mut origins = vec![AstGeneratedMemberOrigin {
                 label: format!("trait {name}"),
                 span: span.clone(),
@@ -113,11 +113,18 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
             target_type,
             methods,
         } => {
-            let mut origins = vec![AstGeneratedMemberOrigin {
-                label: format!("type_ref {trait_name}"),
-                span: span.clone(),
-            }];
-            push_generated_statement_origin("stmt impl_trait", span.clone(), &mut origins);
+            // An inherent `impl Type { … }` names no trait, so there is no
+            // trait reference to record.
+            let mut origins = match trait_name {
+                Some(trait_name) => vec![AstGeneratedMemberOrigin {
+                    label: format!("type_ref {trait_name}"),
+                    span: span.clone(),
+                }],
+                None => Vec::new(),
+            };
+            if trait_name.is_some() {
+                push_generated_statement_origin("stmt impl_trait", span.clone(), &mut origins);
+            }
             push_generated_statement_origin("stmt impl_target", span.clone(), &mut origins);
             collect_generated_type_origins(target_type, span.clone(), &mut origins);
             origins.extend(methods.iter().flat_map(|method| {
@@ -173,6 +180,8 @@ fn generated_member_origins_for_stmt(stmt: &Stmt, span: Option<Span>) -> Vec<Ast
 
 fn collect_generated_type_origins(ty: &Type, span: Option<Span>, origins: &mut Vec<AstGeneratedMemberOrigin>) {
     match ty {
+        // `_` names nothing, so there is no type reference to record.
+        Type::Unknown => {}
         Type::Named(name) => {
             push_generated_statement_origin("type_expr named", span.clone(), origins);
             origins.push(AstGeneratedMemberOrigin {
@@ -295,6 +304,7 @@ fn collect_generated_expr_origins_from_stmt(
             origins.extend(generated_attribute_origins(attributes, span.clone()));
             collect_generated_expr_origins_from_stmt(item, span, origins);
         }
+        Stmt::Defer { body, .. } => collect_generated_expr_origins_from_stmt(body, span, origins),
         Stmt::If {
             condition,
             then_stmt,
@@ -387,7 +397,7 @@ fn collect_generated_expr_origins_from_stmt(
             push_generated_statement_origin("stmt compound_assign_value", span.clone(), origins);
             collect_generated_expr_origins(value, span, origins);
         }
-        Stmt::Define { name, value } => {
+        Stmt::Define { name, value, .. } => {
             push_generated_statement_origin("stmt define", span.clone(), origins);
             push_generated_reference_origin("binding", name, span.clone(), origins);
             push_generated_statement_origin("stmt initializer", span.clone(), origins);
@@ -438,11 +448,13 @@ fn collect_generated_expr_origins_from_stmt(
             target_type,
             methods,
         } => {
-            origins.push(AstGeneratedMemberOrigin {
-                label: format!("type_ref {trait_name}"),
-                span: span.clone(),
-            });
-            push_generated_statement_origin("stmt impl_trait", span.clone(), origins);
+            if let Some(trait_name) = trait_name {
+                origins.push(AstGeneratedMemberOrigin {
+                    label: format!("type_ref {trait_name}"),
+                    span: span.clone(),
+                });
+                push_generated_statement_origin("stmt impl_trait", span.clone(), origins);
+            }
             push_generated_statement_origin("stmt impl_target", span.clone(), origins);
             collect_generated_type_origins(target_type, span.clone(), origins);
             for method in methods {
@@ -450,7 +462,7 @@ fn collect_generated_expr_origins_from_stmt(
                 collect_generated_expr_origins_from_stmt(method, span.clone(), origins);
             }
         }
-        Stmt::Expr(expr) => {
+        Stmt::Expr { value: expr, .. } => {
             push_generated_statement_origin("stmt expr", span.clone(), origins);
             push_generated_statement_origin("stmt expr_value", span.clone(), origins);
             collect_generated_expr_origins(expr, span, origins);
@@ -466,24 +478,6 @@ fn collect_generated_expr_origins_from_stmt(
             push_generated_statement_origin("stmt block", span.clone(), origins);
             for statement in statements {
                 push_generated_statement_origin("stmt block_item", span.clone(), origins);
-                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
-            }
-        }
-        Stmt::Try {
-            body,
-            catch_var,
-            handler,
-        } => {
-            push_generated_statement_origin("stmt try", span.clone(), origins);
-            for statement in body {
-                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
-            }
-            push_generated_statement_origin("stmt try_catch", span.clone(), origins);
-            // The caught name is a binding this statement introduces, like a
-            // parameter or a `let` — recorded so a macro-generated `catch e`
-            // resolves to its origin.
-            push_generated_reference_origin("binding", catch_var, span.clone(), origins);
-            for statement in handler {
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }
@@ -508,7 +502,7 @@ fn collect_generated_expr_origins_from_stmt(
             push_generated_statement_origin("stmt type_alias_target", span.clone(), origins);
             collect_generated_type_origins(target, span, origins);
         }
-        Stmt::Trait { name, methods } => {
+        Stmt::Trait { name, methods, .. } => {
             origins.push(AstGeneratedMemberOrigin {
                 label: format!("trait {name}"),
                 span: span.clone(),
@@ -850,7 +844,7 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
                 }
             }
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body, .. } => {
             push_generated_statement_origin("expr closure", span.clone(), origins);
             for param in params {
                 push_generated_statement_origin("expr closure_param", span.clone(), origins);
@@ -863,6 +857,24 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
             push_generated_statement_origin("expr block", span.clone(), origins);
             for statement in statements {
                 push_generated_statement_origin("expr block_stmt", span.clone(), origins);
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+        }
+        Expr::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
+            push_generated_statement_origin("expr try", span.clone(), origins);
+            for statement in body {
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+            push_generated_statement_origin("expr try_catch", span.clone(), origins);
+            // The caught name is a binding this expression introduces, like a
+            // parameter or a `let` — recorded so a macro-generated `catch e`
+            // resolves to its origin.
+            push_generated_reference_origin("binding", catch_var, span.clone(), origins);
+            for statement in handler {
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }
@@ -952,6 +964,7 @@ fn generated_compound_assign_origin_label(op: &BinOp) -> &'static str {
 fn generated_unary_origin_label(op: &UnaryOp) -> &'static str {
     match op {
         UnaryOp::Not => "unary not",
+        UnaryOp::Neg => "unary neg",
     }
 }
 
@@ -1199,7 +1212,10 @@ pub(super) fn stmt_label(stmt: &Stmt) -> String {
             trait_name,
             target_type,
             ..
-        } => format!("impl {trait_name} for {}", target_type.display()),
+        } => match trait_name {
+            Some(trait_name) => format!("impl {trait_name} for {}", target_type.display()),
+            None => format!("impl {}", target_type.display()),
+        },
         Stmt::TypeAlias { name, .. } => format!("type {name}"),
         Stmt::Attributed { item, .. } => stmt_label(item),
         Stmt::Block { .. } => "block".to_string(),

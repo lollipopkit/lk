@@ -11,11 +11,8 @@ fn artifact(source: &str) -> ModuleArtifact {
     let program = parse_program_source(source, ParseOptions::default()).expect("parse");
     // The try/catch desugar references runtime builtins; declare them as
     // external globals the way a CLI compile (full stdlib context) would.
-    let externals: Vec<String> = ["try$call", "assert", "error", "println"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), externals).expect("compile");
+    let externals: Vec<String> = ["assert", "error", "println"].iter().map(|s| s.to_string()).collect();
+    let module = Compiler::compile_module_with_globals(&program, externals).expect("compile");
     ModuleArtifact::new(Vec::new(), &module).expect("artifact")
 }
 
@@ -108,6 +105,26 @@ fn hybrid_degrades_a_discarded_bridge_result_to_the_void_call() {
     assert!(
         !lk_aot_mir::value_is_used(func, call_dst),
         "the discarded bridge result must be unread (so codegen degrades to the void call)"
+    );
+}
+
+#[test]
+fn hybrid_bridges_the_real_owner_of_an_unlowerable_try_body() {
+    let artifact = artifact(
+        "fn guarded() -> String {\n\
+           try { let f = \"v={}\".trim(); println(f, 1); return \"ok\"; }\n\
+           catch e { return \"caught\"; }\n\
+         }\n\
+         println(guarded());\n\
+         return 0;\n",
+    );
+    let artifact_function_count = artifact.module.functions.len() as u32;
+    let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("the try owner bridges");
+    lk_aot_mir::validate(&mir).expect("hybrid module validates");
+    assert_eq!(mir.vm_functions.len(), 1, "only the real `guarded` function bridges");
+    assert!(
+        mir.vm_functions[0].id.0 < artifact_function_count,
+        "an outlined try body has no function in the embedded VM artifact"
     );
 }
 

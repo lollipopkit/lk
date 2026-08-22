@@ -244,15 +244,16 @@ impl ModuleResolver {
     }
 
     pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport> {
-        self.resolve_source_runtime_with_base(src, None, crate::vm::TypeScope::anonymous())
+        self.resolve_source_runtime_with_base(src, None, crate::val::TypeScope::anonymous())
     }
 
     fn resolve_source_runtime_with_base(
         &self,
         src: &str,
         base_dir: Option<PathBuf>,
-        type_scope: crate::vm::TypeScope,
+        type_scope: crate::val::TypeScope,
     ) -> Result<RuntimeExport> {
+        let seed_dir = base_dir.clone();
         let program = parse_program_source(
             src,
             ParseOptions {
@@ -263,7 +264,10 @@ impl ModuleResolver {
         .map_err(|e| anyhow!(e.to_string()))?;
         let resolver = Arc::new(self.clone());
         let mut ctx = VmContext::new().with_resolver(resolver).with_type_scope(type_scope);
-        let result = program.execute_with_ctx(&mut ctx)?;
+        // The loaded module's own directory, so *its* imports are seeded too:
+        // a type crossing one more module boundary is still a type this file
+        // names.
+        let result = program.execute_with_ctx_from(&mut ctx, seed_dir.as_deref())?;
         Ok(result.into_exports())
     }
 
@@ -356,11 +360,11 @@ impl ModuleResolver {
         }
         // The normalized path is this module's type identity: the compiler has
         // no idea what file it is compiling, so the loader is the only place
-        // that can supply it (`vm::TypeScope`).
+        // that can supply it (`val::TypeScope`).
         resolver.resolve_source_runtime_with_base(
             &src,
             path.parent().map(Path::to_path_buf),
-            crate::vm::TypeScope::from_path(&path.to_string_lossy()),
+            crate::val::TypeScope::from_path(&path.to_string_lossy()),
         )
     }
 }
@@ -385,7 +389,43 @@ fn runtime_export_field(module: &RuntimeExport, name: &str) -> Result<RuntimeExp
     if let Some(value) = map.get_str(name) {
         return Ok(RuntimeExport::new(value, module.shared_state(), module.shared_module()));
     }
-    Err(anyhow!("Export '{}' not found in runtime module", name))
+    // A type: bind the constructor the declaring module generates beside it
+    // (`crate::stmt::struct_ctors`), which is an ordinary top-level `fn` and so
+    // an ordinary export. Binding *that* is what makes the imported name build
+    // the declaring module's type rather than a same-named one — the call runs
+    // in `m`, so the scope, the field order and trait dispatch are all right,
+    // exactly as `m.P { … }` already is.
+    //
+    // It used to refuse here, with a message that said an imported type "cannot
+    // be named or constructed directly" — which `m.P { … }` had been doing all
+    // along.
+    if let Some(ctor) = map.get_str(&crate::stmt::struct_ctors::constructor_name(name)) {
+        return Ok(RuntimeExport::new(ctor, module.shared_state(), module.shared_module()));
+    }
+    if name.starts_with(char::is_uppercase) {
+        // Say which of the three it is, rather than asserting what the module
+        // holds. The old message ended "and this module declares neither",
+        // which it had not checked: `type Pair = List<Int>;` is declared, and
+        // got told it was not.
+        if module
+            .shared_module()
+            .type_info
+            .traits
+            .iter()
+            .any(|decl| decl.name == name)
+        {
+            return Err(anyhow!(
+                "'{name}' is a `trait`, and a trait has no constructor to bind, so it cannot be imported as \
+                 a name. Import the type that implements it instead — the `impl` travels with the type."
+            ));
+        }
+        return Err(anyhow!(
+            "'{name}' is not an export of this module — no value, and no `struct` by that name to bind a \
+             constructor for. A `trait` and a `type` alias are both compile-time only and neither can be \
+             imported as a name."
+        ));
+    }
+    Err(anyhow!("'{}' is not an export of this module", name))
 }
 
 pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &mut VmContext) -> Result<()> {
@@ -450,7 +490,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
     // module `main` never named, so dispatch failed outright ("Object has no
     // method"). Registering the resolver's whole loaded set closes that: it is
     // already the transitive closure, and scope-keyed entries mean the extra
-    // modules cannot clobber anything (see `vm::TypeScope`).
+    // modules cannot clobber anything (see `val::TypeScope`).
     #[cfg(feature = "std")]
     for module in resolver.loaded_file_modules() {
         env.register_imported_types(&module)?;
@@ -525,7 +565,6 @@ mod tests {
     fn test_parent_module_item_import_binds_child_namespace() -> Result<()> {
         use crate::{
             module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
-            util::fast_map::fast_hash_map_from_iter,
             val::{HeapStore, HeapValue, TypedMap},
             vm::{NativeArgs, NativeRuntime},
         };
@@ -548,7 +587,7 @@ mod tests {
                 let mut heap = HeapStore::new();
                 let file = crate::vm::import_runtime_export(&file, &mut heap)?;
                 let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(
-                    fast_hash_map_from_iter([(Arc::<str>::from("file"), file)]),
+                    crate::util::value_map::value_map_from_iter([(Arc::<str>::from("file"), file)]),
                 ))));
                 Ok(RuntimeExport::from_value(value, heap))
             }
@@ -596,6 +635,95 @@ mod tests {
         // (error message still OK but not due to security check)
         let rel = PathBuf::from("does_not_exist.lk");
         assert!(resolver.resolve_file_path(&rel.to_string_lossy()).is_err());
+    }
+
+    /// A method in an imported module may call another method on `self`.
+    ///
+    /// `take_runtime_callable_state` moves a module's shared state out of its
+    /// mutex for the duration of a call and leaves `Default::default()` behind,
+    /// so the mechanism cannot be re-entered — and a method calling another
+    /// method on `self` re-enters by definition. The outer call took the state,
+    /// the inner call took the empty shell, and the executor refused "a module
+    /// expecting 83 globals against a table of 0" for a program that never
+    /// mentions a global. All three shapes below were broken; each works when
+    /// the same code sits in one file, which is what made it a cross-module bug
+    /// rather than a dispatch bug.
+    #[test]
+    fn an_imported_method_may_call_another_method_on_self() -> Result<()> {
+        let cases = [
+            // A trait default body reaching the impl's own method.
+            (
+                "trait Area { fn area(self) -> Int; fn twice(self) -> Int { return self.area() * 2; } }\n\
+                 impl Area for Sq { fn area(self) -> Int { return self.side * self.side; } }",
+                "twice",
+            ),
+            // An inherent method reaching another inherent method.
+            (
+                "impl Sq { fn area(self) -> Int { return self.side * self.side; } \n\
+                 fn twice(self) -> Int { return self.area() * 2; } }",
+                "twice",
+            ),
+            // An inherent method reaching a trait method.
+            (
+                "trait Area { fn area(self) -> Int; }\n\
+                 impl Area for Sq { fn area(self) -> Int { return self.side * self.side; } }\n\
+                 impl Sq { fn twice(self) -> Int { return self.area() * 2; } }",
+                "twice",
+            ),
+        ];
+        for (index, (impls, method)) in cases.iter().enumerate() {
+            let temp = tempfile::tempdir()?;
+            let dep = temp.path().join("shape.lk");
+            std::fs::write(
+                &dep,
+                format!("struct Sq {{ side: Int }}\n{impls}\nfn make(n: Int) -> Sq {{ return Sq {{ side: n }}; }}\n"),
+            )?;
+            let mut resolver = ModuleResolver::new();
+            resolver.set_base_dir(temp.path().to_path_buf());
+            let value = execute_import_source(
+                &format!("use {{ make }} from \"./shape.lk\";\nreturn make(3).{method}();\n"),
+                Arc::new(resolver),
+            )?;
+            assert_eq!(value, RuntimeVal::Int(18), "case {index}");
+        }
+        Ok(())
+    }
+
+    /// Module A's method may call into B and have B call back into A.
+    ///
+    /// The step past `an_imported_method_may_call_another_method_on_self`: there
+    /// the re-entered module *was* the one executing, so the call could simply
+    /// use the live state. Here it is not — B is — and A's state is out on the
+    /// stack, so neither borrowing it nor reusing the current one is right.
+    ///
+    /// Borrowing was never the only way to run a foreign body, though.
+    /// `call_foreign_module_method` keeps the current heap and swaps in a global
+    /// table shaped like the declaring module's, so it needs A's *module*, not
+    /// A's state. Before that, the re-entering call got the empty placeholder
+    /// and the failure surfaced as "module expected 84 globals, got 0".
+    #[test]
+    fn a_module_may_be_re_entered_through_another_module() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("b.lk"), "fn helper(x) { return x.base() + 100; }\n")?;
+        std::fs::write(
+            temp.path().join("a.lk"),
+            "use { helper } from \"./b.lk\";\n\
+             struct A { v: Int }\n\
+             impl A {\n\
+                 fn base(self) -> Int { return self.v; }\n\
+                 fn viab(self) -> Int { return helper(self); }\n\
+             }\n\
+             fn make(n: Int) -> A { return A { v: n }; }\n",
+        )?;
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(temp.path().to_path_buf());
+        let value = execute_import_source(
+            "use { make } from \"./a.lk\";\nreturn make(5).viab();\n",
+            Arc::new(resolver),
+        )?;
+
+        assert_eq!(value, RuntimeVal::Int(105));
+        Ok(())
     }
 
     /// `..` is allowed as a way to reach a sibling directory of the same package,
@@ -871,6 +999,43 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(base);
         assert_eq!(result?, RuntimeVal::Int(21));
+        Ok(())
+    }
+
+    /// An imported type can be constructed: `module.Type { … }`.
+    ///
+    /// A module exports *values*, and a `struct` declaration is not one, so a
+    /// module that declared a type could not let its users make one — every
+    /// such module hand-wrote a `make`. It cannot simply be allowed either: a
+    /// type's identity carries its defining module (`TypeScope`), and a `Pt`
+    /// built in the importer is not the `Pt` that `impl … for Pt` was
+    /// registered against.
+    ///
+    /// So the *defining* module builds it: `stmt::struct_ctors` puts a
+    /// named-parameter constructor beside every `struct`, and the literal is
+    /// parse-time sugar for a call to it. This pins all three things that made
+    /// it worth doing: the fields, the trait method, and the declaration-order
+    /// display.
+    #[test]
+    fn an_imported_type_can_be_constructed_by_the_module_that_owns_it() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join("types.lk"),
+            "struct Pt { x: Int, y: Int }\n             trait Norm { fn norm(self) -> Int; }\n             impl Norm for Pt { fn norm(self) -> Int { return self.x + self.y; } }\n",
+        )?;
+        let program = crate::syntax::parse_program_source(
+            "use \"types\";\nlet p = types.Pt { x: 3, y: 4 };\nreturn [p.x, p.norm(), \"${p}\"];\n",
+            crate::syntax::ParseOptions {
+                base_dir: Some(temp.path().to_path_buf()),
+                ..crate::syntax::ParseOptions::default()
+            },
+        )
+        .expect("program should parse");
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(temp.path().to_path_buf());
+        let mut ctx = crate::vm::VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
+        let result = crate::vm::ProgramExec::execute_with_ctx(&program, &mut ctx)?;
+        assert_eq!(result.display_first_return(), r#"[3,7,"Pt{x:3,y:4}"]"#);
         Ok(())
     }
 }

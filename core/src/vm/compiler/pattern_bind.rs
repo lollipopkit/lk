@@ -18,6 +18,26 @@ impl Compiler {
         pattern: &Pattern,
         type_annotation: Option<&crate::val::Type>,
         value: &Expr,
+        is_const: bool,
+    ) -> Result<()> {
+        // Only for the diagnostic in `load_callable_by_name`: a binding is not
+        // in scope inside its own initializer, and saying which binding that is
+        // turns "Compiler undefined callable `fact`" into the rule it broke.
+        let outer_initializing = self.initializing_binding.take();
+        if let Pattern::Variable(name) = pattern {
+            self.initializing_binding = Some(name.clone());
+        }
+        let lowered = self.lower_let_inner(pattern, type_annotation, value, is_const);
+        self.initializing_binding = outer_initializing;
+        lowered
+    }
+
+    fn lower_let_inner(
+        &mut self,
+        pattern: &Pattern,
+        type_annotation: Option<&crate::val::Type>,
+        value: &Expr,
+        is_const: bool,
     ) -> Result<()> {
         if let Pattern::Variable(name) = pattern {
             // NOTE: never alias the binding to a shared loop-literal cache
@@ -28,8 +48,23 @@ impl Compiler {
             // loop (`sort_words`' inner scan). The general path still uses
             // the cache: the literal store becomes a register move.
             let watermark = self.next_reg;
+            let cacheable = self.top_level_binding_is_cacheable(name, is_const);
+            // The destination stops claiming a width before anything is lowered
+            // into it. What lands there then establishes its own — a move
+            // carries the source's, arithmetic sets or clears it — and the
+            // annotation, if there is one, has the last word. Clearing first is
+            // what makes a width fact impossible to outlive its value: the
+            // register may have held a `u32` in a branch that has since been
+            // recycled.
             let slot = if let Some(slot) = self.locals.get(name).copied() {
-                if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+                if !self.local_declared_in_current_scope(name) {
+                    // Shadowing a binding from an enclosing scope. Reusing its
+                    // register wrote *through* it, so `if c { let x = 2; }`
+                    // left `x` at 2 after the block — in every construct, with
+                    // nothing said. A fresh register leaves the outer value
+                    // alone for the scope restore to hand back.
+                    self.alloc_reg()
+                } else if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                     // A fresh binding must not write the old register in
                     // place: it would clobber the counter the fused loop
                     // opcodes drive (`for i { let i = …; }`), or overwrite a
@@ -43,6 +78,7 @@ impl Compiler {
             } else {
                 self.alloc_reg()
             };
+            self.machine_regs.remove(&slot);
             if !self.try_lower_expr_to_register(slot, value)? {
                 let value = self.lower_expr(value)?;
                 let move_source = !self.is_current_local_slot(value);
@@ -54,9 +90,34 @@ impl Compiler {
                 self.emit_set_global(slot, global_slot)?;
             }
             self.record_const_map_local_from_expr(name, value)?;
-            // An annotated width is one of the two ways the compiler learns a
-            // register holds a machine integer (the other is `as`).
-            self.note_machine_reg(slot, type_annotation);
+            // Past the cache limit the binding is only a global; the register
+            // goes back and reads resolve through `GetGlobal`.
+            if !cacheable {
+                self.clear_const_map_local(name);
+                self.next_reg = self.live_register_floor().max(watermark);
+                return Ok(());
+            }
+            // How the compiler learns a register holds a machine integer: the
+            // annotation if there is one, and otherwise what the initializer
+            // itself produces. Before the second half existed, `let a = read();`
+            // and `let a: u32 = read();` computed different sums from the same
+            // `fn read() -> u32` — see `initializer_machine_width`.
+            // Which struct this local holds, when the initializer says so —
+            // the only type the compiler tracks, and only so that `r.field` has
+            // a declared width to wrap to.
+            self.note_local_struct_type(name, type_annotation, value);
+            match type_annotation {
+                Some(_) => self.note_machine_reg(slot, type_annotation),
+                // A call establishes nothing on its own, so its declared width
+                // is applied here. Anything else keeps whatever the value that
+                // landed in the register established, which is now the answer
+                // rather than a guess.
+                None => {
+                    if let Some(kind) = self.initializer_machine_width(value) {
+                        self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
+                    }
+                }
+            }
             self.insert_fresh_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
             return Ok(());
@@ -89,7 +150,7 @@ impl Compiler {
             }
             Pattern::Wildcard => Ok(()),
             Pattern::List { patterns, rest } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), rest.is_none())?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_let_sequence(patterns, value)?;
                 if let Some(rest) = rest {
@@ -168,6 +229,7 @@ impl Compiler {
                 checked_u8("let sequence value", value)?,
                 checked_u8("let sequence index", key)?,
             ));
+            self.carry_element_width(value, field);
             self.bind_let_pattern(pattern, field)?;
         }
         Ok(())

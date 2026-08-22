@@ -15,7 +15,7 @@ fn reports_numeric_operand_diagnostic() {
         .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)));
     let messages: Vec<&str> = analysis.diagnostics.iter().map(|d| d.message.as_str()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("must by numeric types")),
+        messages.iter().any(|m| m.contains("must be numeric types")),
         "expected numeric diagnostic in {:?}",
         messages
     );

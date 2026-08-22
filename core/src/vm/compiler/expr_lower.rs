@@ -8,6 +8,27 @@ impl Compiler {
     }
 
     pub(super) fn lower_access_to_register(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
+        // A field's declared width, onto the register it lands in.
+        //
+        // The binary paths ask `machine_regs` about *registers*, not about the
+        // expression that filled them, so knowing `r.value` is a `u32` is only
+        // useful once it is written down here. Without it `r.value + 1` on a
+        // `u32` field added at 64 bits and answered 4294967296.
+        //
+        // Recorded before the access lowers rather than after: the lowering
+        // below has several returns, and one of them is a fused opcode.
+        match self.access_register_width_of(target, key) {
+            Some(width) => {
+                self.machine_regs.insert(dst, width);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
+        self.lower_access_to_register_inner(dst, target, key)
+    }
+
+    fn lower_access_to_register_inner(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
         let target = self.lower_readonly_access_target(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
         if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {
@@ -198,13 +219,37 @@ impl Compiler {
         // TODO(32-bit targets): on a 32-bit deployment target a pointer is
         // narrower than the `i64` carrier, so this will need the same
         // truncation a `u32` gets. Harmless while both backends are 64-bit,
-        // and wrong the moment the AOT path cross-compiles to thumb/arm32.
+        // and wrong the moment the AOT path cross-compiles to thumb/arm32 —
+        // which it cannot: Cranelift's backend set here has no 32-bit target
+        // (`no_32_bit_target_is_reachable_yet` in lk-aot-codegen fails when
+        // that stops being true, and names this site).
+        //
+        // Note this is the *compiler*, so it cannot follow the target even in
+        // principle: bytecode is target-agnostic, and the triple only appears
+        // at `lk compile object:<triple>`. A truncation here would have to
+        // become one the VM performs at run time, as `truncate_to_width`
+        // already does for `isize`/`usize`.
         if matches!(ty, crate::val::Type::Ptr { .. }) {
             let src = self.lower_readonly_operand(inner)?;
             // The result is an address, not a machine integer of some width:
             // arithmetic on it must not inherit the operand's wrap.
             self.machine_regs.remove(&src);
             return Ok(src);
+        }
+        // `u64 as Float` reads the carrier as unsigned.
+        //
+        // The last conversion in this family. A `u64` with bit 63 set is a
+        // negative `i64` carrier, and unlike a comparison or a divide the result
+        // does not *look* wrong until it is compared with zero.
+        if matches!(ty, crate::val::Type::Float)
+            && let Some(kind) = self.expr_machine_width(inner)
+            && matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize)
+        {
+            let call = Expr::Call(
+                alloc::string::String::from("__lk_u64_to_float"),
+                alloc::vec![Box::new(inner.clone())],
+            );
+            return self.lower_expr(&call);
         }
         let Some(target) = crate::vm::ir::CastTarget::from_type(ty) else {
             anyhow::bail!("internal error: cast target {} reached lowering", ty.display());
@@ -229,6 +274,7 @@ impl Compiler {
         let dst = self.alloc_reg();
         let opcode = match op {
             UnaryOp::Not => Opcode::Not,
+            UnaryOp::Neg => Opcode::Neg,
         };
         self.emit(Instr::abc(
             opcode,
@@ -312,16 +358,38 @@ impl Compiler {
                 Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
             }
             Expr::Bin(lhs, op, rhs) if compare_test_opcode(op).is_some() => {
-                if let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)? {
+                // A `u64` comparison is unsigned, and the fused compare-branch
+                // opcodes below are not.
+                //
+                // This is the *third* path the same rewrite has to reach:
+                // `lower_bin` for a comparison producing a value, the
+                // lower-into-register path for one feeding a call argument, and
+                // this one for a condition. Each was found by a test the
+                // previous fix left failing — `println(a < b)` after
+                // `let c = a / b`, and `if (a > b)` after both.
+                if let Some(value) = self.lower_unsigned_bin(lhs, op, rhs)? {
+                    return Ok(vec![self.emit_branch_placeholder(Opcode::BrFalse, value)?]);
+                }
+                // Each fused shape below lowers an operand to decide, and leaves
+                // those instructions behind when it declines — so they are only
+                // tried over operands that are free to lower twice. See
+                // [`Self::is_free_to_lower_twice`]: `if (a > b)` and
+                // `if (x % 2 == 0)` still fuse, `if (1 + f(x) > 0)` no longer
+                // calls `f` three times.
+                let speculate = Self::is_free_to_lower_twice(lhs) && Self::is_free_to_lower_twice(rhs);
+                if speculate
+                    && let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)?
+                {
                     return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
                 }
-                if let Some((opcode, value)) = self.lower_zero_branch_operands(lhs, op, rhs)? {
+                if speculate && let Some((opcode, value)) = self.lower_zero_branch_operands(lhs, op, rhs)? {
                     return Ok(vec![self.emit_branch_placeholder(opcode, value)?]);
                 }
-                if let Some((opcode, value, immediate)) = self.lower_i4_branch_operands(lhs, op, rhs)? {
+                if speculate && let Some((opcode, value, immediate)) = self.lower_i4_branch_operands(lhs, op, rhs)? {
                     return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
                 }
-                if ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
+                if speculate
+                    && ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
                     && let Some((opcode, lhs, rhs)) = self.lower_compare_test_immediate_operands(lhs, op, rhs)?
                 {
                     return Ok(vec![
@@ -371,6 +439,36 @@ impl Compiler {
         }
         self.emit_compare_test_pair_immediate_placeholder(first_reg, first_value, second_reg, second_value)
             .map(Some)
+    }
+
+    /// Whether lowering this expression twice is observably the same as once.
+    ///
+    /// The fused compare-and-branch shapes below cannot decide without a
+    /// register fact (`value_kind`), so each lowers its operand and *then* asks —
+    /// and a helper that declines answers `None` with its instructions already in
+    /// the stream. The next attempt lowers the expression again, so an operand
+    /// with a side effect runs once per attempt that looked and declined:
+    /// `if (1 + f(x) > 0)` called `f` three times. Worse, the attempts do not
+    /// even agree on *which* subexpression is the operand — the `%`-against-zero
+    /// form takes `x` out of `x % k` while the next form takes `x % k` whole — so
+    /// there is no single register to hand along.
+    ///
+    /// What makes the speculation sound is this: only speculate over operands
+    /// that are free to lower twice. A name, a literal, and arithmetic over them
+    /// re-lower to at most a dead `Move`/`LoadInt` on the path that declines,
+    /// which is what that path already costs; a call re-lowers to a *call*.
+    ///
+    /// Deliberately a whitelist. A new `Expr` variant is not free until someone
+    /// says it is, and the cost of being wrong here is a program that runs its
+    /// operand twice — the exact bug this exists to prevent.
+    fn is_free_to_lower_twice(expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(_) | Expr::Literal(_) => true,
+            Expr::Paren(inner) | Expr::Unsafe(inner) | Expr::Cast(inner, _) => Self::is_free_to_lower_twice(inner),
+            Expr::Unary(_, inner) => Self::is_free_to_lower_twice(inner),
+            Expr::Bin(lhs, _, rhs) => Self::is_free_to_lower_twice(lhs) && Self::is_free_to_lower_twice(rhs),
+            _ => false,
+        }
     }
 
     pub(super) fn lower_compare_test_immediate_operands(

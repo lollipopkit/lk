@@ -11,37 +11,75 @@
 // them. They live here rather than in the driver modules for the same reason:
 // a driver decodes a scancode, but only the program knows what to do with it.
 
-use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
-use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
-      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
+use { uart_init, uart_putc, uart_write, uart_text, uart_put_int, uart_put_hex } from "drivers/serial";
+use { pci_find_display, pci_devices, pci_vendor, pci_device_id, pci_class,
+    pci_subclass, pci_bar, pci_bar_size, pci_bar_is_io, pci_bdf_device,
+    pci_bdf_function, pci_command_set,
+    PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
+use { edu_find, edu_open, edu_identify, edu_liveness, edu_factorial, edu_dma,
+    edu_irq_line, edu_bar_size, edu_raise, edu_acknowledge, edu_irq_status,
+    EDU_IDENT, EDU_IRQ_TEST } from "drivers/edu";
+use { e1000_find, e1000_open, e1000_init, e1000_mac, e1000_set_mac,
+    e1000_link_up, e1000_transmit, e1000_receive_within, e1000_receive,
+    e1000_enable_receive_interrupt, e1000_disable_interrupts, e1000_interrupt_cause,
+    TX_COUNT, RX_COUNT, RX_BUFFER_SIZE, DESC_SIZE, STATE_SIZE } from "drivers/e1000";
+use { arp_build_request, arp_match_reply, frame_set_byte as net_set_byte,
+    frame_byte as net_byte_at, MAC_SIZE, IP_SIZE } from "drivers/arp";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
 use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
-use { read_scancode, is_release, key_code } from "drivers/keyboard";
+use { read_scancode, is_release, key_code, is_shift, is_caps_lock } from "drivers/keyboard";
 use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
-      dx_of, dy_of, left_down } from "drivers/mouse";
+    dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
+use { remap as pic_remap, mask as pic_mask, unmask as pic_unmask,
+    mask_line as pic_mask_line, eoi as pic_eoi, in_service as pic_in_service,
+    set_level_triggered as pic_set_level,
+    eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave,
+    line_exists as pic_line_exists } from "drivers/pic";
+use { hpet_present, hpet_start, hpet_frequency, hpet_counter,
+    hpet_elapsed_microseconds } from "drivers/hpet";
+use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
+    IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
+use { set_entry as gdt_set_entry, set_tss_entry as gdt_set_tss_entry,
+    load as gdt_load, reload as gdt_reload,
+    load_task_register as gdt_load_task_register, GDT_ENTRY_SIZE } from "drivers/gdt";
+use { prepare as tss_prepare, set_kernel_stack as tss_set_kernel_stack,
+    TSS_SIZE } from "drivers/tss";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
-      dropped as window_dropped, outline as window_outline,
-      put_within as window_put_within, drop_count as window_drop_count,
-      left as window_left, top as window_top, width as window_width,
-      height as window_height } from "drivers/window";
+    dropped as window_dropped, outline as window_outline,
+    put_within as window_put_within, drop_count as window_drop_count,
+    left as window_left, top as window_top, width as window_width,
+    height as window_height } from "drivers/window";
 use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
 use { reset as queue_reset, push as queue_push, pop as queue_pop,
-      is_empty as queue_empty } from "drivers/queue";
+    is_empty as queue_empty } from "drivers/queue";
 use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
-      entry_is_available } from "drivers/multiboot";
+    entry_is_available } from "drivers/multiboot";
 use { heap_init, heap_alloc, heap_release,
-      used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
+    used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
+use { task_table_init, task_table_size, task_word, task_set_word, task_field, task_set_field,
+    task_prepare_frame, task_find_free, task_state, task_set_state,
+    TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
+    TASK_CR3_OFFSET, TASK_STACK_OFFSET,
+    task_block_on, task_unblock, task_wake_due, task_wake_channel,
+    TASK_FREE, TASK_READY, TASK_DEAD, TASK_BLOCKED, TASK_IDLE } from "drivers/tasks";
+use { table_zero, table_set, index_of, switch_to as space_switch,
+    PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
+    SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
+use { rtc_read, rtc_year, rtc_month, rtc_day, rtc_hour, rtc_minute, rtc_second } from "drivers/rtc";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
-      total as pages_total, PAGE_SIZE } from "drivers/pages";
+    release_page as page_release, release_run as pages_release_run,
+    total as pages_total, PAGE_SIZE, PAGES_STATE_SIZE } from "drivers/pages";
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
-      identify as ata_identify, identify_sectors as ata_identify_sectors,
-      ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
-use { find as tar_find, TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
+    identify as ata_identify, identify_sectors as ata_identify_sectors,
+    ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
+use { find as tar_find, next_entry as tar_next, name_length as tar_name_length,
+    name_byte as tar_name_byte, entry_size as tar_entry_size,
+    TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
 use { read as shared_read, write as shared_write, bump as shared_bump,
-      read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
+    read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
 const WIDTH = 320;
 const HEIGHT = 200;
@@ -60,7 +98,7 @@ const POINTER_COLOUR = 0xff4060;
 // module's top level cannot cross a bundled import without changing what the
 // VM would do — see that module's comment.
 const FONT = [
-     0,  0,  0,  0,  0,  0,  0,  0,  // space
+    0,  0,  0,  0,  0,  0,  0,  0,  // space
     14, 17, 17, 31, 17, 17, 17,  0,  // A
     30, 17, 30, 17, 17, 17, 30,  0,  // B
     15, 16, 16, 16, 16, 16, 15,  0,  // C
@@ -70,7 +108,7 @@ const FONT = [
     15, 16, 16, 19, 17, 17, 15,  0,  // G
     17, 17, 31, 17, 17, 17, 17,  0,  // H
     14,  4,  4,  4,  4,  4, 14,  0,  // I
-     7,  2,  2,  2,  2, 18, 12,  0,  // J
+    7,  2,  2,  2,  2, 18, 12,  0,  // J
     17, 18, 20, 24, 20, 18, 17,  0,  // K
     16, 16, 16, 16, 16, 16, 31,  0,  // L
     17, 27, 21, 17, 17, 17, 17,  0,  // M
@@ -88,23 +126,23 @@ const FONT = [
     17, 17, 10,  4,  4,  4,  4,  0,  // Y
     31,  1,  2,  4,  8, 16, 31,  0,  // Z
     14, 17, 19, 21, 25, 17, 14,  0,  // 0
-     4, 12,  4,  4,  4,  4, 14,  0,  // 1
+    4, 12,  4,  4,  4,  4, 14,  0,  // 1
     14, 17,  1,  2,  4,  8, 31,  0,  // 2
     31,  2,  6,  1,  1, 17, 14,  0,  // 3
-     2,  6, 10, 18, 31,  2,  2,  0,  // 4
+    2,  6, 10, 18, 31,  2,  2,  0,  // 4
     31, 16, 30,  1,  1, 17, 14,  0,  // 5
-     6,  8, 16, 30, 17, 17, 14,  0,  // 6
+    6,  8, 16, 30, 17, 17, 14,  0,  // 6
     31,  1,  2,  4,  8,  8,  8,  0,  // 7
     14, 17, 17, 14, 17, 17, 14,  0,  // 8
     14, 17, 17, 15,  1,  2, 12,  0,  // 9
-     0,  0,  0,  0,  0, 12, 12,  0,  // .
-     0,  0,  0,  0, 12, 12,  8,  0,  // ,
-     0, 12, 12,  0, 12, 12,  0,  0,  // :
-     0,  0,  0, 31,  0,  0,  0,  0,  // -
-     4,  4,  4,  4,  4,  0,  4,  0,  // !
+    0,  0,  0,  0,  0, 12, 12,  0,  // .
+    0,  0,  0,  0, 12, 12,  8,  0,  // ,
+    0, 12, 12,  0, 12, 12,  0,  0,  // :
+    0,  0,  0, 31,  0,  0,  0,  0,  // -
+    4,  4,  4,  4,  4,  0,  4,  0,  // !
     14, 17,  1,  2,  4,  0,  4,  0,  // ?
-     0,  0, 31,  0, 31,  0,  0,  0,  // =
-     0, 16,  8,  4,  8, 16,  0,  0,  // >
+    0,  0, 31,  0, 31,  0,  0,  0,  // =
+    0, 16,  8,  4,  8, 16,  0,  0,  // >
 ];
 
 // Free RAM: the image, its heap, its stack and the page tables all live below
@@ -133,7 +171,13 @@ const SCANCODE_ASCII = [
 //
 // This is what a systems language owes a shared page when it has no allocator:
 // not safety, but an arrangement in which the mistake is not expressible.
-const SHARED_BASE = 0x00300000;
+// Asked of the linker rather than written down, because `link.ld` is where the
+// machine's memory map lives and it is the one place the board reads it from
+// too. The old note here said an interrupt handler "cannot look anything up" —
+// which was true of a run-time lookup and never true of this one: a symbol's
+// address is resolved when the image is linked, so what the handler executes is
+// an immediate either way.
+const SHARED_BASE: Int = unsafe { symbol_address("__shared_base") };
 const WORD = 4;
 
 const SHARED_KEY_COUNT = SHARED_BASE;
@@ -147,10 +191,16 @@ const SHARED_LINE_READY = SHARED_LINE_LEN + WORD;
 // it, this program reads it; the address appears in both files, and changing
 // one without the other is the hazard.
 const SHARED_MULTIBOOT = SHARED_LINE_READY + WORD;
-// The page allocator's three words.
+// The page allocator's state, whose size is the allocator's to say.
+//
+// It said three words until it grew a free list, and the fourth landed on
+// `SHARED_SPIN` — which is the spinner task's step, so what broke was the
+// *network card*, three files away, by way of an allocator handing out a page
+// whose bookkeeping the scheduler was incrementing. A neighbour's size written
+// down here as a literal is a dependency that only exists in a comment.
 const SHARED_PAGES = SHARED_MULTIBOOT + WORD;
 // The spinner task's step, and the scheduler's own counter.
-const SHARED_SPIN = SHARED_PAGES + 3 * WORD;
+const SHARED_SPIN = SHARED_PAGES + PAGES_STATE_SIZE;
 const SHARED_SLICE = SHARED_SPIN + WORD;
 // Two words that must always agree. Both the timer handler and the spinner
 // task bump the pair; a lost update — an increment that read a stale value —
@@ -215,8 +265,8 @@ const SCRATCH_SECTOR = 32;
 // commands here and small enough that the failure it is meant to demonstrate —
 // running out, and recovering by freeing — happens within a session.
 const HEAP_PAGES = 16;
-const SOURCE_BASE = 0x00380000;
-const SOURCE_MAX = 0x10000;
+const SOURCE_BASE: Int = unsafe { symbol_address("__source_base") };
+const SOURCE_MAX: Int = unsafe { symbol_address("__source_max") };
 // Two words the filesystem answers through: the first data sector of a file it
 // found, and the file's size.
 const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
@@ -252,7 +302,13 @@ const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 // one thing about who is above whom.
 // What second the clock window is currently showing, so it is only redrawn
 // when the answer changed.
-const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
+// The modifier keys' state. In the shared page because the handler is the only
+// thing that sees a key event, and the same handler has to read it back on the
+// next one.
+const SHARED_SHIFT = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_CAPS = SHARED_SHIFT + WORD;
+
+const SHARED_CLOCK_SHOWN = SHARED_CAPS + WORD;
 // How many tasks exist. Written by the program when it spawns them; read by
 // the scheduler, which runs in an interrupt and cannot ask the board.
 const SHARED_TASK_COUNT = SHARED_CLOCK_SHOWN + WORD;
@@ -283,6 +339,16 @@ const SHARED_DRAG_SLOT = SHARED_WINDOW_PAINT + WINDOW_COUNT * WORD;
 const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
 const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 
+// Set when a ring-3 task asks to exit, which is how "the excursion finished"
+// is told apart from "the excursion faulted". The user program makes that call
+// *before* it tries the forbidden thing, so the two are distinguishable at all.
+//
+// TODO: nothing reads this yet — the ring-3 checks assert on what reached the
+// serial line instead. It is recorded rather than dropped because it is the
+// only evidence of the difference; a `user` command that reported it would make
+// the evidence reachable.
+const SHARED_USER_EXITED = SHARED_DRAG_DY + WORD;
+
 // The terminal's characters, one byte per cell.
 //
 // The screen was the only record of what had been typed, which is fine until
@@ -293,12 +359,126 @@ const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 //
 // ASCII, not glyph indices: the same bytes the shell already handles, so the
 // grid and the line buffer say the same thing about a character.
-const SHARED_GRID = SHARED_DRAG_DY + WORD;
+// Where the PCI device's registers are, and what its handler last saw.
+//
+// The handler needs the first because an interrupt entry takes no arguments but
+// its vector, and the device's BAR is not knowable until configuration space
+// has been read — which happens long after the program's globals are laid out.
+// A shared word is how every other handler here reaches state it did not
+// receive.
+//
+// `SHARED_EDU_SEEN` is written by the handler and read by the shell, so it is
+// the ordinary shape of a completion flag: 0 until an interrupt arrives, then
+// the bits the device said it raised. Read through `shared_read`, which is
+// volatile — a poll the compiler hoisted is a wait that never ends.
+// How much work the short-lived tasks got through, so the shell can tell "the
+// task ran and ended" from "the task was never scheduled".
+const SHARED_BRIEF_TICKS = SHARED_USER_EXITED + WORD;
+
+// How many times the sleeping task has woken.
+const SHARED_SLEEP_WAKES = SHARED_BRIEF_TICKS + WORD;
+
+// How many times the idle task has been given the CPU. The difference between
+// waiting and spinning, as a number.
+const SHARED_IDLE_TURNS = SHARED_SLEEP_WAKES + WORD;
+
+// The slots of the tasks that never block, so the shell can take them off the
+// CPU when it wants to observe a machine with nothing to do.
+//
+// Three of them, and two are in ring 3. That is not incidental: suspending a
+// task is writing a word in a table the scheduler reads, and it works the same
+// whichever ring the task runs in — a ring-3 task has no say in it, which is the
+// difference between a kernel and a cooperative loop.
+const SHARED_BUSY_SLOTS = SHARED_IDLE_TURNS + WORD;
+const BUSY_SLOT_COUNT = 3;
+
+// Where the network card's registers are, and what its handler last saw. The
+// handler needs the first for the same reason the PCI device's does: an
+// interrupt entry takes no arguments but its vector.
+const SHARED_NET_MMIO = SHARED_BUSY_SLOTS + BUSY_SLOT_COUNT * WORD;
+const SHARED_NET_CAUSE = SHARED_NET_MMIO + WORD;
+// How many interrupts the card actually raised during the exchange.
+//
+// Reported because without it this driver's comments are unfalsifiable. A wait
+// with a deadline works whether or not the interrupt ever arrives — it waits out
+// the timeout and finds the frame already in the ring — so "interrupt-driven"
+// and "polling with extra steps" produce the same output and the same success.
+//
+// The number here is not twelve. On this device model some exchanges are
+// answered by the card and the rest by the deadline, which is why the deadline
+// is load-bearing rather than a safety net. Counting is what turned that from an
+// assumption into a fact; the first version of this driver scored one.
+const SHARED_NET_IRQS = SHARED_NET_CAUSE + WORD;
+const SHARED_NET_WAITS = SHARED_NET_IRQS + WORD;
+
+const SHARED_EDU_MMIO = SHARED_NET_WAITS + WORD;
+const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
+
+const SHARED_GRID = SHARED_EDU_SEEN + WORD;
 const GRID_COLUMNS = 53;
 const GRID_ROWS = 25;
 
 // The end of what is spoken for. Anything added goes here, not into a gap.
 const SHARED_END = SHARED_GRID + GRID_COLUMNS * GRID_ROWS;
+
+// The interrupt descriptor table.
+//
+// Not a shared word like everything above — nothing in this program reads it.
+// The *CPU* reads it, on every interrupt, at the address `lidt` was given. It
+// is here because this is the region the memory map set aside for things with
+// no allocator behind them, and because the rule this file states about that
+// region ("anything added goes here, not into a gap") is what keeps two of them
+// from landing on each other.
+//
+// Rounded up to sixteen: a gate is sixteen bytes, and a table that starts
+// mid-gate is one where every entry straddles two of them. The CPU does not
+// require the alignment, which is exactly why nothing would report its absence.
+const IDT_BASE = (((SHARED_END + 15) / 16) as Int) * 16;
+const IDT_SIZE = IDT_GATE_COUNT * IDT_GATE_SIZE;
+
+// The descriptor table the machine runs on, and the task state segment it
+// names. Both after the interrupt table, sized from the same numbers the
+// drivers use rather than from a literal: the next thing added starts at
+// `TSS_BASE + TSS_SIZE`, and every one of these bases is a sum rather than a
+// typed address, which is the arrangement this file argues for at
+// `SHARED_BASE`.
+//
+// Seven entries: null, ring-0 code and data, ring-3 code and data, and the two
+// that make up the TSS descriptor — a system descriptor in long mode is sixteen
+// bytes, so it occupies two.
+const GDT_ENTRIES = 7;
+const GDT_BASE = IDT_BASE + IDT_SIZE;
+const TSS_BASE = GDT_BASE + GDT_ENTRIES * GDT_ENTRY_SIZE;
+
+// Where a user task's stack lives *in its own address space*.
+//
+// A virtual address the kernel's space does not map to the same thing: in the
+// kernel's tables 0x4000_0000 is identity-mapped RAM that nothing uses, and in
+// the task's it is the stack. That difference is what makes them two address
+// spaces rather than one with extra permissions.
+//
+// The `- 8` is the ABI's phase: a function assumes a `call` has just pushed a
+// return address, and `iretq` pushes nothing. Without it the first aligned SSE
+// spill inside the task faults, in whatever it happened to call.
+const USER_STACK_VIRTUAL = 0x40000000;
+const USER_STACK_RESUME = USER_STACK_VIRTUAL + PAGE_SIZE - 8;
+
+// The task table.
+//
+// How many slots is a decided number rather than a discovered one: the table is
+// a fixed region, so it needs a size, and sixteen slots cost four hundred
+// bytes. It used to be six, which was "the tasks that exist, plus one" — a
+// number that says nothing except that nobody had needed a seventh. What the
+// capacity is *not* any more is a bound on memory: the stacks come from the
+// page allocator now, so a task past this is refused because the table is full,
+// not because a linker script reserved four of something.
+const TASK_CAPACITY = 16;
+const TASK_TABLE_BASE = TSS_BASE + TSS_SIZE;
+
+// A task's stack, in pages. 32 KiB, which is what the board's static array was:
+// compiled LK spills SSE registers, and an interrupt lands on top of whatever
+// depth the task had already reached.
+const TASK_STACK_PAGES = 8;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -307,6 +487,52 @@ const VIRTUAL_HEIGHT = 400;
 
 const FRAME_IDLE = 0x203040;
 const FRAME_FOCUSED = 0xffc040;
+
+// What a key produces once the modifiers are applied.
+//
+// Two different rules, which is why this is not one table: caps lock affects
+// *letters only*, and shift affects everything — a keyboard where CapsLock
+// turned `1` into `!` would be one nobody could type on. Letters therefore ask
+// "is exactly one of shift and caps in effect", and the rest ask only about
+// shift.
+fn shifted(ascii: Int, shift: Bool, caps: Bool) -> Int {
+    if (ascii >= 97 && ascii <= 122) {
+        // Upper case when exactly one of them is on: both on is lower again,
+        // which is what a shifted letter does under caps lock.
+        if (shift != caps) {
+            return ascii - 32;
+        }
+        return ascii;
+    }
+    if (!shift) {
+        return ascii;
+    }
+    // The US layout's shifted punctuation, spelled out rather than computed:
+    // there is no arithmetic relation between `1` and `!`, only a convention,
+    // and writing the convention down is the honest way to say so.
+    if (ascii == 49) { return 33; }   // 1 -> !
+    if (ascii == 50) { return 64; }   // 2 -> @
+    if (ascii == 51) { return 35; }   // 3 -> #
+    if (ascii == 52) { return 36; }   // 4 -> $
+    if (ascii == 53) { return 37; }   // 5 -> %
+    if (ascii == 54) { return 94; }   // 6 -> ^
+    if (ascii == 55) { return 38; }   // 7 -> &
+    if (ascii == 56) { return 42; }   // 8 -> *
+    if (ascii == 57) { return 40; }   // 9 -> (
+    if (ascii == 48) { return 41; }   // 0 -> )
+    if (ascii == 45) { return 95; }   // - -> _
+    if (ascii == 61) { return 43; }   // = -> +
+    if (ascii == 91) { return 123; }  // [ -> {
+    if (ascii == 93) { return 125; }  // ] -> }
+    if (ascii == 92) { return 124; }  // \ -> |
+    if (ascii == 59) { return 58; }   // ; -> :
+    if (ascii == 39) { return 34; }   // ' -> "
+    if (ascii == 44) { return 60; }   // , -> <
+    if (ascii == 46) { return 62; }   // . -> >
+    if (ascii == 47) { return 63; }   // / -> ?
+    if (ascii == 96) { return 126; }  // ` -> ~
+    return ascii;
+}
 
 // Where a character sits in FONT. The font has one case, so lower-case maps to
 // the upper-case glyph; anything it does not cover renders as a space, which
@@ -349,11 +575,11 @@ fn framebuffer_address() -> Int {
 // different, invalid request — the kind of value that produces a plausible
 // number instead of an error.
 fn probe_framebuffer() -> Int {
-    let slot = pci_find_display();
-    if (slot < 0) {
+    let display = pci_find_display();
+    if (display < 0) {
         return 0;
     }
-    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
+    return pci_bar(display, 0);
 }
 
 // The address of the pixel the screen shows at its top-left.
@@ -426,7 +652,7 @@ fn repaint_cells(base: Int, left: Int, top: Int, width: Int, height: Int) {
         for column in first_column..last_column + 1 {
             if (column >= 0 && row >= 0 && column < text_columns() && row < text_rows()) {
                 draw_glyph(base, WIDTH, FONT, glyph_index(grid_read(column, row)),
-                           column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+                    column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
             }
         }
     }
@@ -440,6 +666,17 @@ fn repaint_cells(base: Int, left: Int, top: Int, width: Int, height: Int) {
 // are not the handler mask interrupts around it: the two would otherwise
 // interleave on the cursor.
 fn put_char(base: Int, ascii: Int) {
+    // `as Int` on a parameter already declared `Int` is not redundant here, and
+    // the reason is a property of the lowering rather than of this function: a
+    // parameter's type is *observed* from its call sites, and one call site
+    // passing a boxed value widens it for every other one. This has several —
+    // `console_byte` is `#[export]`ed (called from C, so nothing proves the
+    // argument came from LK) and the queue read comes out of shared memory —
+    // so the cast is put once, here, instead of at each of them.
+    //
+    // Without it the arithmetic on `ascii` stops lowering, which on this target
+    // is a hard failure rather than a fallback to the VM.
+    let ascii = ascii as Int;
     let column = shared_read(SHARED_CURSOR_COL);
     let row = shared_read(SHARED_CURSOR_ROW);
     // Erase the cursor before anything moves it, so the block never gets left
@@ -464,7 +701,7 @@ fn put_char(base: Int, ascii: Int) {
         return;
     }
     draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
-               column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+        column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
     grid_write(column, row, ascii);
     let next = column + 1;
     if (next >= text_columns()) {
@@ -534,7 +771,59 @@ fn scroll_view() {
 //
 // Interrupts are masked by the caller: this shares the cursor with the key
 // handler, and the two interleaving would splice the output.
+// A literal's bytes, for a line built out of more than one piece.
+//
+// The lines that interleave text with numbers — `"7 devices"`, `"edu: ident "`
+// then a hex value — are still assembled as lists, because that is what
+// `decimal` and `hex` answer. What changes is that the literal parts of them are
+// written as literals.
+fn text_bytes(text: String) -> List<Int> {
+    let out: List<Int> = [];
+    for index in 0..text.len() {
+        // In range by construction (`0..text.len()`), so the `Int?` that
+        // `byte_at` answers for a past-the-end read is unwrapped here rather
+        // than carried into a `List<Int>`.
+        out.push(text.byte_at(index)!);
+    }
+    return out;
+}
+
+// The same, for a message written as a message.
+//
+// Every line this kernel printed used to be an array of ASCII numbers: the
+// literal `110, 101, 116, 58, 32, 111, 107` is what "net: ok" was written as,
+// eighty-six times over. Not for effect — a string had no way to give up its
+// bytes without allocating one per character, and a kernel cannot allocate on
+// the path where it reports that allocation failed.
+//
+// `byte_at` is that way: one byte, as a number, no allocation, and pure enough
+// that the optimizer may hoist it. It is the whole difference between a
+// language that can write this layer and one that can only be compiled for it.
+fn emit_text(base: Int, text: String) {
+    // The lock, for the line and not for the command.
+    //
+    // The console has three writers — this task, the spinner and the clock —
+    // and what they contend over is the cursor. Holding the lock for a line is
+    // what that needs. The shell used to get it by masking interrupts around
+    // the *whole* command instead, which protected the same thing and also
+    // stopped the timer, which stopped the scheduler, which meant every command
+    // that waited for anything had to remember to turn them back on. Four
+    // separate waits in this file got that wrong, each in a way that still
+    // produced the right answer: a device that never interrupted, twenty tasks
+    // that never ran, a sleep that took a tenth of the time it asked for.
+    let irq = lock();
+    for index in 0..text.len() {
+        let code = text.byte_at(index)!;
+        uart_putc(code);
+        put_char(base, code);
+    }
+    uart_putc(10);
+    put_char(base, 10);
+    unlock(irq);
+}
+
 fn emit(base: Int, text: List<Int>) {
+    let irq = lock();
     for code in text {
         let ascii = (code) as Int;
         uart_putc(ascii);
@@ -542,6 +831,7 @@ fn emit(base: Int, text: List<Int>) {
     }
     uart_putc(10);
     put_char(base, 10);
+    unlock(irq);
 }
 
 // Whether the collected line starts with `word`, and what follows it.
@@ -565,18 +855,18 @@ fn line_starts_with(word: List<Int>) -> Bool {
 
 // The line's bytes from `start` onwards. (`from` is a keyword.)
 fn line_tail(start: Int) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     let length = shared_read(SHARED_LINE_LEN);
     let i = start;
     while (i < length) {
         out.push(shared_read_byte(SHARED_LINE + i));
         i = i + 1;
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 fn hex(value: Int) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     let shift = 28;
     while (shift >= 0) {
         let nibble = (value >> shift) & 0xf;
@@ -587,26 +877,135 @@ fn hex(value: Int) -> List<Int> {
         }
         shift = shift - 4;
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 fn decimal(value: Int) -> List<Int> {
     if (value == 0) {
         return [48];
     }
-    let digits = [0];
+    let digits: List<Int> = [];
     let rest = value;
     while (rest > 0) {
         digits.push(48 + rest % 10);
         rest = (rest / 10) as Int;
     }
-    let out = [0];
+    let out: List<Int> = [];
     let i = digits.len() - 1;
-    while (i >= 1) {
+    while (i >= 0) {
         out.push((digits[i]) as Int);
         i = i - 1;
     }
-    return out.slice(1, out.len());
+    return out;
+}
+
+// The high precision timer: its rate, and that it runs.
+//
+// Two readings with the shell's own busy work between them, because a counter
+// that reads the same twice is the failure this is most likely to have — an
+// address nothing decodes, or a chip whose enable bit was never set. Printing
+// the *difference* rather than the raw value is what makes that visible in one
+// line.
+fn report_hpet(base: Int) {
+    if (!hpet_present()) {
+        emit_text(base, "hpet: no timer at the standard address");
+        return;
+    }
+    if (!hpet_start()) {
+        emit_text(base, "hpet: would not start");
+        return;
+    }
+    let first = hpet_counter();
+    // Something for the counter to count. A `hlt` would wait for the timer
+    // interrupt, which is a different clock and would make this measure that
+    // one instead.
+    let spin = 0;
+    for i in 0..200000 {
+        spin = spin + i;
+    }
+    let second = hpet_counter();
+    let elapsed = hpet_elapsed_microseconds(first, second);
+    emit(base, text_bytes("hpet ")
+            .chain(decimal(u64_as_int(hpet_frequency())))
+            .chain(text_bytes("Hz ticks "))
+            .chain(decimal(u64_as_int(second - first)))
+            .chain(text_bytes(" us "))
+            .chain(decimal(u64_as_int(elapsed))));
+}
+
+// A `u64` the kernel prints as a number.
+//
+// Every value this applies to is a rate or a duration that fits an `Int` many
+// times over; what the cast states is that the *width* stops here, so `decimal`
+// is not handed a value whose top bit means something.
+fn u64_as_int(value: u64) -> Int {
+    return value as Int;
+}
+
+// What `boot.rs` identity-maps: four gigabytes, with 2 MiB pages. Four rather
+// than one because a PCI framebuffer sits near the top of the 32-bit range.
+const MAP_CEILING = 4 * 1024 * 1024 * 1024;
+
+// The largest available range this kernel can actually *reach*, clipped to
+// `[floor, MAP_CEILING)`.
+//
+// Clipped before the comparison rather than after, which is the whole point. The
+// loader reports several ranges, and on a machine with more than four gigabytes
+// the largest is the one above them — an address the page tables have never
+// heard of. Picking it and trimming afterwards leaves nothing; picking it
+// untrimmed faulted on the first page the heap took. `qemu -m 8G` did exactly
+// that, and `-m 3G` did not, which is why nothing noticed.
+//
+// Two functions rather than one returning a pair, matching the two next door:
+// this file has no tuples and the pair would be a list allocated before there is
+// an allocator.
+fn reachable_length(floor: Int) -> Int {
+    let best = 0;
+    for i in 0..entry_count() {
+        let span = clipped_span(entry_at(i), floor);
+        if (span > best) {
+            best = span;
+        }
+    }
+    return best;
+}
+
+fn reachable_base(floor: Int) -> Int {
+    let best = 0;
+    let best_span = 0;
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        let span = clipped_span(entry, floor);
+        if (span > best_span) {
+            best_span = span;
+            let start = entry_base(entry);
+            if (start < floor) {
+                start = floor;
+            }
+            best = start;
+        }
+    }
+    return best;
+}
+
+// How much of one entry survives both bounds. Zero for an entry that is not
+// available, or that lies entirely outside them.
+fn clipped_span(entry: Int, floor: Int) -> Int {
+    if (entry < 0 || !entry_is_available(entry)) {
+        return 0;
+    }
+    let start = entry_base(entry);
+    let end = start + entry_length(entry);
+    if (start < floor) {
+        start = floor;
+    }
+    if (end > MAP_CEILING) {
+        end = MAP_CEILING;
+    }
+    if (end <= start) {
+        return 0;
+    }
+    return end - start;
 }
 
 // The largest available range the loader reported, as (base, length).
@@ -645,18 +1044,17 @@ fn largest_available_length() -> Int {
 
 fn report_memory(base: Int) {
     if (!has_mmap()) {
-        // "no map"
-        emit(base, [110, 111, 32, 109, 97, 112]);
+        emit_text(base, "no map");
         return;
     }
     // "upper " KiB
-    let upper = [117, 112, 112, 101, 114, 32];
-    emit(base, upper.chain(decimal(mem_upper_kb())).chain([32, 107, 98]));
+    let upper = text_bytes("upper ");
+    emit(base, upper.chain(decimal(mem_upper_kb())).chain(text_bytes(" kb")));
     // "pages " free "/" total
-    let pages = [112, 97, 103, 101, 115, 32];
+    let pages = text_bytes("pages ");
     emit(base, pages.chain(decimal(pages_free(SHARED_PAGES)))
-                    .chain([47])
-                    .chain(decimal(pages_total(SHARED_PAGES))));
+            .chain([47])
+            .chain(decimal(pages_total(SHARED_PAGES))));
 }
 
 // Runs the collected line. Returns 1 to keep going, 0 to stop.
@@ -667,6 +1065,699 @@ fn report_memory(base: Int) {
 // medium — a checksum is equally consistent with a bug that reads the same
 // wrong thing every time. Unprintable bytes become '.', the same convention a
 // hex dump uses.
+// The network card, made to ask a question and hear the answer.
+//
+// This is the same four things `edu` does, on hardware people shipped, and the
+// difference is not size. A NIC is not commanded but *fed*: two rings of
+// descriptors shared with the card, each side owning a moving index, and nothing
+// ever started by writing a start bit. A driver that thinks in transfers instead
+// of rings produces something that works once.
+//
+// What it proves that a transmit alone could not: an ARP reply comes back only
+// if the frame that left was well-formed enough for something on the segment to
+// answer it, and only if the receive ring, the address filter and the card's own
+// MAC are all right. One frame out, one frame back, and every field of the
+// answer checked — see `arp_match_reply` for what each check rules out.
+fn report_net(base: Int) {
+    let bdf = e1000_find();
+    if (bdf < 0) {
+        emit_text(base, "net: absent");
+        return;
+    }
+    let mmio = e1000_open(bdf);
+    if (mmio == 0) {
+        emit_text(base, "net: no bar");
+        return;
+    }
+
+    // One page for the two rings and the driver's state, four for the receive
+    // buffers. Pages rather than the heap because the card reads them by
+    // physical address: a heap block is fine on this machine, where the identity
+    // map makes the two the same, and would stop being fine the moment it did
+    // not — and a driver that quietly depended on that would be one nobody could
+    // move.
+    let scratch = page_alloc(SHARED_PAGES);
+    if (scratch == 0) {
+        emit_text(base, "net: no memory");
+        return;
+    }
+    let buffers = alloc_contiguous(NET_BUFFER_PAGES * PAGE_SIZE);
+    if (buffers == 0) {
+        page_release(SHARED_PAGES, scratch);
+        emit_text(base, "net: no memory");
+        return;
+    }
+
+    // Released on the way out, on every path. The rings and buffers exist for
+    // one exchange run: without this, a dozen `net` commands leak sixty pages,
+    // which is where the allocator's free list came from.
+    let outcome = net_exchange(base, mmio, bdf, scratch, buffers);
+    // Reverse order of allocation, and that is a rule rather than a style.
+    //
+    // The free list is last-in-first-out, so what is released last is handed out
+    // first. Releasing in *allocation* order means the next run takes them in a
+    // different order than it took them the first time — and this caller wants
+    // its four buffer pages contiguous, so it got the scratch page in the middle
+    // of the run and reported "no memory" with five pages free.
+    pages_release_run(SHARED_PAGES, buffers, NET_BUFFER_PAGES);
+    page_release(SHARED_PAGES, scratch);
+    // `outcome` is not consulted: `net_exchange` has already said what happened,
+    // on the same console. What it is for is making the release unconditional.
+    let _done = outcome;
+}
+
+// The exchange itself, with the memory already in hand.
+//
+// Split out so the release above happens once rather than at each of the seven
+// places this gives up. A failure path that forgets to free is the ordinary way
+// an allocator leaks, and it is invisible: the command reports the failure it
+// was looking for and the pages are simply gone.
+fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> Bool {
+    let tx_ring = scratch;
+    let rx_ring = scratch + TX_COUNT * DESC_SIZE;
+    let state = rx_ring + RX_COUNT * DESC_SIZE;
+    let mac = state + STATE_SIZE;
+    let frame = mac + 64;
+    let reply = frame + 256;
+    let answer = reply + 256;
+
+    if (!e1000_mac(mmio, mac)) {
+        emit_text(base, "net: no eeprom");
+        return false;
+    }
+    e1000_init(state, mmio, tx_ring, rx_ring, buffers);
+    e1000_set_mac(mmio, mac);
+
+    if (!e1000_link_up(mmio)) {
+        emit_text(base, "net: no link");
+        return false;
+    }
+
+    // The card's own interrupt, installed by the driver at the line
+    // configuration space named — the same shape the PCI device uses, on
+    // hardware people shipped.
+    //
+    // The order is the same and for the same reason: the registers are
+    // published before the gate exists, because an interrupt arriving between
+    // the two would find a handler that cannot reach the card to read its cause;
+    // and the line is unmasked last, because a line opened before its gate is
+    // filled is an interrupt into a not-present descriptor.
+    let irq = edu_irq_line(bdf);
+    // Same check as `edu_interrupt`, and for the same reason: this line came out
+    // of the card's config space, and 0xFF there means "not connected".
+    if (!pic_line_exists(irq)) {
+        uart_text("net: the card reports no usable IRQ line (");
+        uart_put_hex(irq);
+        uart_text("), leaving it without an interrupt\n");
+        return false;
+    }
+    shared_write(SHARED_NET_CAUSE, 0);
+    shared_write(SHARED_NET_MMIO, mmio);
+    if (!install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_net_isr") })) {
+        uart_text("net: no gate for its vector\n");
+        return false;
+    }
+    e1000_enable_receive_interrupt(mmio);
+    // Level, not edge. A PCI device holds its line until the driver has dealt
+    // with it, and the 8259's default is to look for a transition — so without
+    // this the card answers once and then asserts in silence for ever.
+    pic_set_level(irq);
+    pic_unmask(irq);
+
+    // The addresses an emulated user-mode network hands out: the guest is .15
+    // and the gateway is .2. Written as bytes because that is what a packet
+    // holds — see `arp.lk` on why an IP is an address here and not a number.
+    let sender_ip = answer + MAC_SIZE;
+    let target_ip = sender_ip + IP_SIZE;
+    write_ipv4(sender_ip, 10, 0, 2, 15);
+    write_ipv4(target_ip, 10, 0, 2, 2);
+
+    // The exchange, more times than either ring has entries.
+    //
+    // Once proves the rings work. Twelve proves they *wrap*: both are eight
+    // entries, the card wraps its own index, and the driver has to wrap its
+    // idea of where the card has got to in step with it. An off-by-one there
+    // survives the first pass and every pass until the eighth — which is to say
+    // it survives any test that runs the command a few times, because each
+    // command re-initialises the rings and starts the count again.
+    // What the machine did while it waited.
+    //
+    // A poll scores zero here: a polling task is runnable, and the rotation
+    // never falls through to idle while anything is runnable. So do the three
+    // tasks this demonstration deliberately keeps runnable — a spinner that
+    // exists to be interrupted mid-update and two ring-3 tasks that never yield
+    // — which is why they are suspended for the exchange and put back after.
+    // The number is the difference between a driver that waits and one that
+    // watches, and it can only be read on a machine where nothing else is
+    // watching on purpose.
+    suspend_busy_tasks();
+    let idle_before = shared_read(SHARED_IDLE_TURNS);
+    let irqs_before = shared_read(SHARED_NET_IRQS);
+    let waits_before = shared_read(SHARED_NET_WAITS);
+
+    let exchanges = 0;
+    for _round in 0..NET_EXCHANGES {
+        let length = arp_build_request(frame, mac, sender_ip, target_ip);
+        if (!e1000_transmit(state, frame, length)) {
+            emit_text(base, "net: tx");
+            net_quiesce(mmio, irq);
+            resume_busy_tasks();
+            return false;
+        }
+        if (!net_await_reply(state, reply, mac, target_ip, answer)) {
+            emit_text(base, "net: no reply");
+            net_quiesce(mmio, irq);
+            resume_busy_tasks();
+            return false;
+        }
+        exchanges = exchanges + 1;
+    }
+
+    // "net: ok N/N " + our MAC + " -> " + the gateway's
+    emit(base, text_bytes("net: ok ")
+            .chain(decimal(exchanges))
+            .chain(text_bytes("/"))
+            .chain(decimal(NET_EXCHANGES))
+            .chain(text_bytes(" "))
+            .chain(mac_text(mac))
+            .chain(text_bytes(" -> "))
+            .chain(mac_text(answer))
+            .chain(text_bytes(" idle "))
+            .chain(decimal(shared_read(SHARED_IDLE_TURNS) - idle_before))
+            .chain(text_bytes(" irqs "))
+            .chain(decimal(shared_read(SHARED_NET_IRQS) - irqs_before))
+            .chain(text_bytes("/"))
+            .chain(decimal(shared_read(SHARED_NET_WAITS) - waits_before)));
+    net_quiesce(mmio, irq);
+    resume_busy_tasks();
+    return true;
+}
+
+// Puts the card's interrupt away.
+//
+// Masked at the card *and* at the chip, and the cause read one last time. Any
+// one of the three left undone is a line still asserted after this driver has
+// stopped listening — and the next thing to unmask that IRQ inherits it, which
+// is a fault in a handler that was expecting something else entirely.
+fn net_quiesce(mmio: Int, irq: Int) {
+    e1000_disable_interrupts(mmio);
+    pic_mask_line(irq);
+    shared_write(SHARED_NET_MMIO, 0);
+}
+
+// How many times `net` runs the exchange. Larger than either ring so both wrap.
+const NET_EXCHANGES = 12;
+
+// The receive buffers, as pages. Named because the release has to give back
+// exactly what the allocation took, and two expressions that must agree are two
+// places to get it wrong.
+const NET_BUFFER_PAGES = 4;
+
+// Waits for the reply to the request just sent.
+//
+// The budget is the *whole* wait, not a wait per frame. An empty polling window
+// means "not yet"; only the exhausted budget means "not coming". Several frames
+// may arrive before the one being waited for — the segment carries whatever else
+// the host is doing — so a frame that does not match is dropped and the wait
+// goes on.
+fn net_await_reply(state: Int, reply: Int, mac: Int, target_ip: Int, answer: Int) -> Bool {
+    for _attempt in 0..NET_WAIT_ROUNDS {
+        // Look, and decide to wait, without letting the interrupt in between.
+        //
+        // This is the lost-wakeup race, and it is the whole reason a blocking
+        // driver is harder than a polling one. Check the ring, find it empty,
+        // and in the instant before saying "I am waiting" the card delivers the
+        // frame and wakes nobody — after which the wait is for the *next* frame,
+        // which is not coming. Checking first narrows the window; holding the
+        // mask across both closes it, because the handler cannot run until this
+        // task has already announced itself.
+        //
+        // Measured, not assumed: with the check outside the mask, six of twelve
+        // exchanges were answered by an interrupt and six by the deadline.
+        let irq = unsafe { cpu_irq_save() };
+        let received = e1000_receive(state, reply, 256);
+        if (received > 0) {
+            unsafe { cpu_irq_restore(irq); };
+            if (arp_match_reply(reply, received, mac, target_ip, answer)) {
+                return true;
+            }
+            // Some other traffic on the segment. Take the next one without
+            // sleeping — there may already be more in the ring.
+            continue;
+        }
+        // Nothing there. Off the CPU until the card says otherwise, or until the
+        // deadline says the card is not going to. `task_wait_on` masks around
+        // its own announcement and restores what it found, so the mask taken
+        // here is still held when it yields — which is what makes the pair
+        // atomic against the handler.
+        shared_bump(SHARED_NET_WAITS);
+        task_wait_on(NET_WAIT_CHANNEL, NET_WAIT_TICKS);
+        unsafe { cpu_irq_restore(irq); };
+    }
+    return false;
+}
+
+// What the driver listens on, how long it waits for one frame, and how many
+// frames it is prepared to sift through before giving up. The channel is the
+// card's own BAR address, which is unique by construction — two cards in one
+// machine are two channels without anything having to hand out numbers.
+const NET_WAIT_CHANNEL = 0xe1000;
+const NET_WAIT_TICKS = 100;
+const NET_WAIT_ROUNDS = 200;
+
+fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
+    net_set_byte(address, a);
+    net_set_byte(address + 1, b);
+    net_set_byte(address + 2, c);
+    net_set_byte(address + 3, d);
+}
+
+// A MAC as `aabbccddeeff`. Hex without separators: the six bytes are one
+// identifier, and the colons a reader expects are a convention of `ip link`
+// rather than anything the wire has.
+fn mac_text(mac: Int) -> List<Int> {
+    let out: List<Int> = [];
+    for index in 0..MAC_SIZE {
+        out = out.chain(hex(net_byte_at(mac + index)).slice(6, 8).to_list());
+    }
+    return out;
+}
+
+// A run of pages, contiguous.
+//
+// The allocator hands out one page at a time and happens to hand them out in
+// order, so this asks for as many as it needs and *checks* — the card is given
+// one address and a length, and a run that turned out not to be contiguous would
+// be the card writing frames into whatever was between.
+fn alloc_contiguous(bytes: Int) -> Int {
+    let pages = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE) as Int;
+    let base = page_alloc(SHARED_PAGES);
+    if (base == 0) {
+        return 0;
+    }
+    for index in 1..pages {
+        let page = page_alloc(SHARED_PAGES);
+        if (page != base + index * PAGE_SIZE) {
+            // Give back what was taken, including the page that broke the run.
+            //
+            // Failing without this is how an allocator with a free list leaks
+            // worse than one without: the caller sees "no memory", tries again,
+            // and each attempt keeps a few more pages. The odd page goes back
+            // first so the run stays together at the head of the list.
+            page_release(SHARED_PAGES, page);
+            pages_release_run(SHARED_PAGES, base, index);
+            return 0;
+        }
+    }
+    return base;
+}
+
+// What time it is, as the machine's battery-backed clock has it.
+//
+// Every other clock here counts: the PIT counts down and the kernel counts its
+// interrupts, which gives elapsed time and nothing else. This is the one thing
+// on the machine that kept running while the power was off.
+//
+// Printed with the fields spelled out rather than as the packed number the
+// driver answers, because a reader checking this against a wall clock should not
+// have to divide by a hundred five times.
+fn report_clock(base: Int) {
+    let now = rtc_read();
+    if (now == 0) {
+        // The chip never agreed with itself twice running. That is a real
+        // outcome and it is not the same as "the time is zero".
+        emit_text(base, "clock: unsettled");
+        return;
+    }
+    emit(base, text_bytes("clock ")
+            .chain(decimal(rtc_year(now)))
+            .chain(text_bytes("-"))
+            .chain(two_digits(rtc_month(now)))
+            .chain(text_bytes("-"))
+            .chain(two_digits(rtc_day(now)))
+            .chain(text_bytes(" "))
+            .chain(two_digits(rtc_hour(now)))
+            .chain(text_bytes(":"))
+            .chain(two_digits(rtc_minute(now)))
+            .chain(text_bytes(":"))
+            .chain(two_digits(rtc_second(now))));
+}
+
+// Zero-padded, because a clock that prints 9:5:3 is one a reader has to think
+// about and one a check has to parse loosely.
+fn two_digits(value: Int) -> List<Int> {
+    if (value < 10) {
+        return text_bytes("0").chain(decimal(value));
+    }
+    return decimal(value);
+}
+
+// Every device on the bus, one line each.
+//
+// A kernel that can say what is plugged into the machine is a kernel that found
+// them rather than knew them. The line is deliberately the same shape a real
+// `lspci` prints — slot.function, vendor:device, class, and where its first BAR
+// lives — because what is being checked is that each of those came out of
+// configuration space and not out of a constant.
+// Starts a task that sleeps, and says how long it took.
+//
+// The elapsed tick count is the claim, and it is the only one that separates
+// waiting from spinning. Ten sleeps of fifty ticks have to take about five
+// hundred ticks: a `task_sleep` that returned immediately would finish in
+// almost none, and one that spun would finish in about the same time while
+// taking every other task's slice to do it.
+// The tasks that exist to keep the CPU busy, off and back on.
+//
+// They are the demonstration's, not the kernel's: a spinner that must be
+// interrupted mid-update, and two ring-3 tasks that never yield. While any of
+// them runs there is always something runnable, so "the machine had nothing to
+// do" is not a state this kernel can reach — which is the only reason these
+// exist.
+fn suspend_busy_tasks() {
+    for index in 0..BUSY_SLOT_COUNT {
+        let slot = shared_read(SHARED_BUSY_SLOTS + index * WORD);
+        if (slot > 0) {
+            task_suspend(slot);
+        }
+    }
+}
+
+fn resume_busy_tasks() {
+    for index in 0..BUSY_SLOT_COUNT {
+        let slot = shared_read(SHARED_BUSY_SLOTS + index * WORD);
+        if (slot > 0) {
+            task_resume(slot);
+        }
+    }
+}
+
+fn report_sleep(base: Int) {
+    let before_wakes = shared_read(SHARED_SLEEP_WAKES);
+    let before_ticks = shared_read(SHARED_TICKS);
+    let before_idle = shared_read(SHARED_IDLE_TURNS);
+
+    // The spinner is deliberately CPU-bound — it exists to be interrupted in
+    // the middle of an update — so while it runs there is always something
+    // runnable and the idle task never gets a turn. Suspended for the
+    // measurement and put back after: the number below is the difference
+    // between waiting and spinning, and it can only be read when nothing else
+    // is spinning on purpose.
+    suspend_busy_tasks();
+
+    // The spawn under the lock, because `spawn_task` writes a table the timer
+    // handler reads. The *wait* below is not under it — that is the whole point
+    // of the change that moved masking off the command.
+    let irq = lock();
+    let slot = spawn_task(unsafe { symbol_address("lk_task_sleeper") });
+    unlock(irq);
+    if (slot < 0) {
+        resume_busy_tasks();
+        emit_text(base, "sleep: no slot");
+        return;
+    }
+    // The shell waits by *waiting*, not by spinning.
+    //
+    // A busy poll here would work and would also make the measurement below
+    // meaningless: the idle task only gets a turn when nothing else is
+    // runnable, and a spinning shell is runnable. It would also be the thing
+    // this whole change is against — a shell at full tilt while the machine has
+    // nothing to do.
+    for _wait in 0..WAIT_POLLS {
+        if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
+            break;
+        }
+        task_sleep(WAIT_POLL_TICKS);
+    }
+    let idle_turns = shared_read(SHARED_IDLE_TURNS) - before_idle;
+    resume_busy_tasks();
+
+    emit(base, text_bytes("sleep wakes ")
+            .chain(decimal(shared_read(SHARED_SLEEP_WAKES) - before_wakes))
+            .chain(text_bytes("/"))
+            .chain(decimal(TASK_SLEEP_ROUNDS))
+            .chain(text_bytes(" ticks "))
+            .chain(decimal(shared_read(SHARED_TICKS) - before_ticks))
+            .chain(text_bytes(" want "))
+            .chain(decimal(TASK_SLEEP_ROUNDS * TASK_SLEEP_TICKS))
+            .chain(text_bytes(" idle "))
+            .chain(decimal(idle_turns)));
+}
+
+// Starts several tasks that end, and says what came back.
+//
+// The numbers are the claim. A slot count that does not return to what it was
+// means a task ended without its slot being reusable; a page count that does not
+// return means the stack was not given back. Both are invisible from the outside
+// — the machine goes on running perfectly well while it runs out.
+fn report_tasks(base: Int) {
+    let before_slots = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    let before_pages = pages_free(SHARED_PAGES);
+    let before_ticks = shared_read(SHARED_BRIEF_TICKS);
+
+    let started = 0;
+    for _round in 0..TASK_BRIEF_ROUNDS {
+        // The spawn under the lock — it writes a table the timer handler reads —
+        // and nothing else. A command runs with interrupts on now, so the wait
+        // below simply works; the first version of this masked for the whole
+        // cycle and spawned twenty tasks that never ran, never returned and
+        // never gave anything back, and reported it as the table filling up.
+        let irq = lock();
+        let slot = spawn_task(unsafe { symbol_address("lk_task_brief") });
+        unlock(irq);
+        if (slot < 0) {
+            break;
+        }
+        started = started + 1;
+        // Wait for it to finish and be reclaimed before starting the next.
+        //
+        // One at a time, deliberately: the point is that the *same* slot and the
+        // *same* pages come back and get used again. Starting all of them at
+        // once would only show that the table is big enough.
+        for _wait in 0..WAIT_POLLS {
+            if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
+                break;
+            }
+            task_sleep(WAIT_POLL_TICKS);
+        }
+    }
+
+    let ran = shared_read(SHARED_BRIEF_TICKS) - before_ticks;
+    emit(base, text_bytes("task ")
+            .chain(decimal(started))
+            .chain(text_bytes("/"))
+            .chain(decimal(TASK_BRIEF_ROUNDS))
+            .chain(text_bytes(" slots "))
+            .chain(decimal(before_slots))
+            .chain(text_bytes("->"))
+            .chain(decimal(task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)))
+            .chain(text_bytes(" pages "))
+            .chain(decimal(before_pages))
+            .chain(text_bytes("->"))
+            .chain(decimal(pages_free(SHARED_PAGES)))
+            .chain(text_bytes(" ran "))
+            .chain(decimal(ran)));
+}
+
+// More rounds than the table has spare slots, so a slot that never came back
+// would run the table out rather than merely look tidy.
+const TASK_BRIEF_ROUNDS = 20;
+
+fn report_pci(base: Int) {
+    let devices = pci_devices();
+    for index in 0..devices.len() {
+        let bdf = (devices[index]) as Int;
+        // "SS.F VVVV:DDDD cCC/SS"
+        let line = hex(pci_bdf_device(bdf)).slice(6, 8).to_list()
+            .chain([46])
+            .chain(decimal(pci_bdf_function(bdf)))
+            .chain([32])
+            .chain(hex(pci_vendor(bdf)).slice(4, 8).to_list())
+            .chain([58])
+            .chain(hex(pci_device_id(bdf)).slice(4, 8).to_list())
+            .chain(text_bytes(" c"))
+            .chain(hex(pci_class(bdf)).slice(6, 8).to_list())
+            .chain([47])
+            .chain(hex(pci_subclass(bdf)).slice(6, 8).to_list());
+        // A device with no memory BAR 0 — the bridges — says so by omission
+        // rather than by printing a zero that looks like an address.
+        if (pci_bar(bdf, 0) != 0 && !pci_bar_is_io(bdf, 0)) {
+            line = line.chain(text_bytes(" @")) // " @"
+                .chain(hex(pci_bar(bdf, 0)))
+                .chain([43])
+                .chain(hex(pci_bar_size(bdf, 0)));
+        }
+        emit(base, line);
+    }
+    emit(base, decimal(devices.len()).chain(text_bytes(" devices"))); // " devices"
+}
+
+// The PCI device, driven through all three of the things a PCI device does.
+//
+// Four checks, and each one fails differently on purpose. Identification proves
+// the BAR is mapped where configuration space said; liveness proves writes
+// arrive; the factorial proves the device *computes* on a value the driver gave
+// it and hands it back through the busy protocol; and the DMA proves the device
+// wrote RAM by itself, which is the only one of the four that no amount of port
+// I/O could have done.
+//
+// It reports which step failed rather than a single yes/no: "edu: dma" and
+// "edu: ident" are different machines, and a check that says only "no" makes
+// them the same.
+fn report_edu(base: Int) {
+    let bdf = edu_find();
+    if (bdf < 0) {
+        emit_text(base, "edu: absent");
+        return;
+    }
+    let mmio = edu_open(bdf);
+    if (mmio == 0) {
+        emit_text(base, "edu: no bar");
+        return;
+    }
+
+    let ident = edu_identify(mmio);
+    if (ident != EDU_IDENT) {
+        // "edu: ident " + what came back
+        emit(base, text_bytes("edu: ident ").chain(hex(ident)));
+        return;
+    }
+
+    // The register inverts what it is given, in 32 bits.
+    let live = edu_liveness(mmio, 0x0f0f0f0f);
+    if (live != 0xf0f0f0f0) {
+        // "edu: live " + what came back
+        emit(base, text_bytes("edu: live ").chain(hex(live)));
+        return;
+    }
+
+    let factorial = edu_factorial(mmio, 5);
+    if (factorial != 120) {
+        // "edu: fact " + what came back
+        emit(base, text_bytes("edu: fact ").chain(hex(factorial)));
+        return;
+    }
+
+    if (!edu_round_trip(mmio)) {
+        emit_text(base, "edu: dma");
+        return;
+    }
+
+    let irq = edu_irq_line(bdf);
+    if (!edu_interrupt(mmio, irq)) {
+        emit_text(base, "edu: irq");
+        return;
+    }
+
+    // "edu: ok irq " + the line the firmware routed it to
+    emit(base, text_bytes("edu: ok irq ")
+            .chain(decimal(irq))
+            .chain(text_bytes(" bar ")) // " bar "
+            .chain(hex(edu_bar_size(bdf))));
+}
+
+// Makes the device interrupt, and waits for the handler to say it did.
+//
+// The driver installs its own gate here rather than at boot, and that is the
+// point: a PCI device does not know its interrupt line until configuration
+// space has been read, so a kernel that installed every handler in one place at
+// startup could not have a driver for a device it had not been told about.
+// Installing a handler is two stores — a gate, and an address in the runtime's
+// table — so a driver can do it for itself when it knows what it needs.
+//
+// The order matters at both ends. The MMIO base is published *before* the gate
+// exists, because an interrupt arriving between the two would find a handler
+// that cannot reach the device to quieten it; and the line is unmasked last,
+// because a line opened before its gate is filled is an interrupt into a
+// not-present descriptor, which is a fault raised from inside an interrupt.
+fn edu_interrupt(mmio: Int, irq: Int) -> Bool {
+    // What the device said its line is, checked before it is used as an index.
+    //
+    // PCI config space answers this in one byte, and 0xFF is the defined value
+    // for "not connected" — a number the 8259 has no line for and the IDT has
+    // no gate for. Believed, it would install a gate 496 bytes past the end of
+    // a 256-entry table, which in this kernel is the GDT.
+    if (!pic_line_exists(irq)) {
+        uart_text("edu: the device reports no usable IRQ line (");
+        uart_put_hex(irq);
+        uart_text(")\n");
+        return false;
+    }
+    shared_write(SHARED_EDU_SEEN, 0);
+    shared_write(SHARED_EDU_MMIO, mmio);
+    if (!install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_edu_isr") })) {
+        uart_text("edu: no gate for its vector\n");
+        return false;
+    }
+    pic_unmask(irq);
+
+    // A value with a bit the device has no other reason to set, so what the
+    // handler reports back is traceable to this request and not to some other
+    // condition that happened to be pending.
+    edu_raise(mmio, EDU_IRQ_TEST);
+
+    // Waits to be told, rather than polling until it is.
+    //
+    // The first version of this spun with interrupts on for a million
+    // iterations. It worked — an interrupt does arrive between any two
+    // instructions — and it meant the CPU was at full tilt for a wait measured
+    // in microseconds. The handler now wakes whoever asked, and this task is off
+    // the rotation entirely until it does.
+    //
+    // The deadline is what makes it usable rather than a hang: a device that
+    // never raises is a real outcome, and a driver that waited on a channel
+    // alone would take the machine with it.
+    task_wait_on(EDU_WAIT_CHANNEL, EDU_WAIT_TICKS);
+    let seen = shared_read(SHARED_EDU_SEEN);
+    // The line goes back to masked, and the device's own bit is already cleared
+    // by the handler: this is a probe, and leaving a line open behind it means
+    // the next thing that happens to raise it lands in a handler that is no
+    // longer expecting anything.
+    pic_mask_line(irq);
+    return (seen & EDU_IRQ_TEST) != 0;
+}
+
+// What the driver listens on, and how long it is prepared to wait.
+//
+// A channel is any number both sides agree on; this one is a constant because
+// there is one such device. A driver for a card that can be plugged in twice
+// would use the card's own address, which is unique by construction and is why
+// a channel is an Int rather than an index into something.
+const EDU_WAIT_CHANNEL = 0xed0;
+const EDU_WAIT_TICKS = 200;
+
+// A pattern out to the device and back to a different address.
+//
+// Back to a *different* address, and that is the whole test: reading into the
+// buffer it was sent from would pass even if the device never touched RAM,
+// because the bytes were already there. Two buffers means the second one can
+// only hold the pattern if the device's own DMA engine put it there.
+//
+// The addresses are physical, which on this machine equals virtual — see
+// `edu.lk`'s note on why that is a coincidence and not a rule.
+fn edu_round_trip(mmio: Int) -> Bool {
+    let out = SHARED_SECTOR;
+    let back = SHARED_SECTOR + 256;
+    let count = 64;
+
+    for i in 0..count {
+        shared_write_byte(out + i, (i * 7 + 3) & 0xff);
+        shared_write_byte(back + i, 0);
+    }
+
+    if (!edu_dma(mmio, out, 0, count, false)) {
+        return false;
+    }
+    if (!edu_dma(mmio, back, 0, count, true)) {
+        return false;
+    }
+    for i in 0..count {
+        if (shared_read_byte(back + i) != ((i * 7 + 3) & 0xff)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn report_disk(base: Int) {
     let outcome = ata_identify(SHARED_SECTOR);
     if (outcome != ATA_OK) {
@@ -701,7 +1792,7 @@ fn report_disk(base: Int) {
 // from outside by reading the image file after the machine has stopped.
 fn write_disk(base: Int) {
     // "LK-WROTE-SECTOR1", then zeros to the end of the sector.
-    let text = [76, 75, 45, 87, 82, 79, 84, 69, 45, 83, 69, 67, 84, 79, 82, 49];
+    let text = text_bytes("LK-WROTE-SECTOR1");
     for i in 0..SECTOR_SIZE {
         shared_write_byte(SHARED_SECTOR + i, 0);
     }
@@ -759,8 +1850,7 @@ fn print_file(base: Int, name: List<Int>) {
             emit(base, disk_error(ATA_ERROR_BIT));
             return;
         }
-        let line = [0];
-        line = [];
+        let line = [];
         let i = 0;
         while (i < SECTOR_SIZE && printed + i < size) {
             let byte = shared_read_byte(SHARED_SECTOR + i);
@@ -812,14 +1902,40 @@ fn report_heap(base: Int) {
     heap_release(SHARED_HEAP, d);
     let after = heap_blocks(SHARED_HEAP);
     // "blocks <before>/<after> reused <0|1> used <bytes>"
-    emit(base, [98, 108, 111, 99, 107, 115, 32]
-               .chain(decimal(before))
-               .chain([47])
-               .chain(decimal(after))
-               .chain([32, 114, 101, 117, 115, 101, 100, 32])
-               .chain(decimal(reused))
-               .chain([32, 117, 115, 101, 100, 32])
-               .chain(decimal(heap_used(SHARED_HEAP))));
+    emit(base, text_bytes("blocks ")
+            .chain(decimal(before))
+            .chain([47])
+            .chain(decimal(after))
+            .chain(text_bytes(" reused "))
+            .chain(decimal(reused))
+            .chain(text_bytes(" used "))
+            .chain(decimal(heap_used(SHARED_HEAP))));
+}
+
+// Lists what is on the disk: one line per entry, name and size.
+//
+// The walk is the filesystem's, not this function's — an entry's length lives
+// in its own header, so where the next one starts is not known until this one
+// has been read. What is here is only what to do with each: read the name a
+// byte at a time, because a name in a header is bytes and this program has no
+// strings.
+fn list_files(base: Int) {
+    let lba = 0;
+    for entry in 0..64 {
+        let next = tar_next(lba, SHARED_SECTOR);
+        if (next == 0) {
+            return;
+        }
+        // `tar_next` left this entry's header in the buffer.
+        let line = [0];
+        line = [];
+        let length = tar_name_length(SHARED_SECTOR);
+        for i in 0..length {
+            line = line.chain([tar_name_byte(SHARED_SECTOR, i)]);
+        }
+        emit(base, line.chain([32]).chain(decimal(tar_entry_size(SHARED_SECTOR))));
+        lba = next;
+    }
 }
 
 // Reads a file off the disk and asks the board to run it.
@@ -837,8 +1953,7 @@ fn run_file(base: Int, name: List<Int>) {
     let lba = shared_read(SHARED_FILE);
     let size = shared_read(SHARED_FILE + WORD);
     if (size > SOURCE_MAX) {
-        // "too big"
-        emit(base, [116, 111, 111, 32, 98, 105, 103]);
+        emit_text(base, "too big");
         return;
     }
     let copied = 0;
@@ -855,32 +1970,27 @@ fn run_file(base: Int, name: List<Int>) {
         copied = copied + i;
         lba = lba + 1;
     }
-    // Interrupts back on for the duration of the run, and masked again after.
+    // Nothing to say about interrupts any more.
     //
-    // `run_command` is called with them masked, which is right for a command
-    // that touches a few shared words and returns. A whole parse and execution
-    // of an arbitrary program is not that: it takes seconds, and holding the
-    // mask across it stops the timer, starves the other task, and drops every
-    // keystroke that arrives meanwhile. What the mask protects — the cursor and
-    // the line buffer — is not touched by anything that can preempt this: the
-    // key handler only queues bytes, and the spinner draws in its own window.
-    unsafe { cpu_irq_restore(1); };
+    // This used to turn them back on for the duration and mask again after,
+    // because `run_command` held the mask across the whole command and a whole
+    // parse and execution takes seconds. The mask is gone from the command; what
+    // is left here is a call.
     let outcome = kernel_run(SOURCE_BASE, size);
-    unsafe { cpu_irq_save() };
     if (outcome != 0) {
         // "failed " then the stage the board reported.
-        emit(base, [102, 97, 105, 108, 101, 100, 32].chain(decimal(0 - outcome)));
+        emit(base, text_bytes("failed ").chain(decimal(0 - outcome)));
     }
 }
 
 fn file_error(outcome: Int) -> List<Int> {
     if (outcome == TAR_NOT_FOUND) {
         // "no file"
-        return [110, 111, 32, 102, 105, 108, 101];
+        return text_bytes("no file");
     }
     if (outcome == TAR_READ_FAILED) {
         // "read failed"
-        return [114, 101, 97, 100, 32, 102, 97, 105, 108, 101, 100];
+        return text_bytes("read failed");
     }
     // "?"
     return [63];
@@ -892,19 +2002,19 @@ fn file_error(outcome: Int) -> List<Int> {
 fn disk_error(outcome: Int) -> List<Int> {
     if (outcome == ATA_NO_DRIVE) {
         // "no disk"
-        return [110, 111, 32, 100, 105, 115, 107];
+        return text_bytes("no disk");
     }
     if (outcome == ATA_TIMEOUT) {
         // "timeout"
-        return [116, 105, 109, 101, 111, 117, 116];
+        return text_bytes("timeout");
     }
     if (outcome == ATA_ERROR_BIT) {
         // "drive error"
-        return [100, 114, 105, 118, 101, 32, 101, 114, 114, 111, 114];
+        return text_bytes("drive error");
     }
     if (outcome == ATA_BAD_LBA) {
         // "bad sector"
-        return [98, 97, 100, 32, 115, 101, 99, 116, 111, 114];
+        return text_bytes("bad sector");
     }
     // "?"
     return [63];
@@ -915,45 +2025,38 @@ fn run_command(base: Int) -> Int {
     if (length == 0) {
         return 1;
     }
-    if (line_starts_with([104, 101, 108, 112])) {          // "help"
+    if (line_starts_with(text_bytes("help"))) {          // "help"
         // "help clear echo keys exit"
-        // "... time disk cat run heap exit"
-        emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
-                    104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
-                    112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
-                    121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32,
-                    101, 120, 105, 116]);
+        emit_text(base, "help clear echo keys mem page sync yield win time disk cat run heap user ls exit");
         return 1;
     }
-    if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
+    if (line_starts_with(text_bytes("clear"))) {       // "clear"
         clear(base, WIDTH, HEIGHT, BACKGROUND);
         place_cursor(base, 0, 0);
         return 1;
     }
-    if (line_starts_with([101, 99, 104, 111])) {           // "echo"
+    if (line_starts_with(text_bytes("echo"))) {           // "echo"
         emit(base, line_tail(5));
         return 1;
     }
-    if (line_starts_with([107, 101, 121, 115])) {          // "keys"
+    if (line_starts_with(text_bytes("keys"))) {          // "keys"
         emit(base, decimal(shared_read(SHARED_KEY_COUNT)));
         return 1;
     }
-    if (line_starts_with([109, 101, 109])) {               // "mem"
+    if (line_starts_with(text_bytes("mem"))) {               // "mem"
         report_memory(base);
         return 1;
     }
-    if (line_starts_with([112, 97, 103, 101])) {           // "page"
+    if (line_starts_with(text_bytes("page"))) {           // "page"
         let address = page_alloc(SHARED_PAGES);
         if (address == 0) {
-            // "none"
-            emit(base, [110, 111, 110, 101]);
+            emit_text(base, "none");
         } else {
             emit(base, hex(address));
         }
         return 1;
     }
-    if (line_starts_with([115, 121, 110, 99])) {           // "sync"
+    if (line_starts_with(text_bytes("sync"))) {           // "sync"
         let state = lock();
         let a = shared_read(SHARED_PAIR_A);
         let b = shared_read(SHARED_PAIR_B);
@@ -961,17 +2064,16 @@ fn run_command(base: Int) -> Int {
         emit(base, decimal(a).chain([47]).chain(decimal(b)));
         return 1;
     }
-    if (line_starts_with([121, 105, 101, 108, 100])) {     // "yield"
+    if (line_starts_with(text_bytes("yield"))) {     // "yield"
         task_yield();
-        // "back"
-        emit(base, [98, 97, 99, 107]);
+        emit_text(base, "back");
         return 1;
     }
-    if (line_starts_with([119, 105, 110])) {               // "win"
+    if (line_starts_with(text_bytes("win"))) {               // "win"
         emit(base, decimal(window_dropped(SHARED_WINDOWS, WINDOW_SPINNER)));
         return 1;
     }
-    if (line_starts_with([116, 105, 109, 101])) {          // "time"
+    if (line_starts_with(text_bytes("time"))) {          // "time"
         // Measure the two things this program does that are not cheap: a
         // scroll moves the whole picture a pixel row at a time, and a focus
         // change repaints both frames. Both run with interrupts masked, so
@@ -985,50 +2087,91 @@ fn run_command(base: Int) -> Int {
         let t2 = unsafe { cpu_timestamp() };
         unlock(irq_time);
         // "scroll " cycles " frames " cycles
-        emit(base, [115, 99, 114, 111, 108, 108, 32]
-                   .chain(decimal((t1 as Int) - (t0 as Int)))
-                   .chain([32, 102, 114, 97, 109, 101, 115, 32])
-                   .chain(decimal((t2 as Int) - (t1 as Int))));
+        emit(base, text_bytes("scroll ")
+                .chain(decimal((t1 as Int) - (t0 as Int)))
+                .chain(text_bytes(" frames "))
+                .chain(decimal((t2 as Int) - (t1 as Int))));
         return 1;
     }
-    if (line_starts_with([109, 115])) {                    // "ms"
+    if (line_starts_with(text_bytes("ms"))) {                    // "ms"
         // "<x>,<y> b<buttons> p<phase>"
         emit(base, decimal(shared_read(SHARED_MOUSE_X))
-                   .chain([44])
-                   .chain(decimal(shared_read(SHARED_MOUSE_Y)))
-                   .chain([32, 98])
-                   .chain(decimal(shared_read(SHARED_MOUSE_BUTTONS)))
-                   .chain([32, 112])
-                   .chain(decimal(shared_read(SHARED_MOUSE_PHASE)))
-                   .chain([32, 102])
-                   .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
-                   .chain([32, 100])
-                   .chain(decimal(shared_read(SHARED_MOUSE_DX))));
+                .chain([44])
+                .chain(decimal(shared_read(SHARED_MOUSE_Y)))
+                .chain(text_bytes(" b"))
+                .chain(decimal(shared_read(SHARED_MOUSE_BUTTONS)))
+                .chain(text_bytes(" p"))
+                .chain(decimal(shared_read(SHARED_MOUSE_PHASE)))
+                .chain(text_bytes(" f"))
+                .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
+                .chain(text_bytes(" d"))
+                .chain(decimal(shared_read(SHARED_MOUSE_DX))));
         return 1;
     }
-    if (line_starts_with([104, 101, 97, 112])) {           // "heap"
+    if (line_starts_with(text_bytes("user"))) {          // "user"
+        // "ring3" then the machine leaves for ring 3 and does not return: the
+        // program there prints through a syscall and then deliberately writes
+        // an address it is not allowed to, which the exception reporter names.
+        emit_text(base, "ring3");
+        enter_user(unsafe { symbol_address("__user_program") },
+            (unsafe { symbol_address("__user_shell_stack") } as Int) + PAGE_SIZE - 8,
+            USER_CODE_SELECTOR, USER_DATA_SELECTOR);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("heap"))) {           // "heap"
         report_heap(base);
         return 1;
     }
-    if (line_starts_with([114, 117, 110])) {               // "run"
+    if (line_starts_with(text_bytes("run"))) {               // "run"
         run_file(base, line_tail(4));
         return 1;
     }
-    if (line_starts_with([99, 97, 116])) {                 // "cat"
+    if (line_starts_with(text_bytes("ls"))) {                    // "ls"
+        list_files(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("cat"))) {                 // "cat"
         print_file(base, line_tail(4));
         return 1;
     }
-    if (line_starts_with([100, 105, 115, 107, 32, 119])) { // "disk w"
+    if (line_starts_with(text_bytes("disk w"))) { // "disk w"
         write_disk(base);
         return 1;
     }
-    if (line_starts_with([100, 105, 115, 107])) {          // "disk"
+    if (line_starts_with(text_bytes("disk"))) {          // "disk"
         report_disk(base);
         return 1;
     }
-    if (line_starts_with([101, 120, 105, 116])) {          // "exit"
-        // "bye"
-        emit(base, [98, 121, 101]);
+    if (line_starts_with(text_bytes("pci"))) {                // "pci"
+        report_pci(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("edu"))) {               // "edu"
+        report_edu(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("clock"))) {           // "clock"
+        report_clock(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("hpet"))) {             // "hpet"
+        report_hpet(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("sleep"))) {           // "sleep"
+        report_sleep(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("task"))) {             // "task"
+        report_tasks(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("net"))) {               // "net"
+        report_net(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("exit"))) {          // "exit"
+        emit_text(base, "bye");
         return 0;
     }
     // "?"
@@ -1076,7 +2219,19 @@ fn halt() {
 // three bytes that are meaningless apart, so the handler assembles them and
 // publishes the result. What it never does is draw — the cursor is chrome, and
 // chrome belongs to whoever owns the screen.
+// Acknowledging the chip is the driver's job, and it is a *wrapper* rather than
+// a last line, in all three cases, for one reason: an end-of-interrupt that a
+// `return` can skip is an end-of-interrupt that will be skipped. `on_key`
+// already returns early from four places. Written this way the property is
+// structural — there is nowhere for the acknowledgement to not happen — instead
+// of something the next edit has to remember.
 #[export("lk_mouse")]
+fn isr_mouse() {
+    on_mouse();
+    // IRQ12 is the slave's, so both chips are told.
+    pic_eoi_slave();
+}
+
 fn on_mouse() {
     while (has_packet_byte() == 1) {
         let byte = mouse_byte();
@@ -1131,9 +2286,19 @@ fn task_clock() {
             repaint_above(surface, WINDOW_CLOCK);
             unlock(irq);
         }
-        task_yield();
+        // Sleeps rather than yields, and the difference is the whole point of a
+        // blocked state. A `yield` hands over the rest of the slice and comes
+        // straight back: this task is runnable again immediately, so the machine
+        // never has nothing to do, so it never sleeps. A clock that changes once
+        // a second has no business being runnable a thousand times a second.
+        task_sleep(CLOCK_POLL_TICKS);
     }
 }
+
+// A tenth of a second, which is a tenth of the resolution the clock shows. Close
+// enough that a second never visibly arrives late, coarse enough that this task
+// is off the CPU for almost all of it.
+const CLOCK_POLL_TICKS = 100;
 
 // Give up the rest of this task's slice.
 //
@@ -1151,13 +2316,754 @@ fn task_clock() {
 // Named `spawn_task`, not `spawn`: the language already has a `spawn` for its
 // own concurrency, which returns a `Task`. Two things called spawn in one
 // program is a question every reader would have to answer twice.
-#[extern("lk_spawn")]
-fn spawn_task(entry: Int) -> Int {
-    return 0 - 1;
+// Leaves for ring 3 and does not come back — see `src/user.rs`.
+// Enters ring 3, and does not come back.
+//
+// Every number is this file's: what runs, on which stack, and through which two
+// descriptors. What the board contributes is the one thing that cannot be said
+// here — `iretq`, the only way *into* ring 3, because no instruction lowers
+// privilege directly. There is no return value because there is no return: the
+// only ways out are a syscall (which returns *into* ring 3) and a fault.
+#[extern("lk_enter_user")]
+fn enter_user(entry: Int, stack: Int, code: Int, data: Int) -> Int {
+    return 0;
 }
 
-#[extern("kernel_yield")]
+// A stack for a task, out of the page allocator, and its high end.
+//
+// Contiguous because the allocator is a bump: consecutive pages are
+// consecutive addresses, which the heap's own startup already depends on and
+// checks. Answers 0 when it cannot get all of them — a stack that is short by a
+// page is not a stack, it is a task that overruns into whatever is next.
+fn alloc_task_stack() -> Int {
+    let base = alloc_contiguous(TASK_STACK_PAGES * PAGE_SIZE);
+    if (base == 0) {
+        return 0;
+    }
+    return base + TASK_STACK_PAGES * PAGE_SIZE;
+}
+
+// Gives a stack back, by the top the spawner was handed.
+//
+// The top rather than the base, because the top is what the table holds — a task
+// slot records where the stack *ends*, since that is what the frame was built
+// down from. Converting here rather than at the two call sites keeps the one
+// piece of arithmetic that has to match `alloc_task_stack` next to it.
+fn release_task_stack(top: Int) {
+    pages_release_run(SHARED_PAGES, top - TASK_STACK_PAGES * PAGE_SIZE, TASK_STACK_PAGES);
+}
+
+// Publishes a prepared slot. The count goes last, and that ordering is the
+// whole of the locking here: the scheduler reads it from a timer interrupt, so
+// a slot announced before its stack is complete is a resume into zero.
+fn publish_task(slot: Int, rsp: Int, cr3: Int, kernel_stack: Int) -> Int {
+    task_set_field(TASK_TABLE_BASE, slot, TASK_RSP_OFFSET, rsp);
+    task_set_field(TASK_TABLE_BASE, slot, TASK_CR3_OFFSET, cr3);
+    task_set_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET, kernel_stack);
+    // The state last, and that ordering is the contract: this is the word the
+    // scheduler reads to decide the slot is worth resuming, so a slot announced
+    // ready before its stack pointer is written is a resume into zero. It is the
+    // same reason the count used to go last, made per-slot.
+    task_set_state(TASK_TABLE_BASE, slot, TASK_READY);
+    // The watermark: one past the highest slot ever taken, which is how far the
+    // scheduler has to sweep. It only rises — a slot that comes free stays
+    // inside the swept range, and shrinking it would mean proving nothing above
+    // is live, which is a scan to save a scan.
+    if (slot + 1 > task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)) {
+        task_set_word(TASK_TABLE_BASE + TASK_USED_OFFSET, slot + 1);
+        shared_write(SHARED_TASK_COUNT, slot + 1);
+    }
+    return slot;
+}
+
+// Starts a task at `entry`, on a stack of its own.
+//
+// The caller must have interrupts masked, for the reason `publish_task` states.
+fn spawn_task(entry: Int) -> Int {
+    if (entry == 0) {
+        return 0 - 1;
+    }
+    let slot = task_find_free(TASK_TABLE_BASE, TASK_CAPACITY);
+    if (slot < 0) {
+        return 0 - 1;
+    }
+    let top = alloc_task_stack();
+    if (top == 0) {
+        return 0 - 1;
+    }
+    // Where the task goes when its body returns.
+    //
+    // The very top word of the stack, and the frame is built *below* it. That
+    // ordering is the whole of it: `task_prepare_frame` writes downward from
+    // whatever it is given, and its first write is the frame's SS — so writing
+    // the exit address at `top - 8` and then building the frame from `top` puts
+    // the selector on top of it. The first version did exactly that, and the
+    // task returned into `0x10` and took a #UD at address 0x13.
+    //
+    // The word has to exist because the ABI assumes a `call` has just pushed a
+    // return address, and `iretq` pushes nothing. Left zero, a task that simply
+    // finished would `ret` into address zero. A task with no way to return is
+    // not a task, it is a loop that was started.
+    let exit_slot = top - 8;
+    task_set_word(exit_slot, unsafe { symbol_address("lk_task_exit") } as Int);
+    // One word below the top, so the task begins with the stack in the phase a
+    // function expects: the ABI assumes a `call` has just pushed a return
+    // address, and `iretq` pushes nothing. Without the offset the first aligned
+    // SSE spill inside the task faults, in whatever it happened to call.
+    let rsp = task_prepare_frame(exit_slot, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR,
+        exit_slot, task_saved_words());
+    return publish_task(slot, rsp, 0, top);
+}
+
+// A ring-3 task: same table, same switch and same scheduler as any other,
+// entered on a frame whose selectors say ring 3, and running in the address
+// space it is handed.
+//
+// The stack it resumes on is the *virtual* one — the task runs in its own
+// space, where that address is its stack and the kernel's space has something
+// else entirely there. The kernel stack published beside it is a different
+// stack again: its own, because two user tasks sharing one would have the
+// second one's interrupt frame land on top of the first one's.
+fn spawn_user_task(entry: Int, stack_virtual: Int, cr3: Int) -> Int {
+    if (entry == 0 || cr3 == 0) {
+        return 0 - 1;
+    }
+    let slot = task_find_free(TASK_TABLE_BASE, TASK_CAPACITY);
+    if (slot < 0) {
+        return 0 - 1;
+    }
+    let top = alloc_task_stack();
+    if (top == 0) {
+        return 0 - 1;
+    }
+    // No exit address for a ring-3 task: the word below the top of *this* stack
+    // is in the kernel's space, and the task returns onto its own virtual stack
+    // in its own space. A user task that runs off the end faults, which is the
+    // boundary doing its job — ending it is what the syscall is for.
+    let rsp = task_prepare_frame(top, entry, USER_CODE_SELECTOR, USER_DATA_SELECTOR, stack_virtual,
+        task_saved_words());
+    return publish_task(slot, rsp, cr3, top);
+}
+
+// How much the board's save sequence leaves on a task's stack. Its number, not
+// this file's: the assembly that pushes those registers is what decides it.
+#[extern("lk_task_saved_words")]
+fn task_saved_words() -> Int {
+    return 0;
+}
+
+// Which task runs next, and everything that has to be true before it does.
+//
+// Called from the board's trampoline with the interrupted task's stack pointer,
+// and answering the one to resume on. Everything between is bookkeeping this
+// program owns: which slot was running, which is next, whose address space, and
+// whose kernel stack.
+// A task that does a little work and then ends.
+//
+// It exists to prove the end. Every other task in this kernel is a `while (true)`
+// — which is honest for a spinner and a clock, and useless for showing that a
+// slot and a stack come back, because they never do. This one counts to a number
+// and returns, and returning is the whole point: no exit call, no cooperation
+// with the scheduler, just a function that finishes the way any function does.
+// The task that runs when nothing else will.
+//
+// `hlt` rather than a spin, because that is the only difference that matters: a
+// machine with nothing to do should be stopped until the next interrupt, not
+// burning through a loop. On real hardware it is the difference between a fan
+// that is on and one that is not; here it is what makes "everything is blocked"
+// a thing the scheduler can express at all.
+//
+// It never ends and never blocks, so it is always somewhere to go.
+#[export("lk_task_idle")]
+fn task_idle() {
+    while (true) {
+        // Counted before the halt, so the number is "times this task was given
+        // the CPU and had nothing to do with it". That is the measurement that
+        // turns "the task waited" into "the task waited without spending
+        // anything": a spin never reaches here, because a spinning task is
+        // always runnable and the rotation never falls through to idle.
+        shared_bump(SHARED_IDLE_TURNS);
+        unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// A task that sleeps rather than spins.
+//
+// It wakes `TASK_SLEEP_ROUNDS` times, waiting `TASK_SLEEP_TICKS` between, and
+// counts each wake. What that proves is not that it woke — a spin would also
+// "wake" — but *when*: the elapsed ticks have to be the product, which a spin
+// could not produce because a spinning task would be preempted and resumed long
+// before its deadline.
+#[export("lk_task_sleeper")]
+fn task_sleeper() {
+    for _round in 0..TASK_SLEEP_ROUNDS {
+        task_sleep(TASK_SLEEP_TICKS);
+        shared_bump(SHARED_SLEEP_WAKES);
+    }
+}
+
+// How the shell waits for something it has no channel for: a short sleep, over
+// and over, with a bound. Sleeping rather than spinning because a spinning
+// waiter is a runnable task, and a runnable task is one the machine stays awake
+// for.
+const WAIT_POLLS = 2000;
+const WAIT_POLL_TICKS = 2;
+
+const TASK_SLEEP_ROUNDS = 10;
+const TASK_SLEEP_TICKS = 50;
+
+#[export("lk_task_brief")]
+fn task_brief() {
+    for _step in 0..200000 {
+        shared_bump(SHARED_BRIEF_TICKS);
+    }
+}
+
+// Waits `ticks` timer interrupts without using the CPU.
+//
+// The difference between this and the spin loops elsewhere in this file is the
+// whole point of a blocked state: a spin waits at full tilt and takes its slice
+// of every other task's time, while this leaves the rotation entirely and comes
+// back when the timer says so.
+//
+// The state goes on with interrupts masked, because between reading the clock
+// and announcing the deadline a tick would be one the waker had already passed.
+// The yield is *after* they are back on: yielding with them masked would switch
+// to a task that then runs with interrupts off.
+fn task_sleep(ticks: Int) {
+    if (ticks <= 0) {
+        return;
+    }
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_block_on(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks, 0);
+    unsafe { cpu_irq_restore(irq); };
+    // Hands the CPU over now rather than at the end of the slice. Not required —
+    // the next tick would switch away from a slot that is no longer ready — but
+    // a task that has said it is waiting should not go on running.
+    task_yield();
+}
+
+// Waits to be told about `channel`, for at most `ticks`.
+//
+// The pair is what makes this usable by a driver. A wait with only a channel
+// never ends if the device is broken, and a driver that hangs the machine on a
+// bad card is worse than one that polls; a wait with only a deadline is a poll
+// with extra steps. Answers whether it was *told* rather than timed out, which
+// is the one thing the caller cannot work out for itself.
+//
+// The deadline is read and the block announced with interrupts masked, because
+// the thing being waited for is an interrupt: between deciding to wait and
+// saying so, the very signal being waited for could arrive and find nobody
+// waiting — and then the wait is for the next one, which is not coming.
+fn task_wait_on(channel: Int, ticks: Int) -> Bool {
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_block_on(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks, channel);
+    unsafe { cpu_irq_restore(irq); };
+    task_yield();
+    // Back on the CPU, so something woke it. Which one is the question, and the
+    // channel field is the answer: a signal clears it, a deadline clears it too
+    // — so the caller is told by whoever set the flag it was waiting for, not by
+    // this. What is returned is the honest weaker claim: the wait is over.
+    return true;
+}
+
+// Takes a task off the CPU until somebody puts it back.
+//
+// Blocked with no deadline and no channel, which is the one combination nothing
+// wakes — it falls out of the two-reason block rather than being a third state,
+// because "waiting for a moment that never comes and a message nobody sends" is
+// exactly what suspended means.
+//
+// Safe to do to a task holding the drawing lock, because that lock is interrupt
+// masking: a task cannot be scheduled away while it holds one, so this takes
+// effect at the next moment it is safe to take effect at.
+fn task_suspend(slot: Int) {
+    let irq = unsafe { cpu_irq_save() };
+    task_block_on(TASK_TABLE_BASE, slot, 0, 0);
+    unsafe { cpu_irq_restore(irq); };
+}
+
+fn task_resume(slot: Int) {
+    let irq = unsafe { cpu_irq_save() };
+    task_unblock(TASK_TABLE_BASE, slot);
+    unsafe { cpu_irq_restore(irq); };
+}
+
+// Where a task goes when its body returns.
+//
+// It marks its own slot dead and then stops. It cannot do the rest: releasing
+// the stack would hand back the pages holding the frame this is standing on, and
+// the very next interrupt would land on memory the allocator had given away. So
+// this is half an exit, and `reap_dead_tasks` below is the other half — run by
+// something that is not this task.
+//
+// The wait is `hlt` rather than a spin: there is nothing to do, and the only
+// thing that can end it is the timer, which is exactly what `hlt` waits for.
+#[export("lk_task_exit")]
+fn task_exit() {
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_state(TASK_TABLE_BASE, current, TASK_DEAD);
+    unsafe { cpu_irq_restore(irq); };
+    while (true) {
+        unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// Gives back the stacks of tasks that have ended.
+//
+// Run from the scheduler, and it skips two slots on purpose: the one the CPU is
+// on and the one it is about to be on. A dead task is still standing on its
+// stack until something else is running, so the first switch away from it can
+// only mark it — the pages come back a tick later, when it is neither.
+//
+// That is why `DEAD` is a state rather than a step. There is no moment inside
+// the exiting task where the release is safe.
+fn reap_dead_tasks(current: Int, next: Int) {
+    let watermark = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    for slot in 0..watermark {
+        if (slot == current || slot == next) {
+            continue;
+        }
+        if (task_state(TASK_TABLE_BASE, slot) != TASK_DEAD) {
+            continue;
+        }
+        let top = task_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET);
+        if (top != 0) {
+            release_task_stack(top);
+        }
+        task_set_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET, 0);
+        task_set_field(TASK_TABLE_BASE, slot, TASK_RSP_OFFSET, 0);
+        task_set_field(TASK_TABLE_BASE, slot, TASK_CR3_OFFSET, 0);
+        // Free last: it is what makes the slot takeable, and a slot handed to a
+        // spawner before its stack is back is a spawner that allocates while
+        // this one is still releasing.
+        task_set_state(TASK_TABLE_BASE, slot, TASK_FREE);
+    }
+}
+
+#[export("lk_schedule_from_interrupt")]
+fn schedule_from_interrupt(rsp: Int) -> Int {
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
+
+    // Every tick, before anything is chosen: a task whose moment has come has to
+    // be runnable by the time the choice is made, or it waits an extra slice for
+    // no reason. Cheaper than it looks — the watermark is at most the table's
+    // sixteen slots, and this is the only place that reads the clock against
+    // them.
+    let watermark = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    task_wake_due(TASK_TABLE_BASE, watermark, shared_read(SHARED_TICKS));
+
+    let next = schedule(current);
+    // Clamped against the watermark, not the capacity: a scheduler naming a slot
+    // above everything ever spawned would resume a stack that was never
+    // prepared. And clamped against the slot's *state*, because since tasks can
+    // end and can wait, a slot inside the watermark is not necessarily one to
+    // resume.
+    if (next < 0 || next >= watermark) {
+        next = current;
+    }
+    let chosen = task_state(TASK_TABLE_BASE, next);
+    if (chosen != TASK_READY && chosen != TASK_IDLE) {
+        next = current;
+    }
+    reap_dead_tasks(current, next);
+
+    // The address space before the stack pointer, and that order is the point:
+    // the value returned below is a pointer the CPU reads *after* this returns,
+    // so it has to still mean the same thing in whatever space is current then.
+    // It does, because the kernel is mapped identically in every space — which
+    // is what makes this order safe rather than lucky.
+    let want = task_field(TASK_TABLE_BASE, next, TASK_CR3_OFFSET);
+    if (want != 0 && want != unsafe { cpu_read_cr3() }) {
+        space_switch(want);
+    }
+    task_set_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET, next);
+
+    // The ring-0 stack the *next* task will be interrupted onto. Task 0 keeps
+    // the boot stack and never runs at ring 3, so it has none.
+    let kernel_stack = task_field(TASK_TABLE_BASE, next, TASK_STACK_OFFSET);
+    if (kernel_stack != 0) {
+        tss_set_kernel_stack(TSS_BASE, kernel_stack);
+    }
+    return task_field(TASK_TABLE_BASE, next, TASK_RSP_OFFSET);
+}
+
+// What a ring-3 task may ask the kernel for.
+//
+// One number per call, in `rax`. Deliberately few: every entry here is a hole
+// in the wall the ring boundary just built, and the way to keep the wall
+// meaningful is to have few holes and to know what each one lets through.
+const SYS_WRITE = 1;
+const SYS_EXIT = 2;
+const SYS_WRITE_STR = 3;
+
+// The answer to a call the kernel refuses. The ring-3 programs compare against
+// `-1`, which is the same bits either side reads it as.
+//
+// Read back with `as Int` at every use, and that is not decoration: a constant
+// this far down the file is past the point where the compiler keeps top-level
+// bindings in registers, so a function reads it through the global table and
+// gets it *dynamically typed*. Returning it beside a plain `0` is then two
+// return types in one function, which the native lowering refuses. The cast is
+// where the program states what it already knows.
+const SYS_REFUSED = 0 - 1;
+
+// How long a string the kernel will accept in one call.
+//
+// A bound, not a guess: without one a user task can hand over a length that
+// keeps the kernel inside the syscall for as long as it likes — with interrupts
+// on, so the machine survives, but the caller's own slice is spent in kernel
+// code where nothing can preempt the loop's *effects*.
+const MAX_WRITE = 4096;
+
+// The bounds of everything ring 3 may reach, from the linker script — so from
+// the board, which is the only side that can ask the linker anything.
+// Is `[address, address + length)` memory the caller is allowed to hand over?
+//
+// The only region ring 3 can reach is its own section, so that is the whole
+// test — and it is a test the *kernel* performs, not a promise the caller
+// makes. Without it, `write(0x100010, 64)` has the kernel read out its own code
+// on request, which is the shape of every "the kernel followed a pointer it was
+// given" bug there has ever been.
+//
+// The arithmetic is checked too. An `Int` is signed, which does half the work
+// for free: an address with the top bit set arrives negative and fails the
+// lower bound. What it does not cover is the other end — an address just under
+// the maximum wraps `address + length` to a negative number, which would then
+// pass `end <= limit`. LK's addition wraps rather than trapping, so the wrap is
+// what the comparison below looks for.
+fn user_range_is_valid(address: Int, length: Int) -> Bool {
+    if (length <= 0 || length > MAX_WRITE) {
+        return false;
+    }
+    let end = address + length;
+    if (end < address) {
+        return false;
+    }
+    return address >= unsafe { symbol_address("__user_start") }
+        && end <= unsafe { symbol_address("__user_end") };
+}
+
+// The syscall handler, entered from the board's trampoline with the number in
+// `rax` and the arguments in `rdi` and `rsi`.
+//
+// Returning a value rather than writing registers: the trampoline puts the
+// answer back in `rax`, which keeps the register discipline in one place.
+#[export("lk_syscall_dispatch")]
+fn syscall_dispatch(number: Int, arg: Int, arg2: Int) -> Int {
+    // Deliberately a *byte*, not a pointer: one byte per call is slow and
+    // honest, and it was the first call precisely because it needs no decision
+    // about whether to believe an address.
+    if (number == SYS_WRITE) {
+        console_byte(arg & 0xff);
+        return 0 as Int;
+    }
+    // The kernel checks, copies, and only then uses. Printing straight out of
+    // user memory would be one instruction shorter and would leave the window
+    // between the check and the use open — which on a machine with more than
+    // one CPU is not a window but a race. Reading a byte and printing it before
+    // reading the next is that copy, at the smallest granularity there is.
+    if (number == SYS_WRITE_STR) {
+        if (!user_range_is_valid(arg, arg2)) {
+            return SYS_REFUSED as Int;
+        }
+        for offset in 0..arg2 {
+            let byte = unsafe { volatile_read_u8((arg + offset) as *mut u8) };
+            console_byte(byte as Int);
+        }
+        return arg2 as Int;
+    }
+    if (number == SYS_EXIT) {
+        shared_write(SHARED_USER_EXITED, 1);
+        return 0 as Int;
+    }
+    // An unknown number is not a crash: a kernel that dies on a bad syscall is
+    // one that any program can take down.
+    return SYS_REFUSED as Int;
+}
+
+// Builds an address space for a user task, and answers its CR3.
+//
+// Almost all of it is shared with the kernel, and shared by *pointing at* the
+// kernel's own tables rather than by copying them. Three of the four gigabytes
+// are the kernel's directories named directly. The kernel has to be mapped in
+// every address space — an interrupt arriving during ring 3 lands in kernel
+// code, and it must be there to land in — and a copy would work today and drift
+// on the day a mapping is added to one and not the other.
+//
+// Only the second gigabyte is this task's own, and it holds one page: its
+// stack. That single difference is what makes two spaces two spaces. Two tasks
+// can then put their stacks at the same virtual address and not see each
+// other's, which one address space cannot be told apart from "a bit more
+// permission".
+//
+// Returns 0 when there are no pages left. Zero is unambiguous as a CR3: page 0
+// is not in any range this allocator hands out.
+fn build_user_space(stack_physical: Int) -> Int {
+    let pml4 = page_alloc(SHARED_PAGES);
+    let pdpt = page_alloc(SHARED_PAGES);
+    let directory = page_alloc(SHARED_PAGES);
+    let table = page_alloc(SHARED_PAGES);
+    if (pml4 == 0 || pdpt == 0 || directory == 0 || table == 0) {
+        return 0;
+    }
+    table_zero(pml4);
+    table_zero(pdpt);
+    table_zero(directory);
+    table_zero(table);
+
+    let shared = PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+    // The kernel's four page directories, one per gigabyte, asked of the
+    // linker directly. The 32-bit boot code filled them in before long mode and
+    // therefore before any of this existed — but "where did the linker put it"
+    // is a question this language can ask. A user space points *at* them rather
+    // than copying them, which is what keeps the two from drifting.
+    let kernel_directories = unsafe { symbol_address("__pd") };
+    // The first, third and fourth gigabytes: the kernel's, named not copied.
+    // The framebuffer is in the fourth.
+    table_set(pdpt, 0, kernel_directories, shared);
+    table_set(pdpt, 2, kernel_directories + 2 * PAGE_SIZE, shared);
+    table_set(pdpt, 3, kernel_directories + 3 * PAGE_SIZE, shared);
+
+    // The second: this task's own, holding one page of stack at the bottom of
+    // it. Every index is *computed from the virtual address* rather than
+    // written as a number — a hand-written 0 here is right only because the
+    // stack happens to sit at the start of its gigabyte, and would go on
+    // looking right after it stopped being true.
+    let stack_virtual = USER_STACK_RESUME;
+    table_set(pdpt, index_of(stack_virtual, SHIFT_PDPT), directory, shared);
+    table_set(directory, index_of(stack_virtual, SHIFT_DIRECTORY), table, shared);
+    table_set(table, index_of(stack_virtual, SHIFT_TABLE), stack_physical, shared);
+
+    table_set(pml4, index_of(stack_virtual, SHIFT_PML4), pdpt, shared);
+    return pml4;
+}
+
+// Where that stack is in the task's own address space — a different number for
+// the same memory.
+// Give up the rest of this task's slice.
+//
+// `int VECTOR_YIELD` — and the vector is the *same constant* the gate is
+// installed with, twenty lines up, because it can finally be one. It used to be
+// two spellings of one number in two languages: `int` takes its vector as an
+// immediate, so the board owned a Rust function containing `int 0x30` and
+// nothing checked that it matched the gate this file installs.
+//
+// The runtime answers it with a table of 256 stubs, which is what `isr.rs`
+// already did for the entry side. A kernel that can handle an interrupt but not
+// raise one can answer a syscall and not define one.
 fn task_yield() {
+    unsafe { cpu_raise_interrupt(VECTOR_YIELD); };
+}
+
+
+
+// A deliberate fault, when the image was built with the `fault-probe` feature;
+// nothing otherwise.
+//
+// Called immediately after the table is installed, because that is the earliest
+// moment there is a gate to land in — and because the table it lands in should
+// be the one this file just built. A reporter that is never made to report is
+// indistinguishable from one that cannot.
+#[extern("lk_fault_probe")]
+fn fault_probe() {
+}
+
+// The vector map. Which number means what is a decision, not a property of the
+// machine — the only constraint the hardware imposes is that 0..32 belong to
+// the CPU's own exceptions, which is why the PIC is remapped away from them at
+// all.
+// Where the PIC's lines land. Line n arrives as vector `VECTOR_IRQ_BASE + n`,
+// which is the same number `remap` was given — named here because a driver that
+// discovers its line at runtime has to do that arithmetic in both directions:
+// forwards to find its gate, backwards to know which chip to acknowledge.
+const VECTOR_IRQ_BASE = 0x20;
+
+// The two lines the chips deliver when they have nothing real to deliver. See
+// `in_service` in the PIC driver for why they exist at all.
+const IRQ_SPURIOUS_MASTER = 7;
+const IRQ_SPURIOUS_SLAVE = 15;
+
+const VECTOR_TIMER = 0x20;
+const VECTOR_KEYBOARD = 0x21;
+// IRQ12, on the *slave* chip: 0x20 + 8 + 4. Its interrupts reach the CPU
+// through the master's IRQ2 cascade line.
+const VECTOR_MOUSE = 0x2c;
+// Past the PIC's remapped range, so no device can raise either: there is
+// nothing behind them but an `int` instruction. The reschedule one is the
+// board's own (`kernel_yield` executes `int 0x30`); the syscall is the ring-3
+// program's, and its gate is the only one a ring-3 caller may raise.
+const VECTOR_YIELD = 0x30;
+const VECTOR_SYSCALL = 0x80;
+const EXCEPTION_COUNT = 32;
+// Every vector the CPU can raise; the runtime has a stub for each.
+const VECTOR_COUNT = 256;
+
+// The selectors, which are byte offsets into the descriptor table plus the
+// privilege the *caller* is requesting in the low two bits. Ring 3's carry a 3
+// there, which is what makes a ring-3 `iretq` frame a ring-3 one.
+const KERNEL_CODE_SELECTOR = 0x08;
+const KERNEL_DATA_SELECTOR = 0x10;
+const USER_CODE_SELECTOR = 0x18 | 3;
+const USER_DATA_SELECTOR = 0x20 | 3;
+const TSS_SELECTOR = 0x28;
+
+// The descriptors themselves, as the 64-bit words they are.
+//
+// In long mode the base and the limit in each of these are ignored — the FFFF
+// and the zeros are there because the format has the fields, not because
+// anything reads them. What is read is the middle byte: 0x9A is executable and
+// readable, 0x92 is writable data, and 0xFA and 0xF2 are the same two with DPL
+// 3. Privilege is a property of the segment, which is why ring 3 needs its own
+// pair rather than a flag somewhere else.
+const DESCRIPTOR_KERNEL_CODE = 0x00AF9A000000FFFF;
+const DESCRIPTOR_KERNEL_DATA = 0x00AF92000000FFFF;
+const DESCRIPTOR_USER_CODE = 0x00AFFA000000FFFF;
+const DESCRIPTOR_USER_DATA = 0x00AFF2000000FFFF;
+
+// Builds the descriptor table the machine runs on, and the segment it names.
+//
+// The boot stub has a table of its own and always will — entering long mode
+// takes a `lgdt` and a far jump through a 64-bit code descriptor, both before
+// any compiled code exists. That one is the minimum needed to get here and says
+// nothing about policy. This one says what segments the machine has, which is a
+// decision, so it is the program's.
+fn install_descriptor_table() {
+    gdt_set_entry(GDT_BASE, 0, 0);
+    gdt_set_entry(GDT_BASE, 1, DESCRIPTOR_KERNEL_CODE);
+    gdt_set_entry(GDT_BASE, 2, DESCRIPTOR_KERNEL_DATA);
+    gdt_set_entry(GDT_BASE, 3, DESCRIPTOR_USER_CODE);
+    gdt_set_entry(GDT_BASE, 4, DESCRIPTOR_USER_DATA);
+
+    tss_prepare(TSS_BASE);
+    // Task 0's ring-0 stack, and it belongs in the table as well as in the
+    // segment. Task 0 pre-exists the table — it is the one already running when
+    // the first interrupt lands — so nothing ever published a stack for it, and
+    // a switch *back* to it used to leave `rsp0` pointing at whichever task ran
+    // last. The `user` command enters ring 3 from task 0, and an interrupt
+    // during that excursion would have landed its frame on another task's
+    // kernel stack.
+    let boot_stack = unsafe { symbol_address("__ring0_stack_top") };
+    task_set_field(TASK_TABLE_BASE, 0, TASK_STACK_OFFSET, boot_stack);
+    tss_set_kernel_stack(TSS_BASE, boot_stack);
+    // The limit is the segment's last valid byte, so one less than its size.
+    gdt_set_tss_entry(GDT_BASE, 5, TSS_BASE, TSS_SIZE - 1);
+
+    gdt_load(GDT_BASE, GDT_ENTRIES);
+    // The reload changes nothing today, and is here anyway: the two tables
+    // agree on 0x08 and 0x10, so the cached descriptors are already right. What
+    // it buys is that they stay right when this table stops matching the boot
+    // stub's — which is the entire reason for having a second one.
+    gdt_reload(KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR);
+    gdt_load_task_register(TSS_SELECTOR);
+}
+
+// The scheduler's hook into the segment above. Called from the board on every
+// task switch, because the board is where the scheduler still lives.
+#[export("lk_set_kernel_stack")]
+fn set_kernel_stack(top: Int) {
+    tss_set_kernel_stack(TSS_BASE, top);
+}
+
+
+
+// Builds the interrupt table and loads it.
+//
+// The first thing the program does, and it has to be: until this runs there is
+// no gate for any vector, and a fault with no gate is a triple fault — which on
+// this machine is a reset with nothing printed. Every line below this one is
+// covered; nothing above it is.
+// Points a vector at the runtime's generic entry, and says what it should call.
+//
+// The stride is measured rather than named, the same way the exception stubs'
+// is: the assembler's `.align` decides it, and a copy of that number on this
+// side would be a copy nothing checks.
+// Answers whether the vector was installed.
+//
+// Two tables are indexed by it — the IDT and `lkrt`'s handler table — and both
+// end at `VECTOR_COUNT`. The gate write refuses on its own (see
+// `drivers/idt.lk`), and the handler write is refused here for the same reason:
+// the vector for a device interrupt is `VECTOR_IRQ_BASE + line`, and the line is
+// a byte read out of PCI config space.
+fn install_device_handler(vector: Int, handler: Int) -> Bool {
+    let stubs = unsafe { symbol_address("lkrt_isr_stubs") };
+    let span = unsafe { symbol_address("lkrt_isr_stubs_end") } - stubs;
+    if ((span % VECTOR_COUNT) != 0) {
+        uart_text("bad isr stride\n");
+        halt();
+    }
+    if (vector < 0 || vector >= VECTOR_COUNT) {
+        return false;
+    }
+    let stride = ((span / VECTOR_COUNT) as Int);
+    if (!idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0)) {
+        return false;
+    }
+    let table = unsafe { symbol_address("lkrt_isr_handlers") };
+    unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
+    return true;
+}
+
+fn install_interrupt_table() {
+    idt_zero(IDT_BASE);
+
+    // The CPU's own exceptions, one stub each so the report can name the
+    // vector. The stubs are a `.rept` in the board's assembly, padded to a
+    // fixed stride — and the stride is *measured* here rather than named,
+    // because the assembler's `.align` is what decides it and a copy of that
+    // number on this side would be a copy nothing checks.
+    let stubs = unsafe { symbol_address("ISR_STUBS") };
+    let span = unsafe { symbol_address("ISR_STUBS_END") } - stubs;
+    // The stride is only derivable if the array really is 32 equal slots. It
+    // was not, once: the assembler padded the *front* of each stub and not the
+    // back, so the span was 505 and this division gave 15 — after which every
+    // gate but the first pointed into the middle of the stub before it. The
+    // check costs one modulo at boot and is the thing that would have said so.
+    if ((span % EXCEPTION_COUNT) != 0) {
+        uart_text("bad isr stride\n");
+        halt();
+    }
+    let stride = ((span / EXCEPTION_COUNT) as Int);
+    for vector in 0..EXCEPTION_COUNT {
+        idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    }
+
+    // The two vectors whose entry path is their own. The timer's has to return
+    // on a *different* stack, which is what a task switch is; the reschedule
+    // vector is the same path without the device work. Neither fits a shared
+    // tail, so both stay the board's.
+    idt_set_gate(IDT_BASE, VECTOR_TIMER,
+        unsafe { symbol_address("__task_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+    idt_set_gate(IDT_BASE, VECTOR_YIELD,
+        unsafe { symbol_address("__yield_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+
+    // The ordinary device interrupts, through the runtime's generic entry.
+    //
+    // One stub per vector because the CPU does not tell a handler which one
+    // arrived; a shared tail because after that they are identical. Installing
+    // a driver's interrupt is now two stores from here — a gate, and a handler
+    // address — rather than a hand-written trampoline in a file the driver has
+    // nothing to do with.
+    install_device_handler(VECTOR_KEYBOARD, unsafe { symbol_address("lk_key_isr") });
+    install_device_handler(VECTOR_MOUSE, unsafe { symbol_address("lk_mouse") });
+    // The chips' own two vectors, installed whether or not anything uses those
+    // lines — the point of a spurious interrupt is that it arrives on a line
+    // nothing is using.
+    install_device_handler(VECTOR_IRQ_BASE + IRQ_SPURIOUS_MASTER,
+        unsafe { symbol_address("lk_spurious_isr") });
+    install_device_handler(VECTOR_IRQ_BASE + IRQ_SPURIOUS_SLAVE,
+        unsafe { symbol_address("lk_spurious_isr") });
+    // The one gate with DPL 3, and the whole reason the others have DPL 0: a
+    // ring-3 task can raise this vector and no other. `int 0x21` from ring 3
+    // would otherwise be a way to fake a keystroke.
+    idt_set_gate(IDT_BASE, VECTOR_SYSCALL,
+        unsafe { symbol_address("__syscall_trampoline") }, KERNEL_CODE_SELECTOR, 3);
+
+    idt_install(IDT_BASE);
 }
 
 // Repaints a window's frame if the focus has moved since it last did.
@@ -1198,7 +3104,7 @@ fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
                 colour = TITLE_COLOUR;
             }
             drops = drops + window_put_within(base, WIDTH, left, top, limit_x, limit_y,
-                                              x + column, y + row, colour);
+                x + column, y + row, colour);
         }
     }
     if (drops > 0) {
@@ -1336,7 +3242,7 @@ fn paint_shell(base: Int, slot: Int) -> Int {
 #[export("lk_paint_spinner")]
 fn paint_spinner(base: Int, slot: Int) -> Int {
     window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
-                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+        window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
     draw_glyph_in_window(base, WINDOW_SPINNER, spinner_glyph(), 1, 1);
     repaint_frame(base, slot);
     return 0;
@@ -1345,7 +3251,7 @@ fn paint_spinner(base: Int, slot: Int) -> Int {
 #[export("lk_paint_clock")]
 fn paint_clock(base: Int, slot: Int) -> Int {
     window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
-                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+        window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
     draw_clock(base);
     repaint_frame(base, slot);
     return 0;
@@ -1375,8 +3281,8 @@ fn repaint_above(base: Int, slot: Int) {
     for index in 0..WINDOW_COUNT {
         let other = z_slot(index);
         if (above && other != WINDOW_SHELL
-            && overlaps(other, window_left(SHARED_WINDOWS, slot), window_top(SHARED_WINDOWS, slot),
-                        window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot))) {
+                && overlaps(other, window_left(SHARED_WINDOWS, slot), window_top(SHARED_WINDOWS, slot),
+                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot))) {
             repaint_window(base, other);
         }
         if (other == slot) {
@@ -1524,7 +3430,17 @@ fn schedule(current: Int) -> Int {
     // switch costs a stack's worth of pushes, and a slice this short would
     // spend more time switching than running.
     let slice = shared_bump(SHARED_SLICE);
-    if (slice % 8 != 0) {
+    // Stay on the current task for the rest of its slice — but only if it is
+    // still one that may run.
+    //
+    // The state check is not a nicety. This shortcut used to fire on seven ticks
+    // out of eight and hand back `current` without looking at it, which meant a
+    // task that had just marked itself blocked was resumed anyway: `task_sleep`
+    // set its deadline, yielded, and the yield came straight back. Every sleep
+    // returned immediately, the wake count was still right, and the only thing
+    // that gave it away was the elapsed time — ten sleeps of fifty ticks taking
+    // eighty ticks in total.
+    if (slice % 8 != 0 && task_state(TASK_TABLE_BASE, current) == TASK_READY) {
         return current;
     }
     // Round robin over the tasks that exist. The count comes from the shared
@@ -1535,7 +3451,40 @@ fn schedule(current: Int) -> Int {
     if (count <= 1) {
         return current;
     }
-    return (current + 1) % count;
+    // The next slot that is *ready*, not simply the next slot. Since a task can
+    // end, the range below the watermark has holes in it, and handing one to the
+    // switch would resume a stack that has been given back.
+    //
+    // Bounded by the range rather than by "until we find one": every slot may be
+    // dead but the one running, and a loop with no bound would be a scheduler
+    // that never returns from a timer interrupt.
+    // The next slot that is *ready*, not simply the next slot. Since a task can
+    // end and can wait, the range below the watermark has holes in it, and
+    // handing one to the switch would resume a stack that has been given back or
+    // a task that said it is waiting.
+    //
+    // Bounded by the range rather than by "until we find one": a loop with no
+    // bound would be a scheduler that never returns from a timer interrupt.
+    let idle = 0 - 1;
+    for step in 1..(count + 1) {
+        let candidate = (current + step) % count;
+        let state = task_state(TASK_TABLE_BASE, candidate);
+        if (state == TASK_READY) {
+            return candidate;
+        }
+        if (state == TASK_IDLE) {
+            idle = candidate;
+        }
+    }
+    // Nothing is runnable. The idle task is where that goes — and it is found
+    // here rather than remembered in a word because the rotation has just walked
+    // past it. Staying on `current` instead would be resuming a task the loop
+    // above has just decided is not runnable, which for a blocked task means it
+    // wakes early and for a dead one means it runs after it ended.
+    if (idle >= 0) {
+        return idle;
+    }
+    return current;
 }
 
 // The second task: a spinner in the top-right corner.
@@ -1557,7 +3506,7 @@ fn task_b() {
                 column = 0;
             } else {
                 draw_glyph_in_window(framebuffer_origin(), WINDOW_SPINNER,
-                                     glyph_index(typed), 1 + column * CELL_WIDTH, CELL_HEIGHT + 1);
+                    glyph_index(typed), 1 + column * CELL_WIDTH, CELL_HEIGHT + 1);
                 column = column + 1;
             }
             shared_write(SHARED_PANE_COL, column % 10);
@@ -1599,12 +3548,120 @@ fn task_b() {
 // The counter lives in the shared page because a handler's state has to
 // survive between invocations, and it is the only state this one keeps.
 #[export("lk_timer_isr")]
+fn isr_tick() {
+    on_tick();
+    pic_eoi_master();
+}
+
 fn on_tick() {
     bump_pair();
     let ticks = shared_bump(SHARED_TICKS);
     if (ticks % 500 == 0) {
         uart_putc(46); // '.'
     }
+}
+
+// The two vectors a PIC delivers when it has nothing to deliver.
+//
+// Not a defensive nicety: a spurious interrupt is a documented behaviour of the
+// chip, it arrives on a vector nothing here claims, and a vector with no gate
+// is a general protection fault raised from inside an interrupt — which is how
+// this kernel reported the first PCI interrupt probe that timed out. Masking a
+// line while its request is pending is enough to cause one, and a driver that
+// gives up waiting does exactly that.
+//
+// Two rules, and the second is the one that is easy to get wrong. A spurious
+// interrupt was never in service, so it must *not* be acknowledged — an EOI for
+// something not in service clears whatever is. But a spurious interrupt from
+// the slave still reached the CPU through the master's cascade line, which the
+// master does consider in service; so the master, and only the master, is told.
+#[export("lk_spurious_isr")]
+fn isr_spurious(vector: Int) {
+    let irq = vector - VECTOR_IRQ_BASE;
+    if (pic_in_service(irq)) {
+        // A real interrupt, on a line this kernel has no driver for. Nothing to
+        // do but acknowledge it, or the chip holds the line in service and
+        // everything below it in priority goes quiet.
+        pic_eoi(irq);
+        return;
+    }
+    if (irq >= 8) {
+        pic_eoi_master();
+    }
+}
+
+// The network card's interrupt handler.
+//
+// Three obligations, and this card makes the first one a trap: `ICR` clears on
+// read, so the read *is* the acknowledgement and asking twice gets the answer
+// once. A handler that reads it into a variable and then reads it again to check
+// another bit has already thrown that bit away.
+//
+// It does not touch the rings. A handler's job is to say that something happened
+// — taking the frame out is work, and work belongs to whoever was waiting, on
+// its own stack, with interrupts on. What this does is wake them.
+#[export("lk_net_isr")]
+fn isr_net(vector: Int) {
+    let mmio = shared_read(SHARED_NET_MMIO);
+    if (mmio != 0) {
+        let cause = e1000_interrupt_cause(mmio);
+        if (cause != 0) {
+            // Out of the register's width and into a shared word, which is
+            // where the driver's types stop and the kernel's `Int` begins.
+            shared_write(SHARED_NET_CAUSE, cause as Int);
+            shared_bump(SHARED_NET_IRQS);
+            task_wake_channel(TASK_TABLE_BASE,
+                task_word(TASK_TABLE_BASE + TASK_USED_OFFSET),
+                NET_WAIT_CHANNEL);
+        }
+    }
+    pic_eoi(vector - VECTOR_IRQ_BASE);
+}
+
+// The PCI device's interrupt handler.
+//
+// The last of the four things a PCI device does, and the only one that runs
+// with the program suspended somewhere it did not choose. Three obligations,
+// and dropping any of them looks like different broken hardware:
+//
+//   * ask the device *what* it raised, before clearing anything
+//   * clear it at the device, which is what makes it stop asserting its line —
+//     an interrupt acknowledged only at the PIC re-arrives immediately, for ever
+//   * acknowledge the PIC, by line number, which for a line above 7 means both
+//     chips
+//
+// It takes its vector, which the runtime's shared entry passes: one handler can
+// serve several gates, and the line to acknowledge is derivable from the vector
+// rather than being a second thing to keep in step. It allocates nothing, for
+// the same reason the keyboard's does not — an interrupt lands between any two
+// instructions, including instructions inside the allocator.
+#[export("lk_edu_isr")]
+fn isr_edu(vector: Int) {
+    let mmio = shared_read(SHARED_EDU_MMIO);
+    if (mmio != 0) {
+        let raised = edu_irq_status(mmio);
+        edu_acknowledge(mmio, raised);
+        // Recorded after the acknowledgement, so a shell that sees this word
+        // set knows the device has already been quietened. `| 1` because the
+        // device may legitimately raise a value of zero bits and the shell
+        // needs to tell "arrived" from "not yet".
+        // Out of the register's width and into a shared word: the driver's
+        // types stop where the kernel's `Int` begins.
+        shared_write(SHARED_EDU_SEEN, raised | 1);
+        // And whoever asked. This is what a blocked wait is for: the driver said
+        // which channel it was listening on, and the device's own handler is the
+        // thing that knows the answer has arrived. Waking from here rather than
+        // letting the waiter poll is the difference between a machine that is
+        // halted for the wait and one that is turning over.
+        //
+        // Safe from an interrupt because it is writes to a table of volatile
+        // words and interrupts are already masked; it allocates nothing, which
+        // is the rule every handler here keeps.
+        task_wake_channel(TASK_TABLE_BASE,
+            task_word(TASK_TABLE_BASE + TASK_USED_OFFSET),
+            EDU_WAIT_CHANNEL);
+    }
+    pic_eoi(vector - VECTOR_IRQ_BASE);
 }
 
 // The keyboard interrupt handler.
@@ -1615,12 +3672,39 @@ fn on_tick() {
 // instructions of the interrupted program, including instructions inside the
 // runtime's allocator.
 #[export("lk_key_isr")]
+fn isr_key() {
+    on_key();
+    pic_eoi_master();
+}
+
 fn on_key() {
     let scancode = read_scancode();
+    let code = key_code(scancode);
+    // Shift is a *state*, so both edges matter: the release is what ends it.
+    // Every other key ignores releases, which is why they are dropped below
+    // rather than here.
+    if (is_shift(code)) {
+        if (is_release(scancode)) {
+            shared_write(SHARED_SHIFT, 0);
+        } else {
+            shared_write(SHARED_SHIFT, 1);
+        }
+        return;
+    }
     if (is_release(scancode)) {
         return;
     }
-    let code = key_code(scancode);
+    // Caps lock toggles on press and does nothing on release — the lock is the
+    // key's whole purpose, and a keyboard that unlocked when you let go would
+    // be a shift key.
+    if (is_caps_lock(code)) {
+        if (shared_read(SHARED_CAPS) == 0) {
+            shared_write(SHARED_CAPS, 1);
+        } else {
+            shared_write(SHARED_CAPS, 0);
+        }
+        return;
+    }
     if (code >= SCANCODE_ASCII.len()) {
         return;
     }
@@ -1632,6 +3716,7 @@ fn on_key() {
     if (ascii == 0) {
         return;
     }
+    let ascii = shifted(ascii, shared_read(SHARED_SHIFT) == 1, shared_read(SHARED_CAPS) == 1);
     shared_bump(SHARED_KEY_COUNT);
     shared_write(SHARED_LAST_KEY, ascii);
     uart_putc(ascii);
@@ -1655,25 +3740,76 @@ fn on_key() {
 }
 
 uart_init();
-// ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
-// this decides is how often it fires.
+// Before anything that can fault, and before anything that can be interrupted.
+install_interrupt_table();
+// And immediately, on a probe build, something that faults.
+fault_probe();
+// Then the segments. After the table rather than before it because a fault in
+// here should be reportable, and the boot stub's descriptors are enough to run
+// on until this replaces them.
+// The task table first: the descriptor table's setup publishes task 0's own
+// ring-0 stack into it, and before interrupts are enabled either way — the
+// timer handler reads the table, and a table of zeros names task 0 forever,
+// which looks like a working machine with one task rather than an
+// uninitialised table.
+// The fixed-address chain has to stop below the staging area.
+//
+// Everything from `SHARED_BASE` up is a chain of sums — shared words, then the
+// IDT, the GDT, the TSS, the task table — and the next thing at a fixed address
+// is `SOURCE_BASE`, half a megabyte higher, where a file read off the disk
+// lands. Nothing related the two. Adding a shared word or raising
+// `TASK_CAPACITY` would walk the far end of the chain into that buffer, and the
+// symptom would be a program that loads wrong rather than a machine that stops.
+//
+// The linker script makes the same kind of statement about the image, and can:
+// its numbers are link-time. These are computed here, so this is where the
+// check has to be. It is the first line before anything writes at the far end.
+//
+// Halting rather than degrading, unlike the heap above. A heap that reports
+// "nothing fits" is a machine with no heap; a task table on top of the staging
+// area is a machine that corrupts what it reads and says nothing.
+let fixed_end = TASK_TABLE_BASE + task_table_size(TASK_CAPACITY);
+if (fixed_end > SOURCE_BASE) {
+    uart_text("layout: fixed-address chain ends at ");
+    uart_put_hex(fixed_end);
+    uart_text(", past the staging area at ");
+    uart_put_hex(SOURCE_BASE);
+    uart_text("\n");
+    halt();
+}
+task_table_init(TASK_TABLE_BASE, TASK_CAPACITY);
+install_descriptor_table();
+// Then the chip that raises them, and the flag that lets them through. In that
+// order: an interrupt taken before the table was loaded goes wherever the
+// previous table said, and there is no previous table.
+pic_remap(VECTOR_TIMER);
+// The timer, the keyboard, and the cascade — a zero bit is a line allowed to
+// raise something. The cascade (line 2) is not a device: it is how the slave
+// chip reaches the CPU at all, so the mouse's IRQ12 is invisible without it.
+// Every other line stays masked, because an unmasked line with no gate is a
+// fault raised from inside an interrupt.
+pic_mask(0xf8, 0xef);
+// `cpu_irq_restore(1)` is `sti`, and the shape is right rather than merely
+// convenient: this says "put the machine in the state where interrupts are
+// enabled". There is no nesting to get wrong here — they have never been on.
+unsafe { cpu_irq_restore(1); };
+// ~1 kHz. IRQ0 is unmasked and interrupts are on; what this decides is how
+// often it fires.
 pit_start(1193);
 
-let slot = pci_find_display();
-if (slot < 0) {
+let display = pci_find_display();
+if (display < 0) {
     // No display on bus 0. Say so on the line that does exist and stop, rather
     // than programming a configuration address made of the `-1` sentinel and
     // drawing into whatever it names.
-    // "no display"
-    uart_write([110, 111, 32, 100, 105, 115, 112, 108, 97, 121, 10]);
+    uart_text("no display\n");
     halt();
 }
 
 // Let the device answer to memory cycles at all. The firmware usually has
 // already, but a driver that depends on that is a driver that works on one
 // machine.
-let command = pci_read(slot, PCI_REG_COMMAND);
-pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+pci_command_set(display, PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
 // Find the framebuffer once and remember it: everything that draws reads this
 // word, and an interrupt handler cannot walk a bus.
@@ -1689,24 +3825,36 @@ clear(framebuffer, WIDTH, HEIGHT, BACKGROUND);
 // run time would be work the program already knows the answer to.
 //   "LK ON BARE METAL"
 draw_cells(framebuffer, WIDTH, FONT,
-           [12, 11, 0, 15, 14, 0, 2, 1, 18, 5, 0, 13, 5, 20, 1, 12],
-           1, 1, TITLE_COLOUR, BACKGROUND);
+    [12, 11, 0, 15, 14, 0, 2, 1, 18, 5, 0, 13, 5, 20, 1, 12],
+    1, 1, TITLE_COLOUR, BACKGROUND);
 //   "TYPE HELP" then the prompt on the next line
 draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 0, 8, 5, 12, 16], 1, 3, FOREGROUND, BACKGROUND);
 draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
 
-// Hand the page allocator the biggest usable range the loader reported. The
-// image, its stack and its page tables all sit below 2 MiB, so the range is
-// trimmed to start there rather than on top of them.
-let ram_base = largest_available_base();
-let ram_length = largest_available_length();
-let usable_base = ram_base;
-// Above the interpreter's heap, which `src/main.rs` places at 4 MiB and sizes
-// at 28 MiB. Two allocators on one machine agree by arrangement or not at all.
-if (usable_base < 0x02000000) {
-    usable_base = 0x02000000;
+// Hand the page allocator the biggest usable range it can actually reach.
+//
+// Two bounds, and the second is the one that was missing. The floor is
+// `__page_arena_base`, where `link.ld` puts this arena so it starts exactly
+// where the run heap ends — two allocators on one machine agree by arrangement
+// or not at all. The *ceiling* is what `boot.rs` identity-maps: four gigabytes,
+// with 2 MiB pages, four rather than one because a PCI framebuffer sits near the
+// top of the 32-bit range. An address above that is not mapped, and a page
+// allocator handing one out is a fault the moment anything writes to it.
+//
+// So the range is chosen *after* clipping rather than before. The loader reports
+// several available ranges, and on a machine with more than four gigabytes the
+// largest of them is the one above them — picking that and then trimming leaves
+// nothing, and picking it untrimmed faulted on the first page the heap took.
+// `qemu -m 8G` did exactly that; `-m 3G` was fine, which is why nothing noticed.
+let arena_floor: Int = unsafe { symbol_address("__page_arena_base") };
+let usable_base = reachable_base(arena_floor);
+let usable_length = reachable_length(arena_floor);
+if (usable_length == 0) {
+    // Every range the loader reported lies outside what this kernel can reach.
+    // Saying so beats handing out addresses that fault.
+    uart_text("pages: no usable memory below the identity map\n");
 }
-pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
+pages_init(SHARED_PAGES, usable_base, usable_length);
 
 // The kernel heap: sixteen pages taken from the page allocator, once, at
 // startup. Taken rather than declared at a fixed address, because an address
@@ -1731,8 +3879,7 @@ if (heap_pages_ok) {
     // An empty arena: every heap call then reports "nothing fits" instead of
     // writing somewhere it was never given.
     heap_init(SHARED_HEAP, 0, 0);
-    // "no heap"
-    uart_write([110, 111, 32, 104, 101, 97, 112, 10]);
+    uart_text("no heap\n");
 }
 
 // Two windows: the shell owns everything but the corner cell the spinner has.
@@ -1745,11 +3892,11 @@ window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
 // Two pixels wider and taller than its content, so the one-pixel frame it
 // draws for itself does not eat into a glyph.
 window_define(SHARED_WINDOWS, WINDOW_SPINNER,
-              (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH + 2, 2 * CELL_HEIGHT + 2);
+    (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH + 2, 2 * CELL_HEIGHT + 2);
 // A third window, further down the right-hand side: 8 cells for a number and
 // its unit.
 window_define(SHARED_WINDOWS, WINDOW_CLOCK,
-              (text_columns() - 11) * CELL_WIDTH, 3 * CELL_HEIGHT, 8 * CELL_WIDTH + 2, CELL_HEIGHT + 2);
+    (text_columns() - 11) * CELL_WIDTH, 3 * CELL_HEIGHT, 8 * CELL_WIDTH + 2, CELL_HEIGHT + 2);
 // Bottom of the stack to the top: the shell is the desktop, and the two panes
 // sit on it in the order they were defined until a click says otherwise.
 // Each window says what draws it, once, here.
@@ -1770,17 +3917,44 @@ shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 // the table from a timer interrupt, and a slot published before its stack is
 // ready is a jump to zero.
 let irq_spawn = lock();
+// The idle task first, so there is somewhere to go before anything can block.
+//
+// It is an ordinary task in an ordinary slot; what makes it the idle one is its
+// state, which is set after `spawn_task` has published it ready. The rotation
+// skips that state and falls back to it, so it costs nothing while anything else
+// is runnable.
+let idle_task = spawn_task(unsafe { symbol_address("lk_task_idle") });
+if (idle_task >= 0) {
+    task_set_state(TASK_TABLE_BASE, idle_task, TASK_IDLE);
+}
 let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
+shared_write(SHARED_BUSY_SLOTS, spinner_task);
 let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
-// Derived from the last slot handed out, not written as a number: a literal
-// here is a second place that has to be edited whenever a task is added, and
-// the failure when it is not — a scheduler naming a slot that was never
-// spawned — is a jump to zero.
-shared_write(SHARED_TASK_COUNT, clock_task + 1);
+// And one that runs in ring 3. It never yields; the timer is what takes the
+// CPU back, which is the whole difference from the one-shot `user` command.
+// The space is built here and handed over, rather than asked of the board:
+// what an address space *contains* is a decision, and the board's share of it
+// is the four page directories it filled in before long mode. How many spaces
+// there can be is now "how many pages are left", which is a bound with a
+// reason, unlike the four the linker script used to reserve.
+let user_space = build_user_space(unsafe { symbol_address("__user_task_stack_a") });
+let user_task = spawn_user_task(unsafe { symbol_address("__user_task_a") },
+    USER_STACK_RESUME, user_space);
+shared_write(SHARED_BUSY_SLOTS + WORD, user_task);
+// A second one, with a stack at the *same* virtual address in a space of its
+// own: if they shared a space, one would overwrite the other's memory.
+let user_space_b = build_user_space(unsafe { symbol_address("__user_task_stack_b") });
+let user_task_b = spawn_user_task(unsafe { symbol_address("__user_task_b") },
+    USER_STACK_RESUME, user_space_b);
+shared_write(SHARED_BUSY_SLOTS + 2 * WORD, user_task_b);
+// The count is no longer written here: `publish_task` writes it as the last
+// step of every spawn, which is the only moment at which it is true. Writing it
+// afterwards from the last slot handed out was correct and was also a second
+// place to edit whenever a task was added — and the failure when it was not is
+// a scheduler naming a slot that was never spawned.
 unlock(irq_spawn);
-if (spinner_task < 0 || clock_task < 0) {
-    // "no tasks"
-    uart_write([110, 111, 32, 116, 97, 115, 107, 115, 10]);
+if (spinner_task < 0 || clock_task < 0 || user_task < 0 || user_task_b < 0) {
+    uart_text("no tasks\n");
 }
 
 // The mouse, if there is one. A machine without it is a report rather than a
@@ -1796,8 +3970,7 @@ grid_clear();
 // They have to agree; if they ever stop, every line wraps one cell early and
 // the repaint puts characters in the wrong place.
 if (GRID_COLUMNS != text_columns() || GRID_ROWS != text_rows()) {
-    // "grid mismatch"
-    uart_write([103, 114, 105, 100, 32, 109, 105, 115, 109, 97, 116, 99, 104, 10]);
+    uart_text("grid mismatch\n");
     halt();
 }
 // Masked for the whole sequence. Every mouse command answers with an ACK, and
@@ -1809,8 +3982,7 @@ let irq_mouse = lock();
 let mouse_present = mouse_init();
 unlock(irq_mouse);
 if (mouse_present == 0) {
-    // "no mouse"
-    uart_write([110, 111, 32, 109, 111, 117, 115, 101, 10]);
+    uart_text("no mouse\n");
 }
 
 // The cursor starts after the prompt.
@@ -1826,7 +3998,7 @@ place_cursor(framebuffer, 3, 5);
 // is the same claim checked at run time, on the machine, after the boot path
 // has enabled SSE in CR0/CR4.
 // "half " then the answer
-uart_write([104, 97, 108, 102, 32]);
+uart_text("half ");
 uart_put_int(((88 / 2.0) as Int));
 uart_putc(10);
 
@@ -1844,17 +4016,22 @@ let title = get_pixel(framebuffer, WIDTH, 6, 8);
 // `cpu_irq_save` returns the previous state rather than a flag, so nesting one
 // of these inside another does not enable interrupts early on the way out.
 let irq = unsafe { cpu_irq_save() };
-// "display at pci slot "
-uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32,
-            115, 108, 111, 116, 32]);
-uart_put_int(slot);
+// "display at pci " then the device's own address on the bus.
+//
+// The address, not a slot number: enumeration now walks functions as well as
+// devices, so what identifies a device is the (bus, device, function) triple
+// the whole stack calls a BDF. Printing it in the form `pci` lists — SS.F —
+// rather than as the packed integer, because the two lines are about the same
+// device and a reader should not have to divide by 0x800 to see that.
+uart_text("display at pci ");
+uart_put_int(pci_bdf_device(display));
+uart_putc(46); // '.'
+uart_put_int(pci_bdf_function(display));
 uart_putc(10);
-// "framebuffer 0x"
-uart_write([102, 114, 97, 109, 101, 98, 117, 102, 102, 101, 114, 32, 48, 120]);
+uart_text("framebuffer 0x");
 uart_put_hex(framebuffer);
 uart_putc(10);
-// "pixels "
-uart_write([112, 105, 120, 101, 108, 115, 32]);
+uart_text("pixels ");
 uart_put_hex(empty);
 uart_putc(32);
 uart_put_hex(title);
@@ -1894,8 +4071,8 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
     // deciding that a click *means* "focus this window" is a policy — the same
     // reason the key handler routes bytes but does not run commands.
     if (shared_read(SHARED_MOUSE_X) != shared_read(SHARED_CURSOR_X)
-        || shared_read(SHARED_MOUSE_Y) != shared_read(SHARED_CURSOR_Y)
-        || shared_read(SHARED_CURSOR_DRAWN) == 0) {
+            || shared_read(SHARED_MOUSE_Y) != shared_read(SHARED_CURSOR_Y)
+            || shared_read(SHARED_CURSOR_DRAWN) == 0) {
         let irq_cursor = lock();
         move_cursor(framebuffer_origin());
         unlock(irq_cursor);
@@ -1923,7 +4100,7 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
             // excluded: it is the whole screen, so "moving" it would mean
             // moving everything, and there is nowhere for it to go.
             if (hit > WINDOW_SHELL
-                && pointer_y < window_top(SHARED_WINDOWS, hit) + TITLE_HEIGHT) {
+                    && pointer_y < window_top(SHARED_WINDOWS, hit) + TITLE_HEIGHT) {
                 shared_write(SHARED_DRAG_SLOT, hit);
                 shared_write(SHARED_DRAG_DX, pointer_x - window_left(SHARED_WINDOWS, hit));
                 shared_write(SHARED_DRAG_DY, pointer_y - window_top(SHARED_WINDOWS, hit));
@@ -1988,11 +4165,26 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
     unlock(irq_in);
 
     if (shared_read(SHARED_LINE_READY) == 1) {
-        // Mask around the whole exchange: the handler shares the cursor and
-        // the line buffer, and a keystroke arriving mid-command would splice
-        // its echo into the output and its byte into the next line.
-        let irq = unsafe { cpu_irq_save() };
+        // With interrupts *on*, which is the only way a command that waits for
+        // anything can work.
+        //
+        // This used to mask around the whole exchange, on the grounds that the
+        // key handler shares the cursor and the line buffer. It shares neither:
+        // the handler only queues bytes, and both the cursor and the buffer are
+        // written by this task. What the mask really protected was the console
+        // against the two drawing *tasks* — which is a lock's job, and `emit`
+        // now takes one for the line it prints.
+        //
+        // The cost of the old shape was not a race. It was that masking
+        // interrupts stops the timer, and stopping the timer stops the
+        // scheduler, so every command that waited for a device, a task or a
+        // deadline had to know to turn them back on. Four of them did not, and
+        // every one of those still printed the right answer.
+        //
+        // A keystroke arriving mid-command now stays in the queue and is read
+        // as the next line, which is what type-ahead is.
         running = run_command(framebuffer_origin());
+        let irq = lock();
         shared_write(SHARED_LINE_LEN, 0);
         shared_write(SHARED_LINE_READY, 0);
         if (running == 1) {
@@ -2000,23 +4192,25 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
             uart_putc(62);
             put_char(framebuffer_origin(), 62);
         }
-        unsafe { cpu_irq_restore(irq); };
+        unlock(irq);
     }
 }
 
 let keys = shared_read(SHARED_KEY_COUNT);
 let last = shared_read(SHARED_LAST_KEY);
 
-// Masked and deliberately not restored: what runs after this is the runtime's
-// epilogue echoing the script's value, which no LK code is in a position to
-// protect.
+// Both halves, and in this order. Masking the flag stops the CPU taking
+// anything; masking the chip stops it raising anything, which is what keeps a
+// pending tick from being delivered the moment something else enables the flag.
+// Deliberately not restored: what runs after this is the runtime's epilogue
+// echoing the script's value, which no LK code is in a position to protect —
+// and a tick landing mid-line would splice a '.' into it.
 unsafe { cpu_irq_save(); };
+pic_mask(0xff, 0xff);
 uart_putc(10);
-// "keys "
-uart_write([107, 101, 121, 115, 32]);
+uart_text("keys ");
 uart_put_int(keys);
-// " last "
-uart_write([32, 108, 97, 115, 116, 32]);
+uart_text(" last ");
 uart_put_int(last);
 uart_putc(10);
 

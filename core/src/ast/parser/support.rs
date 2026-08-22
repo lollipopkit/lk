@@ -7,6 +7,8 @@ use crate::{
     expr::Expr,
     stmt::{Stmt, StmtParser},
     token::{ParseError, Span, Token},
+    type_syntax::StopAt,
+    val::Type,
 };
 
 /// What a `{ … }` block's final expression means.
@@ -30,6 +32,7 @@ impl<'a> Parser<'a> {
             prefix_mode: false,
             desugar_counter: 0,
             depth: 0,
+            left: 0,
         }
     }
 
@@ -44,6 +47,7 @@ impl<'a> Parser<'a> {
             prefix_mode: false,
             desugar_counter: 0,
             depth: 0,
+            left: 0,
         }
     }
 
@@ -109,21 +113,36 @@ impl<'a> Parser<'a> {
         }
 
         let body = self.parse_expr()?;
+        let param_types = vec![None; params.len()];
         Ok(Expr::Closure {
             params,
+            param_types,
+            return_type: None,
             body: Box::new(body),
         })
     }
 
     /// Parse closure expression: `|param1, param2| expr`.
+    ///
+    /// Each parameter may carry a type, and the whole closure a return type:
+    /// `|x: Int, y: Int| -> Int { … }`. Both are optional and independent — a
+    /// lambda was the one callable in the language whose types could not be
+    /// written down at all, so its parameter types could only be guessed from a
+    /// call site.
+    ///
+    /// A union cannot be written directly in a parameter, because `|` there
+    /// closes the list; it goes through a `type` alias (see
+    /// [`crate::type_syntax`]).
     pub(super) fn parse_closure(&mut self) -> Result<Expr> {
         self.pos += 1;
         let mut params = Vec::new();
+        let mut param_types: Vec<Option<Type>> = Vec::new();
 
         if !self.eof() && self.tokens[self.pos] != Token::Pipe {
             if let Token::Id(param_name) = &self.tokens[self.pos] {
                 params.push(param_name.clone());
                 self.pos += 1;
+                param_types.push(self.parse_closure_param_type()?);
             } else {
                 return Err(anyhow!(
                     self.err("Expected parameter name or '|' after opening '|' in closure")
@@ -135,6 +154,7 @@ impl<'a> Parser<'a> {
                 if let Token::Id(param_name) = &self.tokens[self.pos] {
                     params.push(param_name.clone());
                     self.pos += 1;
+                    param_types.push(self.parse_closure_param_type()?);
                 } else {
                     return Err(anyhow!(self.err("Expected parameter name after comma in closure")));
                 }
@@ -145,6 +165,20 @@ impl<'a> Parser<'a> {
             return Err(anyhow!(self.err("Expected '|' to close parameter list in closure")));
         }
         self.pos += 1;
+
+        // `-> T` before the body. The body is what follows either way, so this
+        // is the only place the arrow can appear.
+        let return_type = if !self.eof() && self.tokens[self.pos] == Token::FnArrow {
+            self.pos += 1;
+            let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureReturn)
+            else {
+                return Err(anyhow!(self.err("Expected a return type after '->' in closure")));
+            };
+            self.pos = end;
+            Some(Box::new(ty))
+        } else {
+            None
+        };
 
         if self.eof() || !self.is_valid_expr_start() {
             return Err(anyhow!(self.err("Expected expression after closure parameters")));
@@ -157,8 +191,23 @@ impl<'a> Parser<'a> {
         };
         Ok(Expr::Closure {
             params,
+            param_types,
+            return_type,
             body: Box::new(body),
         })
+    }
+
+    /// The `: T` after a closure parameter name, when written.
+    fn parse_closure_param_type(&mut self) -> Result<Option<Type>> {
+        if self.eof() || self.tokens[self.pos] != Token::Colon {
+            return Ok(None);
+        }
+        self.pos += 1;
+        let Some((ty, end)) = crate::type_syntax::parse_type_at(self.tokens, self.pos, StopAt::ClosureParam) else {
+            return Err(anyhow!(self.err("Expected a type after ':' in closure parameter")));
+        };
+        self.pos = end;
+        Ok(Some(ty))
     }
 
     pub(super) fn parse_closure_block_expr(&mut self) -> Result<Expr> {
@@ -233,12 +282,15 @@ impl<'a> Parser<'a> {
         if !matches!(inner.last(), Some(Token::Semicolon)) {
             inner.push(Token::Semicolon);
         }
+        // Continues this parser's nesting budget: a block body is still
+        // nesting even though the statement parser gets its own counter.
         let mut stmt_parser = StmtParser::new(&inner);
+        stmt_parser.depth = self.depth;
         let program = stmt_parser.parse_program()?;
         let mut statements = program.statements;
         if tail == BlockTail::Return
             && let Some(last) = statements.last_mut()
-            && let Stmt::Expr(expr) = last.as_ref()
+            && let Stmt::Expr { value: expr, .. } = last.as_ref()
         {
             let value = expr.clone();
             **last = Stmt::Return { value: Some(value) };
@@ -321,7 +373,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn err(&self, msg: &str) -> String {
         let ctx = if let Some(token) = self.tokens.get(self.pos) {
-            format!("found {:?}", token)
+            format!("found `{}`", crate::token::token_lexeme(token))
         } else {
             "found end of input".to_string()
         };
@@ -430,6 +482,83 @@ impl<'a> Parser<'a> {
     }
 
     /// Check if the current token can start a valid expression.
+    /// Can an expression begin at the current token?
+    ///
+    /// This is the *predicate* form of the grammar `parse_primary` and
+    /// `parse_unary` implement, used wherever an expression is optional — a
+    /// range with no end, a trailing list element, a closure body. It has to
+    /// list every form those two accept, and it is checked by hand, so it
+    /// drifts: `Unsafe` and `Match` were missing, which is why
+    /// `|x| match x { … }` was a syntax error while `let a = match x { … };`
+    /// parsed fine. Adding a primary form means adding it here too.
+    /// Whether the `{` at the cursor opens a **block**, not a map literal.
+    ///
+    /// `{` is the one token that starts two different things, and the parser
+    /// used to commit to "map" — so `Expr::Block`, which every `if` arm and
+    /// every function body is, could not be *written* where a value was
+    /// expected: `let x = { let a = 1; a + 1 };` was "Invalid map key start:
+    /// Let". A macro whose template needs a temporary has no other spelling,
+    /// which is where this surfaced.
+    ///
+    /// Two rules, in order:
+    ///
+    /// 1. A statement keyword right after the brace is a block. Every keyword
+    ///    in that list is statement-*only* — none of them can start an
+    ///    expression, so none can be a map key, and there is nothing to
+    ///    disambiguate against. The rule comes first because a `let`'s own type
+    ///    annotation puts a colon at depth 0 (`{ let a: Int = 1; a }`), which
+    ///    rule 2 would read as a map key.
+    /// 2. Otherwise: whichever of `:` / `;` / `}` appears first at depth 0. A
+    ///    map *must* have `key: value`, and cannot contain a `;` at all, so a
+    ///    `;` or a closing brace first means block. `{ }` is decided before
+    ///    either rule — it is the empty map, as it always was.
+    pub(super) fn brace_opens_a_block(&self) -> bool {
+        let statement_keyword = |token: &Token| {
+            matches!(
+                token,
+                Token::Let
+                    | Token::Const
+                    | Token::Return
+                    | Token::While
+                    | Token::For
+                    | Token::Break
+                    | Token::Continue
+                    | Token::Use
+                    | Token::Struct
+                    | Token::Trait
+                    | Token::Impl
+                    | Token::Go
+            )
+        };
+        let first = self.pos + 1;
+        // `{}` is the empty map, as it always was — and it has to be decided
+        // here, because rule 2 sees the closing brace first and would call it a
+        // block (whose value is nil).
+        if self.tokens.get(first) == Some(&Token::RBrace) {
+            return false;
+        }
+        if self.tokens.get(first).is_some_and(statement_keyword) {
+            return true;
+        }
+        let (mut paren, mut bracket, mut brace) = (0usize, 0usize, 0usize);
+        for token in &self.tokens[first..] {
+            match token {
+                Token::LParen => paren += 1,
+                Token::RParen => paren = paren.saturating_sub(1),
+                Token::LBracket => bracket += 1,
+                Token::RBracket => bracket = bracket.saturating_sub(1),
+                Token::LBrace => brace += 1,
+                Token::RBrace if brace > 0 => brace -= 1,
+                _ if paren + bracket + brace > 0 => {}
+                Token::Colon => return false,
+                Token::Semicolon | Token::RBrace => return true,
+                _ => {}
+            }
+        }
+        // Unterminated: let the map parser report it, as it did before.
+        false
+    }
+
     pub(super) fn is_valid_expr_start(&self) -> bool {
         if self.eof() {
             return false;
@@ -440,17 +569,34 @@ impl<'a> Parser<'a> {
             Token::Nil
                 | Token::Bool(_)
                 | Token::Int(_)
+                | Token::UInt { .. }
                 | Token::Float(_)
                 | Token::Str(_)
+                // A template string is a string. Leaving it out made `|x|
+                // "n=${x}"` a syntax error while `|x| "n"` parsed — the
+                // interpolation, not the closure, was what the parser objected
+                // to, and it is the more common of the two by far.
+                | Token::TemplateString(_)
                 | Token::Id(_)
                 | Token::LBracket
                 | Token::LBrace
                 | Token::LParen
                 | Token::Not
+                | Token::Sub
                 | Token::BitNot
                 | Token::Select
                 | Token::Pipe
                 | Token::Fn
+                | Token::Match
+                | Token::If
+                // `try` is an expression like the two above it — that is what
+                // the 2026-07 decision made it — and this list is what decides
+                // whether one may start a *container element*. Missing here, it
+                // was an expression everywhere else and a syntax error inside
+                // `[…]` and `{k: …}`, which is precisely where a fallible value
+                // gets collected.
+                | Token::Try
+                | Token::Unsafe
         )
     }
 

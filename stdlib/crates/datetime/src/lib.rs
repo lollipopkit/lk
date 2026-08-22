@@ -30,12 +30,22 @@ impl DateTimeModule {
         Ok(runtime_string_value(&formatted, runtime.heap_mut()))
     }
 
+    /// The inverse of [`format`] — **whatever `format` can produce**.
+    ///
+    /// It used to try only `NaiveDateTime`, which requires a date *and* a time,
+    /// so the pair could not round-trip: `format(t, "%Y-%m-%d")` gives
+    /// `1970-01-02` and parsing that back with the same format string answered
+    /// "input is not enough for unique date and time". A format string is the
+    /// caller's description of the text on both sides; the two directions have
+    /// to agree about what it describes.
+    ///
+    /// Date-only text is midnight UTC; time-only text is that time on the epoch
+    /// day — the same defaults `format` drops when it omits the other half.
     #[stdlib_export(name = "parse", params(value: String, format: String), returns = Int)]
     fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let datetime = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "parse")?;
         let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "parse")?;
-        let naive = chrono::NaiveDateTime::parse_from_str(datetime.as_ref(), format.as_ref())
-            .map_err(|err| anyhow!("failed to parse datetime: {err}"))?;
+        let naive = parse_naive(datetime.as_ref(), format.as_ref())?;
         let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc);
         Ok(RuntimeVal::Int(dt.timestamp()))
     }
@@ -105,4 +115,30 @@ fn timestamp_arg(value: &RuntimeVal, name: &str) -> Result<i64> {
 
 fn utc_datetime(timestamp: i64) -> Result<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).ok_or_else(|| anyhow!("invalid timestamp"))
+}
+
+/// `value` read against `format`, accepting the three shapes `format` can
+/// write: a full datetime, a date alone, or a time alone.
+///
+/// Tried in that order. The error names the format rather than repeating
+/// chrono's phrasing, which described its own parser's internal requirement
+/// ("input is not enough for unique date and time") — a sentence about a
+/// library the program never mentioned.
+fn parse_naive(value: &str, format: &str) -> Result<chrono::NaiveDateTime> {
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, format) {
+        return Ok(naive);
+    }
+    // A date with no time is midnight, which is what `format` dropped.
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, format) {
+        return Ok(date.and_time(chrono::NaiveTime::MIN));
+    }
+    // A time with no date is that time on the epoch day, the other half of the
+    // same rule.
+    if let Ok(time) = chrono::NaiveTime::parse_from_str(value, format) {
+        let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+            .ok_or_else(|| anyhow!("invalid timestamp"))?
+            .date_naive();
+        return Ok(epoch.and_time(time));
+    }
+    Err(anyhow!("`{value}` does not match the format `{format}`"))
 }

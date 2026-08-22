@@ -161,6 +161,239 @@ port_access! {
     port_in_u32, port_out_u32, u32, "eax";
 }
 
+/// The system-control instructions: descriptor tables, CR2/CR3, the TLB.
+///
+/// Gated exactly like port I/O, and for the same reason stated at the top of
+/// this file: the bare-metal x86 kernel *hosts this interpreter*, and a program
+/// it loads off a disk reaches the same builtins the compiled kernel does.
+/// Answering "unsupported" on the one architecture the machine actually is
+/// would mean LK could describe a kernel but never run one on the only backend
+/// that reaches the hardware.
+///
+/// These duplicate the bodies in `lkrt/src/system.rs`, as `cpu_irq_save` here
+/// already duplicates `lkrt/src/cpu.rs`. The two crates cannot share them:
+/// `lkrt` must not depend on `lk-core`, and `lk-core` depending on `lkrt` would
+/// close the loop the other way. What keeps the copies honest is that they are
+/// each three lines of assembly with the instruction named in the function name.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+mod system {
+    /// The operand `lidt`/`lgdt` take: a limit and a base, packed. Built here
+    /// rather than by the caller — the layout is `#[repr(packed)]`, which no LK
+    /// type describes, and the CPU reads it only during the instruction.
+    #[repr(C, packed)]
+    pub(super) struct PseudoDescriptor {
+        pub(super) limit: u16,
+        pub(super) base: u64,
+    }
+}
+
+/// One operand as a machine word. Gated with the instructions that read it —
+/// on a hosted build every caller is compiled out, and CI builds with
+/// `-D warnings`.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+fn word_operand(args: &NativeArgs<'_>, index: usize, name: &str) -> Result<i64> {
+    match args.get(index) {
+        Some(RuntimeVal::Int(value)) => Ok(*value),
+        _ => Err(anyhow!("{name} expects an integer as argument {}", index + 1)),
+    }
+}
+
+fn system_refusal(name: &str) -> anyhow::Error {
+    anyhow!("{name} requires bare-metal execution on x86-64: no other target has this instruction")
+}
+
+pub(super) fn cpu_load_idt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let descriptor = system::PseudoDescriptor {
+            base: word_operand(&_args, 0, "cpu_load_idt")? as u64,
+            limit: word_operand(&_args, 1, "cpu_load_idt")? as u16,
+        };
+        unsafe {
+            core::arch::asm!("lidt [{}]", in(reg) &descriptor, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_idt"))
+}
+
+pub(super) fn cpu_load_gdt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let descriptor = system::PseudoDescriptor {
+            base: word_operand(&_args, 0, "cpu_load_gdt")? as u64,
+            limit: word_operand(&_args, 1, "cpu_load_gdt")? as u16,
+        };
+        unsafe {
+            core::arch::asm!("lgdt [{}]", in(reg) &descriptor, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_gdt"))
+}
+
+/// Reloads CS and the data segments — the half of a GDT load that `lgdt` does
+/// not do, because the segment registers hold cached descriptors.
+pub(super) fn cpu_reload_segments(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let code = word_operand(&_args, 0, "cpu_reload_segments")? as u64;
+        let data = word_operand(&_args, 1, "cpu_reload_segments")? as u64;
+        unsafe {
+            // A far return, because CS cannot be written by `mov`: push the
+            // selector and the address to continue at, and `retfq` loads both.
+            // FS and GS are left alone — writing either zeroes its base.
+            core::arch::asm!(
+                "push {code}",
+                "lea {tmp}, [rip + 2f]",
+                "push {tmp}",
+                "retfq",
+                "2:",
+                "mov ds, {data:x}",
+                "mov es, {data:x}",
+                "mov ss, {data:x}",
+                code = in(reg) code,
+                data = in(reg) data,
+                tmp = lateout(reg) _,
+            );
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_reload_segments"))
+}
+
+pub(super) fn cpu_load_task_register(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let selector = word_operand(&_args, 0, "cpu_load_task_register")? as u16;
+        unsafe {
+            core::arch::asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_task_register"))
+}
+
+/// The address whose access caused the last page fault. Only the CPU writes it.
+pub(super) fn cpu_read_cr2(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr2", out(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Int(value as i64));
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_read_cr2"))
+}
+
+pub(super) fn cpu_read_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Int(value as i64));
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_read_cr3"))
+}
+
+/// Raises a software interrupt, whatever its number is.
+///
+/// The one x86 instruction whose operand a program cannot supply: `int` takes
+/// its vector as an immediate, so a kernel that wants to raise a vector it
+/// computed has nowhere to put it. The runtime answers that with a table of 256
+/// stubs — see `lkrt/src/isr.rs`, which does the same thing for the entry side —
+/// and this is the interpreter reaching the same table.
+///
+/// Without it a kernel written in this language cannot raise its own syscall or
+/// reschedule vector, which is not a small gap: it is the difference between
+/// defining an interrupt and merely handling one.
+/// The symbol above, for a **test** binary.
+///
+/// `lk-core`'s `no_std` face declares `lkrt_cpu_raise_interrupt` and does not
+/// depend on the crate that defines it — sound in the bare-metal image, where
+/// both are linked together, and unlinkable in a host test binary, where only
+/// one of them is. `cargo test -p lk-core --no-default-features` therefore
+/// could not link on x86_64 at all:
+///
+/// ```text
+/// rust-lld: error: undefined symbol: lkrt_cpu_raise_interrupt
+/// ```
+///
+/// That is a CI step (`check.yml`, "lk-core builds and *tests* as no_std") and
+/// a documented gate. `cargo build` with the same flags is green, because a
+/// library has no link step — which is why running the build in its place hid
+/// this.
+///
+/// A stub rather than a `cfg(test)` arm inside the function: the shipped code
+/// then stays the code the tests compile. Raising an interrupt from a host test
+/// process is not a thing to do, so it does nothing.
+#[cfg(all(test, not(feature = "std"), target_arch = "x86_64"))]
+#[unsafe(no_mangle)]
+extern "C" fn lkrt_cpu_raise_interrupt(_vector: i64) {}
+
+pub(super) fn cpu_raise_interrupt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        // Declared, not depended on. `lk-core` must not have `lkrt` as a crate
+        // dependency — that boundary is what keeps the runtime free of the
+        // parser and the compiler — but on the one target where this means
+        // anything, both are linked into the same image and the symbol is simply
+        // there. A link-time reference is not an architectural edge.
+        unsafe extern "C" {
+            fn lkrt_cpu_raise_interrupt(vector: i64);
+        }
+        let vector = word_operand(&_args, 0, "cpu_raise_interrupt")?;
+        // SAFETY: the vector is bounds-checked inside, and a vector with no gate
+        // faults exactly as it would if a device had raised it.
+        unsafe { lkrt_cpu_raise_interrupt(vector as i64) };
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_raise_interrupt"))
+}
+
+/// Switches address spaces, flushing the TLB in doing so. The code after it
+/// must be mapped in the new space at the same address — which is why a kernel
+/// is mapped into every one.
+pub(super) fn cpu_write_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value = word_operand(&_args, 0, "cpu_write_cr3")? as u64;
+        // No `nomem`: this invalidates every cached translation, so it orders
+        // against essentially all memory.
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_write_cr3"))
+}
+
+/// Drops one page's cached translation. The page table is not what the CPU
+/// consults — the TLB is, and it does not notice a write behind it.
+pub(super) fn cpu_invalidate_page(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let address = word_operand(&_args, 0, "cpu_invalidate_page")? as u64;
+        unsafe {
+            core::arch::asm!("invlpg [{}]", in(reg) address, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_invalidate_page"))
+}
+
 /// A full memory barrier.
 ///
 /// `fence(SeqCst)` rather than hand-written assembly: it is `mfence` on x86-64,

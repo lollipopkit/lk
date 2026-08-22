@@ -30,7 +30,7 @@ fn execute_compares_int_ordering() {
 fn execute_compares_nil_and_short_strings_on_fast_path() {
     let function = Function {
         consts: ConstPool {
-            strings: vec!["ok".to_string(), "no".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("ok"), alloc::sync::Arc::<str>::from("no")],
             ..ConstPool::default()
         },
         code: vec![
@@ -71,11 +71,11 @@ fn execute_checks_contains_for_typed_list_map_and_string() {
         consts: ConstPool {
             ints: vec![2, 9, 1],
             strings: vec![
-                "ab".to_string(),
-                "z".to_string(),
-                "abc".to_string(),
-                "answer".to_string(),
-                "1".to_string(),
+                alloc::sync::Arc::<str>::from("ab"),
+                alloc::sync::Arc::<str>::from("z"),
+                alloc::sync::Arc::<str>::from("abc"),
+                alloc::sync::Arc::<str>::from("answer"),
+                alloc::sync::Arc::<str>::from("1"),
             ],
             ..ConstPool::default()
         },
@@ -138,7 +138,7 @@ fn execute_to_iter_reads_typed_string_int_map_backing_as_pairs() {
     let function = Function {
         consts: ConstPool {
             ints: vec![10, 20],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -202,12 +202,12 @@ fn execute_to_iter_reads_typed_string_int_map_backing_as_pairs() {
 
 #[test]
 fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
-    let mut short_key_map = fast_hash_map_new();
+    let mut short_key_map = crate::util::value_map::value_map_new();
     short_key_map.insert(
         RuntimeMapKey::ShortStr(crate::val::ShortStr::new("a").expect("short key")),
         crate::vm::ConstRuntimeValue::Int(42),
     );
-    let mut heap_key_map = fast_hash_map_new();
+    let mut heap_key_map = crate::util::value_map::value_map_new();
     heap_key_map.insert(
         RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(42),
@@ -238,7 +238,7 @@ fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
 
 #[test]
 fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
-    let mut map = fast_hash_map_new();
+    let mut map = crate::util::value_map::value_map_new();
     map.insert(
         RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(1),
@@ -247,7 +247,7 @@ fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
     let function = Function {
         consts: ConstPool {
             ints: vec![9],
-            strings: vec!["a".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a")],
             heap_values: vec![
                 ConstHeapValue::Map(map),
                 ConstHeapValue::LongString(alloc::sync::Arc::<str>::from("a")),
@@ -311,7 +311,11 @@ fn execute_builds_map_rest_without_removed_keys() {
     let function = Function {
         consts: ConstPool {
             ints: vec![40, 2, 9],
-            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            strings: vec![
+                alloc::sync::Arc::<str>::from("a"),
+                alloc::sync::Arc::<str>::from("b"),
+                alloc::sync::Arc::<str>::from("c"),
+            ],
             ..ConstPool::default()
         },
         code: vec![
@@ -347,7 +351,7 @@ fn execute_map_rest_preserves_typed_string_int_backing() {
     let function = Function {
         consts: ConstPool {
             ints: vec![40, 2],
-            strings: vec!["a".to_string(), "b".to_string()],
+            strings: vec![alloc::sync::Arc::<str>::from("a"), alloc::sync::Arc::<str>::from("b")],
             ..ConstPool::default()
         },
         code: vec![
@@ -379,4 +383,700 @@ fn execute_map_rest_preserves_typed_string_int_backing() {
 
     assert_eq!(values.len(), 1);
     assert_eq!(values.get("b"), Some(&2));
+}
+
+/// A window does not copy, so the source can shrink under it. Every reader used
+/// to answer "how long is this window" differently: `len()` said 3 while
+/// `println` showed two elements, `to_list()` produced `[1,2,nil]`, and `==`
+/// against those two elements was false.
+#[test]
+fn a_window_whose_source_shrank_gives_one_answer_everywhere() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2, 3];
+        let window = xs.slice(0, 3);
+        xs.pop();
+        return [window.len(), window.to_list(), window.last(), window == [1, 2], window.first()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,[1,2],2,true,1]");
+}
+
+/// `clear()` is in the container method table for maps, sets *and* lists, but
+/// a list did not have it.
+#[test]
+fn list_clear_empties_in_place_and_answers_the_list() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2, 3];
+        let answered = xs.clear();
+        return [xs, answered, xs.push(7)];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[7],[7],[7]]");
+}
+
+/// `try` is an expression, like `if` and `match`. It was a statement, so
+/// `let r = try { … } catch e { … };` was a syntax error and the way to get a
+/// value out was to declare a `nil` first and assign into it from both halves.
+#[test]
+fn try_is_an_expression_and_both_halves_carry_its_value() {
+    let result = execute_source(
+        r#"
+        fn risky(n) { return 100 % n; }
+        let ok = try { risky(30) } catch e { -1 };
+        let caught = try { risky(0) } catch e { -1 };
+        let payload = try { risky(0) } catch e { e };
+        // A half that ends in a statement has no value, as in an `if`.
+        let empty = try { risky(0) } catch e { let unused = 1; };
+        // The inner one is the outer's tail, so it is a value too.
+        let nested = try { try { risky(0) } catch e { 2 } } catch e { 3 };
+        return [ok, caught, payload, empty, nested];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[10,-1,\"modulo by zero\",nil,2]");
+}
+
+/// Statement position is unchanged — the value is discarded, as an `if` or a
+/// `match` in statement position is. It compiles to the region it always did,
+/// with no value register: one written *inside* a protected region has to
+/// survive it, and reserving one nobody reads took `try { f(); } catch e { … }`
+/// off the native path.
+#[test]
+fn try_in_statement_position_still_runs_for_effect() {
+    let result = execute_source(
+        r#"
+        let log = [];
+        try { let bad = 1 % 0; log.push("body"); } catch e { log.push("handler"); }
+        try { log.push("fine"); } catch e { log.push("unreachable"); }
+        return log;
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[\"handler\",\"fine\"]");
+}
+
+/// A receiver that is a plain local *is* that local's register, not a copy.
+/// Capturing the same local in a closure boxes it in place, so an argument
+/// containing such a closure changed what the already-taken receiver pointed
+/// at — and the call ran against the cell: `xs.map(|x| x + xs.len())` answered
+/// "UpvalCell has no method 'map'".
+#[test]
+fn a_method_receiver_survives_an_argument_that_captures_it() {
+    let result = execute_source(
+        r#"
+        let xs = [1, 2];
+        let widened = xs.map(|x| x + xs.len());
+        let kept = xs.filter(|x| xs.len() > 1);
+        let boxed: List<Any> = [1];
+        boxed.push(|| boxed.len());
+        let m = {"a": 1};
+        m.set("b", || m.len());
+        return [widened, kept, boxed.len(), m.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[3,4],[1,2],2,2]");
+}
+
+/// Containers were the other half of the "both `Obj`, one rank, therefore
+/// equal" hole that made sorting long strings a no-op: sorting a list of lists
+/// left it exactly as it was.
+#[test]
+fn sorting_orders_lists_element_by_element() {
+    let result = execute_source(
+        r#"
+        let pairs = [[1, "b"], [1, "a"], [0, "c"]];
+        let lengths = [[1, 2, 3], [1, 2], [1]];
+        let long = [["zzzzzzzzzz"], ["aaaaaaaaaa"]];
+        let mixed: List<Any> = [{"a": 1}, [1], "s"];
+        return [pairs.sort(), lengths.sort(), long.sort(), mixed.sort()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display,
+        "[[[0,\"c\"],[1,\"a\"],[1,\"b\"]],[[1],[1,2],[1,2,3]],[[\"aaaaaaaaaa\"],[\"zzzzzzzzzz\"]],[\"s\",[1],{\"a\":1}]]"
+    );
+}
+
+/// A local captured by a closure lives in a cell, and the cell lives in the
+/// local's register. Compound assignment computed the new value *into that
+/// register*, overwriting the cell — so the store that followed found no cell:
+/// `let n = 1; let f = || n; n += 1;` raised
+/// "StoreCellVal expected UpvalCell object". Plain `n = n + 1` always worked,
+/// which is what made it look like an arithmetic problem.
+#[test]
+fn compound_assignment_to_a_captured_local_updates_its_cell() {
+    let result = execute_source(
+        r#"
+        let n = 1;
+        let read = || n;
+        n += 4;
+        n *= 2;
+        n -= 3;
+        let text = "a";
+        let read_text = || text;
+        text += "b";
+        return [n, read(), text, read_text()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[7,7,\"ab\",\"ab\"]");
+}
+
+/// The receiver-aliasing family, in the index-assignment position: a closure in
+/// the *value* boxes the target's local, and the write then landed on the cell.
+#[test]
+fn an_index_assignment_target_survives_a_value_that_captures_it() {
+    let result = execute_source(
+        r#"
+        let xs: List<Any> = [1, 2];
+        xs[0] = || xs.len();
+        let m: Map<String, Any> = {"a": 1};
+        m["b"] = || m.len();
+        return [xs.len(), m.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,2]");
+}
+
+/// `impl Type { … }` was a syntax error, and there is no UFCS — so a struct
+/// could only get a method by declaring a trait that said nothing and
+/// implementing *that*. The machinery was already there: dispatch keys on the
+/// target type, not on the trait.
+#[test]
+fn an_inherent_impl_gives_a_type_its_own_methods() {
+    let result = execute_source(
+        r#"
+        struct Point { x: Int, y: Int }
+        impl Point {
+            fn norm2(self) -> Int { return self.x * self.x + self.y * self.y; }
+            fn scaled(self, by: Int) -> Point { return Point { x: self.x * by, y: self.y * by }; }
+        }
+        trait Area { fn area(self) -> Int; }
+        impl Area for Point { fn area(self) -> Int { return self.x * self.y; } }
+
+        let p = Point { x: 3, y: 4 };
+        return [p.norm2(), p.scaled(2).x, p.area()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[25,6,12]");
+}
+
+/// An inherent impl carries no trait, so nothing is *promised* — but a trait
+/// impl still has to keep its promise.
+#[test]
+fn a_trait_impl_still_has_to_implement_the_trait() {
+    let error = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point { }
+        return 1;
+        "#,
+    )
+    .expect_err("an unimplemented trait method");
+    assert!(error.to_string().contains("not implemented"), "{error}");
+}
+
+/// A trait impl carries the trait's methods and nothing else. It used to accept
+/// anything, and it had to: with `impl Type { … }` a syntax error and no UFCS,
+/// a trait impl was the only place a method could live.
+#[test]
+fn a_trait_impl_rejects_a_method_the_trait_never_declared() {
+    let error = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point {
+            fn area(self) -> Int { return self.x; }
+            fn unrelated(self) -> Int { return 0; }
+        }
+        return 1;
+        "#,
+    )
+    .expect_err("`unrelated` is not part of `Area`");
+    assert!(error.to_string().contains("is not declared by trait"), "{error}");
+
+    // …and the fix the message names actually works.
+    let result = execute_source(
+        r#"
+        trait Area { fn area(self) -> Int; }
+        struct Point { x: Int }
+        impl Area for Point { fn area(self) -> Int { return self.x; } }
+        impl Point { fn unrelated(self) -> Int { return 7; } }
+        return [Point { x: 1 }.area(), Point { x: 1 }.unrelated()];
+        "#,
+    )
+    .expect("execute source");
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,7]");
+}
+
+/// A builtin container dispatches with its element type erased — a
+/// `TypedList::Mixed` has nothing else to report — so the *checker* has to key
+/// on the same thing. It keyed on the static type instead, and
+/// `impl T for List` registered under `List<Any>` while a call on `[1, 2]`
+/// looked up `List<Int>`: the method existed and could not be found. `String`
+/// and `Map` worked only because neither takes that path.
+#[test]
+fn a_method_on_a_builtin_container_is_found_whatever_its_elements_are() {
+    let result = execute_source(
+        r#"
+        impl List { fn second(self) -> Any { return self.get(1); } }
+        impl Map { fn size(self) -> Int { return self.len(); } }
+        impl Set { fn size(self) -> Int { return self.len(); } }
+        return [[1, 2].second(), ["a", "b"].second(), {"k": 1}.size(), Set([1, 2]).size()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[2,\"b\",1,2]");
+}
+
+/// The compiler picks a dedicated opcode for `len`/`push`/`set`/`split`/`join`
+/// from the method *name* alone — it has no type for the receiver there. That
+/// is right for a list and wrong for a struct with a method of that name:
+/// `s.len()` answered "Len target object is not sized", and the four that take
+/// arguments failed at *compile* time on arity, so the method could not even be
+/// written.
+#[test]
+fn a_user_method_named_after_a_builtin_one_is_still_reachable() {
+    let result = execute_source(
+        r#"
+        struct Boxed { items: List<Int> }
+        impl Boxed {
+            fn len(self) -> Int { return 99; }
+            fn push(self) -> Int { return 1; }
+            fn set(self) -> Int { return 2; }
+            fn split(self) -> Int { return 3; }
+            fn join(self) -> Int { return 4; }
+        }
+        let b = Boxed { items: [1] };
+        // The builtins keep working on the types they belong to.
+        let xs = [1, 2, 3];
+        return [b.len(), b.push(), b.set(), b.split(), b.join(), xs.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[99,1,2,3,4,3]");
+}
+
+/// A receiver with side effects runs **once** under `set`.
+///
+/// `set` lowered its receiver expression twice — once for the write, once for
+/// the answer — so `make().set(0, 9)` called `make` twice, wrote into the first
+/// list and answered the second. Every other mutating method (`push`,
+/// `insert`, `remove_at`, `clear`) lowers the receiver once.
+#[test]
+fn set_evaluates_a_side_effecting_receiver_once() {
+    let result = execute_source(
+        r#"
+        let calls = [];
+        fn make() -> List<Int> {
+            calls.push(1);
+            return [1, 2, 3];
+        }
+        let answered = make().set(0, 9);
+        return [calls.len(), answered.get(0) ?? -1, answered.len()];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,9,3]", "one call, and the answer is the list written to");
+}
+
+/// A top-level `let` a function can see is **one** variable, not two.
+///
+/// It used to be two: the top level kept a register copy while functions read
+/// and wrote the global slot, and the two agreed only until the first write on
+/// either side. `let n = 0; fn bump() { n = n + 1; } bump();` left the
+/// function's view at 1 and the top level's at 0, and a top-level `n = 5` was
+/// invisible to the function. Both backends did it, so no differential test
+/// could see it.
+///
+/// A `const` still keeps its register: nothing can write it, so the copy cannot
+/// come apart — and the register is where a machine-integer width lives.
+#[test]
+fn a_top_level_let_and_its_functions_share_one_variable() {
+    let result = execute_source(
+        r#"
+        let n = 0;
+        fn bump() { n = n + 1; }
+        fn get() -> Int { return n; }
+        bump();
+        bump();
+        let after_calls = [n, get()];
+        n = 5;
+        let after_top_level_write = [n, get()];
+        return [after_calls, after_top_level_write];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[[2,2],[5,5]]", "one storage, whichever side writes it");
+}
+
+/// A struct compares by its **fields**, like every other aggregate.
+///
+/// It used to compare by handle, so `P { x: 1 } == P { x: 1 }` was false while
+/// `[1] == [1]`, `{"a": 1} == {"a": 1}` and `Set([1]) == Set([1])` were all
+/// true. The silence was the worst part: `xs.contains(p)`, `index_of` and
+/// `unique` inherited it, so a list of structs could not be searched.
+#[test]
+fn a_struct_compares_by_its_fields_like_every_other_aggregate() {
+    let result = execute_source(
+        r#"
+        struct P { x: Int, y: Int }
+        struct Q { x: Int, y: Int }
+        struct N { inner: P }
+        let a = P { x: 1, y: 2 };
+        return [
+            a == P { x: 1, y: 2 },
+            a == P { x: 1, y: 3 },
+            [a] == [P { x: 1, y: 2 }],
+            [a].contains(P { x: 1, y: 2 }),
+            [a, P { x: 1, y: 2 }].unique().len() == 1,
+            N { inner: a } == N { inner: P { x: 1, y: 2 } },
+            // A different declaration with the same shape is a different type.
+            a == Q { x: 1, y: 2 },
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[true,false,true,true,true,true,false]");
+}
+
+/// A block is a scope: a `let` inside one does not outlive it.
+///
+/// It did, in every construct — `if`, `while`, `for`, a bare block, a `match`
+/// arm — because a `let` shadowing an outer name reused that name's *register*,
+/// so the enclosing scope resumed reading the inner value. Three separate holes
+/// fed it: the statement path reused the register, the inliner never restored
+/// bindings at all (which also made `fn f(c) { let y = 1; if c { let y = 2; }
+/// let s = 45; return y; }` answer 45 — `y` still pointed at the inner
+/// register, and `s` was handed it), and a block *expression* — which is what a
+/// match arm body is — had no scope at all.
+#[test]
+fn a_block_is_a_scope_in_every_construct() {
+    let result = execute_source(
+        r#"
+        fn in_if(c: Bool) -> Int { let y = 1; if c { let y = 2; } return y; }
+        fn in_while(c: Bool) -> Int { let y = 1; while c { let y = 2; break; } return y; }
+        fn in_for() -> Int { let y = 1; for i in 0..1 { let y = 7; } return y; }
+        fn in_block() -> Int { let y = 1; { let y = 3; } return y; }
+        fn in_match() -> Int { let y = 1; let r = match 1 { 1 => { let y = 5; y + 1 } _ => 0 }; return y * 100 + r; }
+        // The inline path: small enough to be inlined at the call site, and the
+        // trailing `let` is what used to collect the shadow's register.
+        fn inlined(c: Bool) -> Int { let y = 1; if c { let y = 2; } let s = 45; return y; }
+        return [in_if(true), in_while(true), in_for(), in_block(), in_match(), inlined(true)];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, "[1,1,1,1,106,1]");
+}
+
+/// A trait method may carry a body: implementors that do not write it get it.
+///
+/// Without defaults every implementor repeated the same method — the language
+/// forcing on its users exactly the "N copies kept in sync by hand" shape the
+/// implementation spends its time removing. The body is copied per implementing
+/// type before anything dispatches (`stmt::trait_defaults`), so `self` is that
+/// type and nothing downstream knows defaults exist.
+#[test]
+fn a_trait_method_may_have_a_default_body() {
+    let result = execute_source(
+        r#"
+        trait Greet {
+            fn name(self) -> String;
+            fn hi(self) -> String { return "hi ${self.name()}"; }
+        }
+        struct P { n: String }
+        impl Greet for P { fn name(self) -> String { return self.n; } }
+        struct Q { n: String }
+        impl Greet for Q {
+            fn name(self) -> String { return self.n; }
+            fn hi(self) -> String { return "yo ${self.n}"; }
+        }
+        // The trait may also be declared *after* the impl that uses it.
+        impl Late for R { fn base(self) -> Int { return 7; } }
+        struct R {}
+        trait Late {
+            fn base(self) -> Int;
+            fn twice(self) -> Int { return self.base() * 2; }
+        }
+        return [P { n: "a" }.hi(), Q { n: "b" }.hi(), "${R {}.twice()}"];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, r#"["hi a","yo b","14"]"#);
+}
+
+/// Braces nest inside `${…}`.
+///
+/// The lexer balanced them when deciding where an interpolation ends; the
+/// parser's own scan of the same content did not, and cut at the first `}`. So
+/// `"${R {}}"` reached the struct-literal parser as `R {`, which read past the
+/// end of its token stream and **panicked** — a parser must answer with an
+/// error, never a panic.
+#[test]
+fn a_template_interpolation_balances_its_braces() {
+    let result = execute_source(
+        r#"
+        struct R { v: Int }
+        let m = {"a": 1};
+        return ["${R { v: 3 }}", "${m}", "${ {"k": 2} }", "${R { v: 3 }.v}"];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(display, r#"["R{v:3}","{\"a\":1}","{\"k\":2}","3"]"#);
+}
+
+/// `min`, `max` and `sum` — on a list, a window over one, and a `Bytes`.
+///
+/// The three most ordinary questions about a sequence of numbers had no answer:
+/// `map`, `filter`, `reduce`, `unique`, `zip` and `chunk` were all there, and
+/// these were not, so each had to be written as a fold — with a comparison
+/// lambda that then had to agree with `sort`'s order, and nothing checked that
+/// it did.
+///
+/// So `min`/`max` use `sort`'s own comparison. The assertions below pin that
+/// with the case that would catch a second ordering: a mixed list, where
+/// numbers sort before strings.
+#[test]
+fn a_sequence_answers_min_max_and_sum() {
+    let result = execute_source(
+        r#"
+        let xs = [3, 1, 2];
+        let mixed = [2, "a", 1];
+        let floats = [1.5, 2.5];
+        let promoted = [1, 2.5];
+        let window = [5, 1, 9, 2].slice(1, 3);
+        let empty = [];
+        return [
+            [xs.min(), xs.max(), xs.sum()],
+            [mixed.min(), mixed.sort().first()],
+            [floats.sum(), promoted.sum()],
+            [window.min(), window.max(), window.sum()],
+            [empty.min(), empty.max(), empty.sum()],
+            [["b", "a"].min(), ["b", "a"].max()],
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display, "[[1,3,6],[1,1],[4,3.5],[1,9,10],[nil,nil,0],[\"a\",\"b\"]]",
+        "min/max follow sort's order, sum promotes to float, empty answers nil and 0"
+    );
+}
+
+/// Summing something that is not a number says what it found.
+#[test]
+fn summing_a_non_number_names_it() {
+    for (source, expected) in [
+        ("[\"a\"].sum()", "list of String"),
+        ("[true].sum()", "list of Bool"),
+        ("[1, nil].sum()", "holds a Nil"),
+    ] {
+        let program = alloc::format!("let e = try {{ {source} }} catch x {{ x }};\nreturn e;");
+        let result = execute_source(&program).expect("execute source");
+        let message = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+        assert!(message.contains(expected), "{source} → {message}");
+    }
+}
+
+/// A map's member access is a key read, its methods win a name collision, and a
+/// function-valued key is callable — all three, pinned.
+///
+/// The precedence existed only as the order two lookups happened to run in.
+/// Nothing said it, so `{"len": 5}.len()` answering the *entry count* was an
+/// implementation detail that any refactor could have flipped, silently, for
+/// every program with a key named after a builtin method.
+#[test]
+fn a_maps_methods_win_a_name_collision_with_its_keys() {
+    let result = execute_source(
+        r#"
+        let plain = {"a": 1};
+        let shadowing = {"len": 5, "b": 2};
+        let callable = {"f": |x| x + 1};
+        return [
+            plain.a,
+            shadowing.len(),
+            shadowing.len,
+            shadowing["len"],
+            callable.f(1),
+            callable["f"](1),
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    assert_eq!(
+        display, "[1,2,5,5,2,2]",
+        "`.len()` is the method (2 entries), `.len` and `[\"len\"]` are the key (5), and a \
+         function-valued key is callable either way"
+    );
+}
+
+/// A missing map member names both routes, and `len()` on a value with no
+/// length names the operation rather than the opcode's operand.
+#[test]
+fn a_map_member_miss_and_a_lengthless_value_say_what_the_program_did() {
+    let result = execute_source(
+        r#"
+        let m = {"a": 1};
+        let missing = try { m.nope() } catch e { e };
+        let lengthless = try { nil.len() } catch e { e };
+        return [missing, lengthless];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    // Both halves for the map: a method *and* a key holding a function.
+    assert!(display.contains("no method `nope`"), "{display}");
+    assert!(display.contains("no key `nope`"), "{display}");
+    // "Len target expected string/list/map/set, got Nil" named this opcode's
+    // operand; the program wrote `len()`.
+    assert!(display.contains("`len()` works on"), "{display}");
+    assert!(!display.contains("Len target"), "{display}");
+}
+
+/// A negative *count* is refused on a String, as it already was on a List.
+///
+/// `[1, 2].take(-1)` raised and `"ab".take(-1)` answered `""`; `skip` had the
+/// same split, and `repeat(-1)` was `""` too. One rule, two carriers, two
+/// behaviours — the shape the negative-position decision was cleaned up into
+/// once already.
+///
+/// A negative *position* is a different thing and keeps its meaning: `slice`
+/// counts from the end.
+#[test]
+fn a_negative_count_is_refused_on_a_string_as_it_is_on_a_list() {
+    let result = execute_source(
+        r#"
+        let s = "ab";
+        return [
+            try { s.take(-1) } catch e { e },
+            try { s.skip(-1) } catch e { e },
+            try { s.repeat(-1) } catch e { e },
+            s.repeat(0),
+            s.take(1),
+            s.skip(1),
+            s.slice(-1, 2),
+        ];
+        "#,
+    )
+    .expect("execute source");
+
+    let display = crate::vm::display_runtime_value(&result.returns[0], &result.state.heap);
+    for expected in [
+        "string.take() count must be non-negative",
+        "string.skip() count must be non-negative",
+        "string.repeat() count must be non-negative",
+    ] {
+        assert!(display.contains(expected), "{display}");
+    }
+    // Zero repeats, the ordinary counts, and the negative *position* all keep
+    // their answers.
+    assert!(display.contains(r#""","a","b","b""#), "{display}");
+}
+
+/// The carrier lists in these messages are the messages' whole content, and
+/// they had drifted from the arms above them.
+///
+/// `len` accepts `Bytes` and a window; its message said "String, List, Map or
+/// Set". `slice`, `skip` and `for` were the same, each naming the set the
+/// operation had when the message was written. A reader is told the rule, and
+/// the rule was wrong in the direction that makes a working program look
+/// impossible.
+///
+/// This walks every carrier, asks whether the operation accepts it, and
+/// requires the rejection message to name exactly the ones it does. Both
+/// directions: a carrier that stops being accepted has to leave the message
+/// too.
+#[test]
+fn a_carrier_list_in_an_error_message_matches_what_the_operation_accepts() {
+    // `(carrier, how to build one, the word the message uses for it)`.
+    const CARRIERS: &[(&str, &str, &str)] = &[
+        ("List", "[1, 2, 3]", "list"),
+        ("String", "\"ab\"", "string"),
+        ("Map", "{\"a\": 1}", "map"),
+        ("Set", "Set([1])", "set"),
+        ("Bytes", "\"ab\".bytes()", "bytes"),
+        ("Slice", "[1, 2, 3].slice(0, 2)", "slice"),
+    ];
+    // `(what the program writes, a program that reaches the same opcode with a
+    // receiver it rejects)`.
+    //
+    // `len`'s list lives on the opcode, and reaching it needs a receiver with
+    // no static type — an out-of-bounds read, whose `nil` the method dispatch
+    // passes through. `for`'s lives in the checker, which a literal reaches
+    // directly. The range index `c[a..b]` is where the `Slice target` list
+    // lives; the `c.slice(a, b)` *method* has no message for this to compare,
+    // because every receiver it rejects is answered by the method dispatch
+    // before the opcode.
+    const OPERATIONS: &[(&str, &str)] = &[
+        ("c.len()", "[1][5].len();"),
+        ("for _x in c {}", "for _x in 1 {}"),
+        ("c[0..1]", "let c = [1][5]; c[0..1];"),
+    ];
+
+    for (op, rejecting) in OPERATIONS {
+        let message = match execute_source(rejecting) {
+            Ok(result) => panic!("`{rejecting}` was expected to fail: {result:?}"),
+            Err(err) => format!("{err}").to_lowercase(),
+        };
+        for (carrier, build, word) in CARRIERS {
+            let program = format!("let c = {build};\n{op};\n");
+            let accepted = execute_source(&program).is_ok();
+            assert_eq!(
+                accepted,
+                message.contains(word),
+                "`{op}` {} `{carrier}`, and the message {} name it: {message}",
+                if accepted { "accepts" } else { "rejects" },
+                if accepted { "does not" } else { "does" },
+            );
+        }
+    }
 }

@@ -1,0 +1,90 @@
+// A user `impl` block can name a built-in type, and the method it adds is an
+// ordinary method call on an ordinary value.
+//
+// An impl target cannot name an *element* type — `impl List<Int>` is refused,
+// because two element types are not distinguishable at run time — so each
+// constructor has at most one impl block.
+
+impl Int {
+    fn doubled(self) -> Int {
+        return self * 2;
+    }
+}
+
+impl Float {
+    fn halved(self) -> Float {
+        return self / 2.0;
+    }
+}
+
+impl String {
+    fn shout(self) -> String {
+        return self.upper() + "!";
+    }
+}
+
+impl Bool {
+    fn flipped(self) -> Bool {
+        return !self;
+    }
+}
+
+impl List {
+    fn second(self) -> Any {
+        return self[1];
+    }
+}
+
+impl Map {
+    fn size(self) -> Int {
+        return self.len();
+    }
+}
+
+impl Set {
+    fn is_any(self) -> Bool {
+        return self.len() > 0;
+    }
+}
+
+impl Nil {
+    fn describe(self) -> String {
+        return "nothing";
+    }
+}
+
+impl Slice {
+    fn window_len(self) -> Int {
+        return self.len();
+    }
+}
+
+let nothing = nil;
+println(nothing.describe());
+println((5).doubled());
+println((3.0).halved());
+println("hi".shout());
+println(true.flipped());
+println([1, 2, 3].second());
+println(["a", "b"].second());
+println([1.5, 2.5].second());
+println([1, 2, 3].slice(0, 2).window_len());
+println({ "k": 1 }.size());
+println(Set([1, 2]).is_any());
+
+// Through a parameter, where the receiver's type comes from the call site.
+fn twice(v: Int) -> Int {
+    return v.doubled();
+}
+
+println(twice(7));
+
+// A built-in method wins over an impl that names it: `len` is the language's,
+// not this one's.
+impl List {
+    fn len(self) -> Int {
+        return 99;
+    }
+}
+
+println([1, 2].len());

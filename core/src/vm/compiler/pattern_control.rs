@@ -68,29 +68,8 @@ impl Compiler {
         } else {
             self.lower_readonly_operand(value)?
         };
-        let (condition, previous) = match pattern {
-            Pattern::List { patterns, .. } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
-                let previous = Vec::new();
-                (condition, previous)
-            }
-            Pattern::Map { patterns, .. } => {
-                let condition = self.lower_map_pattern_condition(value, patterns)?;
-                let previous = Vec::new();
-                (condition, previous)
-            }
-            _ => self.lower_pattern_match(pattern, value)?,
-        };
+        let (condition, previous) = self.lower_pattern_match(pattern, value)?;
         let exit_test = self.emit_test_placeholder(condition)?;
-
-        let previous = match pattern {
-            Pattern::List { .. } | Pattern::Map { .. } => {
-                let mut previous = previous;
-                self.bind_irrefutable_pattern(pattern, value, &mut previous)?;
-                previous
-            }
-            _ => previous,
-        };
 
         self.loops.push(super::support::LoopPatch::default());
         self.emitted_return = false;
@@ -116,6 +95,28 @@ impl Compiler {
         Ok(())
     }
 
+    /// The bindings for a `match` arm that matches every value, or `None` when
+    /// the pattern needs a runtime test.
+    ///
+    /// Such an arm gets no test at all. Emitting one is dead work, and for a
+    /// binding it is also wrong: [`Self::lower_pattern_match`] is shared with
+    /// `if let`, where a binding means "the value is not nil", which is not
+    /// what it means in a `match` arm — `match nil { x => 1 }` answered nil
+    /// while `match nil { _ => 1 }` answered 1, and the type checker called
+    /// both of them total.
+    ///
+    /// An or-pattern is left out: it cannot bind (the compiler refuses
+    /// variables inside one), so the only thing skipping its test would save
+    /// is the test itself, and its alternatives' conditions can evaluate
+    /// arbitrary expressions.
+    pub(super) fn bind_catch_all(&mut self, pattern: &Pattern, value: u16) -> Option<PatternBindings> {
+        match pattern {
+            Pattern::Wildcard => Some(Vec::new()),
+            Pattern::Variable(name) => Some(vec![(name.clone(), self.insert_local(name.clone(), value))]),
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_pattern_match(&mut self, pattern: &Pattern, value: u16) -> Result<(u16, PatternBindings)> {
         let mut previous = Vec::new();
         let condition = match pattern {
@@ -138,14 +139,10 @@ impl Compiler {
                 condition
             }
             Pattern::Wildcard => self.lower_val(&LiteralVal::Bool(true))?,
-            Pattern::List { patterns, .. } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
-                self.bind_irrefutable_pattern(pattern, value, &mut previous)?;
-                condition
-            }
-            Pattern::Map { patterns, .. } => {
-                let condition = self.lower_map_pattern_condition(value, patterns)?;
-                self.bind_irrefutable_pattern(pattern, value, &mut previous)?;
+            Pattern::List { .. } | Pattern::Map { .. } => {
+                let mut slots = self.nil_pattern_slots(pattern)?;
+                let condition = self.lower_container_pattern(pattern, value, &mut previous, &mut slots)?;
+                debug_assert!(slots.is_empty(), "pattern slots left unconsumed");
                 condition
             }
             Pattern::Literal(literal) => {
@@ -202,7 +199,19 @@ impl Compiler {
         self.lower_and_condition(ge_start, before_end)
     }
 
-    pub(super) fn lower_list_pattern_condition(&mut self, value: u16, fixed_len: usize) -> Result<u16> {
+    /// The shape test for a list pattern: it is a list, and its length fits.
+    ///
+    /// `exact` is what `..rest` decides. Without a rest pattern the length must
+    /// *equal* the number of sub-patterns; with one, the fixed part is a
+    /// minimum and the rest takes the tail.
+    ///
+    /// It used to be a minimum either way, which made `[]` match every list —
+    /// so `match xs { [] => …, [a] => …, [a, b] => … }` answered the first arm
+    /// for a list of any length, and every arm after it was dead. `[a]` matched
+    /// a two-element list for the same reason. Nothing documented that reading,
+    /// and every example in the corpus writes `..rest` when it means "at
+    /// least", which is exactly the distinction this argument restores.
+    pub(super) fn lower_list_pattern_condition(&mut self, value: u16, fixed_len: usize, exact: bool) -> Result<u16> {
         let is_list = self.alloc_reg();
         self.emit(Instr::abc(
             Opcode::IsList,
@@ -223,7 +232,7 @@ impl Compiler {
         self.set_register_kind(len, PerfValueKind::Int);
         let expected = self.lower_val(&LiteralVal::Int(fixed_len as i64))?;
         self.emit(Instr::abc(
-            Opcode::CmpGeInt,
+            if exact { Opcode::CmpInt } else { Opcode::CmpGeInt },
             checked_u8("pattern list condition", result)?,
             checked_u8("pattern list len", len)?,
             checked_u8("pattern list expected", expected)?,
@@ -357,6 +366,210 @@ impl Compiler {
         Ok(condition)
     }
 
+    /// A list or map pattern: the shape, then every sub-pattern against the
+    /// element it names.
+    ///
+    /// The shape test was the whole of it — a list's length, a map's keys — and
+    /// anything else written inside was refused outright ("Compiler does not
+    /// support nested refutable pattern yet"). So `match v { [9, b] => … }`,
+    /// the shape most of pattern matching is written in, did not compile.
+    ///
+    /// Extraction happens *inside* the shape guard: reading element 2 of a
+    /// value that is not a list raises, so the elements may only be touched
+    /// once the shape is known. Within the guard a short list reads `nil`,
+    /// which every sub-pattern already answers correctly.
+    fn lower_container_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: u16,
+        previous: &mut Vec<(String, Option<u16>)>,
+        slots: &mut alloc::collections::VecDeque<u16>,
+    ) -> Result<u16> {
+        let shape = match pattern {
+            Pattern::List { patterns, rest } => {
+                self.lower_list_pattern_condition(value, patterns.len(), rest.is_none())?
+            }
+            Pattern::Map { patterns, .. } => self.lower_map_pattern_condition(value, patterns)?,
+            other => bail!("not a container pattern: {:?}", pattern_kind(other)),
+        };
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
+        // The element registers are allocated and set to `nil` *before* the
+        // guard, so every path through this defines them. Only the extraction
+        // is guarded — the values themselves have to exist on the
+        // shape-mismatch path too, because a register read on a path that
+        // cannot run is still a register read to native lowering, which builds
+        // SSA and has no `nil` to fall back on. (The VM does not care: an
+        // unwritten register *is* nil there. Matching that explicitly is what
+        // keeps the two backends compiling the same program.)
+        let width = match pattern {
+            Pattern::List { patterns, .. } => patterns.len(),
+            Pattern::Map { patterns, .. } => patterns.len(),
+            other => bail!("not a container pattern: {:?}", pattern_kind(other)),
+        };
+        let fields: Vec<u16> = slots.drain(..width.min(slots.len())).collect();
+        if fields.len() != width {
+            bail!("pattern slot supply exhausted");
+        }
+        // The `..rest` slot is seeded with an **empty container of its own
+        // kind** before the guard, and filled inside it. Not `nil`: what lands
+        // in it is a list or a map handle, and a register that is nil on one
+        // path and a handle on the other has no single type native lowering
+        // can give it. Not outside the guard either — `..rest` against a Map
+        // ran `SliceFrom` on it and raised "not sliceable" from an arm that
+        // simply does not match.
+        let rest_slot = match pattern {
+            Pattern::List { rest: Some(_), .. } | Pattern::Map { rest: Some(_), .. } => {
+                let slot = self.alloc_reg();
+                let opcode = if matches!(pattern, Pattern::Map { .. }) {
+                    Opcode::NewMap
+                } else {
+                    Opcode::NewList
+                };
+                self.emit(Instr::abc(opcode, checked_u8("pattern rest slot", slot)?, 0, 0));
+                Some(slot)
+            }
+            _ => None,
+        };
+        let skip = self.emit_test_placeholder(shape)?;
+        let mut condition = self.lower_val(&LiteralVal::Bool(true))?;
+        match pattern {
+            Pattern::List { patterns, rest } => {
+                for (index, sub) in patterns.iter().enumerate() {
+                    let field = fields[index];
+                    let index = i64::try_from(index).map_err(|_| anyhow::anyhow!("Compiler pattern index overflow"))?;
+                    let key = self.lower_val(&LiteralVal::Int(index))?;
+                    self.emit(Instr::abc(
+                        Opcode::GetIndex,
+                        checked_u8("pattern sequence field", field)?,
+                        checked_u8("pattern sequence value", value)?,
+                        checked_u8("pattern sequence index", key)?,
+                    ));
+                    if let Some(sub_condition) = self.lower_subpattern(sub, field, previous, slots)? {
+                        condition = self.lower_and_condition(condition, sub_condition)?;
+                    }
+                }
+                if let (Some(rest), Some(slot)) = (rest, rest_slot) {
+                    let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
+                    self.emit(Instr::abc(
+                        Opcode::SliceFrom,
+                        checked_u8("pattern rest slice", slot)?,
+                        checked_u8("pattern rest value", value)?,
+                        checked_u8("pattern rest start", start)?,
+                    ));
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), slot)));
+                }
+            }
+            Pattern::Map { patterns, rest } => {
+                for (index, (key, sub)) in patterns.iter().enumerate() {
+                    let field = fields[index];
+                    let key = self.lower_val(&LiteralVal::from_str(key))?;
+                    self.emit(Instr::abc(
+                        Opcode::GetIndex,
+                        checked_u8("pattern map field", field)?,
+                        checked_u8("pattern map value", value)?,
+                        checked_u8("pattern map key", key)?,
+                    ));
+                    if let Some(sub_condition) = self.lower_subpattern(sub, field, previous, slots)? {
+                        condition = self.lower_and_condition(condition, sub_condition)?;
+                    }
+                }
+                if let (Some(rest), Some(slot)) = (rest, rest_slot) {
+                    let map = self.lower_map_rest(value, patterns)?;
+                    self.emit_move(slot, map, "pattern map rest")?;
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), slot)));
+                }
+            }
+            other => bail!("not a container pattern: {:?}", pattern_kind(other)),
+        }
+        self.emit_move(result, condition, "pattern container condition")?;
+        let end = self.function.code.len();
+        self.patch_test_false_jump(skip, end)?;
+        Ok(result)
+    }
+
+    /// One `nil` register per value the pattern tree will pull out, in the
+    /// order [`Self::lower_container_pattern`] consumes them: this container's
+    /// positions first, then each position's own subtree.
+    ///
+    /// Allocated here, before the first shape test, so a nested container's
+    /// registers are defined on the *outer* mismatch path as well — the
+    /// recursion happens inside the outer guard, so allocating there would
+    /// leave them undefined exactly the way the flat case was.
+    fn nil_pattern_slots(&mut self, pattern: &Pattern) -> Result<alloc::collections::VecDeque<u16>> {
+        let mut slots = alloc::collections::VecDeque::new();
+        self.push_nil_pattern_slots(pattern, &mut slots)?;
+        Ok(slots)
+    }
+
+    fn push_nil_pattern_slots(
+        &mut self,
+        pattern: &Pattern,
+        slots: &mut alloc::collections::VecDeque<u16>,
+    ) -> Result<()> {
+        let (width, subs): (usize, Vec<&Pattern>) = match pattern {
+            Pattern::List { patterns, .. } => (patterns.len(), patterns.iter().collect()),
+            Pattern::Map { patterns, .. } => (patterns.len(), patterns.iter().map(|(_, p)| p).collect()),
+            Pattern::Guard { pattern, .. } => return self.push_nil_pattern_slots(pattern, slots),
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    self.push_nil_pattern_slots(alt, slots)?;
+                }
+                return Ok(());
+            }
+            _ => return Ok(()),
+        };
+        for _ in 0..width {
+            let slot = self.alloc_reg();
+            self.emit(Instr::abx(Opcode::LoadNil, checked_u8("pattern slot", slot)?, 0));
+            slots.push_back(slot);
+        }
+        for sub in subs {
+            self.push_nil_pattern_slots(sub, slots)?;
+        }
+        Ok(())
+    }
+
+    /// One sub-pattern of a container pattern. `None` means it always matches,
+    /// so no test is emitted for it.
+    ///
+    /// A name binds here rather than testing, which is what distinguishes this
+    /// from [`Self::lower_pattern_match`]: that one is shared with `if let`,
+    /// where a bare name means "the value is not nil". Inside `[a, b]` it means
+    /// what it means in a `match` arm — any element, `nil` included.
+    fn lower_subpattern(
+        &mut self,
+        pattern: &Pattern,
+        value: u16,
+        previous: &mut Vec<(String, Option<u16>)>,
+        slots: &mut alloc::collections::VecDeque<u16>,
+    ) -> Result<Option<u16>> {
+        match pattern {
+            Pattern::Wildcard => Ok(None),
+            Pattern::Variable(name) => {
+                previous.push((name.clone(), self.insert_local(name.clone(), value)));
+                Ok(None)
+            }
+            Pattern::List { .. } | Pattern::Map { .. } => {
+                Ok(Some(self.lower_container_pattern(pattern, value, previous, slots)?))
+            }
+            Pattern::Guard { pattern, guard } => {
+                let inner = self.lower_subpattern(pattern, value, previous, slots)?;
+                let inner = match inner {
+                    Some(condition) => condition,
+                    None => self.lower_val(&LiteralVal::Bool(true))?,
+                };
+                Ok(Some(self.lower_guard_condition(inner, guard)?))
+            }
+            // Literal, Range and Or are pure tests with no `if let` reading to
+            // differ from, so they take the same path a top-level arm does.
+            _ => {
+                let (condition, nested) = self.lower_pattern_match(pattern, value)?;
+                previous.extend(nested);
+                Ok(Some(condition))
+            }
+        }
+    }
+
     fn lower_and_condition(&mut self, lhs: u16, rhs: u16) -> Result<u16> {
         let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_rhs = self.emit_test_placeholder(lhs)?;
@@ -364,69 +577,6 @@ impl Compiler {
         let end = self.function.code.len();
         self.patch_test_false_jump(skip_rhs, end)?;
         Ok(result)
-    }
-
-    fn bind_irrefutable_pattern(
-        &mut self,
-        pattern: &Pattern,
-        value: u16,
-        previous: &mut Vec<(String, Option<u16>)>,
-    ) -> Result<()> {
-        match pattern {
-            Pattern::Variable(name) => {
-                previous.push((name.clone(), self.insert_local(name.clone(), value)));
-                Ok(())
-            }
-            Pattern::Wildcard => Ok(()),
-            Pattern::List { patterns, rest } => {
-                for (index, pattern) in patterns.iter().enumerate() {
-                    let index = i64::try_from(index).map_err(|_| anyhow::anyhow!("Compiler pattern index overflow"))?;
-                    let key = self.lower_val(&LiteralVal::Int(index))?;
-                    let field = self.alloc_reg();
-                    self.emit(Instr::abc(
-                        Opcode::GetIndex,
-                        checked_u8("pattern sequence field", field)?,
-                        checked_u8("pattern sequence value", value)?,
-                        checked_u8("pattern sequence index", key)?,
-                    ));
-                    self.bind_irrefutable_pattern(pattern, field, previous)?;
-                }
-                if let Some(rest) = rest {
-                    let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
-                    let slice = self.alloc_reg();
-                    self.emit(Instr::abc(
-                        Opcode::SliceFrom,
-                        checked_u8("pattern rest slice", slice)?,
-                        checked_u8("pattern rest value", value)?,
-                        checked_u8("pattern rest start", start)?,
-                    ));
-                    previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
-                }
-                Ok(())
-            }
-            Pattern::Map { patterns, rest } => {
-                for (key, pattern) in patterns {
-                    let key = self.lower_val(&LiteralVal::from_str(key))?;
-                    let field = self.alloc_reg();
-                    self.emit(Instr::abc(
-                        Opcode::GetIndex,
-                        checked_u8("pattern map field", field)?,
-                        checked_u8("pattern map value", value)?,
-                        checked_u8("pattern map key", key)?,
-                    ));
-                    self.bind_irrefutable_pattern(pattern, field, previous)?;
-                }
-                if let Some(rest) = rest {
-                    let map = self.lower_map_rest(value, patterns)?;
-                    previous.push((rest.clone(), self.insert_local(rest.clone(), map)));
-                }
-                Ok(())
-            }
-            other => bail!(
-                "Compiler does not support nested refutable pattern yet: {:?}",
-                pattern_kind(other)
-            ),
-        }
     }
 
     fn lower_pattern_literal(&mut self, literal: &LiteralVal) -> Result<u16> {

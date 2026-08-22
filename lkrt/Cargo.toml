@@ -18,18 +18,44 @@ default = ["std"]
 # representation, arithmetic, MMIO and CPU control. Files, processes, threads,
 # sockets and the clock drop out — there is nothing on bare metal for them to
 # call.
-std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:chrono"]
+std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:chrono", "dep:uuid", "dep:regex", "dep:rand"]
 
 [dependencies]
 lk-aot-abi = { path = "../aot/abi", default-features = false }
 rustc-hash = { version = "2", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+# The value-map carrier, mirroring `lk-core`'s `util::value_map`: a program's
+# `Map` iterates in insertion order, so both back ends agree by *construction*
+# rather than by both landing on the same hash layout.
+indexmap = { version = "2", default-features = false }
 # Bare metal has no thread-local storage; the arena lives behind a spin lock
 # there instead. Uncontended on a single core, so the hot path stays cheap.
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Named directly for the ordered-object visitor in `encoding.rs`; serde_json
+# already pulls it in, this only makes the path available.
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+# Same crates the stdlib `hash` module uses, so a digest and its hex
+# rendering are byte-identical to the VM's.
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+crc32fast = { version = "1", default-features = false }
+# Same crates the stdlib `encoding` module uses, so base64/hex text is
+# byte-identical to the VM's.
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
+# Same crate the stdlib `random` module uses, so ranges, the shuffle and the
+# byte cap behave identically. `std`-only: the entropy source is the OS's.
+rand = { workspace = true, optional = true }
+# Same crate the stdlib `regex` module uses, so pattern syntax, match
+# semantics and the parse-error text are one rule. `std`-only.
+regex = { workspace = true, optional = true }
+# Same crate the stdlib `uuid` module uses, so the text and the parse-error
+# wording match. `std`-only: v4 needs the OS entropy source.
+uuid = { workspace = true, optional = true }
 serde_yaml = { version = "0.9", optional = true }
-toml = { version = "1", optional = true }
+# `preserve_order`, mirroring the VM: a decoded table keeps document order.
+toml = { version = "1", optional = true, features = ["preserve_order"] }
 # Same crate the stdlib datetime module uses, so native formatting/weekday
 # results are byte-identical to the VM.
 chrono = { workspace = true, optional = true }

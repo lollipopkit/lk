@@ -24,30 +24,51 @@ use alloc::{
 use core::ffi::{CStr, c_char, c_void};
 
 use crate::lklist::{LkMaybeF64, LkMaybeI64};
+use crate::vm_mirror::{RtKey, str_key};
 
-// The exact carrier the VM uses (`core::util::fast_map::FastHashMap` =
-// `hashbrown::HashMap` + `FxBuildHasher`, fixed seed): iteration order is a
-// deterministic function of key hashes + operation sequence, so a native map
-// built by the same operation sequence iterates in the *same* order — the
-// deep-coverage plan's "mirror the Fx order" adjudication. Do not swap either
-// piece independently of `core/src/util/fast_map.rs`.
-pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+// The exact carrier the VM uses (`core::util::value_map::ValueMap`): a
+// program's `Map` iterates in **insertion order**, so a native map built by the
+// same sequence of operations iterates the same way for a structural reason —
+// both append to a vector — rather than because both happen to land on the same
+// hash layout. That older arrangement is what `vm_mirror` was for, and its
+// correctness rested on both builds linking one `hashbrown`, one rustc deriving
+// the same `Hash` discriminants, and one fixed seed.
+//
+// Keep in step with `core/src/util/value_map.rs`, including `shift_remove`
+// (order-preserving) over `swap_remove`.
+pub(crate) type FxMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
 /// The set counterpart of [`FxMap`]. hashbrown rather than std so the same
 /// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
 pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
-type StrI64Map = FxMap<String, i64>;
-type I64I64Map = FxMap<i64, i64>;
-type StrF64Map = FxMap<String, f64>;
-type I64F64Map = FxMap<i64, f64>;
+type StrI64Map = FxMap<StrKey, i64>;
+type I64I64Map = FxMap<crate::vm_mirror::IntKey, i64>;
+type StrF64Map = FxMap<StrKey, f64>;
+type I64F64Map = FxMap<crate::vm_mirror::IntKey, f64>;
 
 /// Insert-or-update without allocating when the key is already present: the
 /// common map workload pattern is repeated updates of existing keys, and
 /// `insert(key.to_string(), ..)` would heap-allocate the key on every call.
-fn set_str_key<V>(map: &mut FxMap<String, V>, key: &str, value: V) {
+fn set_str_key<V>(map: &mut FxMap<StrKey, V>, key: &str, value: V) {
     match map.get_mut(key) {
         Some(slot) => *slot = value,
         None => {
-            map.insert(key.to_string(), value);
+            map.insert(StrKey::Owned(String::from(key)), value);
+        }
+    }
+}
+
+/// [`set_str_key`] for a key that is a **program constant** — see
+/// [`lkrt_lkmap_str_dyn_set_const`].
+///
+/// # Safety
+/// `key` must live as long as the process.
+unsafe fn set_static_str_key<V>(map: &mut FxMap<StrKey, V>, key: &str, value: V) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            // SAFETY: as documented.
+            let key: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(key) };
+            map.insert(StrKey::Static(key), value);
         }
     }
 }
@@ -137,6 +158,34 @@ pub unsafe extern "C" fn lkrt_lkmap_str_i64_set_ik(
     unsafe { with_ik_key(prefix, suffix, |key| set_str_key(map, key, value)) }
 }
 
+/// `m.clear()` — empties the map in place.
+///
+/// One macro over the five carriers, which are all `FxMap`. It was the only
+/// container method the *map* lacked natively while the list and the set both
+/// had it, so `m.clear()` dropped its whole module to the VM for a reason no
+/// program can see.
+macro_rules! map_clear {
+    ($name:ident, $map:ty, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) {
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: `handle` addresses a map of the matching carrier.
+            unsafe { (*(handle as *mut $map)).clear() };
+        }
+    };
+}
+
+map_clear!(lkrt_lkmap_str_i64_clear, StrI64Map, "Empties a `str -> i64` map.");
+map_clear!(lkrt_lkmap_i64_i64_clear, I64I64Map, "Empties an `i64 -> i64` map.");
+map_clear!(lkrt_lkmap_str_f64_clear, StrF64Map, "Empties a `str -> f64` map.");
+map_clear!(lkrt_lkmap_i64_f64_clear, I64F64Map, "Empties an `i64 -> f64` map.");
+map_clear!(lkrt_lkmap_str_dyn_clear, StrDynMap, "Empties a `str -> Dyn` map.");
+
 /// Returns the number of entries.
 ///
 /// # Safety
@@ -183,7 +232,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_i64_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrI64Map` from `lkrt_lkmap_str_i64_new`.
         unsafe { (*(handle as *mut StrI64Map)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
 
@@ -200,7 +249,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_f64_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrF64Map` from `lkrt_lkmap_str_f64_new`.
         unsafe { (*(handle as *mut StrF64Map)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
 
@@ -218,7 +267,11 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *c
         // SAFETY: `handle` addresses a `StrDynMap` from `lkrt_lkmap_str_dyn_new`.
         unsafe { (*(handle as *mut StrDynMap)).clone() }
     };
-    copy.remove(unsafe { key_str(key) });
+    copy.shift_remove(unsafe { key_str(key) });
+    // A struct instance with a field taken away is not that struct: the copy is
+    // an ordinary map. (A map pattern refuses to match a struct, so nothing
+    // reaches here with one today — the id would be a lie if anything did.)
+    copy.type_id = 0;
     crate::state::arena_handle(copy)
 }
 
@@ -255,6 +308,82 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge(base: *mut c_void, overlay: *m
         out.insert(key.clone(), value);
     }
     crate::state::arena_handle(out)
+}
+
+/// `merge(base, overlay)` where the **overlay is a typed carrier**, iterated in
+/// place.
+///
+/// The lowering used to convert the overlay to a `str -> Dyn` map first, with the
+/// claim that "the rebuild replays the source order". Re-inserting a table's
+/// entries into a fresh table in its *iteration* order is a different insertion
+/// sequence from the one that built it, so the copy does not always iterate the
+/// same way — and the overlay's order is the tail of the merged result's.
+///
+/// Struct update syntax (`P { ..base, x: 42 }`) is what reaches this: the
+/// overlay is the `{x: 42}` field literal, which is a typed map. Refusing it
+/// would cost the feature its lowering; copying it is the thing that is wrong.
+/// So nothing is copied — the overlay is walked where it lives.
+///
+/// # Safety
+/// `base` must be a live `StrDynMap` handle or null; `overlay` a live handle of
+/// the carrier `kind` names, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge_typed(
+    base: *mut c_void,
+    overlay: *mut c_void,
+    kind: i64,
+) -> *mut c_void {
+    let empty = StrDynMap::default();
+    // SAFETY: caller passes a live `StrDynMap` handle (or null).
+    let base: &StrDynMap = if base.is_null() {
+        &empty
+    } else {
+        unsafe { &*(base as *mut StrDynMap) }
+    };
+    // The overlay's keys, in its own order — borrowed, not rebuilt.
+    let overlay_pairs = typed_map_pairs(kind, overlay);
+    let mut out = StrDynMap::default();
+    for (key, &value) in base {
+        if !overlay_pairs.iter().any(|(k, _)| k == key) {
+            out.insert(key.clone(), value);
+        }
+    }
+    for (key, value) in overlay_pairs {
+        out.insert(key, value);
+    }
+    crate::state::arena_handle(out)
+}
+
+/// A typed string-keyed map's entries **in its own iteration order**, boxed.
+///
+/// A `Vec`, not a map: the order is the payload here, and a hash table would
+/// impose its own. See [`typed_map_keyed`] for the order-free counterpart that
+/// equality uses.
+fn typed_map_pairs(kind: i64, handle: *mut c_void) -> Vec<(StrKey, crate::lkdyn::LkDyn)> {
+    use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    if handle.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `kind` names the carrier the caller tagged this handle with.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_STR_F64 => (*(handle as *mut StrF64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            KIND_STR_BOOL => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (k.clone(), lkrt_dyn_from_bool(*v)))
+                .collect(),
+            // An int-keyed overlay has no string keys to merge into a field map;
+            // the VM refuses it before this can be reached.
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
 }
 
 /// Fresh zero-capacity rebuild in `src`'s iteration order — the VM's
@@ -352,7 +481,7 @@ macro_rules! map_iter_family {
             // SAFETY: as above.
             let map = unsafe { &mut *(handle as *mut $carrier) };
             #[allow(clippy::redundant_closure_call)]
-            match map.remove(unsafe { key_str(key) }) {
+            match map.shift_remove(unsafe { key_str(key) }) {
                 Some(v) => ($box_val)(&v),
                 None => crate::lkdyn::LkDyn::NIL,
             }
@@ -398,8 +527,14 @@ map_iter_family!(
     "`for pair in m` snapshot over `Map<str, Dyn>`."
 );
 
-macro_rules! map_to_dyn {
-    ($name:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
+/// `for pair in m` over an **int**-keyed map: the same `[key, value]` snapshot
+/// the string-keyed carriers produce, with the key boxed as an `Int`.
+///
+/// Its own function rather than an arm of `map_iter_family!` because that macro
+/// boxes the key with `boxed_str_key` — the key kind is the one thing the two
+/// families do not share.
+macro_rules! int_map_iter {
+    ($name:ident, $keys:ident, $values:ident, $delete:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
         #[doc = $doc]
         /// # Safety
         /// `handle` must be a live map handle of the matching carrier.
@@ -407,33 +542,435 @@ macro_rules! map_to_dyn {
         pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
             // SAFETY: `handle` addresses the matching carrier map.
             let map = unsafe { &*(handle as *mut $carrier) };
-            let mut out = StrDynMap::default();
-            for (k, v) in map.iter() {
-                #[allow(clippy::redundant_closure_call)]
-                out.insert(k.clone(), ($box_val)(v));
+            #[allow(clippy::redundant_closure_call)]
+            pair_list(
+                map.iter()
+                    .map(|(k, v)| (crate::lkdyn::lkrt_dyn_from_i64(k.0), ($box_val)(v)))
+                    .collect(),
+            )
+        }
+
+        #[doc = $doc]
+        /// `.keys()` — the keys, boxed as `Int`, in the map's own order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $keys(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            let keys: Vec<crate::lkdyn::LkDyn> = map.keys().map(|k| crate::lkdyn::lkrt_dyn_from_i64(k.0)).collect();
+            crate::state::arena_handle(keys)
+        }
+
+        #[doc = $doc]
+        /// `.values()` — the values, boxed, in the map's own order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $values(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            let values: Vec<crate::lkdyn::LkDyn> = map.values().map(|v| ($box_val)(v)).collect();
+            crate::state::arena_handle(values)
+        }
+
+        #[doc = $doc]
+        /// `.delete(k)` — removes and returns the value, or nil when absent.
+        /// The string families generate this from their own macro; leaving it
+        /// out here is why `m.delete(k)` lowered for a string-keyed map and
+        /// dropped the module to the VM for an integer-keyed one.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $delete(handle: *mut c_void, key: i64) -> crate::lkdyn::LkDyn {
+            // SAFETY: as above.
+            let map = unsafe { &mut *(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            match map.shift_remove(&crate::vm_mirror::IntKey(key)) {
+                Some(v) => ($box_val)(&v),
+                None => crate::lkdyn::LkDyn::NIL,
             }
-            crate::state::arena_handle(out)
         }
     };
 }
 
-map_to_dyn!(
-    lkrt_lkmap_str_i64_to_dyn,
-    StrI64Map,
+int_map_iter!(
+    lkrt_lkmap_i64_i64_iter_pairs,
+    lkrt_lkmap_i64_i64_keys,
+    lkrt_lkmap_i64_i64_values,
+    lkrt_lkmap_i64_i64_delete,
+    I64I64Map,
     |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
-    "`Map<str, i64>` → boxed-value map (iteration-order-preserving)."
+    "`for pair in m` snapshot over `Map<i64, i64>`."
 );
-map_to_dyn!(
-    lkrt_lkmap_str_f64_to_dyn,
-    StrF64Map,
+int_map_iter!(
+    lkrt_lkmap_i64_f64_iter_pairs,
+    lkrt_lkmap_i64_f64_keys,
+    lkrt_lkmap_i64_f64_values,
+    lkrt_lkmap_i64_f64_delete,
+    I64F64Map,
     |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
-    "`Map<str, f64>` → boxed-value map."
+    "`for pair in m` snapshot over `Map<i64, f64>`."
 );
-map_to_dyn!(
-    lkrt_lkmap_str_bool_to_dyn,
+
+/// A boxed **typed** map: the carrier kind, as the `LkDyn` tag carries it.
+///
+/// Boxing used to mean `*_to_dyn` — rebuilding the map into a `StrDynMap` by
+/// re-inserting in iteration order. That is a *re-representation*, and
+/// `DYN_RAW`'s doc already spells out why it cannot be one: a fresh table filled
+/// by a different insertion sequence has a different layout, so the copy
+/// iterates in a different order than the original. With deletions in the
+/// history the two diverge, and `println([m])` printed its entries in an order
+/// the VM never would — a wrong answer, not a fallback.
+///
+/// So a typed map boxes by tagging its handle in place, and the tag says which
+/// carrier it is. The rebuild survives in exactly one place, [`typed_map_keyed`],
+/// because its one consumer is equality — which is order-free.
+pub(crate) const KIND_STR_I64: i64 = 0;
+pub(crate) const KIND_STR_F64: i64 = 1;
+pub(crate) const KIND_STR_BOOL: i64 = 2;
+pub(crate) const KIND_I64_I64: i64 = 3;
+pub(crate) const KIND_I64_F64: i64 = 4;
+
+/// `{"a":1,"b":2}` / `{3:4,1:2}` — the carrier's own iteration order, no copy.
+pub(crate) fn typed_map_text(kind: i64, handle: *mut c_void) -> String {
+    // SAFETY: the tag the caller decoded `kind` from is only ever set by
+    // `dyn.from_typed_map` on a handle of that carrier.
+    unsafe {
+        let ptr = match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_display(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_display(handle),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_display(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_display(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_display(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        };
+        CStr::from_ptr(ptr).to_str().unwrap_or("").to_string()
+    }
+}
+
+/// Entry count without a copy.
+/// `m.clear()` on a **typed** map handle, by carrier kind.
+///
+/// The sibling of [`typed_map_len`], for the same reason: a boxed map has no
+/// static carrier and the tag is the only thing that says which.
+pub(crate) fn typed_map_clear(kind: i64, handle: *mut c_void) {
+    // SAFETY: as in `typed_map_len`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 | KIND_STR_BOOL => lkrt_lkmap_str_i64_clear(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_clear(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_clear(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_clear(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+pub(crate) fn typed_map_len(kind: i64, handle: *mut c_void) -> i64 {
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 | KIND_STR_BOOL => lkrt_lkmap_str_i64_len(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_len(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_len(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_len(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `for pair in m` / `.keys()` / `.values()` off the carrier, as the
+/// `[key, value]` snapshot list, in the carrier's own order.
+///
+/// One function per operation would be five dispatches; the pair snapshot is
+/// what every one of them is built from, and it is the only shape all five
+/// carriers already produce. `keys` and `values` project it — they are cold
+/// paths, and paying one snapshot there is what buys the int-keyed carriers
+/// the two methods the unboxed lowering never gave them.
+pub(crate) fn typed_map_pair_list(kind: i64, handle: *mut c_void) -> *mut c_void {
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_iter_pairs(handle),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_iter_pairs(handle),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_iter_pairs(handle),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_iter_pairs(handle),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_iter_pairs(handle),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `.delete(k)` on a boxed typed map — removes in place, so the box and the
+/// original stay one map.
+///
+/// String keys only, which is the set the unboxed lowering also serves: an
+/// int-keyed carrier has no `delete` symbol to dispatch to, and inventing one
+/// here would give the boxed spelling a method the plain one does not have.
+pub(crate) fn typed_map_delete(kind: i64, handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
+    // SAFETY: as in `typed_map_text`; `key` is the caller's NUL-terminated key.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_delete(handle, key),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_delete(handle, key),
+            KIND_STR_BOOL => lkrt_lkmap_str_bool_delete(handle, key),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// `m[k] = v` on a **boxed** typed map, by carrier kind.
+///
+/// The counterpart of [`typed_map_delete`], and the key rule is the one
+/// [`crate::lkdyn::lkrt_dyn_index`] states: an integer key on a map is a *key*,
+/// not a position, so each kind takes the key its carrier is keyed by and a key
+/// of the other shape raises.
+///
+/// A value the carrier cannot hold raises rather than widening it. The
+/// allocation belongs to whoever built the map, and their other aliases read it
+/// by its static type, so a `str -> i64` map cannot become a `str -> Dyn` one
+/// here; the carrier is decided at the literal instead (see
+/// `docs/semantics.md`, "拓宽一个列表的载体,只有构造点能做").
+pub(crate) fn typed_map_set(kind: i64, handle: *mut c_void, key: crate::lkdyn::LkDyn, value: crate::lkdyn::LkDyn) {
+    use crate::lkdyn::{lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_str};
+    // SAFETY: as in `typed_map_delete`; the key pointer, when one is taken, is
+    // the boxed key's own NUL-terminated string.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => lkrt_lkmap_str_i64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_i64(value)),
+            KIND_STR_F64 => lkrt_lkmap_str_f64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_f64(value)),
+            // A `bool` carrier stores its members as `i64`; only a boxed bool
+            // belongs in one, so this does not go through `as_i64`.
+            KIND_STR_BOOL => lkrt_lkmap_str_i64_set(handle, lkrt_dyn_as_str(key), lkrt_dyn_as_bool(value)),
+            KIND_I64_I64 => lkrt_lkmap_i64_i64_set(handle, lkrt_dyn_as_i64(key), lkrt_dyn_as_i64(value)),
+            KIND_I64_F64 => lkrt_lkmap_i64_f64_set(handle, lkrt_dyn_as_i64(key), lkrt_dyn_as_f64(value)),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// A boxed bool as the `i64` a `bool` carrier stores. An `Int` is *not*
+/// accepted: the two are distinct types in this language, and the carrier
+/// merely shares their machine representation.
+fn lkrt_dyn_as_bool(v: crate::lkdyn::LkDyn) -> i64 {
+    if v.tag != crate::lkdyn::DYN_BOOL {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload
+}
+
+/// The entries under the general key type, for **equality only**.
+///
+/// This is a copy, and that is fine here and nowhere else: `==` over maps is
+/// order-free, so a different layout cannot change the answer. Display must
+/// never come through this.
+/// A map's entries **in its own iteration order**, under the general key type.
+///
+/// [`typed_map_keyed`] answers the same entries as a hash map, which is right
+/// for equality and wrong for anything that fills a new map from them: the
+/// order a map is filled in decides the order it iterates in, so a merge built
+/// from an unordered view produces the same members in an order the VM never
+/// would.
+pub(crate) fn map_entries_ordered(v: crate::lkdyn::LkDyn) -> Vec<(RtKey, crate::lkdyn::LkDyn)> {
+    use crate::lkdyn::{DYN_MAP, DYN_TMAP_BASE, lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    let handle = v.payload as *mut c_void;
+    if handle.is_null() {
+        return Vec::new();
+    }
+    if v.tag == DYN_MAP {
+        // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+        return unsafe { (*(handle as *mut StrDynMap)).iter() }
+            .map(|(k, v)| (str_key(k), *v))
+            .collect();
+    }
+    // SAFETY: the tag the caller holds is only set by `dyn.from_typed_map` on a
+    // handle of that carrier.
+    unsafe {
+        match v.tag - DYN_TMAP_BASE {
+            KIND_STR_I64 => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_STR_F64 => (*(handle as *mut StrF64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            KIND_STR_BOOL => (*(handle as *mut StrI64Map))
+                .iter()
+                .map(|(k, v)| (str_key(k), lkrt_dyn_from_bool(*v)))
+                .collect(),
+            KIND_I64_I64 => (*(handle as *mut I64I64Map))
+                .iter()
+                .map(|(k, v)| (RtKey::Int(k.0), lkrt_dyn_from_i64(*v)))
+                .collect(),
+            KIND_I64_F64 => (*(handle as *mut I64F64Map))
+                .iter()
+                .map(|(k, v)| (RtKey::Int(k.0), lkrt_dyn_from_f64(*v)))
+                .collect(),
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+}
+
+/// Fills a fresh `str -> Dyn` map from an **ordered** entry sequence.
+///
+/// The sequence is the payload: filling in another order gives the same members
+/// and a different iteration order. A non-string key raises rather than being
+/// stringified — the boxed map carrier is string-keyed, and answering
+/// `{"3": 1}` where the VM answers `{3: 1}` would be a wrong answer dressed as
+/// a conversion.
+pub(crate) fn str_dyn_from_ordered(entries: Vec<(RtKey, crate::lkdyn::LkDyn)>) -> *mut c_void {
+    let mut out = StrDynMap::default();
+    for (key, value) in entries {
+        match &key {
+            RtKey::ShortStr(_) | RtKey::String(_) => {
+                out.insert(StrKey::Owned(crate::vm_mirror::key_str(&key).to_string()), value)
+            }
+            _ => crate::panic::raise_str("map merge with a non-string key has no native carrier"),
+        };
+    }
+    crate::state::arena_handle(out)
+}
+
+pub(crate) fn typed_map_keyed(kind: i64, handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {
+    use crate::lkdyn::{lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64};
+    let mut out: FxMap<RtKey, crate::lkdyn::LkDyn> = FxMap::default();
+    if handle.is_null() {
+        return out;
+    }
+    // SAFETY: as in `typed_map_text`.
+    unsafe {
+        match kind {
+            KIND_STR_I64 => {
+                for (k, v) in (*(handle as *mut StrI64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_i64(*v));
+                }
+            }
+            KIND_STR_F64 => {
+                for (k, v) in (*(handle as *mut StrF64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_f64(*v));
+                }
+            }
+            KIND_STR_BOOL => {
+                for (k, v) in (*(handle as *mut StrI64Map)).iter() {
+                    out.insert(str_key(k), lkrt_dyn_from_bool(*v));
+                }
+            }
+            KIND_I64_I64 => {
+                for (k, v) in (*(handle as *mut I64I64Map)).iter() {
+                    out.insert(RtKey::Int(k.0), lkrt_dyn_from_i64(*v));
+                }
+            }
+            KIND_I64_F64 => {
+                for (k, v) in (*(handle as *mut I64F64Map)).iter() {
+                    out.insert(RtKey::Int(k.0), lkrt_dyn_from_f64(*v));
+                }
+            }
+            // `kind` is decoded from a tag the range check above admitted, so
+            // this is unreachable — and a loud failure rather than a silent
+            // empty map if the encoding ever drifts.
+            _ => crate::panic::raise_str("runtime type error"),
+        }
+    }
+    out
+}
+
+/// The general map key, re-exported so the `dyn` layer can name the type its
+/// keyed views return without reaching into the mirror.
+pub(crate) type MapKey = RtKey;
+
+/// The same view of a **boxed** (`str -> Dyn`) map, so equality can compare one
+/// against a typed one.
+pub(crate) fn boxed_map_keyed(handle: *mut c_void) -> FxMap<RtKey, crate::lkdyn::LkDyn> {
+    let mut out: FxMap<RtKey, crate::lkdyn::LkDyn> = FxMap::default();
+    if handle.is_null() {
+        return out;
+    }
+    // SAFETY: a `DYN_MAP` payload is a live `StrDynMap`.
+    for (k, v) in unsafe { (*(handle as *mut StrDynMap)).iter() } {
+        out.insert(str_key(k), *v);
+    }
+    out
+}
+
+/// `println(m)` for a statically typed map: `{"a":1,"b":2}` / `{3:4,1:2}`.
+///
+/// Rendered from the carrier's own iteration order, with no rebuild — the
+/// order question is therefore not asked twice. That order is the VM's:
+/// `vm_mirror` replays both stages of `typed_map_from_entries` and
+/// `lit_protocol_matches_vm_iteration_order` compares against `lk-core`
+/// directly, so a hasher or layout drift fails there rather than as a
+/// mismatched line of output.
+///
+/// Keys render like the boxed-map arm in `lkdyn`: a string through Rust's
+/// `{:?}` (the VM's quoting and escaping), an int as its decimal text.
+macro_rules! map_display {
+    ($name:ident, $carrier:ty, $key:expr, $val:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier, or null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_char {
+            let empty = <$carrier>::default();
+            // SAFETY: caller passes a live handle of the matching carrier.
+            let map: &$carrier = if handle.is_null() {
+                &empty
+            } else {
+                unsafe { &*(handle as *mut $carrier) }
+            };
+            let mut out = String::from("{");
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                #[allow(clippy::redundant_closure_call)]
+                out.push_str(&($key)(k));
+                out.push(':');
+                #[allow(clippy::redundant_closure_call)]
+                out.push_str(&($val)(v));
+            }
+            out.push('}');
+            crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
+        }
+    };
+}
+
+map_display!(
+    lkrt_lkmap_str_i64_display,
     StrI64Map,
-    |v: &i64| crate::lkdyn::lkrt_dyn_from_bool(*v),
-    "The bool map carrier → boxed-value map."
+    |k: &StrKey| format!("{:?}", k.as_str()),
+    |v: &i64| v.to_string(),
+    "`Map<str, i64>` display."
+);
+map_display!(
+    lkrt_lkmap_str_f64_display,
+    StrF64Map,
+    |k: &StrKey| format!("{:?}", k.as_str()),
+    |v: &f64| v.to_string(),
+    "`Map<str, f64>` display."
+);
+map_display!(
+    lkrt_lkmap_i64_i64_display,
+    I64I64Map,
+    |k: &crate::vm_mirror::IntKey| k.0.to_string(),
+    |v: &i64| v.to_string(),
+    "`Map<i64, i64>` display."
+);
+map_display!(
+    lkrt_lkmap_i64_f64_display,
+    I64F64Map,
+    |k: &crate::vm_mirror::IntKey| k.0.to_string(),
+    |v: &f64| v.to_string(),
+    "`Map<i64, f64>` display."
+);
+map_display!(
+    lkrt_lkmap_str_bool_display,
+    StrI64Map,
+    |k: &StrKey| format!("{:?}", k.as_str()),
+    |v: &i64| if *v != 0 { "true" } else { "false" }.to_string(),
+    "The bool map carrier's display."
 );
 
 /// Creates a fresh, empty `Map<i64, i64>` handle.
@@ -452,7 +989,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_i64_set(handle: *mut c_void, key: i64, v
         return;
     }
     // SAFETY: `handle` addresses an `I64I64Map` from `lkrt_lkmap_i64_i64_new`.
-    unsafe { (*(handle as *mut I64I64Map)).insert(key, value) };
+    unsafe { (*(handle as *mut I64I64Map)).insert(crate::vm_mirror::IntKey(key), value) };
 }
 
 /// Returns the number of entries.
@@ -479,7 +1016,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_i64_get_pair(handle: *mut c_void, key: i
     }
     // SAFETY: as above.
     let map = unsafe { &*(handle as *mut I64I64Map) };
-    match map.get(&key) {
+    match map.get(&crate::vm_mirror::IntKey(key)) {
         Some(&value) => LkMaybeI64 { value, present: 1 },
         None => LkMaybeI64 { value: 0, present: 0 },
     }
@@ -593,7 +1130,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_set(handle: *mut c_void, key: i64, v
         return;
     }
     // SAFETY: `handle` addresses an `I64F64Map` from `lkrt_lkmap_i64_f64_new`.
-    unsafe { (*(handle as *mut I64F64Map)).insert(key, value) };
+    unsafe { (*(handle as *mut I64F64Map)).insert(crate::vm_mirror::IntKey(key), value) };
 }
 
 /// Returns the number of entries.
@@ -620,7 +1157,7 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_pair(handle: *mut c_void, key: i
     }
     // SAFETY: as above.
     let map = unsafe { &*(handle as *mut I64F64Map) };
-    match map.get(&key) {
+    match map.get(&crate::vm_mirror::IntKey(key)) {
         Some(&value) => LkMaybeF64 { value, present: 1 },
         None => LkMaybeF64 { value: 0.0, present: 0 },
     }
@@ -648,11 +1185,188 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_out(
 
 // ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
 
-pub(crate) type StrDynMap = FxMap<String, crate::lkdyn::LkDyn>;
+/// A `str -> Dyn` map, plus the declared-struct id when this map *is* a struct
+/// instance.
+///
+/// The id rides the value rather than a side table because a value crosses
+/// threads. The table it replaced was thread-local, so a struct sent to a task
+/// arrived on the other side as an ordinary map: `typeof` answered `Map` where
+/// the interpreter said `P`, and `println` printed `{"p":1,"q":2}` for
+/// `P{p:1,q:2}`. Carrying it here also drops a hash lookup from every `typeof`,
+/// trait dispatch and declared-field check.
+/// A `str -> Dyn` map's key.
+///
+/// `Static` borrows a string constant out of the program image, which is what a
+/// struct's field names and a map literal's keys are: the lowering emits them as
+/// data symbols (`materialize_key` interns a global), so they outlive every map
+/// that uses them. Copying each one into an owned `String` per *instance* was
+/// an allocation and a free per field per construction — the frees alone were
+/// 42% of a loop building one struct.
+///
+/// `Owned` is for a key computed at run time, which must be owned because the
+/// string it came from can be released while the map lives.
+///
+/// Hashing and comparison go through `as_str`, so the two forms of the same text
+/// are one key — and the hash is `str`'s, byte for byte what `String` gave
+/// before, which is what keeps map iteration order identical (`vm_mirror`
+/// asserts that order against the VM).
+#[derive(Clone, Debug)]
+pub(crate) enum StrKey {
+    Static(&'static str),
+    Owned(String),
+}
+
+impl StrKey {
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Owned(text) => text.as_str(),
+        }
+    }
+}
+
+impl core::ops::Deref for StrKey {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<str> for StrKey {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl core::borrow::Borrow<str> for StrKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl core::hash::Hash for StrKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq for StrKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for StrKey {}
+
+impl From<&str> for StrKey {
+    fn from(text: &str) -> Self {
+        Self::Owned(String::from(text))
+    }
+}
+
+impl core::fmt::Display for StrKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Default, Clone)]
+pub(crate) struct StrDynMap {
+    entries: FxMap<StrKey, crate::lkdyn::LkDyn>,
+    /// The declared struct's id, or `0` for an ordinary map. Written by
+    /// `lkrt_lkmap_obj_mark` right after construction.
+    pub(crate) type_id: i64,
+}
+
+impl core::ops::Deref for StrDynMap {
+    type Target = FxMap<StrKey, crate::lkdyn::LkDyn>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl core::ops::DerefMut for StrDynMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
+
+impl<'a> IntoIterator for &'a StrDynMap {
+    type Item = (&'a StrKey, &'a crate::lkdyn::LkDyn);
+    type IntoIter = <&'a FxMap<StrKey, crate::lkdyn::LkDyn> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (&self.entries).into_iter()
+    }
+}
+
+/// [`lkrt_lkmap_str_i64_new`] at a known size — a literal knows its own.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_i64_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrI64Map::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher))
+}
+
+/// [`lkrt_lkmap_str_f64_new`] at a known size.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_f64_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrF64Map::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher))
+}
+
+/// [`lkrt_lkmap_str_i64_set`] with a **program-constant** key, borrowed rather
+/// than copied. See [`lkrt_lkmap_str_dyn_set_const`].
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_i64_set`], and `key` must live as long as the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_i64_set_const(handle: *mut c_void, key: *const c_char, value: i64) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    unsafe {
+        let map = &mut *(handle as *mut StrI64Map);
+        set_static_str_key(map, key_str(key), value);
+    }
+}
+
+/// [`lkrt_lkmap_str_f64_set`] with a **program-constant** key.
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_i64_set_const`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_f64_set_const(handle: *mut c_void, key: *const c_char, value: f64) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: as documented.
+    unsafe {
+        let map = &mut *(handle as *mut StrF64Map);
+        set_static_str_key(map, key_str(key), value);
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
     crate::state::arena_handle(StrDynMap::default())
+}
+
+/// [`lkrt_lkmap_str_dyn_new`] for a map whose size is known before it is
+/// filled — a struct literal and a map literal both are.
+///
+/// Growing costs a rehash of everything inserted so far, and the cost is not
+/// linear in the field count: three fields cost 135ns each and six cost 277ns,
+/// which is the table doubling under them.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_dyn_new_sized(capacity: i64) -> *mut c_void {
+    let capacity = usize::try_from(capacity).unwrap_or(0).min(1 << 20);
+    crate::state::arena_handle(StrDynMap {
+        entries: FxMap::with_capacity_and_hasher(capacity, rustc_hash::FxBuildHasher),
+        type_id: 0,
+    })
 }
 
 /// # Safety
@@ -664,7 +1378,45 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const
         return;
     }
     let map = unsafe { &mut *(handle as *mut StrDynMap) };
-    set_str_key(map, unsafe { key_str(key) }, value);
+    let key = unsafe { key_str(key) };
+    // Replacing an existing key keeps the key that is already there, so a
+    // repeated store costs no allocation either way.
+    match map.entries.get_mut(key) {
+        Some(existing) => *existing = value,
+        None => {
+            map.entries.insert(StrKey::Owned(String::from(key)), value);
+        }
+    }
+}
+
+/// [`lkrt_lkmap_str_dyn_set`] for a key that is a **program constant** — a
+/// struct's field name, a map literal's key.
+///
+/// The key is borrowed rather than copied, which is an allocation and a later
+/// free saved per field per construction.
+///
+/// # Safety
+/// As [`lkrt_lkmap_str_dyn_set`], and `key` must point at data that lives as
+/// long as the process: the lowering only passes interned globals here
+/// (`materialize_key`), which are symbols in the program image.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set_const(
+    handle: *mut c_void,
+    key: *const c_char,
+    value: crate::lkdyn::LkDyn,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let map = unsafe { &mut *(handle as *mut StrDynMap) };
+    // SAFETY: as documented — the caller guarantees program lifetime.
+    let key: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(key_str(key)) };
+    match map.entries.get_mut(key) {
+        Some(existing) => *existing = value,
+        None => {
+            map.entries.insert(StrKey::Static(key), value);
+        }
+    }
 }
 
 /// A missing key is `nil` — the Dyn carrier's Nil tag *is* the absent case,
@@ -679,6 +1431,48 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const
         return crate::lkdyn::LkDyn::NIL;
     }
     let map = unsafe { &*(handle as *mut StrDynMap) };
+    map.get(unsafe { key_str(key) })
+        .copied()
+        .unwrap_or(crate::lkdyn::LkDyn::NIL)
+}
+
+/// A declared struct field, read by **position** with the key as the check.
+///
+/// A field read was a hash lookup: `strlen` + UTF-8 validation of the key,
+/// then hash and probe. Measured at ~107ns each, which is the whole cost of a
+/// loop that reads a field (the same loop with the read hoisted out is
+/// unmeasurable). A declared struct has a fixed field order that the compiler
+/// knows, so the position is a compile-time constant.
+///
+/// The key is still passed and still compared, because position alone is not a
+/// guarantee: an instance built somewhere this lowering did not see — through
+/// the hybrid bridge, or by a merge — may store its fields in another order.
+/// The comparison is a length test and a byte compare against a constant, not
+/// a hash; a mismatch falls back to the lookup, so the answer is the same
+/// either way.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string of `key_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get_at(
+    handle: *mut c_void,
+    index: i64,
+    key: *const c_char,
+    key_len: i64,
+) -> crate::lkdyn::LkDyn {
+    if handle.is_null() {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    if index >= 0
+        && let Some((found, value)) = map.get_index(index as usize)
+        && found.len() == key_len as usize
+        // SAFETY: `key` is `key_len` readable bytes, as documented.
+        && found.as_bytes() == unsafe { core::slice::from_raw_parts(key as *const u8, key_len as usize) }
+    {
+        return *value;
+    }
     map.get(unsafe { key_str(key) })
         .copied()
         .unwrap_or(crate::lkdyn::LkDyn::NIL)

@@ -3,53 +3,154 @@
 
 // 1. Literal patterns
 let grade = match "A" {
-  "A" => "Excellent",
-  "B" => "Good",
-  "C" => "Average",
-  _   => "Below average",
+    "A" => "Excellent",
+    "B" => "Good",
+    "C" => "Average",
+    _   => "Below average",
 };
 assert(grade == "Excellent");
 
 // 2. Integer literal + wildcard
 let label = match 404 {
-  200 => "OK",
-  301 => "Moved",
-  404 => "Not Found",
-  500 => "Server Error",
-  _   => "Unknown",
+    200 => "OK",
+    301 => "Moved",
+    404 => "Not Found",
+    500 => "Server Error",
+    _   => "Unknown",
 };
 assert(label == "Not Found");
 
 // 3. Or-pattern — combine multiple values in one arm
 let day_type = match 6 {
-  1 | 2 | 3 | 4 | 5 => "weekday",
-  6 | 7 => "weekend",
-  _ => "invalid",
+    1 | 2 | 3 | 4 | 5 => "weekday",
+    6 | 7 => "weekend",
+    _ => "invalid",
 };
 assert(day_type == "weekend");
 
 // 4. Bool literal match
 let bool_result = match true {
-  true => "yes",
-  false => "no",
+    true => "yes",
+    false => "no",
 };
 assert(bool_result == "yes");
 
 // 5. String literal match
 let lang = match "lk" {
-  "rs" => "Rust",
-  "lk" => "LK",
-  "py" => "Python",
-  _ => "Unknown",
+    "rs" => "Rust",
+    "lk" => "LK",
+    "py" => "Python",
+    _ => "Unknown",
 };
 assert(lang == "LK");
 
 // 6. Match returns a value — use it inline
 let size_label = match 42 {
-  1 => "one",
-  _ => "many",
+    1 => "one",
+    _ => "many",
 };
 assert(size_label == "many");
 
 
+// A list pattern says *how many*, and `..rest` is how you say "at least".
+//
+// Without that distinction `[]` matched a list of any length — so an arm
+// written first swallowed every arm after it, and `[a]` matched a pair. Every
+// example here writes `..rest` when it means a prefix, which is the reading the
+// length test now has: exact without a rest pattern, a minimum with one.
+fn count_of(v: List<Int>) -> String {
+    match v {
+        [] => { return "none"; }
+        [a] => { return "one:{}".format(a); }
+        [a, b] => { return "two:{}".format(a + b); }
+        [a, ..rest] => { return "many:{}".format(rest.len()); }
+        _ => { return "other"; }
+    }
+}
+assert(count_of([]) == "none");
+assert(count_of([7]) == "one:7");
+assert(count_of([2, 3]) == "two:5");
+assert(count_of([1, 2, 3, 4]) == "many:3");
+
+// The same rule where the arm order cannot rescue it: the empty pattern is
+// written *after* a longer one, so only an actually-empty list may reach it.
+fn empty_last(v: List<Int>) -> Int {
+    match v {
+        [a] => { return 1; }
+        [] => { return 0; }
+        _ => { return 9; }
+    }
+}
+assert(empty_last([]) == 0);
+assert(empty_last([5]) == 1);
+assert(empty_last([5, 6]) == 9);
+
 println("match: all assertions passed");
+
+// A sub-pattern inside a list or a map is a pattern like any other. It used to
+// be refused outright — "Compiler does not support nested refutable pattern
+// yet" — so a list pattern could check its *shape* and nothing about its
+// contents, which is most of what pattern matching is for.
+fn quadrant(p) -> String {
+    match p {
+        [0, 0] => { return "origin"; }
+        [0, y] => { return "on-y"; }
+        [x, 0] => { return "on-x"; }
+        [x, y] => { return "point"; }
+        _ => { return "not a pair"; }
+    }
+}
+assert(quadrant([0, 0]) == "origin");
+assert(quadrant([0, 5]) == "on-y");
+assert(quadrant([3, 0]) == "on-x");
+assert(quadrant([3, 4]) == "point");
+assert(quadrant([1]) == "not a pair");
+
+// A tagged map, which is what most protocol handling looks like.
+fn apply(msg) -> Int {
+    match msg {
+        {"op": "add", "n": n} => { return n + 1; }
+        {"op": "double", "n": n} => { return n * 2; }
+        _ => { return 0; }
+    }
+}
+assert(apply({"op": "add", "n": 4}) == 5);
+assert(apply({"op": "double", "n": 4}) == 8);
+assert(apply({"op": "nope", "n": 4}) == 0);
+
+// One function, six shapes. An unannotated parameter matched against several
+// patterns gives the scrutinee an open type, and a `match` arm asks a question
+// rather than stating a requirement — constraining the scrutinee to each arm's
+// shape reported the arms as a conflict with each other.
+fn shape(v) -> String {
+    match v {
+        [1, [a, 9]] => { return "nine"; }
+        [1, [a, b]] => { return "inner"; }
+        ["a", n] => { return "tagged"; }
+        [x, ..rest] => { return "head and {}".format(rest.len()); }
+        {"op": "add", "n": n} => { return "add"; }
+        _ => { return "other"; }
+    }
+}
+assert(shape([1, [2, 9]]) == "nine");
+assert(shape([1, [2, 3]]) == "inner");
+assert(shape(["a", 2]) == "tagged");
+assert(shape([0, 1, 2, 3]) == "head and 3");
+assert(shape({"op": "add", "n": 1}) == "add");
+assert(shape(5) == "other");
+
+// The `..rest` arm above is the one that pins where the binding is built: a map
+// reaches it, and running `SliceFrom` on a map raises "not sliceable" from an
+// arm that does not match. It is built inside the shape guard, and the slot is
+// seeded with an empty container of its own kind rather than with `nil` so that
+// both paths give it one type.
+fn guarded(v: List<Int>) -> String {
+    match v {
+        [n, _] if n > 3 => { return "big"; }
+        [x, ..rest] => { return "head and {}".format(rest.len()); }
+        _ => { return "other"; }
+    }
+}
+assert(guarded([5, 1]) == "big");
+assert(guarded([0, 1, 2, 3]) == "head and 3");
+assert(guarded([]) == "other");

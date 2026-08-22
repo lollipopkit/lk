@@ -1,0 +1,263 @@
+use { mmio_layout } from "layout";
+
+// The task table, and the frame a task starts life on.
+//
+// A task, on this machine, is three words: where its stack pointer is while it
+// is *not* running, which address space it runs in, and which kernel stack an
+// interrupt from it should land on. Everything else about switching is one
+// instruction — point RSP at another task's stack and let the same restore
+// sequence run — and that instruction is in the board's trampoline, because a
+// language cannot express "return on a different stack".
+//
+// The table lives at an address the caller chooses, for the reason every table
+// here does: a driver that picks an address is a driver that collides with the
+// next one. It is read from inside an interrupt, so every access goes through
+// `volatile_*` — a value the compiler kept in a register across a poll would be
+// a task table that never changes.
+
+// Two header words, then one slot per task.
+//
+//   header +0   how many slots are in use
+//   header +8   which slot is on the CPU right now
+//
+//   slot   +0   the saved stack pointer, valid while the task is not running
+//   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
+//   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
+//   slot   +24  free, ready, blocked, idle, or dead-and-waiting-to-be-reclaimed
+//   slot   +32  the tick a blocked task becomes ready at, or 0
+//   slot   +40  what a blocked task is waiting to be told, or 0
+mmio_layout! {
+    TASK_USED_OFFSET: 8,
+    TASK_CURRENT_OFFSET: 8,
+    => TASK_HEADER_SIZE
+}
+
+mmio_layout! {
+    TASK_RSP_OFFSET: 8,
+    TASK_CR3_OFFSET: 8,
+    TASK_STACK_OFFSET: 8,
+    TASK_STATE_OFFSET: 8,
+    TASK_WAKE_OFFSET: 8,
+    TASK_WAIT_OFFSET: 8,
+    => TASK_SLOT_SIZE
+}
+
+// What a slot is.
+//
+// A slot used to be either "below the count" or "above it", which is another way
+// of saying a task could be born and never die. A kernel where nothing exits is
+// a kernel where the table is a watermark; giving a task an end means a slot has
+// to be reusable, and reusable means a slot has to say what it is.
+//
+// `DEAD` is a state and not a step, and that is the whole design. A task cannot
+// release the stack it is standing on — the release would hand back the pages
+// holding the very frame that is about to return. So an exiting task marks
+// itself and stops, and something that is *not it* gives the pages back later.
+const TASK_FREE = 0;
+const TASK_READY = 1;
+const TASK_DEAD = 2;
+// Waiting for a moment that has not arrived. `TASK_WAKE_OFFSET` says which one,
+// as a tick count; whoever counts ticks is the one that puts the task back.
+//
+// A blocked task is the difference between a scheduler and a round-robin. Until
+// now every wait in this kernel was a spin with interrupts on — which works, and
+// which means the machine is at full tilt doing nothing, and which means a task
+// waiting a second is a second of every other task's time.
+const TASK_BLOCKED = 3;
+// The task that runs when there is nothing to run.
+//
+// Its own state rather than a slot number kept somewhere, because the two
+// questions the scheduler asks are "may I rotate onto this?" and "is this where
+// I go when nothing else will have me?" — and both are answered by the field it
+// is already reading. A kernel with no idle task and every task blocked has
+// nowhere to go: the last one out would be resumed anyway, which is a scheduler
+// running a task it has just been told is not runnable.
+const TASK_IDLE = 4;
+
+fn task_table_size(capacity: Int) -> Int {
+    return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
+}
+
+// Every access goes through these two, and through `volatile_*` inside them.
+// The table is read from an interrupt handler, so a value the compiler decided
+// to keep in a register across a poll would be a table that never changes.
+fn task_word(address: Int) -> Int {
+    let value = unsafe { volatile_read_u64(address as *mut u64) };
+    return value as Int;
+}
+
+fn task_set_word(address: Int, value: Int) {
+    unsafe { volatile_write_u64(address as *mut u64, value as u64); };
+}
+
+// A slot's field, by the named offset it lives at.
+//
+// One pair rather than a wrapper per field: the offset already says which field
+// it is, and a wrapper per field is six functions saying the same thing again.
+//
+// This was written when a bundled program could hold only 256 functions and six
+// of them were worth saving. That ceiling has since moved — the merge numbers
+// directly-called functions first — so what is left is the reason that survives
+// it, which is the only one worth writing down.
+fn task_field(base: Int, slot: Int, offset: Int) -> Int {
+    return task_word(base + TASK_HEADER_SIZE + slot * TASK_SLOT_SIZE + offset);
+}
+
+fn task_set_field(base: Int, slot: Int, offset: Int, value: Int) {
+    task_set_word(base + TASK_HEADER_SIZE + slot * TASK_SLOT_SIZE + offset, value);
+}
+
+// One task at boot: the one already running, on the stack the boot path gave
+// it. It is slot 0, and it never gets an address space of its own.
+fn task_table_init(base: Int, capacity: Int) {
+    for offset in 0..((task_table_size(capacity) / 8) as Int) {
+        task_set_word(base + offset * 8, 0);
+    }
+    // Slot 0 is the task already running, on the stack the boot path gave it.
+    // `TASK_FREE` is zero, so every other slot is already free from the zeroing
+    // above — which is why this only has to say what slot 0 is.
+    task_set_field(base, 0, TASK_STATE_OFFSET, TASK_READY);
+    task_set_word(base + TASK_USED_OFFSET, 1);
+}
+
+// The lowest slot nothing is using, or -1.
+//
+// Lowest rather than next: the point of an exit is that the slot comes back, and
+// a table that only ever grew would not need to look. The watermark is raised
+// when a slot past it is taken, so the scheduler still has a bound to sweep.
+fn task_find_free(base: Int, capacity: Int) -> Int {
+    for slot in 0..capacity {
+        if (task_field(base, slot, TASK_STATE_OFFSET) == TASK_FREE) {
+            return slot;
+        }
+    }
+    return 0 - 1;
+}
+
+fn task_state(base: Int, slot: Int) -> Int {
+    return task_field(base, slot, TASK_STATE_OFFSET);
+}
+
+fn task_set_state(base: Int, slot: Int, state: Int) {
+    task_set_field(base, slot, TASK_STATE_OFFSET, state);
+}
+
+// Marks a slot as waiting until `tick`, or for `channel` to be signalled, or
+// whichever comes first.
+//
+// Two ways to be woken and not one, because a driver needs both and needs them
+// together. A wait with only a channel is a wait that never ends if the device
+// is broken; a wait with only a deadline is a poll with extra steps. What a
+// driver actually wants to say is "until the card answers, but not for ever",
+// and that is one blocked task with two ways out.
+//
+// Zero means "not this one" for both. It is not an address a device lives at
+// and it is not a tick anything waits for, since a deadline is always in the
+// future when it is written.
+//
+// The state last, and that ordering is the same contract as everywhere else in
+// this table: the state is the word a waker reads to decide this slot is its
+// business, so a slot announced blocked before its deadline and channel are
+// written is one that wakes on whatever the fields last held.
+fn task_block_on(base: Int, slot: Int, tick: Int, channel: Int) {
+    task_set_field(base, slot, TASK_WAKE_OFFSET, tick);
+    task_set_field(base, slot, TASK_WAIT_OFFSET, channel);
+    task_set_field(base, slot, TASK_STATE_OFFSET, TASK_BLOCKED);
+}
+
+// Puts a blocked slot back, clearing both of its reasons for waiting.
+//
+// One function rather than two lines at each waker, because a slot woken with a
+// stale channel still in it is one the *next* signal on that channel wakes
+// again — while it is running, in the middle of something else.
+fn task_unblock(base: Int, slot: Int) {
+    task_set_field(base, slot, TASK_WAKE_OFFSET, 0);
+    task_set_field(base, slot, TASK_WAIT_OFFSET, 0);
+    task_set_field(base, slot, TASK_STATE_OFFSET, TASK_READY);
+}
+
+// Wakes every task waiting to be told about `channel`. Answers how many.
+//
+// Called from interrupt handlers: a device that has something to say signals
+// what it is, and whoever asked wakes. That is the whole of "blocking I/O" —
+// what makes it worth having over a poll is not the code but the machine, which
+// is asleep for the wait rather than turning over.
+fn task_wake_channel(base: Int, watermark: Int, channel: Int) -> Int {
+    if (channel == 0) {
+        return 0;
+    }
+    let woken = 0;
+    for slot in 0..watermark {
+        if (task_field(base, slot, TASK_STATE_OFFSET) != TASK_BLOCKED) {
+            continue;
+        }
+        if (task_field(base, slot, TASK_WAIT_OFFSET) != channel) {
+            continue;
+        }
+        task_unblock(base, slot);
+        woken = woken + 1;
+    }
+    return woken;
+}
+
+// Puts back every task whose moment has come. Answers how many.
+//
+// Swept rather than kept in a sorted queue: the table is sixteen slots and this
+// runs on a timer, so the scan is cheaper than the bookkeeping a queue would
+// need to stay correct across a task that is reaped while queued.
+fn task_wake_due(base: Int, watermark: Int, now: Int) -> Int {
+    let woken = 0;
+    for slot in 0..watermark {
+        if (task_field(base, slot, TASK_STATE_OFFSET) != TASK_BLOCKED) {
+            continue;
+        }
+        let deadline = task_field(base, slot, TASK_WAKE_OFFSET);
+        // Zero is "no deadline": this one is waiting to be told something, and
+        // the clock is not the one to tell it.
+        if (deadline == 0 || deadline > now) {
+            continue;
+        }
+        task_unblock(base, slot);
+        woken = woken + 1;
+    }
+    return woken;
+}
+
+// Builds the stack a task starts life on, and answers the stack pointer that
+// resumes it.
+//
+// It is the exact picture the interrupt path leaves behind, because that is
+// what the restore sequence will read: fifteen saved registers, and under them
+// the frame the CPU itself pushes — SS, RSP, RFLAGS, CS, RIP, high to low.
+// Getting the order wrong is not an error anything reports; it is a jump to
+// whatever the wrong slot held.
+//
+// `code` and `data` are what make a task a *user* task. Not what it runs, not
+// where its stack is — four numbers in this frame.
+// `saved_words` is how much the board's own save sequence leaves on the stack,
+// and it is asked of the board rather than counted here: that sequence is what
+// decides it, and a register added there has to appear in the frame a task
+// *starts* on too. Two numbers in two languages would be two places to add it,
+// and a frame short by one word is not an error anything reports — it is a
+// resume that reads its RIP out of whatever the next slot held.
+fn task_prepare_frame(top: Int, entry: Int, code: Int, data: Int, resume_sp: Int, saved_words: Int) -> Int {
+    let sp = top;
+    sp = sp - 8;
+    task_set_word(sp, data);          // SS
+    sp = sp - 8;
+    task_set_word(sp, resume_sp);     // the RSP the task resumes with
+    sp = sp - 8;
+    task_set_word(sp, 0x202);         // RFLAGS: interrupts enabled, bit 1 always set
+    sp = sp - 8;
+    task_set_word(sp, code);          // CS
+    sp = sp - 8;
+    task_set_word(sp, entry);         // RIP
+    // Zeroed rather than merely reserved: the first restore loads whatever is
+    // here into the saved registers, and a task should not begin life holding
+    // another task's numbers.
+    for _word in 0..saved_words {
+        sp = sp - 8;
+        task_set_word(sp, 0);
+    }
+    return sp;
+}

@@ -15,8 +15,8 @@ let pairs = [[1, "a"], [2, "b"], [3, "c"]];
 let nums = [];
 let labels = [];
 for (n, l) in pairs {
-  nums.push(n);
-  labels.push(l);
+    nums.push(n);
+    labels.push(l);
 }
 assert(nums == [1, 2, 3]);
 assert(labels == ["a", "b", "c"]);
@@ -25,14 +25,14 @@ assert(labels == ["a", "b", "c"]);
 let matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
 let firsts = [];
 for [head, ..tail] in matrix {
-  firsts.push(head);
+    firsts.push(head);
 }
 assert(firsts == [1, 4, 7]);
 
 // 5. String iteration (chars)
 let chars = [];
 for ch in "abc" {
-  chars.push(ch);
+    chars.push(ch);
 }
 assert(chars == ["a", "b", "c"]);
 
@@ -40,7 +40,7 @@ assert(chars == ["a", "b", "c"]);
 let scores = { "alice": 95, "bob": 87, "carol": 92 };
 let total = 0;
 for pair in scores {
-  total += pair[1];
+    total += pair[1];
 }
 assert(total == 274);
 
@@ -48,8 +48,8 @@ assert(total == 274);
 let data = [[1, 2], [3, 4], [5, 6]];
 let flattened = [];
 for [a, b] in data {
-  flattened.push(a);
-  flattened.push(b);
+    flattened.push(a);
+    flattened.push(b);
 }
 assert(flattened == [1, 2, 3, 4, 5, 6]);
 
@@ -57,8 +57,29 @@ assert(flattened == [1, 2, 3, 4, 5, 6]);
 let items = ["x", "y", "z"];
 let indices = [];
 for pair in items.enumerate() {
-  indices.push(pair[0]);
+    indices.push(pair[0]);
 }
 assert(indices == [0, 1, 2]);
+
+// A loop variable is asked a question, not just read. The element it holds
+// came out of a bounds-checked read, so it is a `Maybe` — and asking it
+// anything unwraps first, which is what happens outside a loop too: a method
+// on an absent value raises, catchably.
+let widths = [];
+for word in ["ab", "cde", "f"] { widths.push(word.len()); }
+assert(widths == [2, 3, 1]);
+
+let cased = [];
+for word in ["ab", "cd"] { cased.push(word.upper()); }
+assert(cased == ["AB", "CD"]);
+
+fn width_of(table: Map<String, String>, key: String) -> Int {
+    let asked = 0;
+    try { asked = table[key].len(); } catch e { asked = 0 - 1; }
+    return asked;
+}
+let table = {"a": "xy"};
+assert(width_of(table, "missing") == 0 - 1);
+assert(width_of(table, "a") == 2);
 
 println("for_loop_patterns: all assertions passed");

@@ -1,9 +1,51 @@
 use super::*;
 
-/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn`
-/// passes through, a typed string-keyed map converts (iteration order is
-/// preserved — the rebuild replays the source order, `vm_mirror`'s
-/// argument), `nil` becomes an empty map (the VM accepts a nil merge base).
+/// The `lkmap::KIND_*` number for a typed string-keyed map carrier, or `None`
+/// for anything else (a boxed map, a non-map).
+///
+/// One table, read by everything that tags a typed map handle: boxing
+/// (`dyn.from_typed_map`) and the merge overlay both need the same numbering,
+/// and a second copy of it would be a silent mismatch rather than an error.
+pub(crate) fn typed_map_kind(ty: Ty) -> Option<i64> {
+    Some(match ty {
+        Ty::MapStrI64 => 0,
+        Ty::MapStrF64 => 1,
+        Ty::MapStrBool => 2,
+        Ty::MapI64I64 => 3,
+        Ty::MapI64F64 => 4,
+        _ => return None,
+    })
+}
+
+/// The `lkdyn::TLIST_*` number for a typed list carrier, or `None` for anything
+/// else (a boxed list, a non-list).
+///
+/// The list counterpart of [`typed_map_kind`], and read by the same kinds of
+/// call sites for the same reason: one numbering, not two.
+pub(crate) fn typed_list_kind(ty: Ty) -> Option<i64> {
+    Some(match ty {
+        Ty::ListI64 => 0,
+        Ty::ListF64 => 1,
+        Ty::ListStr => 2,
+        _ => return None,
+    })
+}
+
+/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn` passes
+/// through and `nil` becomes an empty map (the VM accepts a nil merge base).
+///
+/// A **typed** map rejects, and the reason is worth keeping: it used to convert,
+/// with the claim that "iteration order is preserved — the rebuild replays the
+/// source order". It does not. Re-inserting a map's entries into a fresh table
+/// *in its iteration order* is a different insertion sequence from the one that
+/// built it, and once deletions are in the history the two tables iterate
+/// differently — the same mistake `DYN_RAW`'s doc warns about and that
+/// `a_boxed_typed_map_keeps_its_order` pins for the boxing path.
+///
+/// Here the copy is unavoidable (the merge helper wants a real `StrDynMap`), so
+/// the arm is *gone* rather than fixed: a fallback is correct, a silent reorder
+/// is not. Supporting it means a typed-map-aware merge in lkrt, with its own
+/// order-conformance test — separate work, not a table entry.
 pub(crate) fn to_dyn_map_handle(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -11,11 +53,8 @@ pub(crate) fn to_dyn_map_handle(
     ty: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
-    let helper = match ty {
-        Ty::MapStrDyn => return Ok(v),
-        Ty::MapStrI64 => "str_i64_to_dyn",
-        Ty::MapStrF64 => "str_f64_to_dyn",
-        Ty::MapStrBool => "str_bool_to_dyn",
+    match ty {
+        Ty::MapStrDyn => Ok(v),
         Ty::Nil => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -23,17 +62,10 @@ pub(crate) fn to_dyn_map_handle(
                 callee: AbiRef::new("map_h", "str_dyn_new"),
                 args: Vec::new(),
             });
-            return Ok(dst);
+            Ok(dst)
         }
-        _ => return Err(Unsupported::TypeMismatch { pc }),
-    };
-    let dst = ssa.new_val();
-    insts.push(Inst::Call {
-        dst: Some(dst),
-        callee: AbiRef::new("map_h", helper),
-        args: vec![v],
-    });
-    Ok(dst)
+        _ => Err(Unsupported::TypeMismatch { pc }),
+    }
 }
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
@@ -72,6 +104,20 @@ pub(crate) fn to_dyn_list_handle(
     ty: Ty,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
+    // A boxed value is a list handle one tag guard away, and every caller that
+    // wanted one wrote that guard itself — `chain` did, inline, and `zip` did
+    // not, which is the whole of why `xs.zip(ys)` refused when `ys` was a
+    // parameter. `dyn.as_list` aborts on a non-list tag, the loud error the VM
+    // raises for the same call.
+    if ty == Ty::Dyn {
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_list"),
+            args: vec![v],
+        });
+        return Ok(unboxed);
+    }
     let converter = match ty {
         Ty::ListDyn => return Ok(v),
         Ty::ListI64 => "i64_to_dyn",
@@ -106,6 +152,10 @@ pub(crate) fn dyn_boxable_ty(ty: Ty) -> bool {
             | Ty::MapStrI64
             | Ty::MapStrF64
             | Ty::MapStrBool
+            | Ty::MapI64I64
+            | Ty::MapI64F64
+            | Ty::Set
+            | Ty::Bytes
             | Ty::MaybeI64
             | Ty::MaybeF64
             | Ty::MaybeStr
@@ -130,7 +180,7 @@ pub(crate) fn read_channel_id(
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("dyn", "as_i64"),
+                callee: AbiRef::new("dyn", "as_handle"),
                 args: vec![v],
             });
             Ok(dst)
@@ -152,7 +202,7 @@ pub(crate) fn coerce_arg(
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
     if want == Ty::Dyn && ty != Ty::Dyn {
-        return to_dyn_any(ssa, insts, v, ty, pc);
+        return to_dyn(ssa, insts, v, ty, pc);
     }
     if ty != want {
         return Err(Unsupported::TypeMismatch { pc });
@@ -160,11 +210,22 @@ pub(crate) fn coerce_arg(
     Ok(v)
 }
 
-/// [`to_dyn`] extended to the nullable carriers: a `Maybe` boxes to its
-/// payload's tag when present and to nil when absent (`dyn.from_maybe_*`),
-/// preserving VM call semantics — a nil argument arrives as nil instead of
-/// hitting the scalar-context unwrap abort.
-pub(crate) fn to_dyn_any(
+/// Boxes a typed value into a `Dyn`.
+///
+/// A nullable carrier boxes to its payload's tag when present and to **nil**
+/// when absent (`dyn.from_maybe_*`), because that is what the value *is*: the
+/// VM has no `Maybe`, it has nil, and a carrier is this backend's way of
+/// carrying "the VM would have nil here". Boxing is the point at which that
+/// distinction stops mattering.
+///
+/// This used to be two functions — one that refused a carrier and one that did
+/// not — and every site except the call-argument marshaller reached for the
+/// refusing one. So `xs[i] + 1` with a bounds-checked element, which is what
+/// indexing *is*, dropped a whole module to the VM rather than lowering; the
+/// refusal was never a semantic choice, only an unfinished match. A scalar
+/// context still aborts on an absent value, but it reaches that through
+/// `convert`'s unwrap, not through here.
+pub(crate) fn to_dyn(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     v: ValueId,
@@ -176,14 +237,28 @@ pub(crate) fn to_dyn_any(
         Ty::MaybeF64 => "from_maybe_f64",
         Ty::MaybeStr => "from_maybe_str",
         Ty::MaybeBool => "from_maybe_bool",
-        _ => return to_dyn(ssa, insts, v, ty, pc),
+        _ => return to_dyn_plain(ssa, insts, v, ty, pc),
     };
-    let value = ssa.new_val();
+    let value_narrow = ssa.new_val();
     insts.push(Inst::MaybeValue {
-        dst: value,
+        dst: value_narrow,
         src: v,
         maybe_ty: ty,
     });
+    // `MaybeValue` hands back a `MaybeBool`'s half as the `Bool` it is, and
+    // `from_maybe_bool` takes the word — the same widening the present half
+    // gets just below. Without it the call is not well-typed IR, so `"" +
+    // m.get(k)` on a `Map<String, Bool>` failed Cranelift verification.
+    let value = if ty == Ty::MaybeBool {
+        let wide = ssa.new_val();
+        insts.push(Inst::ZextBool {
+            dst: wide,
+            src: value_narrow,
+        });
+        wide
+    } else {
+        value_narrow
+    };
     let present_b = ssa.new_val();
     insts.push(Inst::MaybePresent {
         dst: present_b,
@@ -204,13 +279,10 @@ pub(crate) fn to_dyn_any(
     Ok(boxed)
 }
 
-pub(crate) fn to_dyn(
-    ssa: &mut Ssa,
-    insts: &mut Vec<Inst>,
-    v: ValueId,
-    ty: Ty,
-    pc: usize,
-) -> Result<ValueId, Unsupported> {
+/// [`to_dyn`] for everything that is not a nullable carrier. Only [`to_dyn`]
+/// calls it; the split exists so the carrier arms have somewhere to fall
+/// through to.
+fn to_dyn_plain(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
     let from = match ty {
         Ty::Dyn => return Ok(v),
         Ty::I64 => "from_i64",
@@ -219,47 +291,56 @@ pub(crate) fn to_dyn(
         Ty::Nil => "from_nil",
         Ty::ListDyn => "from_list",
         Ty::MapStrDyn => "from_map",
-        // Typed string maps box via a value-boxing conversion (cold path:
-        // a typed map crossing a `try$call` cell boundary).
-        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {
-            let converter = match ty {
-                Ty::MapStrI64 => "str_i64_to_dyn",
-                Ty::MapStrF64 => "str_f64_to_dyn",
-                _ => "str_bool_to_dyn",
-            };
-            let converted = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(converted),
-                callee: AbiRef::new("map_h", converter),
-                args: vec![v],
+        // Both box by tagging the handle in place — no rebuild, so identity and
+        // any mutation ride along.
+        Ty::Set => "from_set",
+        Ty::Bytes => "from_bytes",
+        // A window too — in place, so the box keeps tracking the list it
+        // windows. Without a box it could not enter a list, a map, a struct
+        // field or a `try` value at all, which is why every one of those
+        // dropped the whole program to the VM.
+        Ty::SliceI64 => "from_slice",
+        // A typed map boxes **in place**, under a tag naming its carrier.
+        //
+        // It used to convert — `str_i64_to_dyn` rebuilds the map into a
+        // `str -> Dyn` one by re-inserting in iteration order. That is a
+        // re-representation, and the copy's layout is not the original's once
+        // deletions are in the history, so `println([m])` listed its entries in
+        // an order the VM never produces. `DYN_RAW`'s doc already said boxing
+        // must not re-represent a container; this is the same rule, applied
+        // where it had been missed.
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapI64I64 | Ty::MapI64F64 => {
+            let kind = typed_map_kind(ty).expect("checked by the arm");
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
             });
             let boxed = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(boxed),
-                callee: AbiRef::new("dyn", "from_map"),
-                args: vec![converted],
+                callee: AbiRef::new("dyn", "from_typed_map"),
+                args: vec![v, kind_v],
             });
             return Ok(boxed);
         }
-        // Typed lists box via an element-wise conversion (cold path: only
-        // emitted where a typed list actually meets a Dyn).
+        // A typed list boxes **in place** too, for the same reason the typed
+        // maps above do — and here the rebuild was losing more than an order.
+        // `let xs = [1]; let c = [xs]; xs.push(2); c[0].len()` answered 1 where
+        // the VM answers 2, and `c[0].push(9)` appended to the copy: both
+        // directions of aliasing, on programs that compiled fully native.
         Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
-            let converter = match ty {
-                Ty::ListI64 => "i64_to_dyn",
-                Ty::ListF64 => "f64_to_dyn",
-                _ => "str_to_dyn",
-            };
-            let converted = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(converted),
-                callee: AbiRef::new("list_h", converter),
-                args: vec![v],
+            let kind = typed_list_kind(ty).expect("checked by the arm");
+            let kind_v = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: kind_v,
+                value: Const::I64(kind),
             });
             let boxed = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(boxed),
-                callee: AbiRef::new("dyn", "from_list"),
-                args: vec![converted],
+                callee: AbiRef::new("dyn", "from_typed_list"),
+                args: vec![v, kind_v],
             });
             return Ok(boxed);
         }

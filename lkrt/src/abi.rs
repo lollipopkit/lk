@@ -40,6 +40,26 @@ pub(crate) fn flush_and_abort() -> ! {
     }
 }
 
+/// The exit of a program whose own error nobody caught.
+///
+/// Distinct from [`flush_and_abort`] on purpose: an uncaught raise is the
+/// *program* failing, not the runtime, and the VM reports it as exit status 1.
+/// Aborting instead made the same program die with SIGABRT (status 134), print
+/// `Aborted` from the shell, and — where core dumps are enabled — write one for
+/// a script that merely forgot a `catch`.
+pub(crate) fn flush_and_exit_failure() -> ! {
+    flush_c_stdio();
+    #[cfg(feature = "std")]
+    {
+        std::process::exit(1)
+    }
+    // Bare metal has no process to exit; the panic handler is the stop.
+    #[cfg(not(feature = "std"))]
+    {
+        panic!("Error: uncaught")
+    }
+}
+
 /// Flushes every C stdio stream (`fflush(NULL)`). Rust-side writers that share
 /// a stream with generated `printf` output call this first so the two buffers
 /// cannot interleave out of order.
@@ -53,11 +73,11 @@ pub(crate) fn flush_c_stdio() {
     }
 }
 
-/// FFI surface of [`flush_and_abort`] for generated code (`Term::Abort`).
+/// The generated-code guard exit (`Term::Abort`), kept under its ABI name.
+/// It does not abort: those guards mirror *catchable* VM errors, so this
+/// raises to the nearest `try` frame and, uncaught, exits 1 like the VM.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_abort() {
-    // Generated-code guards (`Term::Abort`) mirror catchable VM errors:
-    // raise first, abort only without a handler.
     crate::panic::raise_str("runtime error");
 }
 
@@ -94,17 +114,40 @@ pub extern "C" fn lkrt_abi_version() -> i64 {
     ABI_VERSION
 }
 
-/// Called at the start of a native binary's `main` with the ABI version the code
-/// was generated against. If the linked `lkrt` reports a different version the
-/// binary and runtime disagree on the calling/representation contract, so we
-/// abort with a clear message rather than execute with a mismatched ABI (this is
-/// a link/configuration error, never a reason to fall back to the VM).
+// `sigaltstack`/`sigaction` in C, because lkrt has no `libc` dependency to spell
+// their platform structs with — the same reason `try_trampoline.c` exists. Absent
+// on bare metal, where `build.rs` skips the C files and there are no signals.
+#[cfg(feature = "std")]
+unsafe extern "C" {
+    fn lk_install_stack_guard();
+}
+
+/// The program's start, called from a native binary's `main` before any user
+/// code, with the ABI version the code was generated against.
+///
+/// Two things happen here, which is why this is `rt_begin` and not `abi_check`
+/// (its name until the second one arrived):
+///
+/// * The ABI version is checked. A linked `lkrt` reporting a different version
+///   disagrees with the binary about the calling/representation contract, so this
+///   aborts with a clear message rather than executing under a mismatched ABI —
+///   a link/configuration error, never a reason to fall back to the VM.
+/// * The stack-exhaustion handler is installed (`stack_guard.c`). Runaway
+///   recursion used to die on SIGSEGV with exit 139 and no output at all, while
+///   the VM raised a catchable `call depth limit exceeded`. It costs nothing on
+///   the hot path: this runs once, and the handler only ever runs on a fault.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_abi_check(expected: i64) {
+pub extern "C" fn lkrt_rt_begin(expected: i64) {
     if expected != ABI_VERSION {
         crate::rt_eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
         flush_and_abort();
     }
+    #[cfg(feature = "std")]
+    // SAFETY: installs a signal handler and an alternate stack; both are
+    // process-wide, idempotent, and this runs once before any user code.
+    unsafe {
+        lk_install_stack_guard()
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -145,9 +188,10 @@ pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     }
 }
 
-/// Runtime `panic(message)` lowered from AOT builtin calls: always fatal,
-/// matching the VM's loud panic halt (the message text goes to stderr; the
-/// VM additionally prints a backtrace, which stderr comparisons don't cover).
+/// Runtime `panic(message)` lowered from AOT builtin calls: always fatal and
+/// uncatchable, matching the VM's loud panic halt down to the exit status
+/// (the message goes to stderr; the VM additionally prints a backtrace,
+/// which stderr comparisons don't cover).
 ///
 /// # Safety
 /// `message` must be null or a NUL-terminated string pointer.
@@ -160,7 +204,10 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
         unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
     };
     crate::rt_eprintln!("{text}");
-    flush_and_abort();
+    // Uncatchable in both backends, but the *status* has to agree: the VM's
+    // panic halt exits 1, so aborting here made the same program die with
+    // SIGABRT (134) once compiled.
+    flush_and_exit_failure();
 }
 
 /// Runtime `assert(cond)` lowered from AOT builtin calls: a false (zero)
@@ -169,8 +216,8 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
 pub extern "C" fn lkrt_assert(cond: i64) {
     if cond == 0 {
         // Catchable in the VM (a try around a failing assert recovers):
-        // raise to the nearest frame, abort when uncaught (same as before).
-        crate::panic::raise_str("Assertion failed");
+        // raise to the nearest frame, exit 1 when uncaught.
+        crate::panic::raise_str("assertion failed");
     }
 }
 
@@ -189,7 +236,7 @@ pub unsafe extern "C" fn lkrt_assert_msg(cond: i64, message: *const c_char) {
             // SAFETY: non-null message pointers are NUL-terminated per the ABI.
             unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
         };
-        crate::panic::raise_str(&format!("Assertion failed: {text}"));
+        crate::panic::raise_str(&format!("assertion failed: {text}"));
     }
 }
 
@@ -214,13 +261,23 @@ pub(crate) fn owned_c_string(value: impl AsRef<str>) -> Result<*mut c_char, Stri
     Ok(ptr)
 }
 
-pub(crate) fn aborting<T>(f: impl FnOnce() -> Result<T, String>) -> T {
+/// Runs a host operation whose failure is a *language* error — a missing file,
+/// an unreadable directory, a bad address — and raises it to the nearest `try`
+/// frame, exactly as the VM does.
+///
+/// It used to abort the process. That made the same `fs.read_dir("/nope")`
+/// catchable in the VM and fatal natively, with SIGABRT (status 134) instead of
+/// the VM's exit 1 — a backend disagreement about whether a program can handle
+/// its own IO failure. `set_last_error` still records the text for the ABI
+/// entries that report a status instead of raising.
+pub(crate) fn raising<T>(f: impl FnOnce() -> Result<T, String>) -> T {
     match f() {
         Ok(value) => value,
         Err(error) => {
+            // Both borrows are dropped before the raise: `raise_str` longjmps
+            // past Rust drops, so a live `RefCell` borrow would stay flagged.
             set_last_error(error.clone());
-            crate::rt_eprintln!("lkrt error: {error}");
-            flush_and_abort();
+            crate::panic::raise_str(&error)
         }
     }
 }

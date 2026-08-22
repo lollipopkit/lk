@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use lk_core::{
     macro_system::AstMacroOrigin,
     token::{Span, Token},
+    typ::ObservedBinding,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -50,6 +51,10 @@ pub(crate) struct LkDocIndex {
     pub(crate) decls: Vec<LkDecl>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every one is a distinct slice of the analysis the caller already has"
+)]
 pub(crate) fn document_hover(
     content: &str,
     uri: &Url,
@@ -58,9 +63,13 @@ pub(crate) fn document_hover(
     idx: usize,
     ast_macro_origins: &[AstMacroOrigin],
     package_modules: &HashMap<String, PathBuf>,
+    bindings: &[ObservedBinding],
 ) -> Hover {
     let index = scan_lk_docs(content);
     if let Some(hover) = declaration_hover(content, uri, tokens, spans, idx, &index) {
+        return hover;
+    }
+    if let Some(hover) = binding_type_hover(tokens, spans, idx, bindings) {
         return hover;
     }
     if let Some(hover) = package_doc_hover(tokens, idx, package_modules) {
@@ -130,6 +139,40 @@ fn render_decl_markdown(decl: &LkDecl, content: &str, uri: &Url, index: &LkDocIn
         out.push_str(&links.join(" | "));
     }
     out
+}
+
+/// The type of the binding the cursor is on.
+///
+/// Hover had no access to types at all: it read declaration lines out of the
+/// source text and looked names up in the stdlib catalog, which says nothing
+/// about a local. The document's type check knows, and now that it is recorded
+/// per binding with a position, hovering a name can answer with it.
+///
+/// A name can be bound more than once — different scopes, or a rebinding — so
+/// the nearest binding *at or before* the cursor wins, which is the one whose
+/// type the cursor's occurrence actually has.
+fn binding_type_hover(tokens: &[Token], spans: &[Span], idx: usize, bindings: &[ObservedBinding]) -> Option<Hover> {
+    let Token::Id(name) = tokens.get(idx)? else {
+        return None;
+    };
+    let cursor = spans.get(idx)?;
+    let binding = bindings
+        .iter()
+        .filter(|binding| &binding.name == name)
+        .filter(|binding| binding.span.start.offset <= cursor.start.offset)
+        .max_by_key(|binding| binding.span.start.offset)
+        // A use *above* the binding — a function body reading a top-level
+        // `const` declared below it — still has that binding's type.
+        .or_else(|| bindings.iter().find(|binding| &binding.name == name))?;
+
+    // Hover answers even when the type is only partly known — unlike a hint,
+    // there is a question here that deserves an answer — but the solver's
+    // variable numbering is not part of it.
+    let rendered = crate::analyzer::readable_type(&binding.ty).unwrap_or_else(|| "_".to_string());
+    Some(markdown_hover(
+        format!("```lk\n{}: {}\n```", binding.name, rendered),
+        Some(lsp_range_from_span(cursor)),
+    ))
 }
 
 fn ast_macro_origin_hover(span: Option<&Span>, origins: &[AstMacroOrigin]) -> Option<Hover> {
@@ -738,6 +781,37 @@ struct User { id: Int, name: String }
     }
 
     #[test]
+    fn hovering_a_binding_answers_with_its_checked_type() {
+        use lk_core::token::Tokenizer;
+
+        let uri = Url::parse("file:///tmp/test.lk").expect("uri");
+        let content = "let total = 1 + 2;\nprintln(total);\n";
+        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content).expect("tokenize");
+
+        let mut analyzer = crate::analyzer::LkAnalyzer::new();
+        let bindings = analyzer.document_types_for(content).bindings.clone();
+
+        // The `total` inside `println`, not the one being bound.
+        let use_idx = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| matches!(token, Token::Id(name) if name == "total"))
+            .map(|(idx, _)| idx)
+            .next_back()
+            .expect("a use of total");
+
+        let hover = document_hover(content, &uri, &tokens, &spans, use_idx, &[], &HashMap::new(), &bindings);
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup.value.contains("total: Int"),
+            "hover should carry the checked type, got: {}",
+            markup.value
+        );
+    }
+
+    #[test]
     fn stdlib_function_hover_renders_markdown_signature_docs_and_links() {
         let uri = Url::parse("file:///tmp/test.lk").expect("uri");
         let content = "math.floor(1.2)";
@@ -834,6 +908,7 @@ struct User { id: Int }
             debug_idx,
             &expanded.ast_macro_origins,
             &HashMap::new(),
+            &[],
         );
         let HoverContents::Markup(markup) = hover.contents else {
             panic!("expected markdown hover");

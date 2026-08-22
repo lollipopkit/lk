@@ -20,9 +20,10 @@ redrawn for reasons that have nothing to do with dragging.
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 FOREGROUND = (0x40, 0xFF, 0x90)
 FRAME_FOCUSED = (0xFF, 0xC0, 0x40)
@@ -67,9 +68,7 @@ def count_colour(path, colour, left, top, width, height):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         qemu = subprocess.Popen(

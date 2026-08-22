@@ -33,6 +33,10 @@ module.exports = grammar({
     [$.parenthesized_expression, $._argument_list],
     [$.or_pattern],
     [$.or_pattern, $.guarded_pattern],
+    // `p if x | y`: the `|` is the guard's bitwise-or, not the or-pattern's
+    // separator — `parse_guard_pattern` parses the guard as a whole
+    // expression, so it consumes the `|` before `parse_or_pattern` sees it.
+    [$.binary_expression, $.guarded_pattern],
     [$.index_access, $.list_expression],
     [$.index_access, $.match_arm],
     [$.if_statement],
@@ -55,7 +59,7 @@ module.exports = grammar({
   ],
 
   precedences: $ => [
-    ['binary_or', 'binary_and', 'binary_comparison', 'binary_range', 'binary_add', 'binary_mul', 'binary_unary', 'binary_nullish', 'binary_ternary'],
+    ['binary_or', 'binary_and', 'binary_bit_or', 'binary_bit_xor', 'binary_bit_and', 'binary_comparison', 'binary_shift', 'binary_range', 'binary_add', 'binary_mul', 'binary_unary', 'binary_nullish', 'binary_ternary'],
   ],
 
   word: $ => $._word_identifier,
@@ -260,7 +264,7 @@ module.exports = grammar({
 
     // ── Unary ─────────────────────────────────────────────────────────
     unary_expression: $ => prec.left('binary_unary', seq(
-      field('operator', '!'),
+      field('operator', choice('!', '~')),
       field('operand', $._expression),
     )),
 
@@ -280,6 +284,15 @@ module.exports = grammar({
       prec.left('binary_comparison', seq(field('left', $._expression), field('operator', choice('==', '!=', '<', '>', '<=', '>=')), field('right', $._expression))),
       prec.left('binary_and', seq(field('left', $._expression), '&&', field('right', $._expression))),
       prec.left('binary_or', seq(field('left', $._expression), '||', field('right', $._expression))),
+      // Bitwise. Below comparison and above the logical operators, which is
+      // where the parser puts them (`parse_bit_or` → `parse_bit_xor` →
+      // `parse_bit_and` → `parse_cmp`). Shifts are two adjacent comparison
+      // tokens in the lexer, so `<<`/`>>` are written out here rather than
+      // being single tokens.
+      prec.left('binary_bit_or', seq(field('left', $._expression), field('operator', '|'), field('right', $._expression))),
+      prec.left('binary_bit_xor', seq(field('left', $._expression), field('operator', '^'), field('right', $._expression))),
+      prec.left('binary_bit_and', seq(field('left', $._expression), field('operator', '&'), field('right', $._expression))),
+      prec.left('binary_shift', seq(field('left', $._expression), field('operator', choice('<<', '>>')), field('right', $._expression))),
     ),
 
     // ── Nullish coalescing ────────────────────────────────────────────
@@ -445,7 +458,20 @@ module.exports = grammar({
 
     type: $ => $._type,
 
-    primitive_type: $ => choice('Int', 'Float', 'String', 'Bool', 'Nil', 'Any'),
+    // The machine ints belong here because they take no parameters, the same
+    // way `Int` does. `Set`/`Tuple`/`Task`/`Channel`/`Box` do take one
+    // (`Set<T>`), so they want a rule of their own next to `list_type` rather
+    // than a bare keyword here; until then they fall through to
+    // `type_identifier`, which still highlights as a type.
+    primitive_type: $ => choice(
+      'Int', 'Float', 'String', 'Bool', 'Nil', 'Any',
+      // `Number` is `Int | Float`; `i64`/`f64` are second spellings of
+      // `Int`/`Float` — see `TYPE_SPELLINGS` in lk-values. One type, two
+      // names: the widthed one for code that is about widths, the plain one
+      // for code that is not.
+      'Number', 'f64',
+      'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'isize', 'usize',
+    ),
 
     list_type: $ => seq('List', '<', $._type, '>'),
 

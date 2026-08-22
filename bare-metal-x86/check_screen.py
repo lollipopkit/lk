@@ -16,9 +16,10 @@ memory".
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
+
+from kernel import kernel_image
 
 WIDTH, HEIGHT = 320, 200
 # What `program.lk` draws: a dark background, a title in amber at cell (1,1),
@@ -45,9 +46,7 @@ def read_ppm(path):
 
 
 def main():
-    image = sys.argv[1] if len(sys.argv) > 1 else (
-        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
-    )
+    image = kernel_image()
     with tempfile.TemporaryDirectory() as workdir:
         monitor = os.path.join(workdir, "monitor")
         shot = os.path.join(workdir, "screen.ppm")

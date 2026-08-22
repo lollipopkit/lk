@@ -28,9 +28,9 @@ assert(math.cos(0) == 1);
 
 // Distance between two 2D points
 fn distance(x1, y1, x2, y2) {
-  let dx = x2 - x1;
-  let dy = y2 - y1;
-  return math.sqrt(dx * dx * 1.0 + dy * dy * 1.0);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    return math.sqrt(dx * dx * 1.0 + dy * dy * 1.0);
 }
 let d = distance(0, 0, 3, 4);
 assert(d > 4.99);

@@ -2,11 +2,7 @@
 //!
 //! The public surface exposes the canonical `Instr` compiler/executor path.
 
-#[allow(dead_code, unused_imports)]
-pub(crate) mod alloc;
-#[allow(dead_code, unused_imports)]
 pub mod analysis;
-#[allow(dead_code, unused_imports)]
 mod analysis_queries;
 mod artifact;
 mod cache;
@@ -24,8 +20,6 @@ mod migration_guard;
 mod repl;
 mod resolver;
 mod runtime;
-#[allow(dead_code)]
-pub(crate) mod ssa;
 mod type_info;
 pub mod verify;
 #[cfg(all(test, feature = "std"))]
@@ -35,7 +29,7 @@ pub use artifact::*;
 pub use cache::*;
 pub use call_window::*;
 pub use compiler::*;
-pub use context::{MethodImpl, VmContext, receiver_type_scope};
+pub use context::{MethodImpl, VmContext, core_call_method_windowed, receiver_type_scope};
 #[cfg(test)]
 pub use exec::test_support;
 pub use exec::*;

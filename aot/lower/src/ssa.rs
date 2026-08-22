@@ -45,6 +45,10 @@ pub(crate) fn build_term(
         // and `Some` for a bare `return` in a Dyn-returning function (nil
         // crosses the call boundary boxed).
         Some(Exit::Ret(None)) | Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
+        // The outcome code was written into the flag cell by the block's own
+        // instructions; the body itself returns nothing, as it does on every
+        // other path.
+        Some(Exit::TryEscape { .. }) => Term::Ret(None),
         Some(Exit::Jump(pc)) => br(pc),
         Some(Exit::Cond { then_pc, else_pc, .. }) => {
             let cond = cond_val.expect("cond resolved");
@@ -56,6 +60,23 @@ pub(crate) fn build_term(
                 then_args: args_to(ssa, bi, t as usize),
                 else_blk: BlockId(e),
                 else_args: args_to(ssa, bi, e as usize),
+            }
+        }
+        // The body already ran, inside the trampoline; what is branched on is
+        // its *outcome*. True is "returned normally", so true is the
+        // fallthrough and false is the handler.
+        Some(Exit::TryRegion {
+            handler, fallthrough, ..
+        }) => {
+            let ok = cond_val.expect("try outcome resolved");
+            let f = block_id(fallthrough);
+            let h = block_id(handler);
+            Term::CondBr {
+                cond: ok,
+                then_blk: BlockId(f),
+                then_args: args_to(ssa, bi, f as usize),
+                else_blk: BlockId(h),
+                else_args: args_to(ssa, bi, h as usize),
             }
         }
         Some(Exit::FusedCmp {
@@ -149,6 +170,20 @@ pub(crate) struct Phi {
     pub(crate) operands: Vec<(usize, ValueId)>,
 }
 
+/// What a `Map<str, Dyn>` word is — the two carriers share one machine
+/// representation, so the MIR type cannot tell them apart.
+///
+/// The lattice has no "unknown" member on purpose: absence from
+/// [`Ssa::struct_facts`] is unknown, so a site that forgets to record a fact
+/// makes the lowering refuse rather than answer for the wrong one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum StructFact {
+    /// A `NewObject` instance of this declared struct.
+    Struct(String),
+    /// An ordinary map.
+    PlainMap,
+}
+
 pub(crate) struct Ssa {
     pub(crate) reg_count: usize,
     /// Register slots plus the virtual cell slots appended after them
@@ -158,8 +193,38 @@ pub(crate) struct Ssa {
     /// This function runs as a spawned goroutine (isolate): cell-capture
     /// writes go to the thread-private slots.
     pub(crate) spawned_isolate: bool,
+    /// What a capture parameter's runtime cell is agreed to hold, by capture
+    /// index and by the register that names it.
+    ///
+    /// Only a `try`-region cell input has one: a closure's own mutable capture
+    /// answers `Dyn`, which is what every cell read answered before. Keyed both
+    /// ways because the body asks by index (`LoadCellVal` on a `CellParam`) and
+    /// the enclosing frame asks by register (passing the same pointer one frame
+    /// further in).
+    pub(crate) cellparam_content: std::collections::HashMap<usize, Ty>,
+    cellparam_content_by_reg: std::collections::HashMap<u8, Ty>,
+    cellparam_reg: std::collections::HashMap<usize, u8>,
     pub(crate) preds: Vec<Vec<usize>>,
     pub(crate) current_def: Vec<Vec<Option<Reg>>>,
+    /// Slots a block ends with *no* value in, whatever its predecessors say.
+    ///
+    /// A `try` region's body runs in its own frame, so a register it wrote and
+    /// did not carry back through a cell holds, in the parent, neither the
+    /// body's value nor reliably the parent's old one. `current_def = None`
+    /// cannot express that: the read falls through to `read_recursive`, which
+    /// walks predecessors and finds the pre-region definition — the stale value
+    /// that would be a wrong answer.
+    ///
+    /// So the absence is recorded rather than inferred, and a read of it fails
+    /// with `UndefinedOperand` naming the register. That error is already how
+    /// the fixpoint discovers which registers need a cell, so poisoning turns
+    /// "is anything reading this after the region?" — a liveness question that
+    /// would otherwise need a table of every opcode's read operands — into a
+    /// question the SSA answers by being asked.
+    /// `Some(body)` names the try body whose write was left behind, so the
+    /// read's failure can say which region needs the cell rather than making
+    /// every region in the function guess.
+    pub(crate) poisoned: Vec<Vec<Option<u32>>>,
     pub(crate) sealed: Vec<bool>,
     pub(crate) filled: Vec<bool>,
     pub(crate) phis: Vec<Vec<Phi>>,
@@ -173,11 +238,40 @@ pub(crate) struct Ssa {
     /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
     /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
     pub(crate) dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
-    /// Empty-`[]` literal pcs forced to Dyn by a fixpoint retry.
-    pub(crate) dyn_empty_pcs: std::collections::HashSet<usize>,
-    /// Guessed empty-list handles → their literal pc (a consumer that
-    /// contradicts the guess reports `EmptyListGuessWrong`).
-    pub(crate) empty_guess: std::collections::HashMap<ValueId, (usize, Ty)>,
+    /// Loop-header phis a fixpoint retry has forbidden from inheriting
+    /// provenance (`(block, slot)`; see `Unsupported::PhiProvenance`).
+    pub(crate) no_provenance_slots: std::collections::HashSet<(usize, usize)>,
+    /// Container-literal pcs forced to a Dyn carrier by a fixpoint retry.
+    pub(crate) dyn_literal_pcs: std::collections::HashSet<usize>,
+    /// SSA values that hold a **closure**, built by
+    /// `lower_call::materialize_closure`.
+    ///
+    /// A closure is a `Dyn` like any other as far as the type lattice goes, and
+    /// that is not enough: `dyn.as_i64` is a legitimate lowering for a boxed
+    /// value the checker proved is an `Int`, and a nonsense one for a closure.
+    /// The consumers that unbox into a scalar ask this before they do
+    /// (`convert::read_typed_scalar`), so a lambda pushed into a guessed `[]`
+    /// widens the literal instead of compiling to an unbox that raises on the
+    /// one value the list was built to hold.
+    pub(crate) closure_values: std::collections::HashSet<ValueId>,
+    /// A closure value with an *empty* environment → the function it names.
+    ///
+    /// The same fact `GlobalRef::Lambda` carries, kept across the point where
+    /// the reference becomes a value. The list HOFs' typed fast paths ask which
+    /// function a callback register names, and a capture-free lambda still
+    /// answers that after it has been built — without this, a lambda used as a
+    /// value *anywhere* dropped every `xs.map(f)` in the module to the generic
+    /// path, which has no lowering for it at all.
+    pub(crate) closure_fidx: std::collections::HashMap<ValueId, u32>,
+    /// A container literal's handle → `(its pc, the carrier it was built with)`.
+    ///
+    /// The carrier is a *judgement about what goes in*, and a later store can
+    /// contradict it: an empty `[]` guesses, a `[1, 2]` reads its own elements,
+    /// a `{"a": 1}` reads its own values — and all three are equally wrong when
+    /// the program then puts a String in. Whoever finds the contradiction
+    /// reports `LiteralElemTypeContradicted` naming this pc, and the fixpoint
+    /// rebuilds that literal with a Dyn carrier.
+    pub(crate) literal_carrier: std::collections::HashMap<ValueId, (usize, Ty)>,
     /// Constant-range materializations (`NewRange` with all-const operands,
     /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
     /// a range key (`s[1..3]`) and emit a real slice.
@@ -199,6 +293,19 @@ pub(crate) struct Ssa {
     /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
     pub(crate) builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
+    /// Cells whose whole content is a lowering-time reference — a lambda, a
+    /// closure, a named function.
+    ///
+    /// `let f = |x| x + 1; let g = |x| f(x) * 2;` is the shape: `f` is captured,
+    /// so the compiler puts it in a cell, and what goes *into* that cell is a
+    /// `GlobalRef`, not a value. `StoreCellVal` read the register for an SSA
+    /// value, found none, and the program fell back — composing two lambdas,
+    /// which is most of what having them is for.
+    ///
+    /// One ref per cell. A cell that is also assigned something else refuses
+    /// (`Unsupported`, so the program falls back) rather than guessing which
+    /// meaning a later read wanted.
+    pub(crate) cell_refs: std::collections::HashMap<u32, GlobalRef>,
     /// Fresh ids for upvalue cells created by `LoadHeapConst`; each cell's
     /// content lives in virtual slot `reg_count + cid`, participating in the
     /// same Braun construction as registers (cross-block cell state gets
@@ -211,11 +318,25 @@ pub(crate) struct Ssa {
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
     pub(crate) edge_insts: Vec<Vec<Inst>>,
-    /// `NewObject` provenance: the struct type name behind a `MapStrDyn`
-    /// handle value (plan J1). Method calls and display contexts consult the
-    /// trait table through it; `Move` preserves the `ValueId`, so the entry
-    /// follows the value across registers for free.
-    pub(crate) struct_types: std::collections::HashMap<ValueId, String>,
+    /// What a `MapStrDyn` handle value actually is, when this function can
+    /// prove it (plan J1). Method calls and display contexts consult the trait
+    /// table through it; `Move` preserves the `ValueId`, so the entry follows
+    /// the value across registers for free.
+    ///
+    /// **Absence means unproven, not "a plain map".** A struct instance and a
+    /// map share the carrier, so a value with no fact might be either, and the
+    /// map *collection* operations refuse there — answering a struct's field
+    /// count for `len()` is a wrong answer, and the interpreter raises instead.
+    pub(crate) struct_facts: std::collections::HashMap<ValueId, StructFact>,
+    /// A list handle → the declared struct **all** its elements are, when they
+    /// agree.
+    ///
+    /// The element-side twin of [`Self::struct_types`]. An array of records is
+    /// an ordinary shape, and without this the struct identity stopped at the
+    /// list: `nodes[i].next` read a field of something the lowering had no name
+    /// for, so the declared field type could not be applied and the read stayed
+    /// boxed.
+    pub(crate) list_elem_struct: std::collections::HashMap<ValueId, String>,
 }
 
 impl Ssa {
@@ -235,8 +356,12 @@ impl Ssa {
             slot_count,
             capture_slots: capture_count,
             spawned_isolate: false,
+            cellparam_content: std::collections::HashMap::new(),
+            cellparam_content_by_reg: std::collections::HashMap::new(),
+            cellparam_reg: std::collections::HashMap::new(),
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
+            poisoned: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
             filled: vec![false; total_blocks],
             phis: (0..total_blocks).map(|_| Vec::new()).collect(),
@@ -245,16 +370,21 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             dyn_loop_slots: std::collections::HashSet::new(),
-            dyn_empty_pcs: std::collections::HashSet::new(),
-            empty_guess: std::collections::HashMap::new(),
+            no_provenance_slots: std::collections::HashSet::new(),
+            dyn_literal_pcs: std::collections::HashSet::new(),
+            closure_values: std::collections::HashSet::new(),
+            closure_fidx: std::collections::HashMap::new(),
+            literal_carrier: std::collections::HashMap::new(),
             range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
+            cell_refs: std::collections::HashMap::new(),
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
-            struct_types: std::collections::HashMap::new(),
+            struct_facts: std::collections::HashMap::new(),
+            list_elem_struct: std::collections::HashMap::new(),
         }
     }
 
@@ -272,6 +402,8 @@ impl Ssa {
 
     pub(crate) fn write_slot(&mut self, slot: usize, block: usize, value: Reg) {
         if slot < self.slot_count {
+            // A write is a definition, so it clears the absence.
+            self.poisoned[block][slot] = None;
             self.current_def[block][slot] = Some(value);
             if slot < self.reg_count {
                 self.builtin_regs.remove(&(block, slot as u8));
@@ -279,15 +411,99 @@ impl Ssa {
         }
     }
 
+    /// Records that `reg` names a compile-time reference from here on.
+    ///
+    /// **Clears the register's SSA definition**, which is the half of the
+    /// invariant that was missing. [`Ssa::write`] clears the reference, so a
+    /// value shadows a ref; a bare `builtin_regs` insert did *not* clear the
+    /// definition, so a ref did not shadow a value — and `read_slot` consults
+    /// `current_def` first. A register recycled from a value to a reference
+    /// therefore read back the **stale value**.
+    ///
+    /// `GlobalRef::ArgList` is the exception, and the only one: it is a *view*
+    /// of a materialized handle rather than a name for something with no value,
+    /// so both halves are meant to be live at once (see `NewList`, and the
+    /// `Move` arm that propagates the pair).
+    pub(crate) fn bind_ref(&mut self, block: usize, reg: u8, reference: GlobalRef) {
+        if (reg as usize) < self.reg_count && !matches!(reference, GlobalRef::ArgList(_)) {
+            self.current_def[block][reg as usize] = None;
+        }
+        self.builtin_regs.insert((block, reg), reference);
+    }
+
+    /// What `reg` holds, without recording a read or building a phi for it.
+    ///
+    /// For asking a *question* about a register — "is this already a value?" —
+    /// where reading it would commit to a definition the caller may not want.
+    pub(crate) fn peek(&self, reg: u8, block: usize) -> Option<Reg> {
+        self.current_def[block][reg as usize]
+    }
+
     pub(crate) fn read(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         self.read_slot(reg as usize, block, pc)
     }
 
     pub(crate) fn read_slot(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+        // Checked before `current_def`, and before the predecessor walk inside
+        // `read_recursive` — which is the whole point: the stale value is
+        // reachable through the predecessors, and it is exactly what must not
+        // be returned.
+        if let Some(body) = self.poisoned[block][slot] {
+            return Err(Unsupported::UndefinedOperand {
+                pc,
+                reg: slot,
+                body: Some(body),
+            });
+        }
         if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
         }
+        // A register the lowering tracks as a compile-time reference has no SSA
+        // value on purpose, so the generic "read before any definition" would be
+        // describing the bookkeeping rather than the program. Named here, once,
+        // rather than at each consumer: the consumers are every reader.
+        if let Some(reference) = self.builtin_regs.get(&(block, slot as u8)) {
+            return Err(Unsupported::ReferenceAsValue {
+                pc,
+                reg: slot,
+                what: reference.describe(),
+                lambda: match reference {
+                    GlobalRef::Lambda(fidx) | GlobalRef::Closure(fidx, _) | GlobalRef::UserFn(fidx) => Some(*fidx),
+                    _ => None,
+                },
+            });
+        }
         self.read_recursive(slot, block, pc)
+    }
+
+    /// Marks `slot` as having no value at the end of `block`.
+    ///
+    /// See [`Ssa::poisoned`]. Applied after a `try` region's write-backs, so a
+    /// register the region *did* carry back keeps the definition it was just
+    /// given.
+    pub(crate) fn poison(&mut self, reg: u8, block: usize, body: u32) {
+        if (reg as usize) < self.reg_count {
+            self.current_def[block][reg as usize] = None;
+            self.poisoned[block][reg as usize] = Some(body);
+        }
+    }
+
+    /// Records what capture parameter `k`, reached through `reg`, holds.
+    pub(crate) fn set_cellparam_content_ty(&mut self, k: usize, reg: u8, ty: Ty) {
+        self.cellparam_content.insert(k, ty);
+        self.cellparam_content_by_reg.insert(reg, ty);
+        self.cellparam_reg.insert(k, reg);
+    }
+
+    /// Which register names capture parameter `k`, for a cell input — what the
+    /// agreement in [`SigInfer::try_body_cell_input_tys`] is keyed by.
+    pub(crate) fn cellparam_reg(&self, k: usize) -> Option<u8> {
+        self.cellparam_reg.get(&k).copied()
+    }
+
+    /// What the cell `reg` names holds, when this function knows.
+    pub(crate) fn cellparam_content_ty(&self, reg: u8) -> Option<Ty> {
+        self.cellparam_content_by_reg.get(&reg).copied()
     }
 
     /// The virtual slot holding cell `cid`'s content.
@@ -363,6 +579,47 @@ impl Ssa {
             .all(|&pred| self.collect_builtin_ref(reg, pred, visited, found))
     }
 
+    /// The compile-time string a **register** holds at `block`, by whichever
+    /// route answers.
+    ///
+    /// One accessor rather than the `const_strs.get(v).or_else(reg_const_str)`
+    /// pair that was written out at six call sites: a name a lowering needs at
+    /// compile time (a struct's type name, a named argument, a bundled
+    /// module's member, a map key) is the same question every time, and two of
+    /// the sites had only half of it.
+    pub(crate) fn const_str_at(&mut self, reg: u8, block: usize, pc: usize) -> Option<String> {
+        self.read(reg, block, pc)
+            .ok()
+            .and_then(|(v, _)| self.const_str_value(v))
+            .or_else(|| self.reg_const_str(reg, block))
+    }
+
+    /// The compile-time string a *value* is, looking through a phi.
+    ///
+    /// [`Self::reg_const_str`] answers the same question from a register; this
+    /// one starts from the SSA value, which is what a consumer holding an
+    /// already-read operand has. A phi param redirects to its register's
+    /// reaching definitions — the compiler's loop-literal cache hoists a
+    /// template out of the loop body, so inside the loop `"{}"` *is* a phi
+    /// param and the plain map lookup saw nothing. `"{} ".format(i)` in a loop
+    /// fell back for that reason alone.
+    pub(crate) fn const_str_value(&self, v: ValueId) -> Option<String> {
+        if let Some(found) = self.const_strs.get(&v) {
+            return Some(found.clone());
+        }
+        let (phi_block, phi_reg) = self
+            .phis
+            .iter()
+            .enumerate()
+            .find_map(|(block, phis)| phis.iter().find(|phi| phi.param == v).map(|phi| (block, phi.reg)))?;
+        let mut visited = std::collections::HashSet::new();
+        let mut found: Option<String> = None;
+        let agreed = self.preds[phi_block]
+            .iter()
+            .all(|&p| self.collect_reg_const_str(phi_reg, p, &mut visited, &mut found));
+        agreed.then_some(found).flatten()
+    }
+
     pub(crate) fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
         let mut visited = std::collections::HashSet::new();
         let mut found: Option<String> = None;
@@ -431,7 +688,11 @@ impl Ssa {
                 return Ok(self.read_slot(slot, p, pc)?.1);
             }
         }
-        Err(Unsupported::UndefinedOperand { pc, reg: slot })
+        Err(Unsupported::UndefinedOperand {
+            pc,
+            reg: slot,
+            body: None,
+        })
     }
 
     pub(crate) fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
@@ -452,13 +713,27 @@ impl Ssa {
                 ty,
                 operands: Vec::new(),
             });
+            // Provenance seeded from the same filled predecessor the *type*
+            // came from, and for the same reason: a loop body is lowered
+            // before its header is sealed, so waiting for every edge means the
+            // body never sees the fact at all. The seed is optimistic and
+            // checked when the operands arrive — a back edge that disagrees
+            // reports `PhiProvenance`, and the retry lowers this slot without
+            // it (`no_provenance_slots`). The type does exactly this already.
+            if !self.no_provenance_slots.contains(&(block, slot)) {
+                self.seed_provenance(param, slot, block, pc);
+            }
             self.incomplete[block].push(idx);
             (param, ty)
         } else if self.preds[block].len() == 1 {
             let p = self.preds[block][0];
             self.read_slot(slot, p, pc)?
         } else if self.preds[block].is_empty() {
-            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
+            return Err(Unsupported::UndefinedOperand {
+                pc,
+                reg: slot,
+                body: None,
+            });
         } else {
             let ty = self.phi_ty(slot, block, pc)?;
             let ty = if self.dyn_loop_slots.contains(&(block, slot)) {
@@ -519,26 +794,8 @@ impl Ssa {
                 .iter()
                 .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
         {
-            // A guessed empty-`[]` handle read through a phi (loop/branch)
-            // keeps its provenance: every non-self edge must carry the same
-            // literal pc for the param to inherit it.
-            let mut guess: Option<(usize, Ty)> = None;
-            let mut all_guessed = true;
-            for &(_, v, _) in &incoming {
-                if v == param {
-                    continue;
-                }
-                match self.empty_guess.get(&v) {
-                    Some(&g) if guess.is_none() || guess == Some(g) => guess = Some(g),
-                    _ => {
-                        all_guessed = false;
-                        break;
-                    }
-                }
-            }
-            if all_guessed && let Some(g) = guess {
-                self.empty_guess.insert(param, g);
-            }
+            self.verify_seeded_provenance(param, &incoming, block, slot)?;
+            self.inherit_provenance(param, &incoming);
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {
                     v
@@ -570,6 +827,9 @@ impl Ssa {
                     | Ty::ListF64
                     | Ty::ListStr
                     | Ty::MapStrDyn
+                    | Ty::Set
+                    | Ty::Bytes
+                    | Ty::SliceI64
                     | Ty::MaybeI64
                     | Ty::MaybeF64
                     | Ty::MaybeStr
@@ -595,6 +855,128 @@ impl Ssa {
         Ok(())
     }
 
+    /// The declared struct behind a handle, when it is one.
+    pub(crate) fn struct_name(&self, v: ValueId) -> Option<&str> {
+        match self.struct_facts.get(&v) {
+            Some(StructFact::Struct(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether a handle is *provably* an ordinary map — the proof the map
+    /// collection operations need before they may answer from the carrier.
+    pub(crate) fn is_plain_map(&self, v: ValueId) -> bool {
+        self.struct_facts.get(&v) == Some(&StructFact::PlainMap)
+    }
+
+    /// Records a handle as an instance of a declared struct.
+    pub(crate) fn set_struct(&mut self, v: ValueId, name: String) {
+        self.struct_facts.insert(v, StructFact::Struct(name));
+    }
+
+    /// Records a handle as an ordinary map: a map literal, or a runtime call
+    /// whose result is one. Only a `NewObject` produces a struct, so anything
+    /// built any other way is this.
+    pub(crate) fn set_plain_map(&mut self, v: ValueId) {
+        self.struct_facts.insert(v, StructFact::PlainMap);
+    }
+
+    /// Copies provenance from the first filled predecessor's definition of
+    /// `slot` onto a not-yet-complete phi parameter.
+    fn seed_provenance(&mut self, param: ValueId, slot: usize, block: usize, pc: usize) {
+        let preds = self.preds[block].clone();
+        for p in preds {
+            if !self.filled[p] {
+                continue;
+            }
+            let Ok((v, _)) = self.read_slot(slot, p, pc) else {
+                return;
+            };
+            if let Some(&carrier) = self.literal_carrier.get(&v) {
+                self.literal_carrier.insert(param, carrier);
+            }
+            if let Some(fact) = self.struct_facts.get(&v).cloned() {
+                self.struct_facts.insert(param, fact);
+            }
+            if let Some(name) = self.list_elem_struct.get(&v).cloned() {
+                self.list_elem_struct.insert(param, name);
+            }
+            return;
+        }
+    }
+
+    /// What a phi inherits from its operands: the facts that are about *which
+    /// value this is*, not about its type.
+    ///
+    /// A phi is a new `ValueId`, so every side table keyed by one loses its
+    /// entry at a merge unless it is carried across. All three are carried the
+    /// same way — every non-self edge must agree — and they are carried in one
+    /// place so a fourth table cannot be added and forgotten. The guessed-`[]`
+    /// carrier had this; the struct identity did not, which is why a loop over
+    /// an array of records (`while c >= 0 { c = nodes[c].next; }`) lost the
+    /// declared field type at the loop header and stopped lowering.
+    fn inherit_provenance(&mut self, param: ValueId, incoming: &[(usize, ValueId, Ty)]) {
+        fn agreed<T: Clone + PartialEq>(
+            incoming: &[(usize, ValueId, Ty)],
+            param: ValueId,
+            get: impl Fn(ValueId) -> Option<T>,
+        ) -> Option<T> {
+            let mut agreed: Option<T> = None;
+            for &(_, v, _) in incoming {
+                if v == param {
+                    continue;
+                }
+                match get(v) {
+                    Some(found) if agreed.is_none() || agreed.as_ref() == Some(&found) => agreed = Some(found),
+                    _ => return None,
+                }
+            }
+            agreed
+        }
+        if let Some(carrier) = agreed(incoming, param, |v| self.literal_carrier.get(&v).copied()) {
+            self.literal_carrier.insert(param, carrier);
+        }
+        if let Some(fact) = agreed(incoming, param, |v| self.struct_facts.get(&v).cloned()) {
+            self.struct_facts.insert(param, fact);
+        }
+        if let Some(name) = agreed(incoming, param, |v| self.list_elem_struct.get(&v).cloned()) {
+            self.list_elem_struct.insert(param, name);
+        }
+    }
+
+    /// Checks a seeded phi provenance against the operands that have now
+    /// arrived.
+    ///
+    /// An optimistic seed the back edge contradicts has already been used by
+    /// the loop body, so it cannot simply be dropped here — the pass is
+    /// reported as retriable and the next one lowers this slot without the
+    /// seed, which is what `dyn_loop_phis` does for an optimistic *type*.
+    fn verify_seeded_provenance(
+        &mut self,
+        param: ValueId,
+        incoming: &[(usize, ValueId, Ty)],
+        block: usize,
+        slot: usize,
+    ) -> Result<(), Unsupported> {
+        let seeded_struct = self.struct_facts.get(&param).cloned();
+        let seeded_elem = self.list_elem_struct.get(&param).cloned();
+        if seeded_struct.is_none() && seeded_elem.is_none() {
+            return Ok(());
+        }
+        for &(_, v, _) in incoming {
+            if v == param {
+                continue;
+            }
+            if seeded_struct.is_some() && self.struct_facts.get(&v) != seeded_struct.as_ref() {
+                return Err(Unsupported::PhiProvenance { block, slot });
+            }
+            if seeded_elem.is_some() && self.list_elem_struct.get(&v) != seeded_elem.as_ref() {
+                return Err(Unsupported::PhiProvenance { block, slot });
+            }
+        }
+        Ok(())
+    }
+
     /// Emits the `dyn.from_*` boxing sequence for one phi edge into
     /// `edge_insts[pred]` (they land after the block body, before the
     /// terminator). Mirrors `to_dyn`, but targets an edge, not the body.
@@ -606,6 +988,12 @@ impl Ssa {
             Ty::Str => Some("from_str"),
             Ty::ListDyn => Some("from_list"),
             Ty::MapStrDyn => Some("from_map"),
+            // The three that box by tagging the handle in place. Missing here,
+            // a phi merging one of them with `nil` — `let out = try { … } catch
+            // e { … };` is exactly that shape — rejected the whole function.
+            Ty::Set => Some("from_set"),
+            Ty::Bytes => Some("from_bytes"),
+            Ty::SliceI64 => Some("from_slice"),
             _ => None,
         };
         if let Some(name) = simple {
@@ -647,12 +1035,26 @@ impl Ssa {
                     Ty::MaybeStr => "from_maybe_str",
                     _ => "from_maybe_bool",
                 };
-                let value = self.new_val();
+                let value_narrow = self.new_val();
                 self.edge_insts[pred].push(Inst::MaybeValue {
-                    dst: value,
+                    dst: value_narrow,
                     src: v,
                     maybe_ty: ty,
                 });
+                // A `MaybeBool`'s value half comes back as the `Bool` it is
+                // and the ABI entry takes the word — the same widening the
+                // present half gets just below. See `dyn_box::to_dyn`, which
+                // boxes the same carriers on the non-edge path.
+                let value = if ty == Ty::MaybeBool {
+                    let wide = self.new_val();
+                    self.edge_insts[pred].push(Inst::ZextBool {
+                        dst: wide,
+                        src: value_narrow,
+                    });
+                    wide
+                } else {
+                    value_narrow
+                };
                 let present_b = self.new_val();
                 self.edge_insts[pred].push(Inst::MaybePresent {
                     dst: present_b,
@@ -672,23 +1074,20 @@ impl Ssa {
                 });
                 Some(dst)
             }
+            // In place, under a tag naming the carrier — see `dyn_box`'s arm
+            // for the aliasing the old element-wise rebuild lost.
             Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
-                let converter = match ty {
-                    Ty::ListI64 => "i64_to_dyn",
-                    Ty::ListF64 => "f64_to_dyn",
-                    _ => "str_to_dyn",
-                };
-                let converted = self.new_val();
-                self.edge_insts[pred].push(Inst::Call {
-                    dst: Some(converted),
-                    callee: AbiRef::new("list_h", converter),
-                    args: vec![v],
+                let kind = crate::dyn_box::typed_list_kind(ty).expect("checked by the arm");
+                let kind_v = self.new_val();
+                self.edge_insts[pred].push(Inst::Const {
+                    dst: kind_v,
+                    value: Const::I64(kind),
                 });
                 let dst = self.new_val();
                 self.edge_insts[pred].push(Inst::Call {
                     dst: Some(dst),
-                    callee: AbiRef::new("dyn", "from_list"),
-                    args: vec![converted],
+                    callee: AbiRef::new("dyn", "from_typed_list"),
+                    args: vec![v, kind_v],
                 });
                 Some(dst)
             }

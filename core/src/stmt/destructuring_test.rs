@@ -276,4 +276,48 @@ mod tests {
         let display_str = format!("{}", stmt);
         assert!(display_str.contains("let {\"name\": name, \"age\": 0..=120} = {};"));
     }
+
+    /// A binding takes *one* pattern. The parser used to slice out everything
+    /// before `=`, parse a prefix of it, and drop the rest without a word — so
+    /// `let mut s = 0;` bound `mut`, threw `s` away, and only failed later at
+    /// the use of `s`. Every leftover token must be an error at the binding.
+    #[test]
+    fn a_binding_pattern_cannot_leave_tokens_behind() {
+        fn parse_error(source: &str) -> String {
+            let tokens = Tokenizer::tokenize(source).expect("tokenize");
+            let err = StmtParser::new(&tokens)
+                .parse_program()
+                .expect_err("trailing tokens after the pattern must not parse");
+            err.to_string()
+        }
+
+        for source in [
+            "let a b = 1;",
+            "let x [1] = 5;",
+            "const k junk = 7;",
+            "let [x] y = [1];",
+        ] {
+            let message = parse_error(source);
+            assert!(
+                message.contains("after the pattern"),
+                "{source} should report the leftover tokens, said: {message}"
+            );
+        }
+
+        // `mut` lexes as an ordinary identifier, so this is the shape a Rust
+        // habit produces. It gets its own message instead of the generic one.
+        let message = parse_error("let mut s = 0;");
+        assert!(
+            message.contains("`mut` is not a binding modifier"),
+            "`let mut` should name the actual problem, said: {message}"
+        );
+
+        // Valid patterns are untouched.
+        for source in ["let a = 1;", "let [x, ..r] = [1, 2];", "let {\"k\": v} = {};"] {
+            let tokens = Tokenizer::tokenize(source).expect("tokenize");
+            StmtParser::new(&tokens)
+                .parse_program()
+                .unwrap_or_else(|e| panic!("{source} should still parse, said: {e}"));
+        }
+    }
 }

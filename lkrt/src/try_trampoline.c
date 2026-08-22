@@ -1,23 +1,15 @@
-/* Native protected-call trampoline for the Cranelift backend (deep-coverage
- * plan G: `try$call`).
+/* Protected-region trampoline for the Cranelift backend (deep-coverage plan G).
  *
  * Cranelift cannot emit `setjmp` (a `returns_twice` call its SSA/regalloc model
- * does not support), so the string-IR path's inline `_setjmp` has no Cranelift
- * equivalent. This trampoline hoists the `setjmp` into a C frame that outlives
- * the try-body call and is the `_longjmp` target: it drives the same lkrt
- * protocol the generated code otherwise would (`lkrt_rt_try_push` → `_setjmp` →
- * body / `lkrt_rt_try_pop`, or `lkrt_rt_current_error` on a caught raise).
+ * does not support). This trampoline hoists the `setjmp` into a C frame that
+ * outlives the try-body call and is the `_longjmp` target: it drives the same
+ * lkrt protocol the generated code otherwise would (`lkrt_rt_try_push` →
+ * `_setjmp` → body / `lkrt_rt_try_pop`).
  *
- * The try-body is a lowered `lk_fn_N` returning `LkDyn` by value; only
- * integer/pointer-width parameters are supported (the Cranelift lowering rejects
- * float/carrier params and passes each argument as one `i64` word), so a fixed
- * arity switch covers every callable shape without touching the FP registers.
+ * The try-body is a lowered `lk_fn_N` taking one argument: the address of the
+ * caller's word buffer, which it reads its own inputs out of. So this file has
+ * no idea how many values a region crosses, and nothing here caps it.
  */
-
-typedef struct LkDyn {
-    long long tag;
-    long long payload;
-} LkDyn;
 
 /* lkrt runtime hooks (Rust `#[no_mangle] extern "C"`, linked from the same
  * staticlib). `_setjmp` is the BSD-semantics variant (no signal-mask
@@ -27,53 +19,48 @@ typedef struct LkDyn {
 extern int _setjmp(void *env);
 extern void *lkrt_rt_try_push(void);
 extern void lkrt_rt_try_pop(void);
-extern LkDyn lkrt_rt_current_error(void);
 
-static LkDyn lk_call_body(const void *body, long long argc, const long long *a) {
-    switch (argc) {
-    case 0:
-        return ((LkDyn(*)(void))body)();
-    case 1:
-        return ((LkDyn(*)(long long))body)(a[0]);
-    case 2:
-        return ((LkDyn(*)(long long, long long))body)(a[0], a[1]);
-    case 3:
-        return ((LkDyn(*)(long long, long long, long long))body)(a[0], a[1], a[2]);
-    case 4:
-        return ((LkDyn(*)(long long, long long, long long, long long))body)(a[0], a[1], a[2], a[3]);
-    case 5:
-        return ((LkDyn(*)(long long, long long, long long, long long, long long))body)(a[0], a[1], a[2], a[3],
-                                                                                        a[4]);
-    case 6:
-        return ((LkDyn(*)(long long, long long, long long, long long, long long, long long))body)(
-            a[0], a[1], a[2], a[3], a[4], a[5]);
-    case 7:
-        return ((LkDyn(*)(long long, long long, long long, long long, long long, long long, long long))body)(
-            a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
-    case 8:
-        return ((LkDyn(*)(long long, long long, long long, long long, long long, long long, long long,
-                          long long))body)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-    default:
-        /* The Cranelift lowering caps arity at LK_TRY_MAX_ARGS and falls back to
-         * the string-IR path above it, so this is unreachable. */
-        __builtin_trap();
-    }
-}
-
-/* Runs `body(argv[0..argc])` under a fresh try frame. On normal return, writes
- * `*out_ok = 1` and returns the body's `LkDyn`. On a raise inside the body, the
- * `_longjmp` lands here with a non-zero `_setjmp` result: writes `*out_ok = 0`
- * and returns the caught error (`lkrt_rt_current_error`). The failure path's
- * handler pop already happened inside lkrt's raise, matching the string-IR
- * catch arm (which likewise does not pop on the raise path). */
-LkDyn lkrt_rt_try_call(const void *body, long long argc, const long long *argv, long long *out_ok) {
+/* Runs `body(argv)` under a fresh try frame, for the `try { … } catch e { … }`
+ * *statement* — where the body produces no value and the only question is
+ * whether it finished.
+ *
+ * Returns 1 when the body returned, 0 when it raised. The caught value stays
+ * where `lkrt_rt_current_error` can be asked for it, so the caller reads it
+ * only on the path that needs it.
+ *
+ * The body reads its inputs out of `argv` itself (`body_signature` in
+ * `aot/codegen/src/clif.rs`), which is why there is no arity here. There used to
+ * be: a switch casting `body` to one of nine `(long long, …)` prototypes, with a
+ * trapping `default`. It reloaded a buffer the caller had already filled, and it
+ * put a ceiling of eight on how many values a region could cross — past which
+ * the lowering refused a program that was otherwise fine. */
+long long lkrt_rt_try_region(const void *body, const long long *argv) {
     void *buf = lkrt_rt_try_push();
     if (_setjmp(buf) == 0) {
-        LkDyn r = lk_call_body(body, argc, argv);
+        ((void (*)(const long long *))body)(argv);
         lkrt_rt_try_pop();
-        *out_ok = 1;
-        return r;
+        return 1;
     }
-    *out_ok = 0;
-    return lkrt_rt_current_error();
+    /* The raise path's pop already happened inside lkrt's raise. */
+    return 0;
+}
+
+/* Runs `thunk(state)` under a fresh try frame, for a caller that has a closure
+ * rather than a lowered body — a spawned task.
+ *
+ * A raise is thread-local: the handler stack a `try` pushes lives on the thread
+ * that pushed it, and a spawned task starts with an empty one. So a raise inside
+ * a task had no handler at all and took the uncaught path, which prints and
+ * exits the *process* — where the interpreter delivers it to `task.await`.
+ *
+ * Returns 1 when the thunk returned, 0 when it raised; the raised value is
+ * `lkrt_rt_current_error()` on this thread. */
+long long lkrt_rt_try_thunk(void (*thunk)(void *), void *state) {
+    void *buf = lkrt_rt_try_push();
+    if (_setjmp(buf) == 0) {
+        thunk(state);
+        lkrt_rt_try_pop();
+        return 1;
+    }
+    return 0;
 }

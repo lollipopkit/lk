@@ -1,0 +1,180 @@
+use { mmio_layout } from "layout";
+
+// Ethernet framing and ARP, which is the smallest exchange that proves a NIC
+// works in both directions.
+//
+// Smallest, and also the only one available: a machine with no IP stack cannot
+// send anything that expects a reply, except this. ARP is one frame out, one
+// frame back, answered by anything on the segment that owns the address asked
+// for — including the host side of an emulated network, which is what makes it
+// checkable without a second machine.
+//
+// It is also the one exchange where a *wrong* answer is distinguishable from no
+// answer. A reply carries the address that was asked for and the hardware
+// address that owns it, so a driver that received a frame at random cannot pass:
+// the operation code has to be 2, the sender address has to be the one asked
+// about, and the target has to be the card that asked.
+
+// Ethernet: destination, source, type. Everything after is the payload.
+//
+// The offsets are the widths added up, by the compiler. Written out by hand they
+// are four numbers that have to agree, and the one that goes wrong is the header
+// size — because it is the only one nothing else checks.
+mmio_layout! {
+    ETH_DEST: 6,
+    ETH_SOURCE: 6,
+    ETH_TYPE: 2,
+    => ETH_HEADER_SIZE
+}
+
+const ETH_TYPE_ARP = 0x0806;
+
+// ARP over Ethernet and IPv4, which fixes every length in the packet.
+//
+// Ten fields, of five different widths, and the two `1`s in the middle are what
+// makes writing these by hand a mistake waiting to happen: every offset after
+// them is odd-looking and correct, which is exactly the shape a reader checking
+// by eye will "fix".
+mmio_layout! {
+    ARP_HTYPE: 2,
+    ARP_PTYPE: 2,
+    ARP_HLEN: 1,
+    ARP_PLEN: 1,
+    ARP_OPER: 2,
+    ARP_SENDER_MAC: 6,
+    ARP_SENDER_IP: 4,
+    ARP_TARGET_MAC: 6,
+    ARP_TARGET_IP: 4,
+    => ARP_SIZE
+}
+
+const ARP_HTYPE_ETHERNET = 1;
+const ARP_PTYPE_IPV4 = 0x0800;
+const ARP_OPER_REQUEST = 1;
+const ARP_OPER_REPLY = 2;
+
+const MAC_SIZE = 6;
+const IP_SIZE = 4;
+
+// A whole ARP request is 42 bytes.
+const ARP_FRAME_SIZE = ETH_HEADER_SIZE + ARP_SIZE;
+
+// And Ethernet's minimum frame is 60, so an ARP request goes out padded.
+//
+// Padded *here*, by the sender, and not left to the card. The controller has a
+// pad-short-packets bit and this driver sets it, but that is a property of one
+// controller: QEMU's model of this card does not implement it, and a driver that
+// depended on it would put 42-byte runts on the wire — carried by some paths,
+// discarded by others, and passing every test written against the emulator.
+// A frame is the frame layer's business.
+const ETH_MIN_FRAME = 60;
+
+// Named for the frame rather than for the operation: `byte_at` is what a
+// buffer-walking helper wants to be called, and the tar reader next door got
+// there first. Bundling flattens every module into one namespace, so the second
+// one to use a name is the one that has to say what it is about.
+fn frame_byte(address: Int) -> Int {
+    let value = unsafe { volatile_read_u8(address as *mut u8) };
+    return value as Int;
+}
+
+fn frame_set_byte(address: Int, value: Int) {
+    unsafe { volatile_write_u8(address as *mut u8, value as u8); };
+}
+
+// Network byte order is big-endian, which is the opposite of everything else on
+// this machine. Written out rather than done inline at each of the six places a
+// 16-bit field appears, because getting one of them backwards produces a packet
+// that is *almost* right and is answered by nobody.
+fn set_be16(address: Int, value: Int) {
+    frame_set_byte(address, ((value / 0x100) as Int) & 0xff);
+    frame_set_byte(address + 1, value & 0xff);
+}
+
+fn be16_at(address: Int) -> Int {
+    return frame_byte(address) * 0x100 + frame_byte(address + 1);
+}
+
+fn copy_bytes(destination: Int, source: Int, count: Int) {
+    for index in 0..count {
+        frame_set_byte(destination + index, frame_byte(source + index));
+    }
+}
+
+fn bytes_equal(a: Int, b: Int, count: Int) -> Bool {
+    for index in 0..count {
+        if (frame_byte(a + index) != frame_byte(b + index)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn fill_bytes(address: Int, value: Int, count: Int) {
+    for index in 0..count {
+        frame_set_byte(address + index, value);
+    }
+}
+
+// Builds an ARP request into `frame` and answers its length.
+//
+// `sender_mac` and the two IPs are addresses of the bytes, not the values: a MAC
+// is six bytes and an IPv4 address is four, and neither fits the machine word
+// this language counts in without a packing convention that would then have to
+// be undone at every use.
+fn arp_build_request(frame: Int, sender_mac: Int, sender_ip: Int, target_ip: Int) -> Int {
+    // Broadcast: the whole point of the request is that the driver does not know
+    // which hardware address to send it to.
+    fill_bytes(frame + ETH_DEST, 0xff, MAC_SIZE);
+    copy_bytes(frame + ETH_SOURCE, sender_mac, MAC_SIZE);
+    set_be16(frame + ETH_TYPE, ETH_TYPE_ARP);
+
+    let arp = frame + ETH_HEADER_SIZE;
+    set_be16(arp + ARP_HTYPE, ARP_HTYPE_ETHERNET);
+    set_be16(arp + ARP_PTYPE, ARP_PTYPE_IPV4);
+    frame_set_byte(arp + ARP_HLEN, MAC_SIZE);
+    frame_set_byte(arp + ARP_PLEN, IP_SIZE);
+    set_be16(arp + ARP_OPER, ARP_OPER_REQUEST);
+    copy_bytes(arp + ARP_SENDER_MAC, sender_mac, MAC_SIZE);
+    copy_bytes(arp + ARP_SENDER_IP, sender_ip, IP_SIZE);
+    // The field being asked about, so zero rather than broadcast: this is not
+    // where the frame is going, it is the question.
+    fill_bytes(arp + ARP_TARGET_MAC, 0, MAC_SIZE);
+    copy_bytes(arp + ARP_TARGET_IP, target_ip, IP_SIZE);
+
+    // Zeroed rather than merely reserved: the padding goes on the wire, and a
+    // frame that carried whatever was in the buffer would leak it to the
+    // segment. Ethernet's own trailer conventions are why a receiver ignores
+    // these bytes, not a reason to leave them undefined.
+    fill_bytes(frame + ARP_FRAME_SIZE, 0, ETH_MIN_FRAME - ARP_FRAME_SIZE);
+    return ETH_MIN_FRAME;
+}
+
+// Whether `frame` is a reply to a request for `target_ip`, addressed to
+// `our_mac`. If so, the answering hardware address is copied into `out`.
+//
+// Four things checked, and each rules out a different way of passing without
+// having worked: the ethertype rules out any other traffic on the segment, the
+// operation rules out this card hearing its *own* request looped back, the
+// sender address rules out a reply about some other host, and the destination
+// rules out a broadcast that was never meant for this card.
+fn arp_match_reply(frame: Int, length: Int, our_mac: Int, target_ip: Int, out: Int) -> Bool {
+    if (length < ARP_FRAME_SIZE) {
+        return false;
+    }
+    if (be16_at(frame + ETH_TYPE) != ETH_TYPE_ARP) {
+        return false;
+    }
+    let arp = frame + ETH_HEADER_SIZE;
+    if (be16_at(arp + ARP_OPER) != ARP_OPER_REPLY) {
+        return false;
+    }
+    if (!bytes_equal(arp + ARP_SENDER_IP, target_ip, IP_SIZE)) {
+        return false;
+    }
+    if (!bytes_equal(frame + ETH_DEST, our_mac, MAC_SIZE)) {
+        return false;
+    }
+    copy_bytes(out, arp + ARP_SENDER_MAC, MAC_SIZE);
+    return true;
+}

@@ -7,7 +7,7 @@ fn artifact(consts: ConstPoolData, code: Vec<u32>, register_count: u16) -> Modul
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -72,7 +72,7 @@ fn lowers_zero_capture_lambda_global_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["inc".to_string()],
@@ -117,7 +117,7 @@ fn lowers_local_lambda_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -161,7 +161,7 @@ fn rejects_capturing_closure() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: Vec::new(),
@@ -203,7 +203,7 @@ fn rejects_reassigned_lambda_global() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["f".to_string()],
@@ -240,7 +240,7 @@ fn lowers_direct_call() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["add".to_string()],
@@ -349,7 +349,7 @@ fn dead_function_is_skipped() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["dead".to_string()],
@@ -395,7 +395,7 @@ fn monomorphizes_f64_parameter() {
         version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
         module: ModuleData {
-            type_scope: lk_core::vm::TypeScope::anonymous(),
+            type_scope: lk_core::val::TypeScope::anonymous(),
             entry: 0,
             type_info: Default::default(),
             globals: vec!["f".to_string()],
@@ -1285,4 +1285,108 @@ fn int_add_coerces_mixed_operands() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(mir.functions[0].ret, Ty::F64);
+}
+
+/// A container-typed module global keeps its own type.
+///
+/// `container_ty` decides two things at once — which globals keep their type,
+/// and which are *refused* when a slot joins to `Dyn`. A container missing from
+/// it is therefore both boxed and not refused, which is the definition of
+/// miscompiled: `Ty::Bytes`, `Ty::Set`, `Ty::MapStrDyn` and `Ty::SliceI64` were
+/// missing, and
+///
+/// ```lk
+/// let b = "abc".bytes();
+/// fn f(n: Int) -> Int { return b[n] ?? -1; }
+/// ```
+///
+/// printed `98` interpreted and died with `runtime type error` compiled, for
+/// any index at all. The same value as a parameter or a local was fine, and so
+/// were `List` and `String` globals — which is why no example, no differential
+/// case and no fuzz seed had ever shown it.
+///
+/// Asserted on the classification rather than on a compiled program, because
+/// the property is "every handle type is listed" and a program can only ever
+/// show one of them at a time.
+#[test]
+fn every_handle_type_counts_as_a_container_global() {
+    use lk_aot_mir::Ty;
+
+    for ty in [
+        Ty::ListDyn,
+        Ty::ListI64,
+        Ty::ListF64,
+        Ty::ListStr,
+        Ty::SliceI64,
+        Ty::MapStrDyn,
+        Ty::MapStrI64,
+        Ty::MapI64I64,
+        Ty::MapStrF64,
+        Ty::MapI64F64,
+        Ty::MapStrBool,
+        Ty::Set,
+        Ty::Bytes,
+    ] {
+        assert!(
+            crate::inst::global::container_ty(ty),
+            "{ty:?} is a handle: boxing it into a `Dyn` global makes a second container"
+        );
+    }
+
+    for ty in [Ty::I64, Ty::F64, Ty::Bool, Ty::Str, Ty::Nil, Ty::Dyn] {
+        assert!(
+            !crate::inst::global::container_ty(ty),
+            "{ty:?} copies into a slot with nothing lost"
+        );
+    }
+}
+
+/// Recording a compile-time reference clears the register's SSA definition —
+/// the other half of the invariant [`Ssa::write`] already keeps in the opposite
+/// direction, and the half that was missing.
+///
+/// The bytecode reuses registers, so a lambda's `MakeClosure` lands on the slot
+/// a container literal was loaded into a moment earlier:
+///
+/// ```text
+/// 0000 LoadHeapConst r1 #0     ; []
+/// 0001 Move r0 r1              ; fs = r0
+/// 0002 MakeClosure r1 …        ; the lambda, into the slot the list was in
+/// 0003 ListPush r0 r1
+/// ```
+///
+/// `read_slot` consults `current_def` before `builtin_regs`, so with the
+/// definition left in place the push read the **list** back and pushed it into
+/// itself. `let fs = []; fs.push(|x| x + 1);` compiled, answered `List` for
+/// `typeof(fs[0])` where the interpreter answers `Function`, and made
+/// `println(fs)` recurse until the stack ran out.
+#[test]
+fn binding_a_reference_clears_the_registers_value() {
+    let mut ssa = Ssa::new(4, 0, 0, vec![Vec::new()], 1);
+    let value = ssa.new_val();
+    ssa.write(1, 0, (value, Ty::ListI64));
+    assert!(ssa.read(1, 0, 0).is_ok(), "the register holds a value to begin with");
+
+    ssa.bind_ref(0, 1, GlobalRef::Lambda(7));
+    let err = ssa.read(1, 0, 0).expect_err("a reference is not a value");
+    assert!(
+        matches!(err, Unsupported::ReferenceAsValue { reg: 1, .. }),
+        "the read must report the reference, not hand back the stale value: {err:?}"
+    );
+}
+
+/// `GlobalRef::ArgList` is the exception, and deliberately: it is a *view* of a
+/// materialized handle rather than a name for something with no value, so both
+/// halves stay live. Clearing it too takes an argument pack out of reach.
+#[test]
+fn an_argument_pack_keeps_both_views() {
+    let mut ssa = Ssa::new(4, 0, 0, vec![Vec::new()], 1);
+    let handle = ssa.new_val();
+    ssa.write(1, 0, (handle, Ty::ListDyn));
+    ssa.bind_ref(0, 1, GlobalRef::ArgList(vec![]));
+    assert_eq!(
+        ssa.read(1, 0, 0).expect("the handle is still readable").0,
+        handle,
+        "an ArgList names a handle that exists; the value half is not stale"
+    );
 }

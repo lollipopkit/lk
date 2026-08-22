@@ -29,7 +29,7 @@ pub fn set_output(sink: OutputSink) {
 ///
 /// `data` must be a valid NUL-terminated C string, as codegen guarantees.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_io_std_write(_resource: i64, data: *const c_char, newline: i64) -> i64 {
+pub unsafe extern "C" fn lkrt_io_std_write(_resource: i64, data: *const c_char, newline: i64) -> i64 {
     // The sink is copied out and the guard dropped before calling it: a sink
     // that itself logs would otherwise deadlock on a spin mutex.
     let Some(sink) = *OUTPUT.lock() else {

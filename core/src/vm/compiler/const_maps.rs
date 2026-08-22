@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{
     expr::Expr,
-    util::fast_map::FastHashMap,
+    util::value_map::ValueMap,
     val::{LiteralVal, RuntimeMapKey},
     vm::{ConstHeapValue, ConstRuntimeValue},
 };
@@ -85,7 +85,7 @@ impl Compiler {
 
 fn const_heap_map_from_expr_literals_from_expr(
     expr: &Expr,
-) -> Result<Option<FastHashMap<RuntimeMapKey, ConstRuntimeValue>>> {
+) -> Result<Option<ValueMap<RuntimeMapKey, ConstRuntimeValue>>> {
     let Expr::Map(entries) = expr else {
         return Ok(None);
     };

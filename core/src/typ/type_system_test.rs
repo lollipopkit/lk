@@ -217,6 +217,19 @@ mod tests {
         assert!(Type::Int.is_assignable_to(&Type::Float));
         assert!(!Type::Float.is_assignable_to(&Type::Int));
 
+        // …and promotion does not erase nullability. `numeric_class` looks
+        // through `Optional` on purpose, which used to make `Int?` and `Int`
+        // the same class here — so a nil flowed into a declared `Int` and
+        // failed wherever it was next used. `String?` was rejected all along.
+        let optional_int = Type::Optional(Box::new(Type::Int));
+        assert!(!optional_int.is_assignable_to(&Type::Int));
+        assert!(!optional_int.is_assignable_to(&Type::Float));
+        assert!(!Type::Union(vec![Type::Int, Type::Nil]).is_assignable_to(&Type::Int));
+        // Still assignable where nil is allowed, or where the target is Any.
+        assert!(optional_int.is_assignable_to(&optional_int));
+        assert!(optional_int.is_assignable_to(&Type::Optional(Box::new(Type::Float))));
+        assert!(optional_int.is_assignable_to(&Type::Any));
+
         // Boxed behaviour
         let boxed_any = Type::Boxed(Box::new(Type::Any));
         assert!(Type::Float.is_assignable_to(&boxed_any));
@@ -225,10 +238,21 @@ mod tests {
         assert!(boxed_float.is_assignable_to(&Type::Float));
         assert!(!Type::Bool.is_assignable_to(&int_or_string));
 
-        // Container types (covariant)
+        // Containers are invariant: they are mutable and a widening is an
+        // alias, so `List<Int>` used as a `List<Any>` would let a String be
+        // pushed through the wide name and read back as an Int through the
+        // narrow one.
         let list_int = Type::List(Box::new(Type::Int));
         let list_any = Type::List(Box::new(Type::Any));
-        assert!(list_int.is_assignable_to(&list_any));
+        assert!(!list_int.is_assignable_to(&list_any));
+        assert!(!list_any.is_assignable_to(&list_int));
+        assert!(list_int.is_assignable_to(&list_int));
+        // `List<_>` is the read-only view every list fits, and nothing fits
+        // into `_` itself — which is what makes it read-only.
+        let list_unknown = Type::List(Box::new(Type::Unknown));
+        assert!(list_int.is_assignable_to(&list_unknown));
+        assert!(list_any.is_assignable_to(&list_unknown));
+        assert!(!Type::Int.is_assignable_to(&Type::Unknown));
     }
 
     #[test]
@@ -298,13 +322,13 @@ mod tests {
     #[test]
     fn test_type_inference() {
         let registry = TypeRegistry::new();
-        let mut engine = TypeInferenceEngine::new(registry);
+        let mut engine = TypeInferenceEngine::new();
 
         // Test basic unification
         let var1 = engine.fresh_type_var();
         engine.add_constraint(var1.clone(), Type::Int);
 
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
 
         if let Type::Variable(name) = var1 {
             assert_eq!(substitutions.get(&name), Some(&Type::Int));
@@ -314,11 +338,11 @@ mod tests {
     #[test]
     fn test_type_inference_any_does_not_block_later_concrete_constraint() {
         let registry = TypeRegistry::new();
-        let mut engine = TypeInferenceEngine::new(registry);
+        let mut engine = TypeInferenceEngine::new();
         let var = engine.fresh_type_var();
 
         engine.add_constraint(var.clone(), Type::Any);
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
         if let Type::Variable(name) = &var {
             assert_eq!(substitutions.get(name), None);
         } else {
@@ -326,7 +350,7 @@ mod tests {
         }
 
         engine.add_constraint(var.clone(), Type::String);
-        let substitutions = engine.solve_constraints().unwrap();
+        let substitutions = engine.solve_constraints(&registry).unwrap();
         if let Type::Variable(name) = var {
             assert_eq!(substitutions.get(&name), Some(&Type::String));
         } else {

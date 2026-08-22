@@ -7,26 +7,43 @@ use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    LParen,            // (
-    RParen,            // )
-    LBrace,            // {
-    RBrace,            // }
-    LBracket,          // [
-    RBracket,          // ]
-    Dot,               // .
-    ColonColon,        // ::
-    OptionalDot,       // ?.
-    Colon,             // :
-    Comma,             // ,
-    Semicolon,         // ;
-    Dollar,            // $
-    Hash,              // #
+    LParen,      // (
+    RParen,      // )
+    LBrace,      // {
+    RBrace,      // }
+    LBracket,    // [
+    RBracket,    // ]
+    Dot,         // .
+    ColonColon,  // ::
+    OptionalDot, // ?.
+    Colon,       // :
+    Comma,       // ,
+    Semicolon,   // ;
+    Dollar,      // $
+    Hash,        // #
+    /// `defer` — run this when the function is done, whichever way it leaves.
+    Defer,
+    /// `@`, which the grammar gives no meaning to.
+    ///
+    /// It exists so `macro_rules!` can use it the way Rust's do: as the marker
+    /// on an internal rule (`(@from $prev:expr, …)`), where the point is a token
+    /// that is legal in a token stream and illegal in every position a user
+    /// would write by hand — so a caller cannot reach the internal rules by
+    /// accident. LK's macros are Rust-shaped, and a macro ported from Rust hits
+    /// this within the first ten minutes.
+    ///
+    /// Outside a macro it is still an error; it is a *parse* error now rather
+    /// than a lexer one, which is the same answer with a better message.
+    At, // @
     Assign,            // =
     AddAssign,         // +=
     SubAssign,         // -=
     MulAssign,         // *=
     DivAssign,         // /=
     ModAssign,         // %=
+    BitAndAssign,      // &=
+    BitOrAssign,       // |=
+    BitXorAssign,      // ^=
     Nil,               // nil
     Eq,                // ==
     Ne,                // !=
@@ -38,6 +55,7 @@ pub enum Token {
     And,               // &&
     Or,                // ||
     BitAnd,            // &
+    BitXor,            // ^
     BitNot,            // ~
     Not,               // !
     Add,               // +
@@ -92,9 +110,28 @@ pub enum Token {
     Str(String),            // "abc"
     TemplateString(String), // Formatted string content with ${...}
     Int(i64),               // 1
-    Float(f64),             // 1.1
-    Bool(bool),             // true, false
-    Id(String),             // identifier
+    /// A literal that needs all 64 bits: `0x8000_0000_0000_0000` upwards, and
+    /// the decimal spelling of the same numbers.
+    ///
+    /// Separate from `Int` because the carrier cannot hold the distinction. The
+    /// lexer reads `0x…` as a *bit pattern* (see `parse_radix_int`), so a value
+    /// above `i64::MAX` comes back as a negative `i64` — indistinguishable from
+    /// the `-1` a programmer wrote, and this language has no unary minus to tell
+    /// them apart by shape. Keeping the `u64` here is what lets the parser turn
+    /// the first into `… as u64` and leave the second refused.
+    ///
+    /// `radix` is how it was written, so re-rendering it (`lk macro expand`)
+    /// gives the text back rather than a re-spelling. Load-bearing now that
+    /// decimal reaches here too: `18446744073709551615` printed as
+    /// `0xFFFFFFFFFFFFFFFF` is not what anyone wrote either.
+    UInt {
+        value: u64,
+        /// 10, 16, 8 or 2.
+        radix: u32,
+    },
+    Float(f64), // 1.1
+    Bool(bool), // true, false
+    Id(String), // identifier
 }
 
 const ASCII_WHITESPACE: u8 = 1 << 0;
@@ -152,18 +189,8 @@ fn is_ident_continue(c: char) -> bool {
     }
 }
 
-#[inline]
-fn is_alnum_char(c: char) -> bool {
-    let flags = ascii_flags(c);
-    if flags != 0 {
-        flags & (ASCII_ALPHA | ASCII_DIGIT) != 0
-    } else {
-        c.is_alphanumeric()
-    }
-}
-
 /// [chars] and [idx] can be used for syntax error reporting.
-pub struct Tokenizer<'a> {
+pub struct Tokenizer {
     chars: Vec<char>,
     idx: usize,
     len: usize,
@@ -171,10 +198,9 @@ pub struct Tokenizer<'a> {
     pub token_spans: Option<Vec<Span>>,
     line: u32,
     column: u32,
-    input: &'a str,
 }
 
-impl<'a> Tokenizer<'a> {
+impl Tokenizer {
     pub fn tokenize(s: &str) -> Result<Vec<Token>> {
         let chars: Vec<char> = s.chars().collect();
         let mut t = Tokenizer {
@@ -185,7 +211,6 @@ impl<'a> Tokenizer<'a> {
             token_spans: None,
             line: 1,
             column: 1,
-            input: s,
         };
         t.parse()?;
         Ok(t.tokens)
@@ -219,7 +244,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Create a tokenizer with enhanced error reporting
-    pub fn new_enhanced(input: &'a str) -> Self {
+    pub fn new_enhanced(input: &str) -> Self {
         let chars: Vec<char> = input.chars().collect();
         Self {
             len: chars.len(),
@@ -229,7 +254,6 @@ impl<'a> Tokenizer<'a> {
             token_spans: Some(Vec::with_capacity(input.len() / 4)),
             line: 1,
             column: 1,
-            input,
         }
     }
 
@@ -269,8 +293,18 @@ impl<'a> Tokenizer<'a> {
         };
         let l_idx = self.idx.saturating_sub(5);
         let r_idx = if r_idx > self.len { self.len } else { r_idx };
-        let chars = &self.chars[l_idx..r_idx];
-        let chars: String = chars.iter().collect();
+        // Escaped, not raw: the snippet is source text, and a newline in it
+        // used to break the message across lines — an error a caller renders
+        // with a caret cannot have its own line breaks.
+        let chars: String = self.chars[l_idx..r_idx]
+            .iter()
+            .flat_map(|c| match c {
+                '\n' => "\\n".chars().collect::<Vec<_>>(),
+                '\r' => "\\r".chars().collect(),
+                '\t' => "\\t".chars().collect(),
+                other => alloc::vec![*other],
+            })
+            .collect();
         let c = self.chars.get(self.idx);
         let ctx = if let Some(&c) = c {
             format!("'{}' at index {}, near '{}'", c, self.idx, chars)
@@ -278,25 +312,10 @@ impl<'a> Tokenizer<'a> {
             format!("at end, near '{}'", chars)
         };
 
-        // Use the stored input for better context if needed
-        let line_context = self.get_line_context();
-        format!(
-            "Syntax error:\n{} ({})\nLine {}: {}",
-            msg.as_ref(),
-            ctx,
-            self.line,
-            line_context
-        )
-    }
-
-    /// Get the current line from input for error context
-    fn get_line_context(&self) -> String {
-        let target = (self.line as usize).saturating_sub(1);
-        self.input
-            .lines()
-            .nth(target)
-            .map(|line| line.to_string())
-            .unwrap_or_default()
+        // One line, and the same "Syntax error: " prefix the statement parser
+        // uses — this used to be three lines with the source line embedded, which
+        // a caller that renders its own caret cannot lay out.
+        format!("Syntax error: {} ({})", msg.as_ref(), ctx)
     }
 
     fn advance_char(&mut self) {
@@ -344,6 +363,37 @@ impl<'a> Tokenizer<'a> {
         }
 
         Err(anyhow!(self.err("Block comment not closed")))
+    }
+
+    /// `u{XXXX}` after a backslash — one to six hex digits naming a Unicode
+    /// scalar value. Leaves `self.idx` just past the closing brace.
+    fn read_braced_unicode_escape(&mut self) -> Result<char> {
+        self.advance_char(); // past 'u'
+        if self.eof() || self.chars[self.idx] != '{' {
+            return Err(anyhow!(
+                self.err("`\\u` must be followed by `{...}`, as in `\\u{4e2d}`")
+            ));
+        }
+        self.advance_char(); // past '{'
+        let mut digits = String::new();
+        while !self.eof() && self.chars[self.idx] != '}' {
+            digits.push(self.chars[self.idx]);
+            self.advance_char();
+        }
+        if self.eof() {
+            return Err(anyhow!(self.err("Unterminated `\\u{...}` escape")));
+        }
+        self.advance_char(); // past '}'
+        if digits.is_empty() || digits.len() > 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(anyhow!(
+                self.err("`\\u{...}` takes one to six hex digits, as in `\\u{4e2d}`")
+            ));
+        }
+        let code = u32::from_str_radix(&digits, 16).expect("checked hex digits");
+        // Surrogates and anything past U+10FFFF are not characters; rejecting
+        // them here is the difference between a clear message and a string that
+        // silently is not what it says.
+        char::from_u32(code).ok_or_else(|| anyhow!(self.err(alloc::format!("`\\u{{{digits}}}` is not a character"))))
     }
 
     fn parse_str(&mut self) -> Result<()> {
@@ -404,8 +454,21 @@ impl<'a> Tokenizer<'a> {
                         '"' => content.push('"'),
                         '$' => content.push('$'),
                         '0' => content.push('\0'),
+                        // `\u{4e2d}` — a character by code point, the only way
+                        // to write one that cannot be typed: a zero-width
+                        // joiner, a non-breaking space, an astral emoji. There
+                        // was none, and an unknown escape is kept verbatim, so
+                        // `"\u{4e2d}"` printed itself back.
+                        'u' => {
+                            let scalar = self.read_braced_unicode_escape()?;
+                            content.push(scalar);
+                            continue;
+                        }
                         _ => {
-                            // For unknown escape sequences, keep the backslash and the character
+                            // An unknown escape keeps its backslash rather than
+                            // failing. That is load-bearing, not laxity: a regex
+                            // pattern is an ordinary string here, and `"\\d"`
+                            // has to survive to reach the engine.
                             content.push('\\');
                             content.push(escaped_char);
                         }
@@ -420,7 +483,12 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Err(anyhow!(self.err("String not closed")))
+        // Where it *opened* is the useful position: the error is discovered at
+        // end of input, which is nowhere near the quote that has no partner.
+        Err(anyhow!(self.err(format!(
+            "String not closed — the quote at {}:{} has no partner",
+            start_pos.line, start_pos.column
+        ))))
     }
 
     /// Parse Rust-style raw string literals: r"...", r#"..."#, r##"..."##, ...
@@ -577,7 +645,28 @@ impl<'a> Tokenizer<'a> {
         } else {
             match num.parse() {
                 Ok(i) => Token::Int(i),
-                Err(_) => return Err(anyhow!("{}: {}", self.err("Invalid int"), num)),
+                // Above `i64::MAX`, in decimal. The radix path has read these as
+                // `UInt` since `u64` existed; decimal did not, so `u64::MAX` had
+                // a hexadecimal spelling and no decimal one — the same number,
+                // accepted one way and a syntax error the other.
+                //
+                // Only unsigned overflow reaches `UInt`: a leading `-` is part
+                // of `num` here, so `-18446744073709551615` still fails both
+                // parses and stays refused.
+                Err(_) => match num.parse::<u64>() {
+                    Ok(value) => Token::UInt { value, radix: 10 },
+                    // Digits that parse as neither: too big for 64 bits, or
+                    // negative and too big. "Invalid int" said the number was
+                    // malformed, which it is not — it is out of range, and the
+                    // range is the thing the reader needs.
+                    Err(_) => {
+                        return Err(anyhow!(
+                            "{}: {}",
+                            self.err("integer literal out of range (Int is i64, and u64 is the widest)"),
+                            num
+                        ));
+                    }
+                },
             }
         };
         let end_pos = self.current_position();
@@ -673,6 +762,10 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "continue") {
             self.push_span_only(Token::Continue, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "defer") {
+            self.push_span_only(Token::Defer, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "return") {
@@ -805,7 +898,14 @@ impl<'a> Tokenizer<'a> {
         let value = u64::from_str_radix(&digits, radix)
             .map_err(|_| anyhow!("{}: {}", self.err("Integer literal out of range"), digits))?;
         let end_pos = self.current_position();
-        self.push_with_span(Token::Int(value as i64), start_pos, end_pos);
+        // Above `i64::MAX` the carrier is out of room, and *which* number was
+        // written stops being recoverable from it. `UInt` keeps it — see the
+        // variant's own note.
+        let token = match i64::try_from(value) {
+            Ok(fits) => Token::Int(fits),
+            Err(_) => Token::UInt { value, radix },
+        };
+        self.push_with_span(token, start_pos, end_pos);
         Ok(())
     }
 
@@ -878,6 +978,13 @@ impl<'a> Tokenizer<'a> {
                 self.advance_char();
                 let end = self.current_position();
                 self.push_with_span(Token::Hash, start, end);
+                Ok(())
+            }
+            '@' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::At, start, end);
                 Ok(())
             }
             ',' => {
@@ -967,6 +1074,12 @@ impl<'a> Tokenizer<'a> {
                     let end = self.current_position();
                     self.push_with_span(Token::And, start, end);
                     Ok(())
+                } else if self.chars.get(self.idx + 1) == Some(&'=') {
+                    self.advance_char();
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitAndAssign, start, end);
+                    Ok(())
                 } else {
                     self.advance_char();
                     let end = self.current_position();
@@ -986,24 +1099,17 @@ impl<'a> Tokenizer<'a> {
                     // Disambiguate by looking behind at the previous non-whitespace char.
                     // If the previous significant char indicates we're in the middle of an
                     // expression (identifier, literal, closing bracket/paren/brace), treat as OR.
-                    // If we're at expression start or after a delimiter like '=', '(', '{', ',', ';',
-                    // treat as an empty-parameter closure "|| expr".
-                    let mut prev_idx = start.offset.saturating_sub(1);
-                    while prev_idx > 0 && is_space_char(self.chars[prev_idx]) {
-                        prev_idx = prev_idx.saturating_sub(1);
-                    }
-                    let prev_char = if start.offset == 0 {
-                        None
-                    } else {
-                        Some(self.chars[prev_idx])
-                    };
-
-                    let is_after_expr = matches!(prev_char, Some(')' | ']' | '}' | '"' | '\'' | '`'))
-                        || matches!(prev_char, Some(c) if is_alnum_char(c));
-
-                    let is_after_delim = matches!(prev_char, None | Some('=' | '(' | '{' | ',' | ';' | ':'));
-
-                    if is_after_delim && !is_after_expr {
+                    // `||` is a zero-parameter closure exactly where a *value*
+                    // is expected, and the logical operator everywhere else —
+                    // the same question `signed_number_can_start` answers for
+                    // `-5`, so it is the same predicate.
+                    //
+                    // It used to look at the previous *character* and accept
+                    // only `= ( { , ; :`. A character cannot see a keyword, so
+                    // `return || 1;` lexed as a logical or ("Unexpected token:
+                    // Or") while `let f = || 1;` was fine, and `[|| 1]` failed
+                    // on the missing `[`.
+                    if self.operand_can_start() {
                         // Empty-parameter closure context: emit two Pipe tokens with spans
                         let mid_pos = Position::new(start.line, start.column + 1, start.offset + 1);
                         self.push_with_span(Token::Pipe, start, mid_pos.clone());
@@ -1012,6 +1118,10 @@ impl<'a> Tokenizer<'a> {
                         // Logical OR
                         self.push_with_span(Token::Or, start, end);
                     }
+                } else if self.idx < self.len && self.chars[self.idx] == '=' {
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitOrAssign, start, end);
                 } else {
                     // Single | for union types or closure start
                     let end = self.current_position();
@@ -1110,7 +1220,6 @@ impl<'a> Tokenizer<'a> {
                     Ok(())
                 }
             }
-            // Removed '@' context access; treat as unknown punctuation.
             '=' => {
                 let start = self.current_position();
                 if self.expect("==") {
@@ -1146,6 +1255,19 @@ impl<'a> Tokenizer<'a> {
                 self.advance_char();
                 let end = self.current_position();
                 self.push_with_span(Token::BitNot, start, end);
+                Ok(())
+            }
+            '^' => {
+                let start = self.current_position();
+                self.advance_char();
+                if self.idx < self.len && self.chars[self.idx] == '=' {
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitXorAssign, start, end);
+                    return Ok(());
+                }
+                let end = self.current_position();
+                self.push_with_span(Token::BitXor, start, end);
                 Ok(())
             }
             '>' => {
@@ -1224,7 +1346,8 @@ impl<'a> Tokenizer<'a> {
     fn is_punctuation(&self, c: char) -> bool {
         matches!(
             c,
-            '(' | ')'
+            '@' | '('
+                | ')'
                 | '{'
                 | '}'
                 | '['
@@ -1238,6 +1361,7 @@ impl<'a> Tokenizer<'a> {
                 | '#'
                 | '&'
                 | '|'
+                | '^'
                 | '~'
                 | '+'
                 | '-'
@@ -1249,6 +1373,16 @@ impl<'a> Tokenizer<'a> {
                 | '>'
                 | '<'
         )
+    }
+
+    /// Is a *value* expected at this point?
+    ///
+    /// Answers for the two places the lexer has to know: a leading `-` starts a
+    /// negative literal rather than a subtraction, and `||` opens a
+    /// zero-parameter closure rather than a logical or. One predicate, so the
+    /// two cannot disagree about what "here comes a value" means.
+    fn operand_can_start(&self) -> bool {
+        self.signed_number_can_start()
     }
 
     fn signed_number_can_start(&self) -> bool {
@@ -1266,8 +1400,12 @@ impl<'a> Tokenizer<'a> {
                 | Token::Semicolon
                 | Token::Dollar
                 | Token::Hash
+                | Token::At
                 | Token::Assign
                 | Token::AddAssign
+                | Token::BitAndAssign
+                | Token::BitOrAssign
+                | Token::BitXorAssign
                 | Token::SubAssign
                 | Token::MulAssign
                 | Token::DivAssign
@@ -1282,6 +1420,7 @@ impl<'a> Tokenizer<'a> {
                 | Token::And
                 | Token::Or
                 | Token::BitAnd
+                | Token::BitXor
                 | Token::Not
                 | Token::Add
                 | Token::Sub
@@ -1306,7 +1445,7 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-impl<'a> Tokenizer<'a> {
+impl Tokenizer {
     fn push_with_span(&mut self, token: Token, start: Position, end: Position) {
         self.tokens.push(token);
         if let Some(spans) = &mut self.token_spans {

@@ -1,0 +1,148 @@
+// A closure used as a *value* rather than called where it is built.
+//
+// Every other closure the compiler sees is a compile-time fact: it knows which
+// function a register names, so the call devirtualizes and the captures become
+// hidden arguments. That covers a closure that is built and called, and nothing
+// else — putting one in a list has no compile-time answer, because what comes
+// back out of the list is decided at run time.
+//
+// So it becomes a value: a code address, the arity, and the captured
+// environment, called back through the runtime. The lambda gets a second copy
+// of its body with an all-`Dyn` signature for that path, so the original keeps
+// the typed signature its ordinary call sites resolved and pays nothing.
+
+// In a list, called through the element.
+let ops = [|x| x + 1, |x| x * 2];
+assert(ops[0](3) == 4);
+assert(ops[1](3) == 6);
+assert(ops.len() == 2);
+
+// Pushed rather than written in a literal. This is the shape that used to
+// compile to the list pushing *itself*: the bytecode reuses registers, and the
+// lambda landed on the slot the `[]` had just been in.
+let built = [];
+built.push(|x| x + 10);
+assert(built.len() == 1);
+assert(typeof(built[0]) == "Function");
+assert(built[0](5) == 15);
+
+// One built per iteration, each capturing that iteration's value. The capture
+// is copied into the closure, so each one keeps its own.
+let steps = [];
+for i in 0..3 { steps.push(|| i * 100); }
+assert(steps.len() == 3);
+assert(steps[0]() == 0);
+assert(steps[2]() == 200);
+
+// Iterated and called, which reads the closure back out as an ordinary value.
+let total = 0;
+for op in ops { total = total + op(10); }
+assert(total == 31);
+
+// A capture-free lambda and a capturing one side by side.
+let factor = 4;
+let mixed = [|x| x, |x| x * factor];
+assert(mixed[0](7) == 7);
+assert(mixed[1](7) == 28);
+
+// As a map's value, and as a struct's field. Same rule, two more places a
+// value can be written: what comes back out is decided at run time, so what
+// goes in has to be a value.
+let handlers = {"inc": |x| x + 1, "double": |x| x * 2};
+let inc = handlers["inc"];
+let double = handlers["double"];
+assert(inc(4) == 5);
+assert(double(4) == 8);
+assert(handlers.len() == 2);
+
+struct Rule { apply: (Int) -> Int, weight: Int }
+let rule = Rule { apply: |x| x + 100, weight: 3 };
+let apply = rule.apply;
+assert(apply(1) == 101);
+assert(rule.weight == 3);
+
+// Called where it sits, without naming it first. One meaning, two spellings —
+// and for a while only the spelling with a local in the middle compiled.
+assert(handlers["inc"](4) == 5);
+assert(rule.apply(1) == 101);
+
+// The miss says what the interpreter says. A map is the one receiver where the
+// question has two halves — a method *and* an entry holding a function — and
+// the answer names both.
+let missed = "";
+try { handlers.nosuch(); } catch e { missed = "{}".format(e); }
+assert(missed == "a Map has no method `nosuch`, and this map has no key `nosuch` holding a function either");
+
+// Returned from a branch, and called on the spot. A function whose *only*
+// return is a closure over its parameters is summarized instead — the call site
+// builds the closure and the body is never emitted — but two returns cannot be,
+// so this one comes back as a value.
+fn pick(up: Bool) -> (Int) -> Int {
+    if up { return |x| x + 1; }
+    return |x| x * 2;
+}
+assert(pick(true)(5) == 6);
+assert(pick(false)(5) == 10);
+
+let chosen = pick(true);
+assert(chosen(9) == 10);
+
+// A closure capturing *another closure*. Its environment is entirely static
+// references, which the compiler erases — correct for a call that resolves them
+// where it stands, and not enough for a value, whose environment has to hold
+// something at run time.
+let base = |x| x + 1;
+let wrapped = [|y| base(y) * 10, |y| base(y) - 1];
+assert(wrapped[0](2) == 30);
+assert(wrapped[1](2) == 2);
+
+println("closure value: all assertions passed");
+
+// A closure is one object with however many names. `==` and `in` both compare
+// by reference, so two lambdas written the same way are two closures and an
+// alias is not. Compiled, that holds because a lambda the program passes around
+// is built *once*, where it is written — building one per use answered `false`
+// to every line here.
+let f = |x| x + 1;
+let g = f;
+let h = |x| x + 1;
+assert(f == g);
+assert(!(f == h));
+
+let fs = [f, f, h];
+assert(fs[0] == fs[1]);
+assert(fs.contains(f));
+assert(fs.contains(h));
+
+// And a capturing one, whose environment is copied into the closure: still one
+// object, so the copy does not make a second identity.
+let n = 2;
+let scaled = |x| x * n;
+let alias = scaled;
+assert(scaled == alias);
+assert([scaled].contains(alias));
+
+// A callable is not a map key. The refusal names the type, which is the whole
+// point of the sentence — "runtime type error" was the compiled answer.
+let refused = "";
+let m = {};
+try { m[f] = 1; } catch e { refused = "{}".format(e); }
+assert(refused == "Function cannot be a map key or set member: only nil, Bool, Int and String can");
+assert(m.len() == 0);
+
+// A list HOF whose callback is a *value* rather than a lambda written at the
+// call. The typed fold takes a compiled address, which only exists when the
+// lowering can say which lambda the register names; a callback read out of a
+// container or handed in as a parameter is a closure, and the same three folds
+// run through it.
+let ops = [|x| x + 1, |x| x * 10];
+assert([1, 2, 3].map(ops[0]) == [2, 3, 4]);
+assert([1, 2, 3].map(ops[1]) == [10, 20, 30]);
+assert([1, 2, 3, 4].filter(ops[0]) == [1, 2, 3, 4]);
+assert(["ab", "cd"].map(ops[0]) == ["ab1", "cd1"]);
+
+fn apply_all(xs, f) { return xs.map(f); }
+assert(apply_all([5, 6], ops[1]) == [50, 60]);
+
+fn fold_with(xs, f) { return xs.reduce(0, f); }
+assert(fold_with([1, 2, 3], |a, b| a + b) == 6);

@@ -2,13 +2,18 @@
 //! crates and conversion rules of the VM's `core/src/val/de.rs`, so values —
 //! numbers, nesting, and **map iteration order** — match byte-for-byte.
 //!
-//! Order argument: the VM inserts each decoded object's entries, in the
-//! serde iteration order (serde_json `Value::Object` is a BTreeMap → sorted;
-//! serde_yaml `Mapping` and `toml::Table` preserve/sort per their own
-//! defaults — the same crates at the same lockfile versions produce the same
-//! sequence), into a fresh `FastHashMap` and rebuilds the typed map from
-//! *its* iteration (`typed_map_from_entries`). [`str_dyn_map_mirrored`]
-//! replays both stages.
+//! Order argument: the VM inserts each decoded object's entries, **in document
+//! order**, into a fresh `FastHashMap` and rebuilds the typed map from *its*
+//! iteration (`typed_map_from_entries`). [`str_dyn_map_mirrored`] replays both
+//! stages.
+//!
+//! Document order, and not the intermediate's: `serde_json::Value::Object` is a
+//! `BTreeMap`, so both sides used to hand back a document alphabetised — which
+//! contradicts the language's own rule that a map iterates in the order a key
+//! was first written. The VM stopped going through that value type
+//! ([`lk_core::val::de`]'s `OrderedJson`); this does the same, with the same
+//! visitor, because the two orders have to be the same order. TOML takes its
+//! crate's `preserve_order`; YAML's `Mapping` was already ordered.
 //!
 //! Arrays decode to dyn lists (the VM shapes uniform scalars into typed
 //! lists — indexing/len/eq agree; display quoting of a uniform *string*
@@ -29,7 +34,7 @@ use alloc::{
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
 
-use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, LkDyn};
+use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_SLICE, LkDyn, is_list_tag};
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
 use crate::vm_mirror::str_dyn_map_mirrored;
@@ -95,14 +100,82 @@ fn dyn_number(int_value: Option<i64>, float_value: Option<f64>) -> LkDyn {
     }
 }
 
-fn json_to_dyn(value: serde_json::Value) -> LkDyn {
+/// A JSON document with its objects still in document order — the mirror of
+/// `lk_core::val::de`'s type of the same shape. See this module's note.
+enum OrderedJson {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<OrderedJson>),
+    Object(Vec<(String, OrderedJson)>),
+}
+
+impl<'de> serde::Deserialize<'de> for OrderedJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = OrderedJson;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("any JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Null)
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Int(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(i64::try_from(v).map_or(OrderedJson::Float(v as f64), OrderedJson::Int))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Float(v))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v.to_string()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Str(v))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(item) = seq.next_element()? {
+                    out.push(item);
+                }
+                Ok(OrderedJson::Array(out))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, value)) = map.next_entry::<String, OrderedJson>()? {
+                    out.push((key, value));
+                }
+                Ok(OrderedJson::Object(out))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn json_to_dyn(value: OrderedJson) -> LkDyn {
     match value {
-        serde_json::Value::Null => LkDyn::NIL,
-        serde_json::Value::Bool(value) => dyn_bool(value),
-        serde_json::Value::Number(value) => dyn_number(value.as_i64(), value.as_f64()),
-        serde_json::Value::String(value) => dyn_str_of(&value),
-        serde_json::Value::Array(values) => dyn_list_of(values.into_iter().map(json_to_dyn).collect()),
-        serde_json::Value::Object(values) => dyn_map_of(values.into_iter().map(|(k, v)| (k, json_to_dyn(v))).collect()),
+        OrderedJson::Null => LkDyn::NIL,
+        OrderedJson::Bool(value) => dyn_bool(value),
+        OrderedJson::Int(value) => dyn_number(Some(value), None),
+        OrderedJson::Float(value) => dyn_number(None, Some(value)),
+        OrderedJson::Str(value) => dyn_str_of(&value),
+        OrderedJson::Array(values) => dyn_list_of(values.into_iter().map(json_to_dyn).collect()),
+        OrderedJson::Object(values) => dyn_map_of(values.into_iter().map(|(k, v)| (k, json_to_dyn(v))).collect()),
     }
 }
 
@@ -112,7 +185,7 @@ fn json_to_dyn(value: serde_json::Value) -> LkDyn {
 /// `text` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_json_parse(text: *const c_char) -> LkDyn {
-    match serde_json::from_str::<serde_json::Value>(input(text)) {
+    match serde_json::from_str::<OrderedJson>(input(text)) {
         Ok(value) => json_to_dyn(value),
         Err(_) => crate::panic::raise_str("Invalid JSON"),
     }
@@ -179,5 +252,143 @@ pub unsafe extern "C" fn lkrt_toml_parse(text: *const c_char) -> LkDyn {
     match toml::from_str::<toml::Value>(input(text)) {
         Ok(value) => toml_to_dyn(value),
         Err(_) => crate::panic::raise_str("Invalid TOML"),
+    }
+}
+
+/// The write direction: an LK value as `serde_json::Value`, by exactly the
+/// rules of the VM's `core/src/val/ser.rs`.
+///
+/// Object keys come out **sorted**, and that is not a choice made here: both
+/// sides build a `serde_json::Map`, which is a `BTreeMap`. So `stringify` is
+/// the one place where a map's iteration order does *not* show — the ordering
+/// argument that governs `parse` does not apply in reverse.
+mod write {
+    use super::*;
+    use crate::lkdyn::{DYN_BYTES, DYN_NIL, DYN_RAW, DYN_SET, DYN_STR, is_map_tag, map_entries};
+    use crate::vm_mirror::{RtKey, key_str};
+
+    /// The VM's `MAX_VALUE_DEPTH`, and its refusal names the number.
+    const MAX_VALUE_DEPTH: u32 = 512;
+
+    pub(super) fn to_serde(value: LkDyn, depth: u32) -> Result<serde_json::Value, String> {
+        if depth >= MAX_VALUE_DEPTH {
+            return Err(format!(
+                "value nested deeper than {MAX_VALUE_DEPTH} levels; it is cyclic or too deeply nested to write"
+            ));
+        }
+        Ok(match value.tag {
+            DYN_NIL => serde_json::Value::Null,
+            DYN_BOOL => serde_json::Value::Bool(value.payload != 0),
+            DYN_I64 => serde_json::Value::from(value.payload),
+            DYN_F64 => {
+                let number = f64::from_bits(value.payload as u64);
+                match serde_json::Number::from_f64(number) {
+                    Some(number) => serde_json::Value::Number(number),
+                    None => return Err(format!("{number} has no JSON form (NaN and the infinities do not)")),
+                }
+            }
+            DYN_STR => serde_json::Value::String(input(value.payload as *const c_char).to_string()),
+            // Every list representation, not only the boxed one: a typed
+            // carrier boxes in place now, so `json.stringify([[1]])` sees a
+            // `DYN_TLIST_*` tag where it used to see a rebuilt `DYN_LIST`.
+            tag if is_list_tag(tag) => {
+                let mut out = Vec::new();
+                for element in crate::lkdyn::dyn_list_values(value).iter() {
+                    out.push(to_serde(*element, depth + 1)?);
+                }
+                serde_json::Value::Array(out)
+            }
+            // A `Bytes` and a `Set` are the VM's refusals, by their type names.
+            DYN_BYTES => return Err("Bytes has no JSON form".to_string()),
+            DYN_SET => return Err("Set has no JSON form".to_string()),
+            DYN_RAW => return Err("Object has no JSON form".to_string()),
+            // A window is a list, and the VM encodes it as one:
+            // `json.stringify([xs.slice(0, 2)])` is `[[1,2]]` there and was
+            // `value has no JSON form` here. `DYN_SLICE` was added to the tag
+            // space after this match was written and the catch-all swallowed
+            // it — the third arm in this runtime to lose a carrier that way
+            // (see `lkrt_dyn_contains`, and `container_ty` in the lowering).
+            DYN_SLICE => {
+                let mut out = Vec::new();
+                // SAFETY: a `DYN_SLICE` payload is a live window handle — the
+                // tag is only ever set by `lkrt_dyn_from_slice`.
+                let handle = value.payload as *mut core::ffi::c_void;
+                let len = unsafe { crate::lkslice::lkrt_lkslice_i64_len(handle) };
+                for index in 0..len {
+                    // SAFETY: as above, and `index` is inside `len`.
+                    let element = unsafe { crate::lkslice::lkrt_lkslice_i64_get_pair(handle, index) };
+                    out.push(serde_json::Value::Number(element.value.into()));
+                }
+                serde_json::Value::Array(out)
+            }
+            tag if is_map_tag(tag) => {
+                let mut out = serde_json::Map::new();
+                for (key, element) in map_entries(value) {
+                    out.insert(object_key(&key)?, to_serde(element, depth + 1)?);
+                }
+                serde_json::Value::Object(out)
+            }
+            _ => return Err("value has no JSON form".to_string()),
+        })
+    }
+
+    /// A JSON object key, or the VM's refusal — verbatim, because a caught
+    /// error's message is program output and this one *tells the program what
+    /// to write instead*.
+    fn object_key(key: &RtKey) -> Result<String, String> {
+        match key {
+            RtKey::ShortStr(_) | RtKey::String(_) => Ok(key_str(key).to_string()),
+            RtKey::Int(value) => Err(format!(
+                "a JSON object key is a String, and `{value}` is an Int — write it as \"{value}\" if that is what you mean"
+            )),
+            RtKey::Bool(value) => Err(format!("a JSON object key is a String, and `{value}` is a Bool")),
+            RtKey::Nil => Err("a JSON object key is a String, and `nil` is not one".to_string()),
+            RtKey::Obj(_) => Err("a JSON object key is a String".to_string()),
+        }
+    }
+}
+
+/// `encoding.json.stringify(value)` — compact, the `serde_json::Value`
+/// `Display`.
+///
+/// The raise carries the member's name in front of the reason, which is the
+/// stdlib's `write_format` wrapper doing it there.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_json_stringify(value: LkDyn) -> *mut c_char {
+    match write::to_serde(value, 0).map(|value| value.to_string()) {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.json.stringify: {message}")),
+    }
+}
+
+/// `encoding.yaml.stringify(value)`.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_yaml_stringify(value: LkDyn) -> *mut c_char {
+    let text = write::to_serde(value, 0)
+        .and_then(|value| serde_yaml::to_string(&value).map_err(|error| format!("cannot write YAML: {error}")));
+    match text {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.yaml.stringify: {message}")),
+    }
+}
+
+/// `encoding.toml.stringify(value)`.
+///
+/// A TOML document *is* a table, so a top-level scalar or array is refused
+/// rather than written out as something no TOML parser reads back — the VM's
+/// rule, in the VM's words.
+#[cfg(feature = "std")]
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_toml_stringify(value: LkDyn) -> *mut c_char {
+    let text = write::to_serde(value, 0).and_then(|value| {
+        if !value.is_object() {
+            return Err("a TOML document is a table, so the top level must be a map".to_string());
+        }
+        toml::to_string(&value).map_err(|error| format!("cannot write TOML: {error}"))
+    });
+    match text {
+        Ok(text) => arena_c_string(CString::new(text).unwrap_or_default()),
+        Err(message) => crate::panic::raise_str(&format!("encoding.toml.stringify: {message}")),
     }
 }

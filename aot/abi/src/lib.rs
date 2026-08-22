@@ -66,17 +66,28 @@ pub enum Receiver {
     /// Borrows the receiver (or takes none) *and* returns a freshly allocated
     /// arena container handle — the constructors the pass looks for.
     Constructs,
+    /// Returns a freshly allocated handle that **points back into the
+    /// receiver** — `xs.slice(a, b)`, whose window reads through to `xs` on
+    /// every access (`lkrt::lkslice`).
+    ///
+    /// Both halves matter and neither of the other two says both: the result is
+    /// releasable at the end of its scope like any other fresh handle, while
+    /// the receiver is not, because releasing a list that a live window still
+    /// addresses is a use-after-free. Spelling this as `Constructs` would have
+    /// freed the source; spelling it `Retained` would have kept every window
+    /// alive to process exit.
+    ConstructsView,
 }
 
 impl Receiver {
     /// Whether the runtime may hold on to the receiver after the call.
     pub fn retains(self) -> bool {
-        matches!(self, Receiver::Retained)
+        matches!(self, Receiver::Retained | Receiver::ConstructsView)
     }
 
     /// Whether the call's result is a fresh arena container handle.
     pub fn constructs(self) -> bool {
-        matches!(self, Receiver::Constructs)
+        matches!(self, Receiver::Constructs | Receiver::ConstructsView)
     }
 }
 
@@ -96,6 +107,13 @@ pub struct AbiFn {
 }
 
 /// Invokes the given callback macro with every ABI table entry, in order. This is
+/// An entry with no emitter is not "available", it is **unverified**: nothing
+/// exercises its argument marshalling or its receiver class, so the first caller
+/// is the one that finds out whether the row is right. Three such rows
+/// (`dyn.as_typed_map`, `dyn.as_set`, `dyn.as_bytes`) were added for symmetry
+/// with their `from_*` counterparts and deleted unused — add the row with the
+/// call site, not before it.
+///
 /// the single source of truth (RFC aot-redesign §3.3): the [`ABI_FUNCTIONS`] const
 /// table below and `lkrt`'s compile-time signature-conformance checks both expand
 /// from it, so a signature can no longer drift between the schema, the codegen
@@ -121,19 +139,26 @@ macro_rules! for_each_abi_fn {
             ("cpu", "irq_restore", lkrt_cpu_irq_restore, WritesHost, [I64], Nil);
             ("cpu", "timestamp", lkrt_cpu_timestamp, WritesHost, [], I64);
             ("cpu", "wait_for_interrupt", lkrt_cpu_wait_for_interrupt, WritesHost, [], Nil);
-            // Volatile MMIO. `WritesHost` even for the reads: the effect
-            // annotation is what drives CSE, and a device read that can change
-            // state or return a different value each time is not pure. These
-            // are calls rather than inline loads because Cranelift has no
-            // volatile flag — see lkrt/src/mmio.rs.
-            ("mmio", "read_u8", lkrt_mmio_read_u8, WritesHost, [I64], I64);
-            ("mmio", "read_u16", lkrt_mmio_read_u16, WritesHost, [I64], I64);
-            ("mmio", "read_u32", lkrt_mmio_read_u32, WritesHost, [I64], I64);
-            ("mmio", "read_u64", lkrt_mmio_read_u64, WritesHost, [I64], I64);
-            ("mmio", "write_u8", lkrt_mmio_write_u8, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u16", lkrt_mmio_write_u16, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u32", lkrt_mmio_write_u32, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u64", lkrt_mmio_write_u64, WritesHost, [I64, I64], Nil);
+            // System control: descriptor tables, CR2/CR3, the TLB. x86 only,
+            // and `WritesHost` including the reads — CR2 changes behind the
+            // code's back on every fault, which is its entire purpose, so two
+            // reads of it must not be collapsed into one. See lkrt/src/system.rs.
+            ("cpu", "load_idt", lkrt_cpu_load_idt, WritesHost, [I64, I64], Nil);
+            ("cpu", "load_gdt", lkrt_cpu_load_gdt, WritesHost, [I64, I64], Nil);
+            ("cpu", "reload_segments", lkrt_cpu_reload_segments, WritesHost, [I64, I64], Nil);
+            ("cpu", "load_task_register", lkrt_cpu_load_task_register, WritesHost, [I64], Nil);
+            ("cpu", "read_cr2", lkrt_cpu_read_cr2, WritesHost, [], I64);
+            ("cpu", "read_cr3", lkrt_cpu_read_cr3, WritesHost, [], I64);
+            ("cpu", "write_cr3", lkrt_cpu_write_cr3, WritesHost, [I64], Nil);
+            ("cpu", "raise_interrupt", lkrt_cpu_raise_interrupt, WritesHost, [I64], Nil);
+            ("cpu", "invalidate_page", lkrt_cpu_invalidate_page, WritesHost, [I64], Nil);
+            // Volatile MMIO has no entries here any more, and that absence is
+            // the point: `volatile_read_uN`/`volatile_write_uN` lower to a real
+            // machine load and store (`Inst::VolatileLoad`), not to a call.
+            // What made them calls was that Cranelift has no volatile flag and
+            // its alias analysis collapses two accesses to one address; what
+            // replaced them is a `sequence_point` before each access, which
+            // emits nothing and moves the key that analysis works from.
             // Port I/O — `WritesHost` for the same reason the MMIO reads are:
             // reading a device port can change its state, so it must not be
             // collapsed with another read of the same port.
@@ -144,7 +169,7 @@ macro_rules! for_each_abi_fn {
             ("port", "out_u16", lkrt_port_out_u16, WritesHost, [I64, I64], Nil);
             ("port", "out_u32", lkrt_port_out_u32, WritesHost, [I64, I64], Nil);
             ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
-            ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
+            ("lkrt", "rt_begin", lkrt_rt_begin, WritesHost, [I64], Nil);
             ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);
             ("lkrt", "error_clear", lkrt_error_clear, WritesHost, [], Nil);
             ("lkrt", "last_error", lkrt_last_error, ReadsHost, [], StrPtr);
@@ -157,7 +182,7 @@ macro_rules! for_each_abi_fn {
             ("rt", "assert", lkrt_assert, WritesHost, [I64], Nil);
             ("rt", "assert_msg", lkrt_assert_msg, WritesHost, [I64, StrPtr], Nil);
             ("rt", "panic", lkrt_panic, WritesHost, [StrPtr], Nil);
-            // Native protected calls (`try$call`, plan G): handler-stack
+            // Native protected regions (plan G): handler-stack
             // frames around a `_setjmp` in the generated code, the raised
             // value, and the raise entry points (no live handler → the
             // existing loud abort). Cells are the VM's `UpvalCell` — shared
@@ -167,7 +192,18 @@ macro_rules! for_each_abi_fn {
             ("rt", "current_error", lkrt_rt_current_error, ReadsHost, [], DynVal);
             ("rt", "raise_dyn", lkrt_rt_raise_dyn, WritesHost, [DynVal], Nil);
             ("rt", "raise_msg", lkrt_rt_raise_msg, WritesHost, [StrPtr], Nil);
+            // The present-bit of a nullable carrier, checked with the sentence
+            // to raise if it is not set. The sentence is a *compile-time*
+            // constant: the lowering knows the operator and both operand types,
+            // which is exactly what the VM's message names, so there is no
+            // table of messages here to drift from the one in the executor.
+            ("rt", "maybe_guard", lkrt_rt_maybe_guard, WritesHost, [I64, StrPtr], Nil);
             ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
+            // The raw-handle family: a typed container parked as-is, because
+            // boxing one is an element-wise copy. Tag-checked at both ends.
+            ("rt", "cell_new_raw", lkrt_rt_cell_new_raw, WritesHost, [I64], Ptr);
+            ("rt", "cell_get_raw", lkrt_rt_cell_get_raw, ReadsHost, [Ptr], I64);
+            ("rt", "cell_set_raw", lkrt_rt_cell_set_raw, WritesHost, [Ptr, I64], Nil);
             ("rt", "cell_get", lkrt_rt_cell_get, ReadsHost, [Ptr], DynVal);
             ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
             // Early release of an arena container proven dead (scope drop).
@@ -181,19 +217,143 @@ macro_rules! for_each_abi_fn {
             // Go close semantics (buffer drains, then raises), snapshot
             // argument blocks for spawn, join-once task await.
             ("chan", "new", lkrt_chan_new, WritesHost, [I64], I64);
+            ("time", "timeout", lkrt_time_timeout, WritesHost, [I64], I64);
+            ("time", "after", lkrt_time_after, WritesHost, [I64], I64);
             ("chan", "send", lkrt_chan_send, WritesHost, [I64, DynVal], Nil);
             ("chan", "recv", lkrt_chan_recv, WritesHost, [I64], DynVal);
             ("chan", "close", lkrt_chan_close, WritesHost, [I64], Nil);
             ("chan", "try_send", lkrt_chan_try_send, WritesHost, [I64, DynVal], I64);
             ("chan", "try_recv", lkrt_chan_try_recv, WritesHost, [I64], DynVal);
             ("chan", "len", lkrt_chan_len, ReadsHost, [I64], I64);
+            ("chan", "capacity", lkrt_chan_capacity, ReadsHost, [I64], I64);
             ("chan", "is_closed", lkrt_chan_is_closed, ReadsHost, [I64], I64);
             ("chan", "select", lkrt_chan_select, WritesHost, [Ptr, Ptr, Ptr, Ptr, I64], Ptr);
             // `encoding` submodules: the VM's exact crates + conversion rules
             // (`core/src/val/de.rs`); object key order mirrors two-stage.
             ("json", "parse", lkrt_json_parse, WritesHost, [StrPtr], DynVal);
+            ("json", "stringify", lkrt_json_stringify, WritesHost, [DynVal], StrPtr);
             ("yaml", "parse", lkrt_yaml_parse, WritesHost, [StrPtr], DynVal);
+            ("yaml", "stringify", lkrt_yaml_stringify, WritesHost, [DynVal], StrPtr);
             ("toml", "parse", lkrt_toml_parse, WritesHost, [StrPtr], DynVal);
+            ("toml", "stringify", lkrt_toml_stringify, WritesHost, [DynVal], StrPtr);
+            // `base64`/`hex`/`url`: the same crates the stdlib module uses, so
+            // the text is byte-identical. `WritesHost` like every other
+            // arena-allocating string producer. `url.decode_component` raises on
+            // a malformed escape.
+            // `Bytes` handles: an arena-owned `Vec<u8>`, the same shape a list
+            // handle has. Content equality and `Bytes([…])` display, both the
+            // VM's rules.
+            ("bytes_h", "from_str", lkrt_lkbytes_from_str, WritesHost, [StrPtr], Ptr);
+            ("bytes_h", "len", lkrt_lkbytes_len, Pure, [Ptr], I64);
+            ("bytes_h", "is_empty", lkrt_lkbytes_is_empty, Pure, [Ptr], I64);
+            ("bytes_h", "eq", lkrt_lkbytes_eq, Pure, [Ptr, Ptr], I64);
+            ("bytes_h", "get", lkrt_lkbytes_get, Pure, [Ptr, I64], DynVal);
+            ("bytes_h", "concat", lkrt_lkbytes_concat, WritesHost, [Ptr, Ptr], Ptr);
+            ("bytes_h", "slice", lkrt_lkbytes_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            // `Bytes` had a carrier and four methods; ten of its fourteen fell
+            // back. A count is not a position, so take/skip get their own guard
+            // rather than borrowing `slice`'s.
+            ("bytes_h", "take", lkrt_lkbytes_take, WritesHost, [Ptr, I64], Ptr);
+            ("bytes_h", "skip", lkrt_lkbytes_skip, WritesHost, [Ptr, I64], Ptr);
+            ("bytes_h", "index_of", lkrt_lkbytes_index_of, ReadsHost, [Ptr, I64], DynVal);
+            // `index_of`'s sibling, and `reverse` — the two pure sequence
+            // operations `Bytes` was missing while it had every other read.
+            ("bytes_h", "count", lkrt_lkbytes_count, ReadsHost, [Ptr, I64], I64);
+            ("bytes_h", "reverse", lkrt_lkbytes_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("bytes_h", "sort", lkrt_lkbytes_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("bytes_h", "unique", lkrt_lkbytes_unique, WritesHost, [Ptr], Ptr, Constructs);
+            ("bytes_h", "contains", lkrt_lkbytes_contains, ReadsHost, [Ptr, I64], I64);
+            ("bytes_h", "from_i64_list", lkrt_lkbytes_from_i64_list, WritesHost, [Ptr], Ptr);
+            ("bytes_h", "from_dyn_list", lkrt_lkbytes_from_dyn_list, WritesHost, [Ptr], Ptr);
+            ("bytes_h", "to_i64_list", lkrt_lkbytes_to_i64_list, WritesHost, [Ptr], Ptr);
+            // The three reductions. `min`/`max` answer nil on an empty
+            // sequence, so they box; `sum` answers `0` and does not.
+            ("bytes_h", "sum", lkrt_lkbytes_sum, ReadsHost, [Ptr], I64);
+            ("bytes_h", "min", lkrt_lkbytes_min, ReadsHost, [Ptr], DynVal);
+            ("bytes_h", "max", lkrt_lkbytes_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "i64_sum", lkrt_lklist_i64_sum, ReadsHost, [Ptr], I64);
+            ("list_h", "f64_sum", lkrt_lklist_f64_sum, ReadsHost, [Ptr], F64);
+            ("list_h", "i64_min", lkrt_lklist_i64_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "i64_max", lkrt_lklist_i64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_sum", lkrt_lklist_dyn_sum, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_min", lkrt_lklist_dyn_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "dyn_max", lkrt_lklist_dyn_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "f64_min", lkrt_lklist_f64_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "f64_max", lkrt_lklist_f64_max, ReadsHost, [Ptr], DynVal);
+            ("list_h", "str_min", lkrt_lklist_str_min, ReadsHost, [Ptr], DynVal);
+            ("list_h", "str_max", lkrt_lklist_str_max, ReadsHost, [Ptr], DynVal);
+            ("bytes_h", "utf8", lkrt_lkbytes_utf8, WritesHost, [Ptr], StrPtr);
+            ("bytes_h", "utf8_lossy", lkrt_lkbytes_utf8_lossy, WritesHost, [Ptr], StrPtr);
+            ("bytes_h", "to_str", lkrt_lkbytes_to_str, WritesHost, [Ptr], StrPtr);
+            ("base64", "decode", lkrt_base64_decode, WritesHost, [StrPtr], Ptr);
+            ("hex", "decode", lkrt_hex_decode, WritesHost, [StrPtr], Ptr);
+            ("base64", "encode", lkrt_base64_encode, WritesHost, [StrPtr], StrPtr);
+            ("hex", "encode", lkrt_hex_encode, WritesHost, [StrPtr], StrPtr);
+            // `uuid.v4` is deliberately not `Pure`: two calls are two UUIDs, and
+            // CSE merges equal `Pure` calls in a dominance scope.
+            // `regex` compiles through a shared bounded cache, so a call is
+            // `ReadsHost`, not `Pure` — two identical calls are still cheap, but
+            // the cache is process state.
+            ("regex", "is_match", lkrt_regex_is_match, ReadsHost, [StrPtr, StrPtr], I64);
+            ("regex", "split", lkrt_regex_split, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("regex", "find", lkrt_regex_find, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("regex", "find_all", lkrt_regex_find_all, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("regex", "captures", lkrt_regex_captures, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("regex", "replace", lkrt_regex_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
+            // `random`: nondeterministic to a value, so never `Pure` (CSE would
+            // merge two rolls into one).
+            ("process", "id", lkrt_process_id, ReadsHost, [], I64);
+            ("process", "set_cwd", lkrt_process_set_cwd, WritesHost, [StrPtr], I64);
+            ("process", "exit", lkrt_process_exit, WritesHost, [I64], Nil);
+            ("process", "status", lkrt_process_status, WritesHost, [StrPtr, Ptr], I64);
+            ("process", "output_string", lkrt_process_output_string, WritesHost, [StrPtr, Ptr], StrPtr);
+            ("process", "output", lkrt_process_output, WritesHost, [StrPtr, Ptr], Ptr);
+            ("process", "status_noargs", lkrt_process_status_noargs, WritesHost, [StrPtr], I64);
+            ("process", "output_string_noargs", lkrt_process_output_string_noargs, WritesHost, [StrPtr], StrPtr);
+            ("process", "output_noargs", lkrt_process_output_noargs, WritesHost, [StrPtr], Ptr);
+            ("random", "int", lkrt_random_int, WritesHost, [I64, I64], I64);
+            ("random", "float", lkrt_random_float, WritesHost, [], F64);
+            ("random", "bool", lkrt_random_bool, WritesHost, [], I64);
+            ("random", "bool_p", lkrt_random_bool_p, WritesHost, [F64], I64);
+            ("random", "bytes", lkrt_random_bytes, WritesHost, [I64], Ptr);
+            ("random", "choice_i64", lkrt_random_choice_i64, WritesHost, [Ptr], DynVal);
+            ("random", "choice_f64", lkrt_random_choice_f64, WritesHost, [Ptr], DynVal);
+            ("random", "choice_str", lkrt_random_choice_str, WritesHost, [Ptr], DynVal);
+            ("random", "choice_dyn", lkrt_random_choice_dyn, WritesHost, [Ptr], DynVal);
+            ("random", "shuffle_i64", lkrt_random_shuffle_i64, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_f64", lkrt_random_shuffle_f64, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_str", lkrt_random_shuffle_str, WritesHost, [Ptr], Ptr);
+            ("random", "shuffle_dyn", lkrt_random_shuffle_dyn, WritesHost, [Ptr], Ptr);
+            ("uuid", "v4", lkrt_uuid_v4, WritesHost, [], StrPtr);
+            ("uuid", "parse", lkrt_uuid_parse, WritesHost, [StrPtr], StrPtr);
+            ("uuid", "is_valid", lkrt_uuid_is_valid, Pure, [StrPtr], I64);
+            ("base64", "encode_bytes", lkrt_base64_encode_bytes, WritesHost, [Ptr], StrPtr);
+            ("hex", "encode_bytes", lkrt_hex_encode_bytes, WritesHost, [Ptr], StrPtr);
+            // `hash`, both carriers of each member (`Bytes | String`).
+            ("hash", "sha256_str", lkrt_hash_sha256_str, Pure, [StrPtr], StrPtr);
+            ("hash", "sha1_str", lkrt_hash_sha1_str, Pure, [StrPtr], StrPtr);
+            ("hash", "crc32_str", lkrt_hash_crc32_str, Pure, [StrPtr], I64);
+            ("hash", "fnv64_str", lkrt_hash_fnv64_str, Pure, [StrPtr], I64);
+            ("hash", "sha256_bytes", lkrt_hash_sha256_bytes, ReadsHost, [Ptr], StrPtr);
+            ("hash", "sha1_bytes", lkrt_hash_sha1_bytes, ReadsHost, [Ptr], StrPtr);
+            ("hash", "crc32_bytes", lkrt_hash_crc32_bytes, ReadsHost, [Ptr], I64);
+            ("hash", "fnv64_bytes", lkrt_hash_fnv64_bytes, ReadsHost, [Ptr], I64);
+            ("url", "encode_component", lkrt_url_encode_component, WritesHost, [StrPtr], StrPtr);
+            ("url", "decode_component", lkrt_url_decode_component, WritesHost, [StrPtr], StrPtr);
+            // A closure as a runtime *value* (`lkrt::lkclosure`). Built from a
+            // function address and the same argument block a `spawn` uses for
+            // its captures; called by appending that block to the arguments,
+            // which is the order the native signature already declares.
+            //
+            // Not `Constructs`: that annotation is the scope-drop pass's
+            // contract that a call answers a *bare arena handle*, which
+            // `rt.handle_release` can be handed. This one answers an `LkDyn`.
+            ("rt", "closure_new", lkrt_closure_new, WritesHost, [Ptr, Ptr, I64, I64], DynVal);
+            ("rt", "closure_call", lkrt_closure_call, WritesHost, [DynVal, Ptr], DynVal);
+            ("rt", "closure_arity", lkrt_closure_arity, ReadsHost, [DynVal], I64);
+            // The callable-property call (`m.thing()`), which needs the name so
+            // a miss can say what the interpreter says.
+            ("rt", "closure_call_property", lkrt_closure_call_property, WritesHost, [DynVal, Ptr, StrPtr], DynVal);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);
@@ -205,15 +365,13 @@ macro_rules! for_each_abi_fn {
             ("rt", "task_await", lkrt_task_await, WritesHost, [I64], DynVal);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
-            ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
+            ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], Ptr);
             ("tcp", "write_str", lkrt_tcp_write_str, WritesHost, [I64, StrPtr], I64);
-            ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, I64], I64);
+            ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, Ptr], I64);
             ("tcp", "close", lkrt_tcp_close, WritesHost, [I64], I64);
             // Not `Pure`: it `take_bytes` — the handle is *consumed*, so a
             // second call with the same handle fails where the first one
             // succeeded. Mislabeling it would let a CSE pass collapse the two.
-            ("bytes", "to_string_utf8", lkrt_bytes_to_string_utf8, WritesHost, [I64], StrPtr);
-            ("bytes", "free", lkrt_bytes_free, WritesHost, [I64], I64);
             ("lkrt", "handle_close", lkrt_handle_close, WritesHost, [I64], I64);
             ("io.std", "write", lkrt_io_std_write, WritesHost, [I64, StrPtr, I64], I64);
             ("io.std", "flush", lkrt_io_std_flush, WritesHost, [I64], I64);
@@ -221,23 +379,35 @@ macro_rules! for_each_abi_fn {
             ("env", "get", lkrt_env_get, ReadsHost, [StrPtr, Ptr], I64);
             ("env", "get_or", lkrt_env_get_or, ReadsHost, [StrPtr, StrPtr], StrPtr);
             ("env", "has", lkrt_env_has, ReadsHost, [StrPtr], I64);
-            ("env", "set", lkrt_env_set, WritesHost, [StrPtr, StrPtr], I64);
-            ("env", "remove", lkrt_env_remove, WritesHost, [StrPtr], I64);
-            ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], I64);
+            ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], Ptr);
             ("fs", "read_to_string", lkrt_fs_read_to_string, ReadsHost, [StrPtr], StrPtr);
             ("fs", "write_str", lkrt_fs_write_str, WritesHost, [StrPtr, StrPtr], I64);
-            ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, I64], I64);
+            ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, Ptr], I64);
             ("fs", "exists", lkrt_fs_exists, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_len", lkrt_fs_metadata_len, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_is_file", lkrt_fs_metadata_is_file, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_is_dir", lkrt_fs_metadata_is_dir, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_readonly", lkrt_fs_metadata_readonly, ReadsHost, [StrPtr], I64);
-            ("fs", "canonicalize", lkrt_fs_canonicalize, ReadsHost, [StrPtr], StrPtr);
+            ("fs", "canonicalize", lkrt_fs_canonicalize, ReadsHost, [StrPtr], DynVal);
+            ("fs", "metadata_map", lkrt_fs_metadata_map, WritesHost, [StrPtr], Ptr);
+            ("env", "vars_map", lkrt_env_vars_map, WritesHost, [], Ptr);
+            ("fs", "is_file", lkrt_fs_is_file, ReadsHost, [StrPtr], I64);
+            ("fs", "is_dir", lkrt_fs_is_dir, ReadsHost, [StrPtr], I64);
+            ("fs", "append_str", lkrt_fs_append_str, WritesHost, [StrPtr, StrPtr], I64);
+            ("fs", "append_bytes", lkrt_fs_append_bytes, WritesHost, [StrPtr, Ptr], I64);
+            ("fs", "create_dir", lkrt_fs_create_dir, WritesHost, [StrPtr], I64);
+            ("fs", "create_dir_all", lkrt_fs_create_dir_all, WritesHost, [StrPtr], I64);
+            ("fs", "remove_file", lkrt_fs_remove_file, WritesHost, [StrPtr], I64);
+            ("fs", "remove_dir", lkrt_fs_remove_dir, WritesHost, [StrPtr], I64);
+            ("fs", "remove_dir_all", lkrt_fs_remove_dir_all, WritesHost, [StrPtr], I64);
+            ("fs", "rename", lkrt_fs_rename, WritesHost, [StrPtr, StrPtr], I64);
+            ("fs", "copy", lkrt_fs_copy, WritesHost, [StrPtr, StrPtr], I64);
             ("fs", "temp_dir", lkrt_fs_temp_dir, ReadsHost, [], StrPtr);
             ("path", "temp_dir", lkrt_path_temp_dir, ReadsHost, [], StrPtr);
             ("process", "cwd", lkrt_process_cwd, ReadsHost, [], StrPtr);
             ("os", "clock", lkrt_os_clock, ReadsHost, [], F64);
             ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
+            ("os", "time", lkrt_os_time, ReadsHost, [], I64);
             ("os", "hostname", lkrt_os_hostname, ReadsHost, [], StrPtr);
             ("os", "arch", lkrt_os_arch, ReadsHost, [], StrPtr);
             // The module member is `os.os` (renamed: the schema name pairs with
@@ -247,6 +417,7 @@ macro_rules! for_each_abi_fn {
             ("fs", "read_dir_list", lkrt_fs_read_dir_list, ReadsHost, [StrPtr], Ptr);
             // `math.floor(Float) -> Int` with the VM's exact rounding (`floor()
             // as i64`, saturating); an `Int` argument short-circuits in the lowering.
+            ("math", "f64_to_machine_int", lkrt_f64_to_machine_int, Pure, [F64, I64, I64], I64);
             ("math", "floor", lkrt_math_floor, Pure, [F64], I64);
             ("math", "ceil", lkrt_math_ceil, Pure, [F64], I64);
             ("math", "round", lkrt_math_round, Pure, [F64], I64);
@@ -255,16 +426,47 @@ macro_rules! for_each_abi_fn {
             ("math", "sqrt", lkrt_math_sqrt, ReadsHost, [F64], F64);
             ("math", "sin", lkrt_math_sin, Pure, [F64], F64);
             ("math", "cos", lkrt_math_cos, Pure, [F64], F64);
+            // `sin`/`cos` were native and `tan` was not; the inverse and log
+            // families were absent entirely. Their domain guards raise the
+            // stdlib module's own words, because a caught error's text is the
+            // program's output.
+            ("math", "tan", lkrt_math_tan, Pure, [F64], F64);
+            ("math", "asin", lkrt_math_asin, Pure, [F64], F64);
+            ("math", "acos", lkrt_math_acos, Pure, [F64], F64);
+            ("math", "atan", lkrt_math_atan, Pure, [F64], F64);
+            ("math", "atan2", lkrt_math_atan2, Pure, [F64, F64], F64);
+            ("math", "log", lkrt_math_log, Pure, [F64], F64);
+            ("math", "log10", lkrt_math_log10, Pure, [F64], F64);
+            ("math", "log2", lkrt_math_log2, Pure, [F64], F64);
+            ("math", "clamp_i64", lkrt_math_clamp_i64, Pure, [I64, I64, I64], I64);
             ("math", "exp", lkrt_math_exp, Pure, [F64], F64);
             ("math", "pow", lkrt_math_pow, Pure, [F64, F64], F64);
             ("math", "hypot", lkrt_math_hypot, Pure, [F64, F64], F64);
             ("math", "cbrt", lkrt_math_cbrt, Pure, [F64], F64);
             ("math", "is_nan", lkrt_math_is_nan, Pure, [F64], I64);
+            ("math", "is_inf", lkrt_math_is_inf, Pure, [F64], I64);
+            ("math", "sinh", lkrt_math_sinh, Pure, [F64], F64);
+            ("math", "cosh", lkrt_math_cosh, Pure, [F64], F64);
+            ("math", "tanh", lkrt_math_tanh, Pure, [F64], F64);
+            ("math", "trunc_f64", lkrt_math_trunc_f64, Pure, [F64], F64);
+            ("math", "fract_f64", lkrt_math_fract_f64, Pure, [F64], F64);
+            ("math", "to_int_f64", lkrt_math_to_int_f64, Pure, [F64], I64);
             // `math.sign` keeps its argument's numeric flavor (Int → signum,
             // Float → ±1.0/0.0); the lowering dispatches on the static type.
             ("math", "sign_i64", lkrt_math_sign_i64, Pure, [I64], I64);
             ("math", "sign_f64", lkrt_math_sign_f64, Pure, [F64], F64);
+            // The `path` module's fixed-arity members. `String?` results arrive
+            // boxed, the same convention `string.strip_prefix` uses.
+            ("path", "normalize", lkrt_path_normalize, Pure, [StrPtr], StrPtr);
+            ("path", "parent", lkrt_path_parent, Pure, [StrPtr], DynVal);
+            ("path", "file_name", lkrt_path_file_name, Pure, [StrPtr], DynVal);
+            ("path", "file_stem", lkrt_path_file_stem, Pure, [StrPtr], DynVal);
+            ("path", "extension", lkrt_path_extension, Pure, [StrPtr], DynVal);
+            ("path", "with_extension", lkrt_path_with_extension, WritesHost, [StrPtr, StrPtr], StrPtr);
+            ("path", "is_absolute", lkrt_path_is_absolute, Pure, [StrPtr], I64);
+            ("path", "components", lkrt_path_components, WritesHost, [StrPtr], Ptr);
             ("path", "sep", lkrt_path_sep, ReadsHost, [], StrPtr);
+            ("path", "delimiter", lkrt_path_delimiter, ReadsHost, [], StrPtr);
             // chrono-backed datetime (same crate as the stdlib module, so
             // formatting/weekday output is byte-identical). `format`/`parse`/
             // ordinal helpers abort on invalid input like the VM's loud error.
@@ -283,10 +485,37 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_from_range", lkrt_lklist_i64_from_range, WritesHost, [I64, I64, I64, I64], Ptr, Constructs);
             ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_take", lkrt_lklist_f64_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_skip", lkrt_lklist_f64_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "str_take", lkrt_lklist_str_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "str_skip", lkrt_lklist_str_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil, Borrowed);
+            // `clear()` on every carrier: the operation does not depend on the
+            // element type, so all four rows land together.
+            ("list_h", "i64_clear", lkrt_lklist_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            // `pop` / `insert` / `remove_at`: none of the three had a lowering on
+            // any carrier, so a single `xs.pop()` dropped its whole module to the
+            // VM. `drop_last` is `pop`'s mutation half — the read reuses the
+            // carrier's `Maybe` machinery (see `list_drop_last!` for why a
+            // `*_pop` returning `Maybe<f64>` by value is not portable). `insert`
+            // answers nothing for the same reason `clear` does: the VM evaluates
+            // it to the receiver, which the lowering already holds, and a
+            // `Borrowed` pointer return would hand back an unowned handle.
+            ("list_h", "i64_drop_last", lkrt_lklist_i64_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "f64_drop_last", lkrt_lklist_f64_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "str_drop_last", lkrt_lklist_str_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "i64_insert", lkrt_lklist_i64_insert, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
+            ("list_h", "f64_insert", lkrt_lklist_f64_insert, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            ("list_h", "str_insert", lkrt_lklist_str_insert, WritesHost, [Ptr, I64, StrPtr], Nil, Borrowed);
+            ("list_h", "i64_remove_at", lkrt_lklist_i64_remove_at, WritesHost, [Ptr, I64], I64, Borrowed);
+            ("list_h", "f64_remove_at", lkrt_lklist_f64_remove_at, WritesHost, [Ptr, I64], F64, Borrowed);
+            ("list_h", "str_remove_at", lkrt_lklist_str_remove_at, WritesHost, [Ptr, I64], StrPtr, Borrowed);
+            ("list_h", "f64_clear", lkrt_lklist_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "str_clear", lkrt_lklist_str_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "dyn_clear", lkrt_lklist_dyn_clear, WritesHost, [Ptr], Nil, Borrowed);
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
             // none of these are Pure.
@@ -312,6 +541,10 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
             // Linear membership test; returns 0/1 (the caller narrows to `i1`).
             ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
+            // Cross-type numeric membership: `1 in [1.0]` and `1.0 in [1, 2]`
+            // follow `==`, not the list's internal representation.
+            ("list_h", "i64_contains_f64", lkrt_lklist_i64_contains_f64, ReadsHost, [Ptr, F64], I64, Borrowed);
+            ("list_h", "f64_contains_i64", lkrt_lklist_f64_contains_i64, ReadsHost, [Ptr, I64], I64, Borrowed);
             // `xs[start..]`: a fresh handle with the elements from `start` on
             // (negative `start` aborts, matching the VM's fatal slice error).
             ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
@@ -322,6 +555,11 @@ macro_rules! for_each_abi_fn {
             ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             ("list_h", "f64_at", lkrt_lklist_f64_at, ReadsHost, [Ptr, I64], F64, Borrowed);
             ("list_h", "f64_set", lkrt_lklist_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            // `str_set` completes the carrier set: `xs[i] = v` lowered on `Int`
+            // and `Float` only, so the same two lines stayed native or did not
+            // depending on the list's representation. (`dyn_set` was already
+            // declared further down — it had a row and no lowering using it.)
+            ("list_h", "str_set", lkrt_lklist_str_set, WritesHost, [Ptr, I64, StrPtr], Nil, Borrowed);
             ("list_h", "f64_contains", lkrt_lklist_f64_contains, ReadsHost, [Ptr, F64], I64, Borrowed);
             // String-element list handle (elements are interned string-constant pointers).
             ("list_h", "str_new", lkrt_lklist_str_new, WritesHost, [], Ptr, Constructs);
@@ -329,18 +567,92 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64, Borrowed);
             ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr, Borrowed);
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            // `join` on the numeric carriers. It was absent because the VM
+            // refused a non-string list — one arbitrary rule reproduced as a
+            // second one here. The VM renders every element now, and these
+            // render them the same way the display helpers do.
+            ("list_h", "i64_join", lkrt_lklist_i64_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            ("list_h", "f64_join", lkrt_lklist_f64_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            ("list_h", "dyn_join", lkrt_lklist_dyn_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            // `index_of` is on every sequence in the VM; the lowering had it
+            // only on `Str`.
+            ("list_h", "i64_index_of", lkrt_lklist_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("list_h", "i64_count", lkrt_lklist_i64_count, ReadsHost, [Ptr, I64], I64, Borrowed);
+            ("list_h", "f64_count", lkrt_lklist_f64_count, ReadsHost, [Ptr, F64], I64, Borrowed);
+            ("list_h", "f64_index_of", lkrt_lklist_f64_index_of, ReadsHost, [Ptr, F64], DynVal, Borrowed);
+            ("list_h", "str_index_of", lkrt_lklist_str_index_of, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("list_h", "str_count", lkrt_lklist_str_count, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
+            ("list_h", "dyn_index_of", lkrt_lklist_dyn_index_of, ReadsHost, [Ptr, DynVal], DynVal, Borrowed);
+            ("list_h", "dyn_count", lkrt_lklist_dyn_count, ReadsHost, [Ptr, DynVal], I64, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
-            // `.slice(start[, end])` method semantics: negative aborts (the
-            // VM's loud non-negative-index error), `end` clamps to len.
-            ("list_h", "i64_slice_method", lkrt_lklist_i64_slice_method, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            // The other carriers, sharing `slice_bounds` with the one above:
+            // two-argument `slice` lowered only on `Int`, so `xs.slice(1, 3)`
+            // dropped a module to the VM for a reason no program can see.
+            ("list_h", "f64_slice", lkrt_lklist_f64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            ("list_h", "str_slice", lkrt_lklist_str_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            ("list_h", "dyn_slice", lkrt_lklist_dyn_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            // `.slice(start[, end])` is a **window**, not a copy — see the
+            // `slice_h` block below. (`i64_slice` above stays a copy: `xs[1..5]`
+            // is a range index, which the VM materializes.)
             ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "f64_sort", lkrt_lklist_f64_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "str_sort", lkrt_lklist_str_sort, WritesHost, [Ptr], Ptr, Constructs);
+            // The boxed carrier, whose order is `dyn_compare` — the VM's
+            // cross-kind comparison, mirrored with a conformance test rather
+            // than copied (see `vm_mirror`).
+            ("list_h", "dyn_sort", lkrt_lklist_dyn_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "f64_reverse", lkrt_lklist_f64_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "str_reverse", lkrt_lklist_str_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_reverse", lkrt_lklist_dyn_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            // List windows (`lkrt::lkslice`): `xs.slice(a, b)` reads through to
+            // `xs` instead of copying it, matching `HeapValue::Slice` in the VM.
+            // `ConstructsView` is what keeps the source alive for as long as the
+            // window can address it. `get_pair` (by-value `Maybe<i64>`) is
+            // declared in codegen, like the list and map variants.
+            ("slice_h", "i64_new", lkrt_lkslice_i64_new, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_sub", lkrt_lkslice_i64_sub, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_len", lkrt_lkslice_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            // The copy, asked for by name. Its result windows nothing, so it is
+            // an ordinary `Constructs`.
+            ("slice_h", "i64_to_list", lkrt_lkslice_i64_to_list, WritesHost, [Ptr], Ptr, Constructs);
+            // Reads *through* the window rather than materializing it: a
+            // window exists so that asking for a sum does not build a list.
+            ("slice_h", "i64_sum", lkrt_lkslice_i64_sum, ReadsHost, [Ptr], I64, Borrowed);
+            ("slice_h", "i64_min", lkrt_lkslice_i64_min, ReadsHost, [Ptr], DynVal, Borrowed);
+            ("slice_h", "i64_max", lkrt_lkslice_i64_max, ReadsHost, [Ptr], DynVal, Borrowed);
+            ("slice_h", "i64_contains", lkrt_lkslice_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
+            ("slice_h", "i64_index_of", lkrt_lkslice_i64_index_of, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("slice_h", "i64_count", lkrt_lkslice_i64_count, ReadsHost, [Ptr, I64], I64, Borrowed);
+            // Sub-windows, and `WritesHost` because a negative count raises.
+            ("slice_h", "i64_take", lkrt_lkslice_i64_take, WritesHost, [Ptr, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_skip", lkrt_lkslice_i64_skip, WritesHost, [Ptr, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_display", lkrt_lkslice_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_i64_new_sized", lkrt_lkmap_str_i64_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil, Borrowed);
+            ("map_h", "str_i64_set_const", lkrt_lkmap_str_i64_set_const, WritesHost, [Ptr, StrPtr, I64], Nil, Borrowed);
             ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            // Typed-map display. The order is the carrier's own iteration order,
+            // which `vm_mirror` pins to the VM's.
+            ("map_h", "str_i64_display", lkrt_lkmap_str_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "str_f64_display", lkrt_lkmap_str_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "str_bool_display", lkrt_lkmap_str_bool_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "i64_i64_display", lkrt_lkmap_i64_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("map_h", "i64_i64_iter_pairs", lkrt_lkmap_i64_i64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            // `.keys()` / `.values()` on an *int*-keyed map. The string-keyed
+            // carriers have had these all along; without them `{1: 2}.keys()`
+            // was the one container question the native build could not answer,
+            // and it dropped the whole program to the VM.
+            ("map_h", "i64_i64_keys", lkrt_lkmap_i64_i64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_i64_values", lkrt_lkmap_i64_i64_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_keys", lkrt_lkmap_i64_f64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_values", lkrt_lkmap_i64_f64_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_iter_pairs", lkrt_lkmap_i64_f64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "i64_f64_display", lkrt_lkmap_i64_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // `{ ..rest }`: a fresh handle with one key removed (chained per key).
             ("map_h", "str_i64_without", lkrt_lkmap_str_i64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
             ("map_h", "str_f64_without", lkrt_lkmap_str_f64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
@@ -348,9 +660,12 @@ macro_rules! for_each_abi_fn {
             ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
             ("map_h", "i64_i64_len", lkrt_lkmap_i64_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("map_h", "i64_i64_delete", lkrt_lkmap_i64_i64_delete, WritesHost, [Ptr, I64], DynVal, Borrowed);
             // String-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_f64_new_sized", lkrt_lkmap_str_f64_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
+            ("map_h", "str_f64_set_const", lkrt_lkmap_str_f64_set_const, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
             ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             // Int-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             // Composite string-int key store (`m["n${i}"] = v`): the key is built
@@ -360,6 +675,7 @@ macro_rules! for_each_abi_fn {
             ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr, Constructs);
             ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
             ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("map_h", "i64_f64_delete", lkrt_lkmap_i64_f64_delete, WritesHost, [Ptr, I64], DynVal, Borrowed);
             // Byte-wise string comparison, returning -1/0/1 (the caller compares to 0).
             ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
@@ -378,19 +694,32 @@ macro_rules! for_each_abi_fn {
             ("str", "lower", lkrt_str_lower, WritesHost, [StrPtr], StrPtr);
             ("str", "upper", lkrt_str_upper, WritesHost, [StrPtr], StrPtr);
             ("str", "trim", lkrt_str_trim, WritesHost, [StrPtr], StrPtr);
-            ("str", "find", lkrt_str_find, Pure, [StrPtr, StrPtr], I64);
-            ("str", "substring", lkrt_str_substring, WritesHost, [StrPtr, I64, I64], StrPtr);
+            ("str", "index_of", lkrt_str_index_of, WritesHost, [StrPtr, StrPtr], DynVal);
             ("str", "reverse", lkrt_str_reverse, WritesHost, [StrPtr], StrPtr);
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
+            ("str", "replace_limited", lkrt_str_replace_limited, WritesHost, [StrPtr, StrPtr, StrPtr, I64], StrPtr);
             ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr, Constructs);
             // `string.strip_prefix/suffix` return String-or-nil (boxed Dyn);
-            // `count` counts non-overlapping matches (empty needle → byte
-            // len + 1, the stdlib module's exact rule); `capitalize`/`title`
-            // are Unicode-aware, byte-identical to the stdlib module.
+            // `count` counts non-overlapping matches, the empty needle included
+            // (one between every pair of *characters*, which is what
+            // `str::matches` answers); `capitalize`/`title`/`strip`/`pad_*` are
+            // Unicode-aware and character-counted, byte-identical to the VM's
+            // `core_methods`.
             ("str", "strip_prefix", lkrt_str_strip_prefix, WritesHost, [StrPtr, StrPtr], DynVal);
             ("str", "strip_suffix", lkrt_str_strip_suffix, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("str", "strip", lkrt_str_strip, WritesHost, [StrPtr, StrPtr], StrPtr);
+            ("str", "pad_left", lkrt_str_pad_left, WritesHost, [StrPtr, I64, StrPtr], StrPtr);
+            ("str", "pad_right", lkrt_str_pad_right, WritesHost, [StrPtr, I64, StrPtr], StrPtr);
+            // Text → number, the only path there is; the answer is boxed
+            // because the module returns `Int?`/`Float?`.
+            ("str", "to_int", lkrt_str_to_int, Pure, [StrPtr, I64], DynVal);
+            ("str", "to_float", lkrt_str_to_float, Pure, [StrPtr], DynVal);
             ("str", "count", lkrt_str_count, Pure, [StrPtr, StrPtr], I64);
+            // Guarded counts: `WritesHost` because a negative one raises, which
+            // is an observable effect codegen must not optimize away.
+            ("str", "take", lkrt_str_take, WritesHost, [StrPtr, I64], StrPtr);
+            ("str", "skip", lkrt_str_skip, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "capitalize", lkrt_str_capitalize, WritesHost, [StrPtr], StrPtr);
             ("str", "title", lkrt_str_title, WritesHost, [StrPtr], StrPtr);
             ("str", "char_at", lkrt_str_char_at, WritesHost, [StrPtr, I64], DynVal);
@@ -399,6 +728,8 @@ macro_rules! for_each_abi_fn {
             ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr, Constructs);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
+            // The unsigned reading of the carrier — see `lkrt_u64_to_str`.
+            ("str", "from_u64", lkrt_u64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);
             ("str", "from_bool", lkrt_bool_to_str, WritesHost, [I64], StrPtr);
             // Divisor-guarded arithmetic: abort on a zero divisor (matching the VM's fatal
@@ -427,10 +758,20 @@ macro_rules! for_each_abi_fn {
             // `!x` on a boxed value: Bool negates, Nil is true, anything else
             // is the VM's loud type error.
             ("dyn", "not", lkrt_dyn_not, ReadsHost, [DynVal], I64);
+            // `-x` on a boxed value: Int and Float negate, anything else is
+            // the VM's loud type error.
+            ("dyn", "neg", lkrt_dyn_neg, ReadsHost, [DynVal], DynVal);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "cast_to_i64", lkrt_dyn_cast_to_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
+            // The same two conversions for a *map key*, which refuse a type no
+            // map can key by name instead of with the generic type error.
+            // The shape tests, which are five tags and six rather than one each.
+            ("dyn", "is_list", lkrt_dyn_is_list, Pure, [DynVal], I64);
+            ("dyn", "is_map", lkrt_dyn_is_map, Pure, [DynVal], I64);
+            ("dyn", "as_key_i64", lkrt_dyn_as_key_i64, ReadsHost, [DynVal], I64);
+            ("dyn", "as_key_str", lkrt_dyn_as_key_str, ReadsHost, [DynVal], StrPtr);
             // Deliberately `Retained`: this returns the *existing* handle held
             // inside the boxed value (`v.payload`), not a fresh one — treating
             // it as a constructor would let the pass free someone else's list.
@@ -449,8 +790,60 @@ macro_rules! for_each_abi_fn {
             ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
             ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "map_get_or", lkrt_dyn_map_get_or, ReadsHost, [DynVal, DynVal, DynVal], DynVal);
+            ("dyn", "clear", lkrt_dyn_clear, WritesHost, [DynVal], Nil);
+            ("dyn", "from_chan", lkrt_dyn_from_chan, Pure, [I64], DynVal);
+            ("dyn", "from_task", lkrt_dyn_from_task, Pure, [I64], DynVal);
+            ("dyn", "from_stream", lkrt_dyn_from_stream, Pure, [Ptr], DynVal);
+            ("dyn", "stream_list", lkrt_dyn_stream_list, Pure, [DynVal], Ptr);
+            ("dyn", "as_handle", lkrt_dyn_as_handle, Pure, [DynVal], I64);
+            ("dyn", "list_insert", lkrt_dyn_list_insert, WritesHost, [DynVal, I64, DynVal], Nil);
+            ("dyn", "list_remove_at", lkrt_dyn_list_remove_at, WritesHost, [DynVal, I64], DynVal);
+            ("dyn", "list_drop_last", lkrt_dyn_list_drop_last, WritesHost, [DynVal], Nil);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
+            // `Set`/`Bytes` in the boxed universe: without these two tags they
+            // could not enter a mixed container, a struct field, or a bridged
+            // return at all.
+            ("dyn", "from_typed_map", lkrt_dyn_from_typed_map, Pure, [Ptr, I64], DynVal);
+            // A typed list boxes in place too. `list_h.*_to_dyn` still exists —
+            // it is the element-wise *conversion* a mixed-list method result
+            // needs — but boxing must not go through it: the copy is a
+            // different list, and both directions of aliasing died on it.
+            ("dyn", "from_typed_list", lkrt_dyn_from_typed_list, Pure, [Ptr, I64], DynVal);
+            // `push` through a boxed receiver reaches the carrier itself; see
+            // `dyn.as_list`, which is read-only for exactly this reason.
+            ("dyn", "list_push", lkrt_dyn_list_push, WritesHost, [DynVal, DynVal], Nil, Borrowed);
+            ("dyn", "from_set", lkrt_dyn_from_set, Pure, [Ptr], DynVal);
+            ("dyn", "from_bytes", lkrt_dyn_from_bytes, Pure, [Ptr], DynVal);
+            // A window boxes in place, like `from_set`/`from_bytes`; `as_slice`
+            // is the read-back the `try` cell path needs, and both have call
+            // sites (a row without one is unverified, not available).
+            ("dyn", "from_slice", lkrt_dyn_from_slice, Pure, [Ptr], DynVal);
+            ("dyn", "as_slice", lkrt_dyn_as_slice, ReadsHost, [DynVal], Ptr);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
+            // The same read by position — see `lkrt_dyn_field_at`.
+            ("dyn", "field_at", lkrt_dyn_field_at, ReadsHost, [DynVal, I64, StrPtr, I64], DynVal);
+            // Map methods on a *boxed* receiver. `as_map` cannot serve them:
+            // it hands back a `str_dyn` handle, and a typed map boxed in place
+            // is still its own carrier. Dispatched per operation rather than
+            // per unbox because `delete` writes — a materialized copy would
+            // answer the reads and drop the write.
+            ("dyn", "to_iter", lkrt_dyn_to_iter, WritesHost, [DynVal], Ptr);
+            // `needle in v` on a boxed haystack. A map answers key membership
+            // and every other container element membership, which is a
+            // run-time choice — the lowering had no `Dyn` arm at all, so the
+            // whole program fell back.
+            ("dyn", "contains", lkrt_dyn_contains, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "seq_contains", lkrt_dyn_seq_contains, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "map_pairs", lkrt_dyn_map_pairs, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_keys", lkrt_dyn_map_keys, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_values", lkrt_dyn_map_values, WritesHost, [DynVal], Ptr, Constructs);
+            ("dyn", "map_has", lkrt_dyn_map_has, ReadsHost, [DynVal, StrPtr], I64);
+            ("dyn", "map_delete", lkrt_dyn_map_delete, WritesHost, [DynVal, StrPtr], DynVal);
+            // `c[k] = v` through a boxed receiver, for either container: the
+            // key is boxed so one row can carry both spellings, since which of
+            // them a tag accepts is what the callee decides.
+            ("dyn", "index_set", lkrt_dyn_index_set, WritesHost, [DynVal, DynVal, DynVal], Nil, Borrowed);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
             ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);
@@ -462,17 +855,41 @@ macro_rules! for_each_abi_fn {
             // marked map would leave a stale entry that a later allocation at
             // the same address would inherit.
             ("map_h", "obj_mark", lkrt_lkmap_obj_mark, WritesHost, [Ptr, I64], Nil);
+            ("map_h", "obj_mark_checked", lkrt_lkmap_obj_mark_checked, WritesHost, [Ptr, I64], Nil);
+            // A struct type's name and field order, described once at startup
+            // so `display` can render a marked instance the way the VM does
+            // (declaration order, nested values quoted). Two calls rather than
+            // a static table: these are shapes the ABI already has.
+            ("obj_ty", "begin", lkrt_struct_type_begin, WritesHost, [I64, StrPtr], Nil);
+            ("obj_ty", "field", lkrt_struct_type_field, WritesHost, [I64, StrPtr, I64], Nil);
+            // A store the lowering could not rule out statically. The declared
+            // code is a constant here, so this is a tag compare — no table.
+            ("obj_ty", "check", lkrt_check_declared_field, ReadsHost, [StrPtr, StrPtr, I64, DynVal], Nil);
+            // The same check when only the *mark* knows the struct type.
+            ("obj_ty", "check_marked", lkrt_check_marked_field, ReadsHost, [Ptr, StrPtr, DynVal], Nil);
+            ("obj_ty", "check_marked_dyn", lkrt_check_marked_field_dyn, ReadsHost, [Ptr, DynVal, DynVal], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
+            ("dyn", "dispatch_type_id", lkrt_dyn_dispatch_type_id, ReadsHost, [DynVal], I64);
+            // `typeof(x)` where the carrier could be a struct instance at run
+            // time (`Dyn`, `MapStrDyn`): the answer is the declared name, which
+            // only the runtime's type table has.
+            ("dyn", "type_name", lkrt_dyn_type_name, ReadsHost, [DynVal], StrPtr);
             ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_dyn_new_sized", lkrt_lkmap_str_dyn_new_sized, WritesHost, [I64], Ptr, Constructs);
             ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);
+            ("map_h", "str_dyn_set_const", lkrt_lkmap_str_dyn_set_const, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);
             ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            // The same read by position, with the key as the check — see
+            // `lkrt_lkmap_str_dyn_get_at`.
+            ("map_h", "str_dyn_get_at", lkrt_lkmap_str_dyn_get_at, ReadsHost, [Ptr, I64, StrPtr, I64], DynVal);
             ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64, Borrowed);
             ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
             // Struct update (`P { ..base, k: v }`): the VM's merge_field_maps
             // two-step insertion + make_struct's fresh field copy.
             ("map_h", "str_dyn_merge", lkrt_lkmap_str_dyn_merge, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_merge_typed", lkrt_lkmap_str_dyn_merge_typed, WritesHost, [Ptr, Ptr, I64], Ptr, Constructs);
             ("map_h", "str_dyn_rebuild", lkrt_lkmap_str_dyn_rebuild, WritesHost, [Ptr], Ptr, Constructs);
             // Map-literal protocol (VM-order mirror, plan D1): stage-1 build
             // in source order, then finish into the typed carrier — the
@@ -491,6 +908,15 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_i64_iter_pairs", lkrt_lkmap_str_i64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_i64_keys", lkrt_lkmap_str_i64_keys, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_i64_values", lkrt_lkmap_str_i64_values, WritesHost, [Ptr], Ptr, Constructs);
+            // `clear` was the one container method the map lacked while the
+            // list and the set both had it, so `m.clear()` dropped its module to
+            // the VM. `Map<str, bool>` rides the `str_i64` carrier, so five
+            // helpers cover the six map types the MIR distinguishes.
+            ("map_h", "str_i64_clear", lkrt_lkmap_str_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "i64_i64_clear", lkrt_lkmap_i64_i64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "str_f64_clear", lkrt_lkmap_str_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "i64_f64_clear", lkrt_lkmap_i64_f64_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("map_h", "str_dyn_clear", lkrt_lkmap_str_dyn_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("map_h", "str_i64_delete", lkrt_lkmap_str_i64_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
             ("map_h", "str_f64_iter_pairs", lkrt_lkmap_str_f64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
             ("map_h", "str_f64_keys", lkrt_lkmap_str_f64_keys, WritesHost, [Ptr], Ptr, Constructs);
@@ -508,9 +934,6 @@ macro_rules! for_each_abi_fn {
             // Typed map → `Map<str, Dyn>` conversion (cold: a typed map
             // crossing a `try$call` cell boundary boxes). Replayed inserts in
             // iteration order keep the layout — same keys, same order.
-            ("map_h", "str_i64_to_dyn", lkrt_lkmap_str_i64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
-            ("map_h", "str_f64_to_dyn", lkrt_lkmap_str_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
-            ("map_h", "str_bool_to_dyn", lkrt_lkmap_str_bool_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr, Constructs);
@@ -526,6 +949,9 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64, Borrowed);
+            ("list_h", "dyn_drop_last", lkrt_lklist_dyn_drop_last, WritesHost, [Ptr], Nil, Borrowed);
+            ("list_h", "dyn_insert", lkrt_lklist_dyn_insert, WritesHost, [Ptr, I64, DynVal], Nil, Borrowed);
+            ("list_h", "dyn_remove_at", lkrt_lklist_dyn_remove_at, WritesHost, [Ptr, I64], DynVal, Borrowed);
             ("list_h", "dyn_take", lkrt_lklist_dyn_take, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_skip", lkrt_lklist_dyn_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
             ("list_h", "dyn_chain", lkrt_lklist_dyn_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
@@ -535,6 +961,12 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_map_fn", lkrt_lklist_dyn_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "dyn_filter_fn", lkrt_lklist_dyn_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "dyn_reduce_fn", lkrt_lklist_dyn_reduce_fn, WritesHost, [Ptr, DynVal, Ptr], DynVal, Borrowed);
+            // The same three folds with the callback as a *closure value* — a
+            // callback the lowering cannot name, because it came out of a
+            // container or a parameter.
+            ("list_h", "dyn_map_closure", lkrt_lklist_dyn_map_closure, WritesHost, [Ptr, DynVal], Ptr, Constructs);
+            ("list_h", "dyn_filter_closure", lkrt_lklist_dyn_filter_closure, WritesHost, [Ptr, DynVal], Ptr, Constructs);
+            ("list_h", "dyn_reduce_closure", lkrt_lklist_dyn_reduce_closure, WritesHost, [Ptr, DynVal, DynVal], DynVal, Borrowed);
             ("list_h", "str_map_fn", lkrt_lklist_str_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "str_filter_fn", lkrt_lklist_str_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             ("list_h", "i64_unique", lkrt_lklist_i64_unique, WritesHost, [Ptr], Ptr, Constructs);
@@ -544,17 +976,32 @@ macro_rules! for_each_abi_fn {
             ("set", "new", lkrt_lkset_new, WritesHost, [], Ptr, Constructs);
             ("set", "from_str_list", lkrt_lkset_from_str_list, WritesHost, [Ptr], Ptr, Constructs);
             ("set", "from_i64_list", lkrt_lkset_from_i64_list, WritesHost, [Ptr], Ptr, Constructs);
+            ("set", "from_dyn_list", lkrt_lkset_from_dyn_list, WritesHost, [Ptr], Ptr, Constructs);
             ("set", "has", lkrt_lkset_has, ReadsHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "add", lkrt_lkset_add, WritesHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "delete", lkrt_lkset_delete, WritesHost, [Ptr, DynVal], I64, Borrowed);
             ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64, Borrowed);
             ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil, Borrowed);
+            ("set", "display", lkrt_lkset_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            // The set operations. `kind` selects which — one row per *shape*
+            // rather than seven rows, because the four combining operations
+            // differ only in which members they keep and all four must fill the
+            // answer in the same stated sequence.
+            ("set", "combine", lkrt_lkset_combine, WritesHost, [Ptr, Ptr, I64], Ptr, Constructs);
+            ("set", "relate", lkrt_lkset_relate, ReadsHost, [Ptr, Ptr, I64], I64, Borrowed);
+            ("set", "eq", lkrt_lkset_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("set", "iter", lkrt_lkset_iter, WritesHost, [Ptr], Ptr, Constructs);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);
             ("arith", "f64_mod", lkrt_f64_mod_checked, ReadsHost, [F64, F64], F64);
             ("arith", "i64_shl", lkrt_i64_shl_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_shr", lkrt_i64_shr_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_shr", lkrt_u64_shr_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_lt", lkrt_u64_lt, Pure, [I64, I64], I64);
+            ("arith", "u64_div", lkrt_u64_div, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_rem", lkrt_u64_rem, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_to_f64", lkrt_u64_to_f64, Pure, [I64], F64);
         }
     };
 }
@@ -602,6 +1049,37 @@ pub fn find(module: &str, name: &str) -> Option<&'static AbiFn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call that answers something different each time may not be `Pure`.
+    ///
+    /// `Pure` is what the MIR CSE pass keys on: two `Pure` calls with equal
+    /// arguments in one dominance scope become one. For a clock or a UUID that
+    /// is a wrong answer, not a slow one — `let a = uuid.v4(); let b =
+    /// uuid.v4();` would bind the same string twice. These entries take no
+    /// arguments, which is exactly the case CSE collapses most eagerly, so the
+    /// classification is pinned here rather than left to whoever adds the next
+    /// one by copying a neighbouring row.
+    #[test]
+    fn nondeterministic_entries_are_not_pure() {
+        for (module, name) in [
+            ("uuid", "v4"),
+            ("random", "int"),
+            ("random", "float"),
+            ("random", "bool"),
+            ("random", "choice_i64"),
+            ("random", "shuffle_i64"),
+            ("os", "clock"),
+            ("os", "epoch"),
+            ("time", "now"),
+            ("datetime", "now"),
+        ] {
+            let entry = find(module, name).expect("entry exists");
+            assert!(
+                !matches!(entry.effect, AbiEffect::Pure),
+                "{module}.{name} is Pure, so CSE may merge two calls that must answer differently"
+            );
+        }
+    }
 
     #[test]
     fn symbols_are_unique() {

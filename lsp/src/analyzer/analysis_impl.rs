@@ -1115,51 +1115,73 @@ impl LkAnalyzer {
         diags
     }
 
+    /// Diagnostics for a check that already ran.
+    ///
+    /// The errors come from `TokenCacheEntry::document_types`, the one check
+    /// this document gets. Running another one here is what this used to do,
+    /// and it type-checked every file twice per analysis.
     pub(crate) fn collect_type_diagnostics(
-        program: &Program,
+        errors: &[RecordedTypeError],
         tokens: &[token::Token],
         spans: &[Span],
         content: &str,
         origins: Option<&[macro_system::MacroTokenOrigin]>,
     ) -> Vec<Diagnostic> {
-        let mut checker = TypeChecker::new_strict();
-        match program.type_check(&mut checker) {
-            Ok(_) => Vec::new(),
-            Err(err) => {
-                let range = Self::type_error_range(&err, tokens, spans, content);
-                let mut message = Self::type_error_from_anyhow(&err)
+        errors
+            .iter()
+            .map(|recorded| {
+                let range = Self::type_error_range(recorded, tokens, spans, content);
+                let mut message = recorded
+                    .typed
+                    .as_ref()
                     .map(|type_error| type_error.message.clone())
-                    .unwrap_or_else(|| err.to_string());
+                    .unwrap_or_else(|| recorded.message.clone());
                 if let Some(origins) = origins {
-                    if let Some(span) = lk_core::syntax::type_error_span(&err, tokens, spans) {
-                        if let Some(note) = macro_origin_note_for_span(origins, &span) {
-                            message.push('\n');
-                            message.push_str(&note);
+                    if let Some(type_error) = recorded.typed.as_ref() {
+                        if let Some(span) = lk_core::syntax::typed_error_span(type_error, tokens, spans) {
+                            if let Some(note) = macro_origin_note_for_span(origins, &span) {
+                                message.push('\n');
+                                message.push_str(&note);
+                            }
                         }
                     }
                 }
-                let mut diagnostic = Diagnostic::new(
-                    range,
-                    Some(DiagnosticSeverity::ERROR),
-                    None,
-                    Some("lk".to_string()),
-                    message,
-                    None,
-                    None,
-                );
-                diagnostic.code = Some(NumberOrString::String("lk_type_error".to_string()));
-                vec![diagnostic]
-            }
-        }
+                // A lint is advice, not a rejection: `lk check` only reports
+                // the implicit-`Any` finding under `--strict`, and a program
+                // carrying it compiles and runs. Rendering it as `ERROR` made
+                // three of this repository's own examples red in the editor
+                // while the compiler accepted them — the editor saying the
+                // program is broken when it is not.
+                let is_lint = recorded.typed.as_ref().is_some_and(|type_error| type_error.lint);
+                let severity = if is_lint {
+                    DiagnosticSeverity::WARNING
+                } else {
+                    DiagnosticSeverity::ERROR
+                };
+                let mut diagnostic =
+                    Diagnostic::new(range, Some(severity), None, Some("lk".to_string()), message, None, None);
+                diagnostic.code = Some(NumberOrString::String(
+                    if is_lint { "lk_type_lint" } else { "lk_type_error" }.to_string(),
+                ));
+                diagnostic
+            })
+            .collect()
     }
 
     pub(crate) fn type_error_range(
-        err: &anyhow::Error,
+        recorded: &RecordedTypeError,
         tokens: &[token::Token],
         spans: &[Span],
         content: &str,
     ) -> Range {
-        if let Some(type_error) = Self::type_error_from_anyhow(err) {
+        // The statement the error came from, when one was recorded. Preferred
+        // over the search below, which matches the *first* token in the file
+        // that looks like the offending expression — in `let a = 1; let b = 1;`
+        // that is the wrong `1`.
+        if let Some(span) = &recorded.span {
+            return Self::span_to_range(span);
+        }
+        if let Some(type_error) = recorded.typed.as_ref() {
             if let Some(expr) = &type_error.expr {
                 if let Some(range) = Self::range_for_expr(expr, tokens, spans) {
                     return range;
@@ -1169,8 +1191,7 @@ impl LkAnalyzer {
                 return range;
             }
         }
-        let message = err.to_string();
-        if let Some(range) = Self::implicit_any_error_range(None, &message, tokens, spans) {
+        if let Some(range) = Self::implicit_any_error_range(None, &recorded.message, tokens, spans) {
             return range;
         }
         Self::default_error_range(content)
@@ -1206,10 +1227,6 @@ impl LkAnalyzer {
         let rest = &message[start..];
         let end = rest.find('\'')?;
         Some(&rest[..end])
-    }
-
-    pub(crate) fn type_error_from_anyhow(err: &anyhow::Error) -> Option<&typ::TypeError> {
-        err.downcast_ref::<typ::TypeError>()
     }
 
     pub(crate) fn range_for_expr(expr: &Expr, tokens: &[token::Token], spans: &[Span]) -> Option<Range> {

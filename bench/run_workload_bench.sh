@@ -142,13 +142,11 @@ run_with_timeout() {
 }
 
 collect_profile_once() {
-  local exec_widths=(28 12 10 10 8 10 10 10 10)
-  local copy_widths=(28 10 10 10 10 10 10 10 10 10 10)
+  local exec_widths=(28 12 12 10 10 8 10 10 10 10)
   local opcode_widths=(28 70)
   local write_source_widths=(28 70)
   local index_key_widths=(28 70)
   local exec_rows=()
-  local copy_rows=()
   local opcode_rows=()
   local write_source_rows=()
   local index_key_rows=()
@@ -156,13 +154,20 @@ collect_profile_once() {
   echo "VM Profile by Workload"
 
   for name in "${WORKLOADS[@]}"; do
-    local err_file opcodes top_opcodes write_sources index_keys calls branches typed containers list_ops map_ops string_ops clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap
+    local err_file opcodes top_opcodes write_sources index_keys calls branches typed containers list_ops map_ops string_ops reg_writes
     err_file="$TMPDIR/profile_${name}.err"
     local out_file
     out_file="$TMPDIR/profile_${name}.out"
     if ! LK_VM_PROFILE=1 LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
       echo "VM profile run failed for workload '$name'" >&2
       sed 's/^/  /' "$err_file" >&2
+      return 1
+    fi
+    # A binary without `--features vm-profile` used to answer LK_VM_PROFILE=1
+    # with a full profile of zeros, which this happily tabulated as measurements.
+    if grep -q "VM profile: unavailable" "$err_file"; then
+      echo "VM profile requested but '$LK_BIN' has no profiling counters compiled in." >&2
+      echo "  Rebuild with: cargo build --profile dist -p lk-cli --features vm-profile" >&2
       return 1
     fi
     opcodes=$(profile_value "$err_file" opcode_steps)
@@ -176,41 +181,20 @@ collect_profile_once() {
     list_ops=$(profile_value "$err_file" list_ops)
     map_ops=$(profile_value "$err_file" map_ops)
     string_ops=$(profile_value "$err_file" string_ops)
-    clones=$(profile_value "$err_file" val_clones)
-    heap_clones=$(profile_value "$err_file" heap_clones)
-    copy_heap=$(profile_value "$err_file" copy_policy_heap_clones)
-    reg_heap=$(profile_value "$err_file" register_copy_heap_clones)
-    local_heap=$(profile_value "$err_file" local_copy_heap_clones)
-    load_heap=$(profile_value "$err_file" local_load_heap_clones)
-    store_heap=$(profile_value "$err_file" local_store_heap_clones)
-    const_heap=$(profile_value "$err_file" const_load_heap_clones)
-    arg_heap=$(profile_value "$err_file" call_arg_heap_clones)
-    cont_heap=$(profile_value "$err_file" container_copy_heap_clones)
-    exec_rows+=("$name|$opcodes|$calls|$branches|$typed|$containers|$list_ops|$map_ops|$string_ops")
-    copy_rows+=("$name|$clones|$heap_clones|$copy_heap|$reg_heap|$local_heap|$load_heap|$store_heap|$const_heap|$arg_heap|$cont_heap")
+    reg_writes=$(profile_value "$err_file" register_writes)
+    exec_rows+=("$name|$opcodes|$reg_writes|$calls|$branches|$typed|$containers|$list_ops|$map_ops|$string_ops")
     opcode_rows+=("$name|$top_opcodes")
     write_source_rows+=("$name|$write_sources")
     index_key_rows+=("$name|$index_keys")
   done
 
-  printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s\n" \
-    "Workload" "Opcodes" "Calls" "Branches" "Typed" "Containers" "List" "Map" "String"
+  printf "%-28s %12s %12s %10s %10s %8s %10s %10s %10s %10s\n" \
+    "Workload" "Opcodes" "RegWrites" "Calls" "Branches" "Typed" "Containers" "List" "Map" "String"
   print_separator "${exec_widths[@]}"
   for row in "${exec_rows[@]}"; do
-    IFS='|' read -r name opcodes calls branches typed containers list_ops map_ops string_ops <<< "$row"
-    printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s\n" \
-      "$name" "$opcodes" "$calls" "$branches" "$typed" "$containers" "$list_ops" "$map_ops" "$string_ops"
-  done
-
-  echo ""
-  echo "VM Copy Profile by Workload"
-  printf "%-28s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
-    "Workload" "Clones" "HeapClone" "CopyHeap" "RegHeap" "LocalHeap" "LoadHeap" "StoreHeap" "ConstHeap" "ArgHeap" "ContHeap"
-  print_separator "${copy_widths[@]}"
-  for row in "${copy_rows[@]}"; do
-    IFS='|' read -r name clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap <<< "$row"
-    printf "%-28s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
-      "$name" "$clones" "$heap_clones" "$copy_heap" "$reg_heap" "$local_heap" "$load_heap" "$store_heap" "$const_heap" "$arg_heap" "$cont_heap"
+    IFS='|' read -r name opcodes reg_writes calls branches typed containers list_ops map_ops string_ops <<< "$row"
+    printf "%-28s %12s %12s %10s %10s %8s %10s %10s %10s %10s\n" \
+      "$name" "$opcodes" "$reg_writes" "$calls" "$branches" "$typed" "$containers" "$list_ops" "$map_ops" "$string_ops"
   done
 
   echo ""
@@ -390,16 +374,23 @@ echo "LK:  $LK_BIN"
 echo "Lua: $($LUA_BIN -v 2>&1 | head -1)"
 if [ "$RUN_AOT" != "0" ]; then
   AOT_COMPILE_LOG="$TMPDIR/aot_compile.log"
-  if "$LK_BIN" compile "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
+  # `LK_AOT_NO_FALLBACK=1`: a plain `compile` would happily bundle the VM for a
+  # shape Cranelift cannot lower, and the run would then be reported as "AOT"
+  # while executing the interpreter — a wrong number with nothing saying so.
+  # `scripts/aot_coverage.sh` scans this same file for the same reason; this is
+  # the second half, so the measurement cannot lie even if the gate is skipped.
+  if LK_AOT_HYBRID=0 LK_AOT_NO_FALLBACK=1 "$LK_BIN" compile \
+    "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
     AOT_ENABLED=1
-    AOT_BACKEND=$(sed -nE 's/.*backend ([^,]+),.*/\1/p' "$AOT_COMPILE_LOG" | tail -1)
-    if [ -z "$AOT_BACKEND" ]; then
-      AOT_BACKEND="unknown"
-    fi
+    # There is one native backend (Cranelift); the string-IR `llvm` one retired.
+    # This used to scrape a "backend X," line out of the compile log — a line the
+    # compiler stopped emitting when that backend went away, so the report had
+    # been saying "(unknown)" ever since.
+    AOT_BACKEND="cranelift"
     echo "AOT: $AOT_BIN ($AOT_BACKEND)"
   else
     AOT_BACKEND="skipped"
-    echo "AOT: skipped (compile failed)"
+    echo "AOT: skipped (compile failed — a shape stopped lowering natively)"
     echo "AOT compile failed; continuing with LK VM and Lua only:" >&2
     sed 's/^/  /' "$AOT_COMPILE_LOG" >&2
   fi

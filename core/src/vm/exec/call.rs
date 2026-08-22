@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -72,8 +73,33 @@ pub(super) fn callable_target(
         | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::Runtime(function))) => {
             Ok(CallableTarget::Runtime(Arc::clone(function)))
         }
+        // The value *is* a callable, but not the flavour the call site was
+        // compiled for — a fact mismatch, which is the runtime's problem and
+        // not the program's.
         (_, HeapValue::Callable(_)) => bail!("{error}"),
-        _ => bail!("{error}"),
+        // Not a callable at all. Say what it is: the common way to get here is
+        // calling a module (`use chan;` shadows the `chan()` global with the
+        // module, which is a Map of its members), and "is not callable" alone
+        // leaves nothing to act on.
+        (_, other) => bail!(
+            "{error}: it is a {}{}",
+            HeapValue::type_name(other),
+            module_shaped_hint(other)
+        ),
+    }
+}
+
+/// The nudge for a value that is a map.
+///
+/// An imported module *is* a map of its members, and `use chan;` binds it over
+/// the `chan()` global — so `chan(1)` calls a Map. That is a documented sharp
+/// edge (see `docs/semantics.md`), and this is where a program meets it. A map
+/// is not callable for any other reason either, so the hint costs nothing when
+/// the value is an ordinary one.
+fn module_shaped_hint(value: &HeapValue) -> &'static str {
+    match value {
+        HeapValue::Map(_) => " — an imported module is a map of its members, so call one of them (`m.f(…)`)",
+        _ => "",
     }
 }
 
@@ -139,7 +165,7 @@ impl Executor {
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-            "Call callee is not callable",
+            "this value is not a function",
         )?;
 
         match callable {
@@ -148,7 +174,7 @@ impl Executor {
                 captures,
             } => {
                 let function = checked_positional_function(module, function_index, window.arg_count)?;
-                self.push_call_frame(function_index, function, captures, window)?;
+                self.push_call_frame(function_index, function, Some(captures), window)?;
                 Ok(CallOutcome::Pushed(function_index))
             }
             CallableTarget::RuntimeNative { arity, function } => {
@@ -160,7 +186,7 @@ impl Executor {
                     );
                 }
                 let native = NativeEntry {
-                    name: "<runtime-native>".to_string(),
+                    name: Cow::Borrowed("<runtime-native>"),
                     arity,
                     function,
                 };
@@ -194,10 +220,17 @@ impl Executor {
             }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
-                let result = runtime_callable::call_runtime_callable_runtime(
+                // The executor is the one place that knows which module these
+                // arguments come from, and a *function* among them needs that:
+                // it is an index into this module's table, and crossing into
+                // another module is what promotes it to a callable carrying
+                // this one (`ClosureCopy::Promote`).
+                let caller_module = self.shared_module.clone();
+                let result = runtime_callable::call_runtime_callable_runtime_from(
                     function.as_ref(),
                     &self.state.stack[args],
                     &mut self.state.heap,
+                    caller_module.as_ref(),
                     ctx.as_deref_mut(),
                 );
                 result
@@ -215,9 +248,11 @@ impl Executor {
         window: CallWindow,
     ) -> Result<()> {
         let module = module.ok_or_else(|| anyhow!("CallDirect requires Module execution"))?;
-        let captures = Arc::clone(&self.empty_captures);
         let function = checked_positional_function(module, function_index, window.arg_count)?;
-        self.push_call_frame(function_index, function, captures, window)
+        // `None`, not a clone of a shared empty vector: a direct call is the
+        // most common thing a program does, and the refcount pair it used to
+        // pay for saying "no captures" showed up as a tenth of the run.
+        self.push_call_frame(function_index, function, None, window)
     }
 
     /// Push a suspended caller `CallFrame` and switch the executor's "current
@@ -229,7 +264,7 @@ impl Executor {
         &mut self,
         function_index: u32,
         function: &Function,
-        captures: Arc<Vec<RuntimeVal>>,
+        captures: Option<Arc<Vec<RuntimeVal>>>,
         window: CallWindow,
     ) -> Result<()> {
         let arg_range = self.call_args_stack_range(window)?;
@@ -243,8 +278,10 @@ impl Executor {
             self.state.stack.resize(new_top, RuntimeVal::Nil);
         }
         let reg_count = function.register_count as usize;
-        self.state.stack[new_base..new_base + reg_count].fill(RuntimeVal::Nil);
-        let param_count = window.arg_count as usize;
+        // The parameter slots are about to be overwritten wholesale, so they do
+        // not need nilling first — only the locals above them do.
+        let param_count = (window.arg_count as usize).min(reg_count);
+        self.state.stack[new_base + param_count..new_base + reg_count].fill(RuntimeVal::Nil);
         for i in 0..param_count {
             let src = arg_range.start + i;
             let dst = new_base + i;
@@ -276,7 +313,7 @@ impl Executor {
         &mut self,
         function_index: u32,
         function: &Function,
-        captures: Arc<Vec<RuntimeVal>>,
+        captures: Option<Arc<Vec<RuntimeVal>>>,
         window: CallWindow,
         named_count: u16,
     ) -> Result<()> {

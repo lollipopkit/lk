@@ -1,6 +1,6 @@
 use anyhow::Result;
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedMap},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -46,7 +46,7 @@ impl EnvModule {
 
     #[stdlib_export(name = "vars", params(), returns = Map, docs = "Returns all environment variables as a map.")]
     fn vars(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let mut map = fast_hash_map_new();
+        let mut map = value_map_new();
         for (key, value) in std::env::vars_os() {
             let key = key.to_string_lossy();
             let value = value.to_string_lossy();

@@ -26,26 +26,26 @@ assert(remaining.has("city"));
 // 5. if let — conditional destructuring
 let maybe_num = [1, 2, 3];
 if let [head, ..tail] = maybe_num {
-  assert(head == 1);
-  assert(tail == [2, 3]);
+    assert(head == 1);
+    assert(tail == [2, 3]);
 } else {
-  panic("if let should match");
+    panic("if let should match");
 }
 
 // 6. if let with literal — only matches that literal
 let val = 42;
 if let 42 = val {
-  assert(true);
+    assert(true);
 } else {
-  panic("if let 42 should match");
+    panic("if let 42 should match");
 }
 
 // 7. while let — loop until pattern fails
 let stack = [1, 2, 3];
 let collected = [];
 while let [top, ..rest] = stack {
-  collected.push(top);
-  stack = rest;
+    collected.push(top);
+    stack = rest;
 }
 assert(collected == [1, 2, 3]);
 

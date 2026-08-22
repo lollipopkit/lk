@@ -70,13 +70,26 @@ impl PathModule {
     #[stdlib_export(name = "normalize", params(path: String), returns = String)]
     fn normalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = string_arg(args.get(0).expect("checked arity"), runtime, "path.normalize path")?;
+        let path = Path::new(path.as_ref());
+        // A `..` that cannot be popped is kept only when the path is
+        // *relative*, where it still means something: `a/../../b` really does
+        // go up past where it started, so `../b` is the answer. Above a root it
+        // means nothing — `/..` is `/` on every filesystem — and keeping it
+        // produced `/../a`, a path that normalizes to itself forever.
+        let rooted = path.has_root();
         let mut out = std::path::PathBuf::new();
-        for component in Path::new(path.as_ref()).components() {
+        for component in path.components() {
             use std::path::Component;
             match component {
                 Component::CurDir => {}
                 Component::ParentDir => {
-                    if !out.pop() {
+                    // Only a *named* component is what `..` cancels. Popping
+                    // whatever was last meant one `..` ate another:
+                    // `normalize("../..")` answered the empty string, so two
+                    // levels up became none at all.
+                    if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                        out.pop();
+                    } else if !rooted {
                         out.push(component.as_os_str());
                     }
                 }

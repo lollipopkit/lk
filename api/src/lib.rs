@@ -3,7 +3,7 @@
 //! A minimal, safe surface for embedding the LK VM in a Rust host. Each [`Vm`]
 //! is an **isolated instance**: it owns its own `VmContext` (heap, globals,
 //! async runtime handle), so multiple VMs are fully independent with no shared
-//! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
+//! global state — this is exactly what the M0 global-state removal enabled. Add a
 //! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
 
 use lk_core::vm::ModuleResolver;
@@ -32,6 +32,17 @@ pub struct Vm {
     ctx: Option<VmContext>,
     fuel: Option<u64>,
     heap_limit: Option<usize>,
+    /// The last `eval` failure, kept so the C ABI can *say* what went wrong.
+    ///
+    /// `lk_vm_eval` answers NULL on error and used to drop the message on the
+    /// floor, so every embedder — including this project's own Tier 0 bundle —
+    /// could only print "execution failed". A missing import, a type error and
+    /// a divide by zero were the same sentence.
+    last_error: Option<String>,
+    /// NUL-terminated copy handed to C by `lk_vm_last_error`; owned here so the
+    /// caller needs no free.
+    #[cfg(feature = "ffi")]
+    last_error_c: Option<std::ffi::CString>,
 }
 
 impl Vm {
@@ -45,6 +56,9 @@ impl Vm {
             ctx: None,
             fuel: None,
             heap_limit: None,
+            last_error: None,
+            #[cfg(feature = "ffi")]
+            last_error_c: None,
         }
     }
 
@@ -65,6 +79,9 @@ impl Vm {
             ctx: None,
             fuel: None,
             heap_limit: None,
+            last_error: None,
+            #[cfg(feature = "ffi")]
+            last_error_c: None,
         }
     }
 
@@ -359,7 +376,6 @@ fn map_key_to_string(key: &lk_core::val::RuntimeMapKey) -> String {
         RuntimeMapKey::Int(value) => value.to_string(),
         RuntimeMapKey::ShortStr(value) => value.as_str().to_string(),
         RuntimeMapKey::String(value) => value.to_string(),
-        RuntimeMapKey::Obj(handle) => format!("<obj {}>", handle.index()),
     }
 }
 
@@ -676,7 +692,7 @@ mod tests {
 
     #[test]
     fn instances_are_isolated() {
-        // Two independent VMs share no global state (M0 去全局状态).
+        // Two independent VMs share no global state (M0 global-state removal).
         let mut a = Vm::new();
         let mut b = Vm::new();
         assert_eq!(a.eval("let x = 10; return x;").unwrap(), "10");
@@ -841,11 +857,46 @@ pub mod ffi {
             return core::ptr::null_mut();
         };
         match vm.eval(src) {
-            Ok(out) => CString::new(out)
-                .map(CString::into_raw)
-                .unwrap_or(core::ptr::null_mut()),
-            Err(_) => core::ptr::null_mut(),
+            Ok(out) => {
+                vm.last_error = None;
+                CString::new(out)
+                    .map(CString::into_raw)
+                    .unwrap_or(core::ptr::null_mut())
+            }
+            Err(error) => {
+                // Kept rather than dropped: NULL alone made "missing import",
+                // "type error" and "divide by zero" the same answer, and the
+                // one embedder this project ships (the Tier 0 bundle) could
+                // only print "lk: execution failed".
+                vm.last_error = Some(format!("{error:#}"));
+                core::ptr::null_mut()
+            }
         }
+    }
+
+    /// The message behind the last [`lk_vm_eval`] that answered NULL, or NULL if
+    /// the last call succeeded. Borrowed from the VM — valid until the next
+    /// `lk_vm_eval` or [`lk_vm_free`], and **not** to be passed to
+    /// [`lk_string_free`].
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be freed.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_last_error(vm: *mut Vm) -> *const c_char {
+        if vm.is_null() {
+            return core::ptr::null();
+        }
+        let vm = unsafe { &mut *vm };
+        let Some(message) = vm.last_error.as_deref() else {
+            return core::ptr::null();
+        };
+        // Re-encoded into a NUL-terminated buffer the VM owns, so the pointer
+        // stays valid for the caller without a free.
+        let Ok(encoded) = CString::new(message) else {
+            return core::ptr::null();
+        };
+        vm.last_error_c = Some(encoded);
+        vm.last_error_c.as_ref().map_or(core::ptr::null(), |s| s.as_ptr())
     }
 
     /// Free a VM created by [`lk_vm_new`].
@@ -1086,12 +1137,16 @@ pub mod ffi {
     type ListDynPush = unsafe extern "C" fn(*mut c_void, LkHybridDyn);
     type MapStrDynNew = unsafe extern "C" fn() -> *mut c_void;
     type MapStrDynSet = unsafe extern "C" fn(*mut c_void, *const c_char, LkHybridDyn);
+    /// Marks a field map as an instance of the struct of this name. See
+    /// `marshal_object`.
+    type ObjMarkByName = unsafe extern "C" fn(*mut c_void, *const c_char) -> i64;
     type RaiseDyn = unsafe extern "C" fn(LkHybridDyn);
 
     static RT_LIST_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_LIST_DYN_PUSH: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_SET: AtomicUsize = AtomicUsize::new(0);
+    static RT_OBJ_MARK_BY_NAME: AtomicUsize = AtomicUsize::new(0);
     static RT_RAISE_DYN: AtomicUsize = AtomicUsize::new(0);
 
     /// Register the lkrt runtime table (hybrid wrapper C constructor):
@@ -1104,12 +1159,14 @@ pub mod ffi {
         list_dyn_push: ListDynPush,
         map_str_dyn_new: MapStrDynNew,
         map_str_dyn_set: MapStrDynSet,
+        obj_mark_by_name: ObjMarkByName,
         raise_dyn: RaiseDyn,
     ) {
         RT_LIST_DYN_NEW.store(list_dyn_new as usize, Ordering::Release);
         RT_LIST_DYN_PUSH.store(list_dyn_push as usize, Ordering::Release);
         RT_MAP_STR_DYN_NEW.store(map_str_dyn_new as usize, Ordering::Release);
         RT_MAP_STR_DYN_SET.store(map_str_dyn_set as usize, Ordering::Release);
+        RT_OBJ_MARK_BY_NAME.store(obj_mark_by_name as usize, Ordering::Release);
         RT_RAISE_DYN.store(raise_dyn as usize, Ordering::Release);
     }
 
@@ -1118,6 +1175,7 @@ pub mod ffi {
         list_dyn_push: ListDynPush,
         map_str_dyn_new: MapStrDynNew,
         map_str_dyn_set: MapStrDynSet,
+        obj_mark_by_name: ObjMarkByName,
     }
 
     fn hybrid_rt() -> HybridRt {
@@ -1125,7 +1183,13 @@ pub mod ffi {
         let list_dyn_push = RT_LIST_DYN_PUSH.load(Ordering::Acquire);
         let map_str_dyn_new = RT_MAP_STR_DYN_NEW.load(Ordering::Acquire);
         let map_str_dyn_set = RT_MAP_STR_DYN_SET.load(Ordering::Acquire);
-        if list_dyn_new == 0 || list_dyn_push == 0 || map_str_dyn_new == 0 || map_str_dyn_set == 0 {
+        let obj_mark_by_name = RT_OBJ_MARK_BY_NAME.load(Ordering::Acquire);
+        if list_dyn_new == 0
+            || list_dyn_push == 0
+            || map_str_dyn_new == 0
+            || map_str_dyn_set == 0
+            || obj_mark_by_name == 0
+        {
             hybrid_die(format_args!(
                 "container return needs the lkrt constructor table (lk_hybrid_register_rt)"
             ));
@@ -1138,6 +1202,7 @@ pub mod ffi {
                 list_dyn_push: core::mem::transmute::<usize, ListDynPush>(list_dyn_push),
                 map_str_dyn_new: core::mem::transmute::<usize, MapStrDynNew>(map_str_dyn_new),
                 map_str_dyn_set: core::mem::transmute::<usize, MapStrDynSet>(map_str_dyn_set),
+                obj_mark_by_name: core::mem::transmute::<usize, ObjMarkByName>(obj_mark_by_name),
             }
         }
     }
@@ -1205,6 +1270,7 @@ pub mod ffi {
                 Some(HeapValue::String(value)) => leaked_c_string(value.as_ref()),
                 Some(HeapValue::List(list)) => marshal_list(list, state, depth),
                 Some(HeapValue::Map(map)) => marshal_map(map, state, depth),
+                Some(HeapValue::Object(object)) => marshal_object(object, state, depth),
                 Some(other) => hybrid_die(format_args!(
                     "bridged return kind not yet marshalable: {}",
                     other.type_name()
@@ -1219,25 +1285,74 @@ pub mod ffi {
         state: &lk_core::vm::RuntimeModuleState,
         depth: usize,
     ) -> LkHybridDyn {
-        // A typed string list displays *quoted* in the VM while `ListDyn`
-        // displays bare (the Mixed-list quirk) — converting would silently
-        // change program output, so it stays unmarshalable for now.
-        if matches!(list, lk_core::val::TypedList::String(_)) {
-            hybrid_die(format_args!(
-                "bridged return kind not yet marshalable: List<Str> (quoted typed display)"
-            ));
-        }
+        // A typed string list used to be refused here, on the grounds that it
+        // displays *quoted* in the VM while a `ListDyn` displays bare, so
+        // converting would change the program's output. Both display quoted
+        // now — `println(["a", "b"])` and the same list typed `List<Any>` agree
+        // on either engine — and the branch below already knew how to convert
+        // one, which the refusal above it made dead code.
         let rt = hybrid_rt();
         // SAFETY: the constructor table points at lkrt's no-mangle builders
         // (registered by the wrapper); handles stay arena-owned.
         unsafe {
             let handle = (rt.list_dyn_new)();
-            for item in list.collect_owned() {
-                let element = marshal_value(item, state, depth + 1);
-                (rt.list_dyn_push)(handle, element);
+            // A `TypedList::String` element past `ShortStr`'s inline limit
+            // cannot become a `RuntimeVal` without a heap allocation, and this
+            // side only has the heap immutably. It does not need one: marshaling
+            // a string only *reads* it.
+            if let lk_core::val::TypedList::String(values) = list {
+                for text in values {
+                    (rt.list_dyn_push)(handle, leaked_c_string(text.as_ref()));
+                }
+            } else {
+                let items = list
+                    .collect_owned()
+                    .expect("only a string list can decline, and that case is handled above");
+                for item in items {
+                    let element = marshal_value(item, state, depth + 1);
+                    (rt.list_dyn_push)(handle, element);
+                }
             }
             LkHybridDyn {
                 tag: LK_HYBRID_DYN_LIST,
+                payload: handle as i64,
+            }
+        }
+    }
+
+    /// A struct instance: its fields as a `str -> Dyn` map, marked with the
+    /// declared name so `typeof` and `println` answer `P` rather than `Map`.
+    ///
+    /// This arm did not exist, so a bridged function that *returned* a struct
+    /// aborted the program — `bridged return kind not yet marshalable: P`. The
+    /// hybrid test had one and discarded the result, which is why nothing saw
+    /// it: a value that is never used is never marshalled.
+    ///
+    /// A name the native side does not know (a struct declared only inside the
+    /// bridged module) leaves the map unmarked, which is the same answer the
+    /// native side gives for a struct whose declaration is out of reach.
+    fn marshal_object(
+        object: &lk_core::val::RuntimeObject,
+        state: &lk_core::vm::RuntimeModuleState,
+        depth: usize,
+    ) -> LkHybridDyn {
+        let rt = hybrid_rt();
+        // SAFETY: as in `marshal_map`.
+        unsafe {
+            let handle = (rt.map_str_dyn_new)();
+            for (key, value) in object.fields_iter() {
+                let Ok(key_c) = std::ffi::CString::new(key) else {
+                    hybrid_die(format_args!("bridged struct field name contains an embedded NUL"));
+                };
+                let element = marshal_value(value, state, depth + 1);
+                (rt.map_str_dyn_set)(handle, key_c.into_raw(), element);
+            }
+            let Ok(name) = std::ffi::CString::new(object.type_name().as_ref()) else {
+                hybrid_die(format_args!("bridged struct name contains an embedded NUL"));
+            };
+            (rt.obj_mark_by_name)(handle, name.as_ptr());
+            LkHybridDyn {
+                tag: LK_HYBRID_DYN_MAP,
                 payload: handle as i64,
             }
         }

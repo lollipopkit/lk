@@ -14,6 +14,22 @@ impl<'a> Parser<'a> {
         Ok((pattern, self.pos))
     }
 
+    /// Parse `tokens` as one whole pattern — every token must belong to it.
+    ///
+    /// The binding parsers slice out "everything before the top-level `=`" and
+    /// hand the slice here. Parsing a *prefix* and dropping the rest is what
+    /// let `let mut s = 0;` through: it bound `mut`, discarded `s`, and the
+    /// program only failed later at the *use* of `s`, pointing away from the
+    /// actual mistake. Anything left over is a syntax error, reported here.
+    pub fn parse_whole_pattern(tokens: &[Token]) -> Result<Pattern> {
+        let mut parser = Parser::new(tokens);
+        let (pattern, consumed) = parser.parse_pattern_prefix()?;
+        if consumed < tokens.len() {
+            return Err(anyhow!(unconsumed_pattern_error(tokens, consumed)));
+        }
+        Ok(pattern)
+    }
+
     /// Parse OR pattern: pattern1 | pattern2
     pub(super) fn parse_or_pattern(&mut self) -> Result<Pattern> {
         let mut patterns = vec![self.parse_guard_pattern()?];
@@ -54,8 +70,18 @@ impl<'a> Parser<'a> {
 
         match &self.tokens[self.pos] {
             // Literal patterns
-            Token::Int(i) => {
-                let start_val = *i;
+            //
+            // `UInt` joins `Int` here rather than becoming a cast the way it does
+            // in expression position: a pattern compares carriers, and the
+            // carrier of `0xFFFF_FFFF_FFFF_FFFF` is the one the scrutinee will
+            // be holding. Leaving it out would turn a pattern that used to mean
+            // *something* into a parse error.
+            Token::Int(_) | Token::UInt { .. } => {
+                let start_val = match &self.tokens[self.pos] {
+                    Token::Int(i) => *i,
+                    Token::UInt { value, .. } => *value as i64,
+                    _ => unreachable!("matched just above"),
+                };
                 self.pos += 1;
 
                 // Check if this is a range pattern
@@ -317,4 +343,18 @@ impl<'a> Parser<'a> {
 
         Ok(ParsedSelectCase { arm, guard, body })
     }
+}
+
+fn unconsumed_pattern_error(tokens: &[Token], consumed: usize) -> String {
+    let tail: Vec<String> = tokens[consumed..].iter().map(crate::token::token_lexeme).collect();
+    let tail = tail.join(" ");
+    // `mut` is a plain identifier to the lexer, so `let mut x` parses as the
+    // pattern `mut` with `x` left over. LK has no binding modifier: every
+    // variable is rebindable, so the fix is always to drop the word.
+    if matches!(tokens.first(), Some(Token::Id(name)) if name == "mut") {
+        return alloc::format!(
+            "Syntax error: `mut` is not a binding modifier in LK (variables are rebindable already) — write `{tail}` instead of `mut {tail}`"
+        );
+    }
+    alloc::format!("Syntax error: unexpected `{tail}` after the pattern — a binding takes one pattern before '='")
 }

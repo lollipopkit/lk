@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use lk_core::package::{MANIFEST_FILE, Manifest, PackageGraph, find_manifest};
@@ -11,22 +11,21 @@ fn read_file_content(path: &str) -> anyhow::Result<String> {
     std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", path, e))
 }
 
-pub(crate) fn sanitize_path(raw: &str) -> anyhow::Result<PathBuf> {
-    let p = Path::new(raw);
-
-    for comp in p.components() {
-        if matches!(comp, Component::ParentDir) {
-            return Err(anyhow::anyhow!(
-                "Parent directory components ('..') are not allowed in file paths."
-            ));
-        }
-    }
-
-    Ok(p.to_path_buf())
-}
-
-pub(crate) fn parse_sanitized_path(raw: &str) -> Result<PathBuf, String> {
-    sanitize_path(raw).map_err(|e| e.to_string())
+/// A CLI path argument, taken as written.
+///
+/// This used to refuse any path containing `..`, under the name
+/// `sanitize_path`. It protected nobody: an **absolute** path was allowed
+/// through the same check, so anything `..` could reach was already reachable —
+/// and every call site is an argument the person running the command typed.
+/// What it did do was refuse the most ordinary invocation there is:
+/// `lk ../script.lk` from a subdirectory, and likewise `lk check ../x.lk`,
+/// `lk fmt ../dir` and `lk compile -o ../out`.
+///
+/// Traversal guards belong where the path comes from somewhere the user is not
+/// choosing — `package::cache_dir_for_source` builds a directory out of a
+/// dependency's URL, and *that* refuses `..`.
+pub(crate) fn parse_path_arg(raw: &str) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(raw))
 }
 
 pub(crate) fn expand_program_file(path: &Path) -> anyhow::Result<ProgramExpansion> {
@@ -60,28 +59,75 @@ pub(crate) fn parse_options_for_file(path: &Path) -> anyhow::Result<ParseOptions
     Ok(options)
 }
 
-pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(CompileMode, PathBuf)> {
+pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(CompileMode, PathBuf, Option<PathBuf>)> {
     let cwd = std::env::current_dir().context("read current directory")?;
     split_compile_args_with_cwd(args, &cwd)
 }
 
-pub(crate) fn split_compile_args_with_cwd(args: &[String], cwd: &Path) -> anyhow::Result<(CompileMode, PathBuf)> {
+/// The third element is the **default output path** when the entry was resolved
+/// from a manifest rather than named on the command line.
+///
+/// A build output does not belong in `src/`. `lk compile` in a package resolves
+/// the entry to `<pkg>/src/main.lk`, and the output path was "the entry without
+/// its extension" — so `lk compile` dropped a 20 MB executable (and
+/// `lk compile bytecode` a `.lkm`) *inside the source directory*, next to the
+/// file it was built from, where the next `git add .` picks it up. A file the
+/// user named keeps that rule (`lk compile foo.lk` → `foo`, which is what
+/// naming a file means); a package build goes to the package root, the way
+/// `go build` puts its binary in the module directory rather than under `src`.
+pub(crate) fn split_compile_args_with_cwd(
+    args: &[String],
+    cwd: &Path,
+) -> anyhow::Result<(CompileMode, PathBuf, Option<PathBuf>)> {
     match args.len() {
-        0 => Ok((CompileMode::Exe, default_compile_entry(cwd)?)),
+        0 => {
+            let (entry, output) = default_compile_entry_with_output(cwd)?;
+            Ok((CompileMode::Exe, entry, output))
+        }
         1 => {
             if let Some(mode) = parse_compile_mode(&args[0])? {
-                return Ok((mode, default_compile_entry(cwd)?));
+                let (entry, output) = default_compile_entry_with_output(cwd)?;
+                return Ok((mode, entry, output));
             }
-            Ok((CompileMode::Exe, sanitize_path(&args[0])?))
+            Ok((CompileMode::Exe, PathBuf::from(&args[0]), None))
         }
         2 => {
             let mode =
                 parse_compile_mode(&args[0])?.ok_or_else(|| anyhow::anyhow!("Unknown compile target '{}'", args[0]))?;
-            let file = sanitize_path(&args[1])?;
-            Ok((mode, file))
+            let file = PathBuf::from(&args[1]);
+            Ok((mode, file, None))
         }
         _ => anyhow::bail!("compile requires [FILE], [TARGET], or [TARGET FILE]"),
     }
+}
+
+/// The implicit entry plus where its output belongs.
+///
+/// `None` for the `./main.lk` case: that is a loose file in the current
+/// directory, and `main.lk` → `main` beside it is what naming it would have
+/// done anyway.
+fn default_compile_entry_with_output(cwd: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
+    let entry = default_compile_entry(cwd)?;
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    // Resolved through `<root>/src/main.lk`: the output goes to `<root>/<stem>`,
+    // named after the *package directory* rather than "main", which is what a
+    // built program is called.
+    let from_src = entry.parent().is_some_and(|dir| dir.ends_with("src"));
+    if !from_src {
+        return Ok((entry, None));
+    }
+    let name = entry
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".to_string());
+    let package_root = entry
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or(root);
+    Ok((entry, Some(package_root.join(name))))
 }
 
 fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {

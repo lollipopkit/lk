@@ -8,13 +8,12 @@ use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, ShortStrOrStr, 
 use crate::vm::analysis::{PerfIndexFact, PerfIndexTargetKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric};
 
 use super::{
-    Executor, IndexTargetKind, heap_kind, record_dynamic_index_key_metric, record_index_key_metric,
-    runtime_map_key_from_str,
+    Executor, IndexTargetKind, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str,
 };
 
 impl Executor {
     #[inline(always)]
-    pub(in crate::vm::exec) fn get_list_index(&self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
+    pub(in crate::vm::exec) fn get_list_index(&mut self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
         let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
             bail!("GetList target expected Obj");
         };
@@ -33,7 +32,11 @@ impl Executor {
         } else {
             *index as usize
         };
-        Ok(self.get_typed_list_element(list, index))
+        match self.get_typed_list_element(list, index) {
+            Some(value) => Ok(value),
+            // A long string element: read it again where allocation is allowed.
+            None => Ok(self.get_typed_list_element_allocating(*handle, index)),
+        }
     }
 
     #[inline(always)]
@@ -78,7 +81,7 @@ impl Executor {
             })?,
             Some(other) => bail!(
                 "GetIndexStrI target object changed while indexing: {:?}",
-                heap_kind(other)
+                HeapValue::type_name(other)
             ),
             None => bail!("heap object {} out of bounds", handle.index()),
         }
@@ -104,7 +107,7 @@ impl Executor {
         } else {
             *index as usize
         };
-        Some(self.get_typed_list_element(list, index))
+        self.get_typed_list_element(list, index)
     }
 
     #[inline(always)]
@@ -168,7 +171,7 @@ impl Executor {
         pc: usize,
         target_reg: u8,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
@@ -180,7 +183,10 @@ impl Executor {
         if let RuntimeVal::Obj(h) = self.read_unchecked(key_reg)
             && let Some(HeapValue::List(list)) = self.state.heap.get(*h)
         {
-            let items = list.collect_owned();
+            // A materialized range: its elements are the integers `NewRange`
+            // produced, so this never declines. `unwrap_or_default` rather than
+            // an expect because an empty answer is already handled below.
+            let items = list.collect_owned().unwrap_or_default();
             if items.is_empty() {
                 return self.get_index_slice(target_reg, 0, Some(0), None);
             }
@@ -198,11 +204,8 @@ impl Executor {
                 let value = *value;
                 let idx_val = self.read_unchecked(key_reg);
                 let idx = match idx_val {
-                    RuntimeVal::Int(n) => {
-                        let len = value.as_str().len() as i64;
-                        if *n < 0 { (len + *n) as usize } else { *n as usize }
-                    }
-                    _ => bail!("String index must be Int"),
+                    RuntimeVal::Int(n) => *n,
+                    _ => bail!("a string index must be Int"),
                 };
                 self.index_string_at(value.as_str(), idx)
             }
@@ -210,7 +213,7 @@ impl Executor {
                 let handle = *handle;
                 self.get_heap_index(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
             }
-            other => bail!("GetIndex target expected Obj, got {:?}", other.kind()),
+            other => bail!("{} is not indexable", self.value_type_name(other)),
         }
     }
 
@@ -220,13 +223,32 @@ impl Executor {
         pc: usize,
         handle: crate::val::HeapRef,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
-        // Fast path: when index_fact confirms Map target, do direct map lookup.
-        if let Some(fact) = index_fact {
-            if fact.target_kind == PerfIndexTargetKind::Map {
+        // What kind of container this is: the compile-time fact when there is
+        // one, and otherwise one look at the heap.
+        //
+        // A container behind a *parameter* has no fact — `prices.get(sku)` and
+        // `xs[i]` inside `fn line_total(prices, …)` / `fn at(xs, i)` are the
+        // ordinary shapes — so every such lookup took the `#[cold]` route to
+        // learn what the heap says directly. Measured: 7 000 000 of 7 000 000
+        // map lookups in a pricing loop, 6 000 000 of 6 000 000 list lookups in
+        // an indexing loop, and the cold route then answered from the same
+        // carrier these arms read.
+        let target_kind = match index_fact {
+            Some(fact) => Some(fact.target_kind),
+            None => match self.state.heap.get(handle) {
+                Some(HeapValue::Map(_)) => Some(PerfIndexTargetKind::Map),
+                Some(HeapValue::List(_)) => Some(PerfIndexTargetKind::List),
+                Some(HeapValue::Object(_)) => Some(PerfIndexTargetKind::Object),
+                Some(HeapValue::String(_)) => Some(PerfIndexTargetKind::String),
+                _ => None,
+            },
+        };
+        match target_kind {
+            Some(PerfIndexTargetKind::Map) => {
                 if let Some(key_str) = known_string_key {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
@@ -243,8 +265,7 @@ impl Executor {
                     return self.get_map_index_fast(handle, key_reg, index_key_metrics);
                 }
             }
-            // For list with known type, skip the slow path too
-            if fact.target_kind == PerfIndexTargetKind::List {
+            Some(PerfIndexTargetKind::List) => {
                 let key_val = self.read_unchecked(key_reg);
                 if let RuntimeVal::Int(n) = key_val
                     && let Some(HeapValue::List(list)) = self.state.heap.get(handle)
@@ -258,36 +279,55 @@ impl Executor {
                     } else {
                         *n as usize
                     };
-                    return Ok(self.get_typed_list_element(list, index));
+                    if let Some(value) = self.get_typed_list_element(list, index) {
+                        return Ok(value);
+                    }
+                    return Ok(self.get_typed_list_element_allocating(handle, index));
                 }
             }
-            if fact.target_kind == PerfIndexTargetKind::String {
+            // `p.x` — a struct field read. The object arm lived only in the
+            // slow path, so every field read of a struct took the cold route:
+            // 600 000 of 600 000 in a loop that reads two fields. The slow
+            // path's field-slot cache is not what saves it there either — with
+            // a static fact no inline cache is consulted at all, so what it
+            // does is exactly this lookup, behind a `#[cold]` call.
+            Some(PerfIndexTargetKind::Object) => {
+                if let Some(key) = known_string_key
+                    && let Some(HeapValue::Object(object)) = self.state.heap.get(handle)
+                {
+                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
+                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
+                    return Ok(object.get_field(key).unwrap_or(RuntimeVal::Nil));
+                }
+            }
+            Some(PerfIndexTargetKind::String) => {
                 let key_val = self.read_unchecked(key_reg);
                 if let RuntimeVal::Int(n) = key_val
                     && let Some(HeapValue::String(value)) = self.state.heap.get(handle)
                 {
-                    let index = if *n < 0 {
-                        let index = value.len() as i64 + *n;
-                        if index < 0 {
-                            return Ok(RuntimeVal::Nil);
-                        }
-                        index as usize
-                    } else {
-                        *n as usize
-                    };
-                    return self.index_string_at(value, index);
+                    return self.index_string_at(value, *n);
                 }
             }
+            Some(PerfIndexTargetKind::Unknown) | None => {}
         }
 
         self.get_heap_index_slow_path(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
     }
 
-    /// Read a value from a typed list by index, converting to RuntimeVal.
-    /// Returns RuntimeVal::Nil for out-of-bounds or unsupported types.
+    /// Read a value from a typed list by index, without allocating.
+    ///
+    /// `None` means *this path cannot answer* — not that the element is
+    /// missing. A `TypedList::String` element longer than a `ShortStr` needs a
+    /// heap allocation, and this runs behind `&self` on the index fast path.
+    /// Out of bounds is `Some(Nil)`, which is an answer.
+    ///
+    /// Returning `Nil` for the too-long case, which is what this used to do,
+    /// made `xs[0]` answer nil for an element that was plainly there — while
+    /// `xs.first()`, which allocates, answered correctly. Same list, two
+    /// answers, and only for strings over seven bytes.
     #[inline(always)]
-    fn get_typed_list_element(&self, list: &TypedList, index: usize) -> RuntimeVal {
-        match list {
+    fn get_typed_list_element(&self, list: &TypedList, index: usize) -> Option<RuntimeVal> {
+        Some(match list {
             TypedList::Int(values) => values
                 .get(index)
                 .copied()
@@ -305,12 +345,74 @@ impl Executor {
                 .unwrap_or(RuntimeVal::Nil),
             TypedList::Mixed(values) => values.get(index).cloned().unwrap_or(RuntimeVal::Nil),
             TypedList::String(values) => match values.get(index) {
-                Some(value) => ShortStr::new(value)
-                    .map(RuntimeVal::ShortStr)
-                    .unwrap_or_else(|| RuntimeVal::Nil),
+                Some(value) => RuntimeVal::ShortStr(ShortStr::new(value)?),
                 None => RuntimeVal::Nil,
             },
+        })
+    }
+
+    /// One element of a window, by its position *within the window*.
+    ///
+    /// Negative indices count from the window's end, as they do for a list.
+    /// Out of range is nil.
+    pub(in crate::vm::exec) fn slice_element(&mut self, handle: crate::val::HeapRef, index: i64) -> RuntimeVal {
+        let Some(HeapValue::Slice(slice)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let (source, start, recorded_len) = (slice.source, slice.start, slice.len);
+        // A negative index counts back from the window's end, and where that
+        // end *is* depends on whether the source shrank — so only this case
+        // pays for the extra look at the source. A non-negative index does not
+        // need to know: past the source, the element read below answers nil on
+        // its own, which is the same answer clamping would give.
+        let index = if index < 0 {
+            slice.live_len(&self.state.heap) as i64 + index
+        } else {
+            index
+        };
+        if index < 0 || index as usize >= recorded_len {
+            return RuntimeVal::Nil;
         }
+        let RuntimeVal::Obj(source) = source else {
+            return RuntimeVal::Nil;
+        };
+        self.get_typed_list_element_allocating(source, start + index as usize)
+    }
+
+    /// One byte of a `Bytes`, as an `Int`.
+    ///
+    /// Same index rule as every other sequence: a negative counts from the end,
+    /// outside is nil. `Bytes` was not indexable at all until it had this —
+    /// `b[0]` answered "index target object is not indexable".
+    pub(in crate::vm::exec) fn byte_element(&mut self, handle: crate::val::HeapRef, index: i64) -> RuntimeVal {
+        let Some(HeapValue::Bytes(bytes)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let index = if index < 0 { bytes.len() as i64 + index } else { index };
+        if index < 0 {
+            return RuntimeVal::Nil;
+        }
+        bytes
+            .get(index as usize)
+            .map_or(RuntimeVal::Nil, |byte| RuntimeVal::Int(*byte as i64))
+    }
+
+    /// The same read, allowed to allocate. Used where the fast path declines.
+    fn get_typed_list_element_allocating(&mut self, handle: crate::val::HeapRef, index: usize) -> RuntimeVal {
+        let Some(HeapValue::List(list)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        if let Some(value) = self.get_typed_list_element(list, index) {
+            return value;
+        }
+        // Only a long `TypedList::String` element reaches here.
+        let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let Some(text) = values.get(index).cloned() else {
+            return RuntimeVal::Nil;
+        };
+        RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(text)))
     }
 
     /// Fast map index lookup that avoids RuntimeMapKey construction.
@@ -339,7 +441,10 @@ impl Executor {
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
                         Ok(map.get_str(key_str).unwrap_or(RuntimeVal::Nil))
                     }
-                    Some(other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+                    Some(other) => bail!(
+                        "GetIndex target object changed while indexing: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                     None => bail!("heap object {} out of bounds", handle.index()),
                 }
             }
@@ -348,7 +453,10 @@ impl Executor {
                 let key = RuntimeMapKey::Int(*n);
                 match self.state.heap.get(handle) {
                     Some(HeapValue::Map(map)) => Ok(map.get(&key).unwrap_or(RuntimeVal::Nil)),
-                    Some(other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+                    Some(other) => bail!(
+                        "GetIndex target object changed while indexing: {:?}",
+                        HeapValue::type_name(other)
+                    ),
                     None => bail!("heap object {} out of bounds", handle.index()),
                 }
             }
@@ -375,7 +483,7 @@ impl Executor {
         pc: usize,
         handle: crate::val::HeapRef,
         key_reg: u8,
-        known_string_key: Option<&str>,
+        known_string_key: Option<&Arc<str>>,
         index_fact: Option<PerfIndexFact>,
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
@@ -400,6 +508,18 @@ impl Executor {
         };
 
         match target_kind {
+            IndexTargetKind::Slice => {
+                let RuntimeVal::Int(index) = *self.read(key_reg)? else {
+                    bail!("slice index must be Int");
+                };
+                Ok(self.slice_element(handle, index))
+            }
+            IndexTargetKind::Bytes => {
+                let RuntimeVal::Int(index) = *self.read(key_reg)? else {
+                    bail!("bytes index must be Int");
+                };
+                Ok(self.byte_element(handle, index))
+            }
             IndexTargetKind::List => {
                 if let Some(pos) = self.negative_list_index(handle, key_reg) {
                     let orig_val = *self.read(key_reg)?;
@@ -419,18 +539,22 @@ impl Executor {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
                     return Ok(value);
                 }
-                let key = match known_string_key {
-                    Some(key_str) => {
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
-                        runtime_map_key_from_str(key_str)
-                    }
-                    None => {
-                        record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
-                        self.map_key_from_register(key_reg)?
-                    }
+                let Some(key_str) = known_string_key else {
+                    // A key in a *register* is the ordinary way to look
+                    // something up (`counts.get(word)`), and it took the long
+                    // way round: build a `RuntimeMapKey` — an `Arc` clone for a
+                    // heap string — and then hand it to the generic lookup,
+                    // which for a typed map immediately asks it for the `&str`
+                    // it started from. `get_map_index_fast` is that same
+                    // question answered once, and it was reachable only when
+                    // the *target* had been proven a map at compile time. A
+                    // map behind a parameter has no such proof — which is
+                    // exactly where a lookup keyed by a variable lives.
+                    return self.get_map_index_fast(handle, key_reg, index_key_metrics);
                 };
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
+                let key = runtime_map_key_from_str(key_str);
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
                 Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
             }
@@ -438,7 +562,7 @@ impl Executor {
                 let key = match known_string_key {
                     Some(key_str) => {
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::KnownStringKey);
-                        Arc::<str>::from(key_str)
+                        Arc::clone(key_str)
                     }
                     None => {
                         record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
@@ -505,15 +629,15 @@ impl Executor {
             HeapValue::String(value) => {
                 let idx_val = self.read(key_reg)?;
                 let idx = match &idx_val {
-                    RuntimeVal::Int(n) => {
-                        let len = value.len() as i64;
-                        if *n < 0 { (len + *n) as usize } else { *n as usize }
-                    }
-                    _ => bail!("String index must be Int"),
+                    RuntimeVal::Int(n) => *n,
+                    _ => bail!("a string index must be Int"),
                 };
                 self.index_string_at(value, idx)
             }
-            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+            other => bail!(
+                "GetIndex target object changed while indexing: {:?}",
+                HeapValue::type_name(other)
+            ),
         }
     }
 }
@@ -562,12 +686,11 @@ pub(in crate::vm::exec) fn with_string_int_key<R>(prefix: &str, suffix: i64, f: 
 #[cfg(test)]
 mod tests {
     use super::get_string_map_direct;
-    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
     use crate::val::{RuntimeMapKey, RuntimeVal, ShortStr, TypedMap};
 
     #[test]
     fn direct_string_map_lookup_returns_nil_for_empty_mixed_map() {
-        let map = TypedMap::Mixed(fast_hash_map_new());
+        let map = TypedMap::Mixed(crate::util::value_map::value_map_new());
 
         assert_eq!(get_string_map_direct(&map, "missing"), Some(RuntimeVal::Nil));
     }
@@ -575,7 +698,7 @@ mod tests {
     #[test]
     fn direct_string_map_lookup_keeps_non_empty_mixed_map_on_generic_path() {
         let key = RuntimeMapKey::ShortStr(ShortStr::new("present").expect("short key"));
-        let map = TypedMap::Mixed(fast_hash_map_from_iter([(key, RuntimeVal::Int(1))]));
+        let map = TypedMap::Mixed(crate::util::value_map::value_map_from_iter([(key, RuntimeVal::Int(1))]));
 
         assert_eq!(get_string_map_direct(&map, "missing"), None);
         assert_eq!(get_string_map_direct(&map, "present"), None);

@@ -64,11 +64,24 @@ impl ImportEnv {
         for import in imports {
             match import {
                 ImportStmt::ModuleAlias { module, alias } => {
-                    env.module_aliases.insert(alias.clone(), module.clone());
+                    // `use dep as name;` — the bundle is keyed by the binding
+                    // the CLI queued it under, which is the alias.
+                    if let Some(b) = bundle_by_path(alias) {
+                        env.file_namespaces.insert(alias.clone(), b);
+                    } else {
+                        env.module_aliases.insert(alias.clone(), module.clone());
+                    }
                 }
                 ImportStmt::Namespace { alias, source } => match source {
                     ImportSource::Module(module) => {
-                        env.module_aliases.insert(alias.clone(), module.clone());
+                        // A bundled *package* module answers here the way a
+                        // bundled file does; a stdlib module has no bundle and
+                        // keeps the module-object binding.
+                        if let Some(b) = bundle_by_path(module) {
+                            env.file_namespaces.insert(alias.clone(), b);
+                        } else {
+                            env.module_aliases.insert(alias.clone(), module.clone());
+                        }
                     }
                     ImportSource::File(path) => {
                         if let Some(b) = bundle_by_path(path) {
@@ -81,11 +94,48 @@ impl ImportEnv {
                         let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
                         match source {
                             ImportSource::Module(module) => {
-                                env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                                // Same rule as the file branch below when the
+                                // module is a bundled package: the item is a
+                                // merged function, not a member read off a
+                                // module object.
+                                let ctor = lk_core::stmt::struct_ctors::constructor_name(&item.name);
+                                if let Some(fidx) = bundle_by_path(module)
+                                    .and_then(|b| bundles[b].fns.get(&item.name).or_else(|| bundles[b].fns.get(&ctor)))
+                                    .copied()
+                                {
+                                    env.file_items.insert(bound, fidx);
+                                } else {
+                                    env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                                }
                             }
+                            // Functions only, and that is now the whole of it:
+                            // a renamed *constant* never reaches here, because
+                            // the bundler folds its value into the reads of
+                            // both names before this runs.
+                            //
+                            // It used to reach here and bind nothing — a
+                            // `const` is not in `fns` — so `use { SIZE as
+                            // TSS_SIZE }` left a `GetGlobal` of a slot nothing
+                            // initialises: an error under `compile object:` and
+                            // a fall back to the VM otherwise, while the
+                            // unrenamed `SIZE` worked because bundling flattens
+                            // a module's constants under their own names. See
+                            // `collect_renamed_file_items` in the CLI's
+                            // bundler, which is where the fold learns the other
+                            // name.
+                            // A `struct S` is bound through the constructor the
+                            // declaring module generates beside it (`S$new`),
+                            // which is what the VM's import resolution binds
+                            // too — the type itself is not a value. Without
+                            // this fallback `use { P } from "geo"` bound
+                            // nothing and every read of `P` refused to lower,
+                            // while the same type reached as `geo.P { … }`
+                            // lowered fine: that spelling desugars to
+                            // `geo.P$new(…)` and finds the function by name.
                             ImportSource::File(path) => {
+                                let ctor = lk_core::stmt::struct_ctors::constructor_name(&item.name);
                                 if let Some(fidx) = bundle_by_path(path)
-                                    .and_then(|b| bundles[b].fns.get(&item.name))
+                                    .and_then(|b| bundles[b].fns.get(&item.name).or_else(|| bundles[b].fns.get(&ctor)))
                                     .copied()
                                 {
                                     env.file_items.insert(bound, fidx);
@@ -104,7 +154,26 @@ impl ImportEnv {
                         env.file_namespaces.insert(stem, b);
                     }
                 }
-                ImportStmt::Module { .. } => {}
+                // `use math;` binds the module under its own name — the same
+                // binding `use math as math;` makes. It was an empty arm, so
+                // the lowering could not tell an imported module from a global
+                // that happens to share its name: `chan` is both (a bare
+                // constructor function *and* a module), and `chan.new(1)`
+                // therefore lowered natively whether or not the file imported
+                // it, while the VM refused the unimported spelling.
+                ImportStmt::Module { module } => {
+                    // A *package* dependency arrives here under its own name
+                    // and is bundled under that name, so the same lookup a
+                    // file import gets applies before the stdlib reading does.
+                    // Without it the bundle was built and never consulted, and
+                    // the call fell to `lower_module`, which knows stdlib only
+                    // — the workspace example was the sweep's one fallback.
+                    if let Some(b) = bundle_by_path(module) {
+                        env.file_namespaces.insert(module.clone(), b);
+                    } else {
+                        env.module_aliases.insert(module.clone(), module.clone());
+                    }
+                }
             }
         }
         Ok(env)

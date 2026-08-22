@@ -4,6 +4,7 @@
 // `stdlib::register_stdlib_concurrency_globals` are migrated separately.
 
 use anyhow::{Result, anyhow, bail};
+use lk_core::util::value_map::value_map_new;
 use lk_core::{
     val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
     vm::{NativeArgs, NativeRuntime},
@@ -27,7 +28,13 @@ impl TaskModule {
         let value = runtime
             .async_runtime()
             .with(|rt| rt.block_on(rt.join_task(task.id)))
-            .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+            // The cause, unwrapped: a task that raised `modulo by zero` has to
+            // say that and not `Failed to await task: modulo by zero`, or the
+            // same failure reads differently depending on whether it crossed a
+            // task boundary. See the error-text ruling in `docs/semantics.md`.
+            // A raise that crossed the task boundary arrives detached from the
+            // heap it was built in; this is where it comes back into one.
+            .map_err(|error| lk_core::rt::RaisedPayload::reattach(error, runtime.heap_mut()))?;
         value.into_value(runtime.heap_mut())
     }
 
@@ -42,15 +49,26 @@ impl TaskModule {
         }
     }
 
-    #[stdlib_export(name = "join_all", params(...tasks: Task), returns = List)]
+    /// Awaits several tasks and answers their values, in the order given.
+    ///
+    /// Takes either the tasks themselves or **one list of them**. The list form
+    /// is the point: tasks are collected in a loop, the language has no spread
+    /// operator, and variadic-only meant there was no way at all to join a
+    /// number of tasks the program did not know when it was written — which is
+    /// what `join_all` is for.
+    #[stdlib_export(name = "join_all", params(...tasks: Any), returns = List)]
     fn join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args.as_slice() {
+        let tasks = match args.as_slice() {
+            [single] => task_list_arg(single, runtime.heap()),
+            many => many.to_vec(),
+        };
+        let mut values = Vec::with_capacity(tasks.len());
+        for arg in &tasks {
             let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
             let value = runtime
                 .async_runtime()
                 .with(|rt| rt.block_on(rt.join_task(task.id)))
-                .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+                .map_err(|error| lk_core::rt::RaisedPayload::reattach(error, runtime.heap_mut()))?;
             values.push(value.into_value(runtime.heap_mut())?);
         }
         let list = crate::typed_list_from_values(values, runtime.heap());
@@ -67,7 +85,7 @@ impl TaskModule {
             .async_runtime()
             .with(|rt| Ok(rt.stats()))
             .map_err(|err| anyhow!("Failed to read runtime stats: {err}"))?;
-        let mut map = lk_core::util::fast_map::fast_hash_map_new();
+        let mut map = value_map_new();
         map.insert(
             Arc::<str>::from("active_tasks"),
             RuntimeVal::Int(stats.active_tasks as i64),
@@ -89,10 +107,7 @@ impl TaskModule {
 
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
     fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
-        if duration_ms < 0 {
-            bail!("task.sleep() duration must be non-negative");
-        }
+        let duration_ms = lk_stdlib_common::duration_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
         runtime
             .async_runtime()
             .with(|rt| {
@@ -106,6 +121,22 @@ impl TaskModule {
     }
 }
 
+/// The elements of a list argument, or the argument itself when it is not one.
+///
+/// Lets `join_all` take `[t1, t2]` as well as `t1, t2` without a second export.
+fn task_list_arg(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+    let RuntimeVal::Obj(handle) = value else {
+        return vec![*value];
+    };
+    match heap.get(*handle) {
+        // Only a mixed list can hold tasks; a typed one (`List<Int>`, …)
+        // cannot, so it is handed on whole and reported as the wrong argument
+        // rather than dissolved into a row of nils.
+        Some(HeapValue::List(lk_core::val::TypedList::Mixed(values))) => values.clone(),
+        _ => vec![*value],
+    }
+}
+
 fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<TaskValue>> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{name} expects a Task argument");
@@ -116,14 +147,6 @@ fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<Task
     match value {
         HeapValue::Task(task) => Ok(task.clone()),
         other => Err(anyhow!("{name} expects a Task argument, got {}", other.type_name())),
-    }
-}
-
-fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
-    match value {
-        RuntimeVal::Int(value) => Ok(*value),
-        RuntimeVal::Float(value) => Ok(*value as i64),
-        other => Err(anyhow!("{name} expects a numeric argument, got {:?}", other.kind())),
     }
 }
 
@@ -191,6 +214,42 @@ mod tests {
         let task = resolved_task(RuntimeVal::Int(42), state.heap_mut());
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(result, RuntimeVal::Int(42));
+        Ok(())
+    }
+
+    /// Tasks are collected in a loop, into a list, and the language has no
+    /// spread operator — so variadic-only meant a number of tasks the program
+    /// did not know when it was written could not be joined at all.
+    ///
+    /// Asserted through the *rejection*, because a synthetic task is not
+    /// registered with the async runtime and joining one cannot succeed here:
+    /// a mixed list of tasks gets past the argument check and fails on the
+    /// join, while a typed list — which cannot hold tasks — is rejected as the
+    /// wrong argument. Those two outcomes are only distinguishable if the list
+    /// was unwrapped.
+    #[test]
+    fn task_join_all_takes_one_list_of_tasks_as_well_as_the_tasks() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        let task = resolved_task(RuntimeVal::Int(7), state.heap_mut());
+        let tasks = RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::List(lk_core::val::TypedList::Mixed(vec![task]))),
+        );
+        let ints = RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::List(lk_core::val::TypedList::Int(vec![1, 2]))),
+        );
+
+        let unwrapped = call("join_all", &[tasks], &mut state).expect_err("no live runtime here");
+        assert!(
+            !unwrapped.to_string().contains("expects a Task argument"),
+            "a list of tasks must be unwrapped, not rejected: {unwrapped}"
+        );
+
+        let rejected = call("join_all", &[ints], &mut state).expect_err("a List<Int> holds no tasks");
+        assert!(rejected.to_string().contains("expects a Task argument"), "{rejected}");
         Ok(())
     }
 

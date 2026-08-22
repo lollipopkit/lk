@@ -20,15 +20,100 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --all-features
+      - name: LSP latency budgets
+        # Wall-clock budgets, so they run alone and single-threaded. Inside
+        # `cargo test --workspace` they share the machine with every other test
+        # binary and fail on contention: `analyze(complex program)` measures
+        # ~1.2ms and once failed a workspace run at 11.99ms against its 10ms
+        # budget. They are `#[ignore]`d for that reason — see the module doc.
+        run: cargo test -p lk-lsp --test perf_latency_test -- --ignored --test-threads=1
+      - name: Compiler scaling budget
+        # `compiling_many_functions_stays_linear` asserts a *ratio* of two
+        # wall-clock measurements, which contention breaks in both directions —
+        # min-of-5 per side was not enough. Same treatment, same reason.
+        run: cargo test -p lk-core --lib -- --ignored --test-threads=1
+      - name: no build artifacts in the example trees
+        # `lk compile foo.lk` writes `foo` — extensionless, so no suffix
+        # pattern in `.gitignore` reaches it and `git add -A` after a compile
+        # takes it. Two 20MB binaries reached `main` that way, inside commits
+        # about unrelated things. `.gitignore` now excludes extensionless files
+        # under these trees; this catches a `git add -f` past it.
+        run: |
+          found=$(git ls-files examples bench | grep -v '\.' || true)
+          if [ -n "$found" ]; then
+            echo "::error::tracked files with no extension under examples/ or bench/ — build artifacts?"
+            echo "$found"
+            exit 1
+          fi
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: cargo clippy (no_std)
+        # `--all-features` never compiles the `no_std` side, so the code that
+        # only exists there — `io_bare`, the interrupt stubs, every `#[cfg(not(
+        # feature = "std"))]` branch, and *all* of the test code in that profile
+        # — was never linted. It was not clean when this step was added: a raw
+        # pointer dereferenced in a safe `extern "C" fn`, a doc comment on a
+        # macro invocation, and four test files that had never compiled without
+        # `std` at all. The bare-metal *build* steps below do not catch these:
+        # they build the lib, not `--all-targets`, and without the lint.
+        run: |
+          cargo clippy -p lk-core --no-default-features --all-targets -- -D warnings
+          cargo clippy -p lkrt --no-default-features --all-targets -- -D warnings
+      - name: zed extension check
+        # `ecosystem/zed-ext` is excluded from the workspace (it targets
+        # wasm32-wasip1), so `cargo test --workspace` never sees it. The check
+        # existed as a Makefile target and was never wired up here, which means
+        # the extension could stop compiling and nothing would say so.
+        run: |
+          rustup target add wasm32-wasip1
+          make zed-ext-check
       - name: wasm32 smoke (L0 no_std crates + browser playground)
         run: |
           rustup target add wasm32-unknown-unknown
           cargo build -p lk-values --target wasm32-unknown-unknown
           cargo build -p lk-wasm --target wasm32-unknown-unknown
+      - name: every bare-metal LK program type-checks
+        # The two bare-metal crates are excluded from the workspace, and their
+        # build steps only compile the *one* program each embeds — so a `.lk`
+        # beside it drifted out of the type system unnoticed. Two real bugs were
+        # found this way on the same day: a `Float` reaching `&` in seven PCI
+        # driver functions, and a `u32` mask assigned to an `Int` flag in
+        # `uart.lk`, which the embedded path never type-checked at all.
+        run: |
+          cargo build -p lk-cli --no-default-features --features stdlib
+          fail=0
+          # Matched by prefix, not by a hand-written list: `bare-metal-native`
+          # was added later and `find bare-metal bare-metal-x86` does not reach it,
+          # so the one program in it was outside the very gate this step is.
+          for f in $(find . -path './bare-metal*' -name '*.lk' -not -path '*/target/*'); do
+            if ! ./target/debug/lk check "$f"; then
+              echo "::error file=$f::does not type-check"
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: VM vs native sweep (every example and bench program)
+        # Between the coverage gate ("does it lower?") and the differential
+        # suites ("does this pinned case agree?") sits the case that has bitten
+        # twice: lowers fine, answers differently, and no case in the corpus has
+        # that shape. This runs every program in the repo through both.
+        #
+        # It lived in a `/tmp` shell loop for months, which meant it was retyped
+        # from memory after every reboot and its expected counts lived in a
+        # commit message.
+        run: |
+          cargo build -p lk-cli --features aot
+          SWEEP_REQUIRE="identical=78 diverged=1" bash scripts/vm_native_sweep.sh
+      - name: every LK source is `lk fmt` shape
+        # `lk fmt --check` shipped as a CI feature and no workflow ran it, so
+        # 36 of the repo's 97 `.lk` files were not in the shape the tool
+        # produces — including the ones the formatter is demonstrated on. A
+        # formatter nobody can run is not one.
+        #
+        # This reuses the `lk` the step above builds, so it must stay after it.
+        run: ./target/debug/lk fmt --check
       - name: thumbv7em MCU smoke (bare + alloc L0 profiles on bare-metal ARM)
         # Proves the L0 foundations cross-compile to a real Cortex-M MCU target
         # (no OS, no allocator provided): lk-values is the `alloc` profile
@@ -42,7 +127,7 @@ jobs:
           # The computation-only stdlib modules must cross-compile too, each
           # on its own: a crate that only builds because a sibling happened to
           # enable `std` for it is not actually no_std.
-          for m in bytes encoding hash iter math slice string; do
+          for m in bytes encoding hash iter math string; do
             cargo build -p "lk-stdlib-$m" --no-default-features --target thumbv7em-none-eabi
           done
           cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi
@@ -199,7 +284,13 @@ jobs:
           # says the font renderer drew. The '...' are timer interrupts handled
           # by an LK function — three in a row, where one could be a fluke.
           for expected in \
-            "display at pci slot" \
+            # `SS.F`, not a slot number: enumeration walks functions as well as
+            # devices, so what identifies the display is its (bus, device,
+            # function) address. This line said "slot" for as long as the x86
+            # step could not get past *building* the kernel — an assertion that
+            # never runs is not a gate, and this one went stale unnoticed
+            # because upstream failures kept it from ever being reached.
+            "display at pci 2.0" \
             "framebuffer 0xfd000000" \
             "half 44" \
             "pixels 00001428 00ffc040" \
@@ -224,13 +315,15 @@ jobs:
             echo "::error::the exception reporter did not report the faulting address"
             exit 1
           }
+          # Each `check_*.py` builds and objcopies its own image (`kernel.py`) —
+          # this used to do it for all of them, which meant the fault-probe
+          # build above had to be undone here before anything else ran, and
+          # nothing said so. A check that boots whatever is on disk is not a
+          # check: see `kernel.py` for the two ways that lied.
+          #
           # Reading the framebuffer back proves the writes reached the device's
           # memory; it does not prove the mode was set, because an unconfigured
           # card still accepts them. Only what QEMU scans out shows that.
-          LK_BIN=../target/debug/lk cargo build --release
-          llvm-objcopy -O elf32-i386 \
-            target/x86_64-unknown-none/release/lk-bare-metal-x86 \
-            target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot
           timeout 120 python3 check_screen.py
           # The input half, end to end: `sendkey` puts real scancodes into the
           # emulated PS/2 controller, the LK handler decodes them into a line,
@@ -275,6 +368,10 @@ jobs:
           # looked up by name. The board supplies stacks and the switch; which
           # code runs on them is no longer in `src/tasks.rs` at all.
           timeout 300 python3 check_spawn.py
+          # Ring 3. The program prints through a syscall and is then refused a
+          # write to kernel memory — the boundary becoming a property of the
+          # machine rather than of the program's good manners.
+          timeout 300 python3 check_user.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
@@ -284,18 +381,57 @@ jobs:
         # pinned off, no fallback) is the only thing that catches it. Add a
         # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
         run: |
-          cargo build -p lk-cli --features aot
-          # 48/51. The three allowed files are the try/catch corpus: `try`/`catch`
-          # became a real statement (`Stmt::Try` → `TryBegin`/`TryEnd`) to fix
-          # three silent wrong answers on the VM path, and the MIR lowering has no
-          # handler-region support yet, so they degrade to the Tier 0 VM bundle.
-          # Output stays VM-identical (see `try_catch_differential` in
-          # cli/tests/clif_differential_test.rs); what lapses is *native*
-          # lowering. Drop these entries when the region outlining lands —
-          # see todos.md.
+          # The script builds the compiler it scans with — a stale binary would
+          # report full coverage for code it does not contain, and unlike a
+          # missing one that failure is silent.
+          #
+          # 76/76, and no allow list. The try/catch corpus was the last thing
+          # on it; each of the three came off by a different fix, and each was
+          # checked by *running* it against the VM rather than by the fact that
+          # it compiled — see `aot/lower/src/try_region.rs`, where the two
+          # answers that compiled and computed the wrong thing are also
+          # recorded.
+          #
+          # An example that legitimately cannot lower goes back on this list
+          # with a rationale. It is empty now, which means a regression has
+          # nowhere to hide.
           AOT_COVERAGE_REQUIRE_FULL=1 \
-          AOT_COVERAGE_ALLOW=examples/syntax/try_catch.lk,examples/syntax/error_unwrap.lk,examples/syntax/error_model_edges.lk \
           bash scripts/aot_coverage.sh
+      - name: the same gate against an *optimized* compiler
+        # Every gate above builds `lk` unoptimized, and the `lk` people install
+        # is not that one. The difference is not academic: `debug_assert_eq!`
+        # discards its whole expression in a release build, and one of them held
+        # the call that grows the signature tables for a `try` body — so an
+        # optimized `lk` panicked on *every* program containing `try`, in every
+        # build ever shipped, while the debug build this file exercised was
+        # fine. Overflow checks and `debug_assert` are the two things a profile
+        # switch changes silently; this step is what notices.
+        #
+        # Release rather than dist: dist adds full LTO for a perf number nothing
+        # here measures, and costs several minutes for it. The profile
+        # difference that matters (`debug_assertions` off, optimizations on) is
+        # the same either way.
+        run: |
+          cargo build --release -p lk-cli --features aot
+          LK_BIN=./target/release/lk \
+          AOT_COVERAGE_REQUIRE_FULL=1 \
+          bash scripts/aot_coverage.sh
+          # And that it *runs*: compiling is not the property that broke the
+          # second time. An optimized `lk` links the lkrt archive sitting beside
+          # it, while the refresh that keeps that archive current used to build
+          # the debug one unconditionally — so a release `lk` linked whatever
+          # was last left there. The first `try` program it compiled died on
+          # `SIGILL` against a trampoline from a different day.
+          for f in examples/syntax/try_catch.lk examples/general/concurrency_demo.lk; do
+            LK_FORCE_VM=1 ./target/release/lk "$f" > /tmp/vm.txt
+            LK_AOT_HYBRID=0 LK_AOT_NO_FALLBACK=1 \
+              ./target/release/lk compile "$f" --output /tmp/opt_native
+            /tmp/opt_native > /tmp/native.txt
+            diff /tmp/vm.txt /tmp/native.txt || {
+              echo "::error::$f differs between the VM and an optimized native build"
+              exit 1
+            }
+          done
       - name: strict native-only differential (no Tier 0 fallback)
         # Complements the scan above: the corpora must not just *compile*
         # native, they must produce VM-identical output while pinned to the

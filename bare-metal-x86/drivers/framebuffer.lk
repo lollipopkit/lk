@@ -96,7 +96,7 @@ fn copy_rows(base: Int, stride: Int, from_row: Int, to_row: Int, rows: Int) {
         for pair in 0..pairs {
             let x = pair * 2;
             put_pixel_pair(base, stride, x, to_row + row,
-                           get_pixel_pair(base, stride, x, from_row + row));
+                get_pixel_pair(base, stride, x, from_row + row));
         }
     }
 }

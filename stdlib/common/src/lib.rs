@@ -21,6 +21,7 @@ use alloc::{
     vec::Vec,
 };
 
+pub mod language;
 pub mod metadata;
 pub mod resource;
 pub mod runtime_native;
@@ -69,6 +70,39 @@ use lk_core::{
     val,
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
 };
+
+/// A duration argument, in milliseconds.
+///
+/// Rejects a negative **before** truncating, which is where the spellings of
+/// this one operation used to disagree — four answers for the same call:
+///
+/// | | `-1` | `-0.5` |
+/// | --- | --- | --- |
+/// | `time.sleep` | `Duration::from_millis(-1 as u64)` — a 584-million-year sleep | returned at once |
+/// | `task.sleep` | refused | returned at once |
+/// | `time.timeout` / `time.after` | a timer that never fires, silently | — |
+///
+/// The `-0.5` column is the reason the check has to come first: `task.sleep`
+/// *had* a `< 0` guard, and it ran after `as i64` had already turned the value
+/// into `0`.
+pub fn duration_millis(value: &RuntimeVal, name: &str) -> anyhow::Result<i64> {
+    let ms = match value {
+        RuntimeVal::Int(ms) => *ms as f64,
+        RuntimeVal::Float(ms) => *ms,
+        other => {
+            return Err(anyhow::anyhow!(
+                "{name} expects a numeric argument, got {:?}",
+                other.kind()
+            ));
+        }
+    };
+    if ms < 0.0 {
+        return Err(anyhow::anyhow!(
+            "{name} expects a non-negative duration in milliseconds, got {ms}"
+        ));
+    }
+    Ok(ms as i64)
+}
 
 pub fn typed_list_from_values(values: Vec<RuntimeVal>, heap: &HeapStore) -> TypedList {
     if values.is_empty() {
@@ -130,5 +164,39 @@ pub fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
         RuntimeVal::ShortStr(value)
     } else {
         RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::<str>::from(value))))
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    /// A negative duration is refused, and refused *before* truncation.
+    ///
+    /// One operation had four answers: `time.sleep(-1)` cast to `u64` and slept
+    /// for 584 million years, `task.sleep(-1)` refused, `time.timeout(-1)` and
+    /// `time.after(-1)` armed a timer that never fires — and every one of them
+    /// accepted `-0.5`, because the only `< 0` check ran after `as i64` had
+    /// already turned it into `0`.
+    #[test]
+    fn a_duration_cannot_be_negative() {
+        for value in [RuntimeVal::Int(-1), RuntimeVal::Float(-0.5), RuntimeVal::Float(-1e-9)] {
+            let err = duration_millis(&value, "time.sleep()").expect_err("refused");
+            assert!(
+                err.to_string().contains("non-negative duration in milliseconds"),
+                "{err}"
+            );
+        }
+        assert_eq!(
+            duration_millis(&RuntimeVal::Int(0), "x").expect("zero is a duration"),
+            0
+        );
+        assert_eq!(duration_millis(&RuntimeVal::Int(7), "x").expect("positive"), 7);
+        // Truncation toward zero is unchanged for the values that are allowed.
+        assert_eq!(
+            duration_millis(&RuntimeVal::Float(0.9), "x").expect("sub-millisecond"),
+            0
+        );
+        assert!(duration_millis(&RuntimeVal::Bool(true), "x").is_err());
     }
 }

@@ -7,7 +7,6 @@ use anyhow::Result;
 use crate::{
     expr::{Expr, MatchArm},
     stmt::Stmt,
-    util::fast_map::FastHashMap,
     val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue,
 };
@@ -17,7 +16,7 @@ use super::{
     call::map_get_method_call_args,
     checked_u8,
     inline::{inline_body_is_supported, stmt_contains_call_to},
-    support::{FunctionInlineBody, const_runtime_map_key_from_literal},
+    support::{FunctionInlineBody, access_member_name, const_runtime_map_key_from_literal},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -168,10 +167,10 @@ impl Compiler {
 
 fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_stmt_scalar_consts(item, keys),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => collect_stmt_scalar_consts(item, keys),
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => collect_expr_scalar_consts(expr, keys),
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => collect_expr_scalar_consts(expr, keys),
         Stmt::Return { value: None } => {}
         Stmt::Let { value, .. } | Stmt::Define { value, .. } => collect_expr_scalar_consts(value, keys),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => collect_expr_scalar_consts(value, keys),
@@ -187,11 +186,6 @@ fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
             }
         }
         // A try/catch is a two-way branch, so it is walked like `If`.
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_scalar_consts(stmt, keys);
-            }
-        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -300,6 +294,11 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
                 collect_stmt_scalar_consts(stmt, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_scalar_consts(stmt, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             if let Some(start) = start {
                 collect_expr_scalar_consts(start, keys);
@@ -328,7 +327,9 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
 
 fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>, keys: &mut Vec<ScalarLoopConstKey>) {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_stmt_folded_int_consts(item, locals, keys),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
+            collect_stmt_folded_int_consts(item, locals, keys)
+        }
         Stmt::Let { pattern, value, .. } => {
             collect_expr_folded_int_consts(value, locals, keys);
             if let crate::expr::Pattern::Variable(name) = pattern {
@@ -339,7 +340,7 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
                 }
             }
         }
-        Stmt::Define { name, value } => {
+        Stmt::Define { name, value, .. } => {
             collect_expr_folded_int_consts(value, locals, keys);
             if let Some(value) = folded_int_expr_value(value, locals) {
                 locals.insert(name.clone(), value);
@@ -351,7 +352,9 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
             collect_expr_folded_int_consts(value, locals, keys);
             locals.remove(name);
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => collect_expr_folded_int_consts(expr, locals, keys),
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
+            collect_expr_folded_int_consts(expr, locals, keys)
+        }
         Stmt::Return { value: None }
         | Stmt::Empty
         | Stmt::Break
@@ -377,16 +380,6 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
         // assignment still invalidates a later fold within it. Cloning per
         // statement would have let every statement fold against pre-branch
         // values.
-        Stmt::Try { body, handler, .. } => {
-            let mut body_locals = locals.clone();
-            for stmt in body {
-                collect_stmt_folded_int_consts(stmt, &mut body_locals, keys);
-            }
-            let mut handler_locals = locals.clone();
-            for stmt in handler {
-                collect_stmt_folded_int_consts(stmt, &mut handler_locals, keys);
-            }
-        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -491,6 +484,12 @@ fn collect_expr_folded_int_consts(expr: &Expr, locals: &HashMap<String, i64>, ke
                 collect_stmt_folded_int_consts(stmt, &mut scoped, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            let mut scoped = locals.clone();
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_folded_int_consts(stmt, &mut scoped, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_folded_int_consts(expr, locals, keys);
@@ -555,10 +554,12 @@ fn collect_stmt_inline_call_scalar_consts(
     keys: &mut Vec<ScalarLoopConstKey>,
 ) {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_stmt_inline_call_scalar_consts(item, bodies, visiting, keys),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
+            collect_stmt_inline_call_scalar_consts(item, bodies, visiting, keys)
+        }
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
             collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
         }
         Stmt::Return { value: None } => {}
@@ -577,11 +578,6 @@ fn collect_stmt_inline_call_scalar_consts(
             collect_stmt_inline_call_scalar_consts(then_stmt, bodies, visiting, keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_inline_call_scalar_consts(else_stmt, bodies, visiting, keys);
-            }
-        }
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
         Stmt::IfLet {
@@ -698,6 +694,11 @@ fn collect_expr_inline_call_scalar_consts(
                 collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
@@ -755,14 +756,16 @@ fn collect_boxed_exprs_inline_call_scalar_consts(
 
 fn collect_stmt_const_map_get_scalar_consts(
     stmt: &Stmt,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     match stmt {
-        Stmt::Attributed { item, .. } => collect_stmt_const_map_get_scalar_consts(item, const_maps, keys)?,
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => {
+            collect_stmt_const_map_get_scalar_consts(item, const_maps, keys)?
+        }
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
-        Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {
+        Stmt::Expr { value: expr, .. } | Stmt::Return { value: Some(expr) } => {
             collect_expr_const_map_get_scalar_consts(expr, const_maps, keys)?;
         }
         Stmt::Return { value: None } => {}
@@ -781,11 +784,6 @@ fn collect_stmt_const_map_get_scalar_consts(
             collect_stmt_const_map_get_scalar_consts(then_stmt, const_maps, keys)?;
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_const_map_get_scalar_consts(else_stmt, const_maps, keys)?;
-            }
-        }
-        Stmt::Try { body, handler, .. } => {
-            for stmt in body.iter().chain(handler) {
-                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }
         Stmt::IfLet {
@@ -836,7 +834,7 @@ fn collect_stmt_const_map_get_scalar_consts(
 
 fn collect_expr_const_map_get_scalar_consts(
     expr: &Expr,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     if let Some(key) = const_map_get_scalar_loop_key(expr, const_maps)? {
@@ -894,6 +892,11 @@ fn collect_expr_const_map_get_scalar_consts(
                 collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
+            }
+        }
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_const_map_get_scalar_consts(expr, const_maps, keys)?;
@@ -916,7 +919,7 @@ fn collect_expr_const_map_get_scalar_consts(
 
 fn collect_boxed_exprs_const_map_get_scalar_consts(
     exprs: &[Box<Expr>],
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     for expr in exprs {
@@ -927,7 +930,7 @@ fn collect_boxed_exprs_const_map_get_scalar_consts(
 
 fn const_map_get_scalar_loop_key(
     expr: &Expr,
-    const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
+    const_maps: &HashMap<String, crate::util::value_map::ValueMap<RuntimeMapKey, ConstRuntimeValue>>,
 ) -> Result<Option<ScalarLoopConstKey>> {
     let Some((target, key)) = const_map_get_target_and_key(expr) else {
         return Ok(None);
@@ -957,7 +960,7 @@ fn const_map_get_target_and_key(expr: &Expr) -> Option<(&Expr, &Expr)> {
     let Expr::Access(target, method) = callee.as_ref() else {
         return None;
     };
-    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || method_name(method) != Some("get") {
+    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || access_member_name(method) != Some("get") {
         return None;
     }
     Some((args[0].as_ref(), args[1].as_ref()))
@@ -968,14 +971,6 @@ fn const_map_key_from_expr(expr: &Expr) -> Result<Option<RuntimeMapKey>> {
         Expr::Paren(inner) => const_map_key_from_expr(inner),
         Expr::Literal(value) => const_runtime_map_key_from_literal(value),
         _ => Ok(None),
-    }
-}
-
-fn method_name(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Var(name) => Some(name.as_str()),
-        Expr::Literal(value) => value.as_str(),
-        _ => None,
     }
 }
 

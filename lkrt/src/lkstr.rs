@@ -113,6 +113,49 @@ pub unsafe extern "C" fn lkrt_str_slice_chars(s: *const c_char, start: i64, end:
     arena_c_string(CString::new(sliced).unwrap_or_default())
 }
 
+/// `s.take(n)` / `s.skip(n)` — a prefix in *characters*, and the rest of one.
+///
+/// A separate symbol from `slice_chars`, and that is the whole point: a **count
+/// is not a position**, so a negative one is the refusal the VM gives rather
+/// than something measured from the tail. Lowered as `slice_chars(s, 0, n)`,
+/// `"abc".take(-1)` answered `"ab"` compiled and raised interpreted — while
+/// `xs.take(-1)` and `b.take(-1)` raised on both ends, because those two
+/// carriers have their own guarded helpers. This is String's.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_take(s: *const c_char, count: i64) -> *mut c_char {
+    str_window(s, count, true)
+}
+
+/// The `skip` half of [`lkrt_str_take`].
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_skip(s: *const c_char, count: i64) -> *mut c_char {
+    str_window(s, count, false)
+}
+
+fn str_window(s: *const c_char, count: i64, take: bool) -> *mut c_char {
+    if count < 0 {
+        // Raised before anything is allocated: a raise longjmps past drops.
+        crate::panic::raise_str(&alloc::format!(
+            "string.{}() count must be non-negative, got {count}",
+            if take { "take" } else { "skip" }
+        ));
+    }
+    let text = view(s);
+    let count = count as usize;
+    let kept: String = if take {
+        text.chars().take(count).collect()
+    } else {
+        text.chars().skip(count).collect()
+    };
+    arena_c_string(CString::new(kept).unwrap_or_default())
+}
+
 /// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
 /// (the sign of the ordering). The caller compares the result against `0` to
 /// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison
@@ -223,6 +266,34 @@ pub extern "C" fn lkrt_i64_to_str(n: i64) -> *mut c_char {
     arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
 }
 
+/// Renders the carrier as an *unsigned* decimal string.
+///
+/// The same rendering `lkrt_i64_to_str` does, for the one case where the carrier
+/// is not an `i64`: a `u64` above `i64::MAX` has bit 63 set, and reading that as
+/// a sign turns a physical address into a negative number. The compiler picks
+/// this at the display site, which is the last place the width still exists.
+///
+/// 20 digits fits `u64::MAX` exactly (18446744073709551615), and there is no
+/// sign to leave room for.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_to_str(n: i64) -> *mut c_char {
+    let mut buf = [0u8; 20];
+    let mut magnitude = n as u64;
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    let mut bytes = Vec::with_capacity(buf.len() - at + 1);
+    bytes.extend_from_slice(&buf[at..]);
+    // SAFETY: decimal digits are ASCII, never NUL.
+    arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
+}
+
 /// Renders an `f64` as its display string. The VM formats floats with Rust's
 /// `f64::to_string()` (see `runtime_value_display_string`), so this uses the same —
 /// giving byte-identical output (`2.0 → "2"`, `1.0/3.0 → "0.3333333333333333"`).
@@ -283,38 +354,6 @@ pub unsafe extern "C" fn lkrt_str_trim(s: *const c_char) -> *mut c_char {
     arena_c_string(CString::new(view(s).trim()).unwrap_or_default())
 }
 
-/// `s.find(needle)` — *byte* index of the first match, `-1` when absent
-/// (the VM returns the Rust `str::find` byte position).
-///
-/// # Safety
-/// Both pointers must be valid C strings, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_find(s: *const c_char, needle: *const c_char) -> i64 {
-    view(s).find(view(needle)).map_or(-1, |pos| pos as i64)
-}
-
-/// `s.substring(start, length)` — *byte*-indexed (the VM slices bytes here,
-/// unlike the char-based range slice): the end clamps to the byte length,
-/// `end <= start` yields the empty string, and a non-boundary index is the
-/// VM's panic — flush-and-abort.
-///
-/// # Safety
-/// `s` must be a valid C string, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_substring(s: *const c_char, start: i64, length: i64) -> *mut c_char {
-    let text = view(s);
-    let start = start as usize;
-    let end = start.saturating_add(length as usize).min(text.len());
-    if end <= start {
-        return arena_c_string(CString::default());
-    }
-    let Some(sliced) = text.get(start..end) else {
-        crate::rt_eprintln!("string.substring() index is not a char boundary");
-        crate::panic::raise_str("runtime error");
-    };
-    arena_c_string(CString::new(sliced).unwrap_or_default())
-}
-
 /// `s.reverse()` — char-wise reversal.
 ///
 /// # Safety
@@ -325,13 +364,23 @@ pub unsafe extern "C" fn lkrt_str_reverse(s: *const c_char) -> *mut c_char {
     arena_c_string(CString::new(reversed).unwrap_or_default())
 }
 
-/// `s.repeat(n)` — `n <= 0` yields the empty string.
+/// `s.repeat(n)` — `n == 0` yields the empty string, `n < 0` raises.
+///
+/// This said "`n <= 0` yields the empty string", which is a rule the
+/// interpreter does not have: it raises for a negative count, the way
+/// `take`, `skip` and the `pad_*` widths all do. So `"ab".repeat(-1)`
+/// answered `""` compiled and stopped the program interpreted — the only one
+/// of the four guards that was not mirrored.
 ///
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_repeat(s: *const c_char, n: i64) -> *mut c_char {
-    if n <= 0 {
+    if n < 0 {
+        // Raised before anything is allocated: a raise longjmps past drops.
+        crate::panic::raise_str(&alloc::format!("string.repeat() count must be non-negative, got {n}"));
+    }
+    if n == 0 {
         return arena_c_string(CString::default());
     }
     arena_c_string(CString::new(view(s).repeat(n as usize)).unwrap_or_default())
@@ -343,7 +392,35 @@ pub unsafe extern "C" fn lkrt_str_repeat(s: *const c_char, n: i64) -> *mut c_cha
 /// All pointers must be valid C strings, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char, to: *const c_char) -> *mut c_char {
-    arena_c_string(CString::new(view(s).replace(view(from), view(to))).unwrap_or_default())
+    unsafe { lkrt_str_replace_limited(s, from, to, -1) }
+}
+
+/// `s.replace(from, to)` with a cap on how many occurrences are replaced:
+/// `limit` negative means every one, otherwise at most that many from the
+/// left.
+///
+/// This is what the method's `all` parameter compiles to, which is why it is a
+/// count rather than a flag — `all: false` is "at most one" and `all: true` is
+/// "no limit", and both are the same primitive. The flag can be a runtime
+/// value, so picking between two entries at compile time would not have
+/// covered `s.replace(a, b, flag)`.
+///
+/// # Safety
+/// All pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_replace_limited(
+    s: *const c_char,
+    from: *const c_char,
+    to: *const c_char,
+    limit: i64,
+) -> *mut c_char {
+    let (s, from, to) = (view(s), view(from), view(to));
+    let replaced = if limit < 0 {
+        s.replace(from, to)
+    } else {
+        s.replacen(from, to, limit as usize)
+    };
+    arena_c_string(CString::new(replaced).unwrap_or_default())
 }
 
 /// The module `string.len(s)` — **byte** length (`str::len`), unlike the
@@ -354,6 +431,29 @@ pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char,
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_byte_len(s: *const c_char) -> i64 {
     view(s).len() as i64
+}
+
+/// `s.index_of(needle)` — the *character* position of the first occurrence, or
+/// nil.
+///
+/// Characters, not bytes, because that is what `s.len()` counts and `s[i]`
+/// indexes — an answer in bytes could not be handed back to either. Nil rather
+/// than -1 for a miss, because -1 is a valid index into a string (it is the
+/// last character), so `s[s.index_of(x)]` would quietly answer that instead of
+/// failing.
+///
+/// This replaces `lkrt_str_find`, which reported a byte offset and -1, and so
+/// disagreed with the VM twice over.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_index_of(s: *const c_char, needle: *const c_char) -> crate::lkdyn::LkDyn {
+    let text = view(s);
+    match text.find(view(needle)) {
+        Some(byte) => crate::lkdyn::lkrt_dyn_from_i64(text[..byte].chars().count() as i64),
+        None => crate::lkdyn::LkDyn::NIL,
+    }
 }
 
 /// `string.strip_prefix(s, prefix)` — the stripped remainder, or nil (a
@@ -387,19 +487,114 @@ pub unsafe extern "C" fn lkrt_str_strip_suffix(s: *const c_char, suffix: *const 
     }
 }
 
-/// `string.count(s, needle)` — non-overlapping matches; an empty needle
-/// counts *byte* length + 1 (the stdlib module's exact rule).
+/// `string.to_int(s[, base])` — the number, or nil when the text is not one.
+///
+/// Whitespace is trimmed and the answer is boxed because the module returns
+/// `Int?`. Must stay byte-identical to `lk_stdlib_string::to_int`'s String arm:
+/// `i64::from_str_radix` on the trimmed text, so `"42.0"`, `""` and an
+/// out-of-range number are all nil rather than a guess.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_to_int(s: *const c_char, base: i64) -> crate::lkdyn::LkDyn {
+    if !(2..=36).contains(&base) {
+        crate::panic::raise_str("to_int() base must be between 2 and 36");
+    }
+    match i64::from_str_radix(view(s).trim(), base as u32) {
+        Ok(value) => crate::lkdyn::lkrt_dyn_from_i64(value),
+        Err(_) => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.to_float(s)` — see [`lkrt_str_to_int`]. `"nan"`, `"inf"` and
+/// `"-inf"` parse: they are Float values.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_to_float(s: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).trim().parse::<f64>() {
+        Ok(value) => crate::lkdyn::lkrt_dyn_from_f64(value),
+        Err(_) => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.count(s, needle)` — non-overlapping matches.
+///
+/// No special case for the empty needle: `str::matches("")` already answers one
+/// match between every pair of characters and at both ends, which is the same
+/// rule stated in *characters*. The special case here said *bytes* + 1, so
+/// `string.count("中中", "")` was 7 compiled and 3 interpreted.
 ///
 /// # Safety
 /// Both pointers must be valid C strings, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_count(s: *const c_char, needle: *const c_char) -> i64 {
-    let text = view(s);
-    let pat = view(needle);
-    if pat.is_empty() {
-        return text.len() as i64 + 1;
+    view(s).matches(view(needle)).count() as i64
+}
+
+/// `string.strip(s, chars)` — both ends, every character that is in `chars`.
+///
+/// A *set* of characters, not an affix: `strip_prefix`/`strip_suffix` next door
+/// are the once-each operations. Byte-identical to the VM's `str::trim_matches`.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip(s: *const c_char, chars: *const c_char) -> *mut c_char {
+    let set = view(chars);
+    let stripped = view(s).trim_matches(|ch| set.contains(ch));
+    arena_c_string(CString::new(stripped).unwrap_or_default())
+}
+
+/// `s.pad_left(width[, fill])` / `s.pad_right(…)` — widened to `width`
+/// **characters** by repeating `fill` from its start.
+///
+/// Characters, because that is the unit everything else in the language counts.
+/// And the fill repeats by `cycle().take(n)` rather than by slicing a repeated
+/// string, so there is no byte boundary to get wrong.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_pad_left(s: *const c_char, width: i64, fill: *const c_char) -> *mut c_char {
+    pad(s, width, fill, true, "pad_left")
+}
+
+/// The right-hand half of [`lkrt_str_pad_left`].
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_pad_right(s: *const c_char, width: i64, fill: *const c_char) -> *mut c_char {
+    pad(s, width, fill, false, "pad_right")
+}
+
+fn pad(s: *const c_char, width: i64, fill: *const c_char, left: bool, name: &str) -> *mut c_char {
+    // Raised before anything is allocated: a raise longjmps past Rust drops.
+    if width < 0 {
+        crate::panic::raise_str(&alloc::format!(
+            "string.{name}() width must be non-negative, got {width}"
+        ));
     }
-    text.matches(pat).count() as i64
+    let fill = view(fill);
+    if fill.is_empty() {
+        crate::panic::raise_str(&alloc::format!("string.{name}() fill must not be empty"));
+    }
+    let text = view(s);
+    let len = text.chars().count();
+    let width = width as usize;
+    if len >= width {
+        return arena_c_string(CString::new(text).unwrap_or_default());
+    }
+    let padding: String = fill.chars().cycle().take(width - len).collect();
+    let padded = if left {
+        alloc::format!("{padding}{text}")
+    } else {
+        alloc::format!("{text}{padding}")
+    };
+    arena_c_string(CString::new(padded).unwrap_or_default())
 }
 
 /// `string.capitalize(s)` — first char uppercased, the rest lowercased
@@ -482,16 +677,60 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut core::ffi::c_v
     crate::state::arena_handle_owning_strings(elements, owned)
 }
 
+/// `string.byte_at(s, i)` — one byte, as a number, or absent past the end.
+///
+/// The one string read that allocates nothing. `char_at` below answers a
+/// *string* of one character, which means an allocation, which means it cannot
+/// be used from an interrupt handler or on a target with no allocator running
+/// yet — and a freestanding program that wants to put a message on a serial
+/// port needs exactly this and nothing else.
+///
+/// Bytes rather than characters, and deliberately: a byte index is O(1) where a
+/// character index is a scan, and code that pushes a message to a device is
+/// working in bytes anyway. Absent rather than a raise for out of range,
+/// because the caller is a loop bounded by `len` and a raise would be a cost
+/// paid on every iteration of the common case.
+///
+/// This used to answer `-1`, and so did the VM — a sentinel where the language
+/// says nil everywhere else it means absent, and where `string.byte_at` (the
+/// same operation, module-spelled) already answered nil.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_byte_at(s: *const c_char, index: i64) -> crate::lklist::LkMaybeI64 {
+    use crate::lklist::LkMaybeI64;
+    let text = view(s).as_bytes();
+    if index < 0 || index >= text.len() as i64 {
+        return LkMaybeI64 { value: 0, present: 0 };
+    }
+    LkMaybeI64 {
+        value: text[index as usize] as i64,
+        present: 1,
+    }
+}
+
 /// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,
-/// exactly the VM's `index_string_at`). A negative index counts back from
-/// the *byte* length (the VM's quirk — exact for ASCII).
+/// exactly the VM's `index_string_at`). A negative index counts back from the
+/// *character* count, like `s.len()` and like `s[i]` — it used to count back
+/// from the byte length on both sides, so `"中文abc"[-1]` answered nil.
 ///
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate::lkdyn::LkDyn {
     let text = view(s);
-    let idx = if index < 0 { text.len() as i64 + index } else { index };
+    let idx = if index < 0 {
+        // For ASCII the byte length *is* the character count.
+        let len = if text.is_ascii() {
+            text.len() as i64
+        } else {
+            text.chars().count() as i64
+        };
+        len + index
+    } else {
+        index
+    };
     if idx < 0 {
         return crate::lkdyn::LkDyn::NIL;
     }

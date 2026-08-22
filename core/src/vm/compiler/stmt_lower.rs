@@ -3,9 +3,27 @@ use super::*;
 impl Compiler {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         match stmt {
-            Stmt::Attributed { item, .. } => self.lower_stmt(item)?,
+            Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => self.lower_stmt(item)?,
             Stmt::Empty => {}
-            Stmt::Expr(expr) => {
+            // A `try` here is used for effect, so it computes no value — the
+            // bytecode is exactly what the statement form always emitted. That
+            // matters beyond size: a value written *inside* the protected
+            // region has to survive it, which the native back end does by
+            // boxing the register into a cell, and a type with no unboxer is a
+            // rejection. Reserving a value nobody reads would have taken
+            // `try { f(); } catch e { … }` off the native path.
+            Stmt::Expr { value: expr, .. } if matches!(expr.as_ref(), Expr::Try { .. }) => {
+                let Expr::Try {
+                    body,
+                    catch_var,
+                    handler,
+                } = expr.as_ref()
+                else {
+                    unreachable!("matched above");
+                };
+                self.lower_try_stmt(body, catch_var, handler)?;
+            }
+            Stmt::Expr { value: expr, .. } => {
                 let watermark = self.next_reg;
                 if !self.try_lower_rewritten_set_index_expr(expr)?
                     && !self.try_lower_builtin_method_statement(expr)?
@@ -27,9 +45,10 @@ impl Compiler {
                 pattern,
                 type_annotation,
                 value,
+                is_const,
                 ..
-            } => self.lower_let(pattern, type_annotation.as_ref(), value)?,
-            Stmt::Define { name, value } => self.lower_define(name, value)?,
+            } => self.lower_let(pattern, type_annotation.as_ref(), value, *is_const)?,
+            Stmt::Define { name, value, .. } => self.lower_define(name, value)?,
             Stmt::Assign { name, value, .. } => {
                 let watermark = self.next_reg;
                 self.lower_assign(name, value)?;
@@ -60,24 +79,36 @@ impl Compiler {
             } => self.lower_for(pattern, iterable, body)?,
             Stmt::Break => self.lower_break()?,
             Stmt::Continue => self.lower_continue()?,
-            Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
-            Stmt::Trait { name, methods } => self.lower_trait_decl(name, methods)?,
+            // A `struct` emits no code, but its *field order* is module data:
+            // it is the order `display` prints an instance's fields in, and the
+            // only place it survives is here (an object's fields live in a hash
+            // map, whose order nothing in the source explains).
+            Stmt::Struct { name, fields } => {
+                self.type_info.structs.push(crate::vm::StructDecl {
+                    name: name.clone(),
+                    fields: fields
+                        .iter()
+                        .map(|(field, ty)| crate::vm::StructFieldDecl {
+                            name: field.clone(),
+                            ty: ty.as_ref().map(Type::display),
+                        })
+                        .collect(),
+                });
+            }
+            Stmt::Import(_) | Stmt::TypeAlias { .. } => {}
+            Stmt::Trait { name, methods, .. } => self.lower_trait_decl(name, methods)?,
             Stmt::Impl {
                 trait_name,
                 target_type,
                 methods,
-            } => self.lower_impl_decl(trait_name, target_type, methods)?,
+            } => self.lower_impl_decl(trait_name.as_deref(), target_type, methods)?,
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
-            Stmt::Try {
-                body,
-                catch_var,
-                handler,
-            } => self.lower_try(body, catch_var, handler)?,
             Stmt::Block { statements } => {
                 let watermark = self.next_reg;
                 let locals = self.locals.clone();
                 let cell_locals = self.cell_locals.clone();
                 let const_map_locals = self.const_map_locals.clone();
+                let scopes = self.enter_scope();
                 self.local_rebind_suppression += 1;
                 self.lower_stmt_sequence(statements)?;
                 self.local_rebind_suppression -= 1;
@@ -87,6 +118,7 @@ impl Compiler {
                 self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
                 self.locals = locals;
                 self.const_map_locals = const_map_locals;
+                self.exit_scope(scopes);
                 if !self.emitted_return {
                     self.next_reg = self.live_register_floor().max(watermark);
                 }
@@ -276,8 +308,14 @@ impl Compiler {
         // The general path below still consumes the cache: the literal store
         // becomes a register move instead of a constant load.
         let watermark = self.next_reg;
+        // A `define` is never a `const`.
+        let cacheable = self.top_level_binding_is_cacheable(name, false);
         let slot = if let Some(slot) = self.locals.get(name).copied() {
-            if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+            if !self.local_declared_in_current_scope(name) {
+                // See `lower_let`: shadowing an enclosing binding must not
+                // write through its register.
+                self.alloc_reg()
+            } else if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                 // A fresh binding must not write the old register in place:
                 // it would clobber the counter the fused loop opcodes drive
                 // (`for i { let i = …; }`), or overwrite a promoted cell that
@@ -302,6 +340,15 @@ impl Compiler {
             self.emit_set_global(slot, global_slot)?;
         }
         self.record_const_map_local_from_expr(name, value)?;
+        // Past the limit the binding is only a global: the register goes back,
+        // and reads resolve through `GetGlobal` — which is the one place a
+        // *function* could ever see this value from, so nothing about its
+        // meaning changes.
+        if !cacheable {
+            self.clear_const_map_local(name);
+            self.next_reg = self.live_register_floor().max(watermark);
+            return Ok(());
+        }
         self.insert_fresh_local(name.to_string(), slot);
         self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())

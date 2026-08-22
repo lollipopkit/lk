@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 
 use crate::stmt::{ImportSource, ImportStmt, Program, Stmt};
 use crate::syntax::{ParseOptions, parse_program_source};
-use crate::typ::{FunctionSig, NamedParamSig, TypeChecker};
-use crate::val::{FunctionNamedParamType, Type};
+use crate::typ::declared_signature::signature_of_stmt;
+use crate::typ::{FunctionSig, TypeChecker};
+use crate::typ::{StructDef, TraitDef, TraitImpl, TypeAlias};
+use crate::val::Type;
 
 /// Registers a signature for every function `program` imports from a file.
 ///
@@ -42,18 +44,50 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                 let Some(dep) = load(base_dir, path) else {
                     continue;
                 };
+                seed_declared_types(&dep, checker);
+                seed_impl_methods(&dep, checker);
                 for item in items {
                     let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
-                    if let Some((signature, function_type)) = signature_of(&dep, &item.name) {
+                    // A type imported by name is constructible by that name:
+                    // the import binds the declaring module's generated
+                    // constructor, so `P { … }` has something to call.
+                    if checker.registry().get_struct(&item.name).is_some() {
+                        checker.registry_mut().mark_constructible_import(&bound, &item.name);
+                    }
+                    if let Some((mut signature, function_type)) = signature_of(&dep, &item.name) {
+                        // Where it came from, for the one rule that turns on it:
+                        // a named parameter's default is filled by the compiler
+                        // from the callee's declaration, which a caller in
+                        // another module does not have.
+                        signature.origin = crate::typ::SigOrigin::Imported;
                         checker.add_function_sig(bound.clone(), signature);
                         checker.add_local_type(bound, function_type);
                     }
                 }
             }
-            // `use "lib";` and `use * as m from "lib";` bind a namespace, whose
-            // members are reached as `m.f`. Member types are a separate
-            // mechanism from function signatures, so they are left alone here
-            // rather than half-registered under a made-up name.
+            // `use * as m from "lib";` binds a namespace whose members are
+            // reached as `m.f` — not a free `f`, since two namespaces may each
+            // export one.
+            ImportStmt::Namespace {
+                alias,
+                source: ImportSource::File(path),
+            } => {
+                let Some(dep) = load(base_dir, path) else {
+                    continue;
+                };
+                seed_namespace(alias, &dep, checker);
+            }
+            // `use "lib";` binds the file's stem, which is the name the module
+            // resolver defines it under.
+            ImportStmt::File { path } => {
+                let Some(namespace) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                let Some(dep) = load(base_dir, path) else {
+                    continue;
+                };
+                seed_namespace(namespace, &dep, checker);
+            }
             _ => continue,
         }
     }
@@ -118,60 +152,127 @@ fn load(base_dir: &Path, import_path: &str) -> Option<Program> {
     .ok()
 }
 
+/// Registers every stated function signature in `dep` under `namespace`.
+fn seed_namespace(namespace: &str, dep: &Program, checker: &mut TypeChecker) {
+    seed_declared_types(dep, checker);
+    seed_impl_methods(dep, checker);
+    for stmt in &dep.statements {
+        let Stmt::Function { name, .. } = item_of(stmt) else {
+            continue;
+        };
+        if let Some((_, function_type)) = signature_of(dep, name) {
+            checker.add_imported_member(namespace, name.clone(), function_type);
+        }
+    }
+}
+
+/// Register the `struct`s and `trait`s an imported module declares.
+///
+/// A type crosses a module boundary by its bare name — `use * as L from
+/// "./leaf"; fn passthru(v: Int) -> Deep` names `Deep`, not `L.Deep` — so the
+/// importing file's checker has to know it. Only functions were seeded, which
+/// went unnoticed while an unknown name silently became `Type::Named`: the
+/// annotation type-checked against nothing and the program ran anyway.
+fn seed_declared_types(dep: &Program, checker: &mut TypeChecker) {
+    for stmt in &dep.statements {
+        match item_of(stmt) {
+            Stmt::Struct { name, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, ty)| (field.clone(), ty.clone().unwrap_or(Type::Any)))
+                    .collect();
+                checker.registry_mut().register_imported_struct(StructDef {
+                    name: name.clone(),
+                    fields,
+                });
+            }
+            Stmt::Trait { name, methods, .. } => {
+                checker.registry_mut().register_trait(TraitDef {
+                    name: name.clone(),
+                    methods: methods.iter().cloned().collect(),
+                });
+            }
+            // A `type` alias is a declared name like the other two, and crosses
+            // a module boundary the same way.
+            Stmt::TypeAlias { name, target } => {
+                checker.registry_mut().register_type_alias(TypeAlias {
+                    name: name.clone(),
+                    target_type: target.clone(),
+                });
+            }
+            // Which imported type implements which imported trait. The
+            // *methods* crossed already (`seed_impl_methods`); the relation did
+            // not, so a trait written as a type accepted nothing from another
+            // module — `use "shapes"; shapes.render(c)` with `render(v: Shape)`
+            // reported "expected Shape, got Cat" for a `Cat` that implements it.
+            //
+            // No method indices, as in `predeclare_type_declarations`: they are
+            // the compiler's, and this runs before compilation.
+            Stmt::Impl {
+                trait_name: Some(trait_name),
+                target_type,
+                ..
+            } => {
+                let target_type = checker.resolve_aliases(target_type);
+                checker.registry_mut().register_trait_impl(TraitImpl {
+                    trait_name: trait_name.clone(),
+                    target_type,
+                    methods: hashbrown::HashMap::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Register the method signatures an imported module's `impl` blocks declare.
+///
+/// A method reaches the checker by being *type-checked*: `stmt_impl`'s `Impl`
+/// arm sets the impl's self type and each method body's check calls
+/// `add_method_sig`. That only ever happens for the program's own statements, so
+/// a method on an imported type was unknown to the checker — and unknown means
+/// unchecked, not rejected: the call fell through to `Any`. Same file,
+/// `impl Show for Int { fn show(self) -> String … }` and `a.show(1, 2)` was
+/// refused ("Method expects 0 arguments"); with the impl one `use` away the same
+/// call passed.
+///
+/// The signature is read from the declaration, not inferred: an imported body is
+/// not re-checked here, so an unannotated parameter is `Any` exactly as it is for
+/// an imported free function. That keeps this from *tightening* anything — it
+/// only makes the arity and the annotated types visible.
+fn seed_impl_methods(dep: &Program, checker: &mut TypeChecker) {
+    for stmt in &dep.statements {
+        let Stmt::Impl {
+            target_type, methods, ..
+        } = item_of(stmt)
+        else {
+            continue;
+        };
+        // Aliases resolve against the importing checker, which already has the
+        // dependency's `type` declarations (`seed_declared_types` ran first).
+        let self_ty = checker.resolve_aliases(target_type);
+        for method in methods {
+            let Stmt::Function { name, .. } = item_of(method) else {
+                continue;
+            };
+            let Some((_, function_type)) = signature_of_stmt(item_of(method)) else {
+                continue;
+            };
+            checker.add_method_sig(&self_ty, name, function_type);
+        }
+    }
+}
+
 /// The stated signature of a top-level `fn` in `program`.
 fn signature_of(program: &Program, name: &str) -> Option<(FunctionSig, Type)> {
     for stmt in &program.statements {
-        let Stmt::Function {
-            name: declared,
-            params,
-            param_types,
-            named_params,
-            return_type,
-            ..
-        } = item_of(stmt)
-        else {
+        let Stmt::Function { name: declared, .. } = item_of(stmt) else {
             continue;
         };
         if declared != name {
             continue;
         }
-        let positional: Vec<Type> = (0..params.len())
-            .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
-            .collect();
-        let annotated: Vec<bool> = (0..params.len())
-            .map(|i| param_types.get(i).cloned().flatten().is_some())
-            .collect();
-        let named: Vec<NamedParamSig> = named_params
-            .iter()
-            .map(|param| NamedParamSig {
-                name: param.name.clone(),
-                ty: param.type_annotation.clone().unwrap_or(Type::Any),
-                has_default: param.default.is_some(),
-            })
-            .collect();
-        let returns = return_type.clone().unwrap_or(Type::Any);
-        let named_annotations: Vec<FunctionNamedParamType> = named
-            .iter()
-            .map(|param| FunctionNamedParamType {
-                name: param.name.clone(),
-                ty: param.ty.clone(),
-                has_default: param.has_default,
-            })
-            .collect();
-        let function_type = Type::Function {
-            params: positional.clone(),
-            named_params: named_annotations,
-            return_type: Box::new(returns.clone()),
-        };
-        return Some((
-            FunctionSig {
-                positional,
-                named,
-                return_type: Some(returns),
-                annotated,
-            },
-            function_type,
-        ));
+        return signature_of_stmt(item_of(stmt));
     }
     None
 }

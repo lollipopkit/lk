@@ -24,7 +24,7 @@ REPL 和 CLI 只在结果不为 `nil` 时打印返回值。如果函数没有 `r
 
 LK 有六种原始类型和几种复合类型。用 `typeof(value)` 查看运行时类型名。
 
-```lk
+```lk,fragment
 typeof(42)        // "Int"
 typeof(3.14)      // "Float"
 typeof("hello")   // "String"
@@ -60,7 +60,7 @@ count := 0;       // 等价于 let count = 0;
 
 `const` 不可重新赋值，`let` 可以：
 
-```lk
+```lk,fragment
 let x = 1;
 x = 2;            // OK
 
@@ -90,7 +90,7 @@ let { "name": n, "age": age } = { "name": "LK", "age": 1 };
 
 ### 算术与比较
 
-```lk
+```lk,fragment
 1 + 2       // 3
 10 % 3      // 1
 3 == 3      // true
@@ -100,7 +100,7 @@ let { "name": n, "age": age } = { "name": "LK", "age": 1 };
 
 ### 逻辑与位运算
 
-```lk
+```lk,fragment
 true && false   // false
 !true           // false
 0xA & 0xF      // 按位与
@@ -129,7 +129,7 @@ let label = status ? "active" : "inactive";  // "active"
 
 ### 可选链
 
-```lk
+```lk,fragment
 let user = { "name": "LK" };
 user?.name       // "LK"
 nil?.name        // nil
@@ -147,9 +147,8 @@ let even = 0..10..2; // [0, 2, 4, 6, 8]
 
 ### 字符串与集合运算
 
-```lk
-"ha" * 3            // "hahaha"
-3 * "ab"            // "ababab"
+```lk,fragment
+"ha".repeat(3)      // "hahaha"  (`*` does not repeat a string)
 [1, 2] + [3, 4]     // [1, 2, 3, 4]
 [1, 2, 3] - [2]     // [1, 3]
 { "a": 1 } + { "b": 2 }  // { "a": 1, "b": 2 }
@@ -161,7 +160,7 @@ let even = 0..10..2; // [0, 2, 4, 6, 8]
 
 ### 列表
 
-```lk
+```lk,fragment
 let fruits = ["apple", "banana", "cherry"];
 fruits[0]          // "apple"
 fruits[-1]         // "cherry"
@@ -170,7 +169,7 @@ fruits[1..3]       // ["banana", "cherry"]
 
 列表方法（无需导入）：
 
-```lk
+```lk,fragment
 fruits.len()       // 3
 fruits.push("date");
 fruits.contains("apple")  // true
@@ -182,7 +181,7 @@ fruits.filter(|f| f.starts_with("a"))
 
 展开语法：
 
-```lk
+```lk,fragment
 let more = ["date", "elderberry"];
 let all = [..fruits, ..more, "fig"];
 ```
@@ -191,7 +190,7 @@ let all = [..fruits, ..more, "fig"];
 
 裸键为字符串键：
 
-```lk
+```lk,fragment
 let profile = { name: "LK", version: 1 };
 // 等价于 { "name": "LK", "version": 1 }
 profile.name                    // "LK"
@@ -204,7 +203,7 @@ Map 方法：`len`、`is_empty`、`keys`、`values`、`has`、`get`、`set`、`d
 
 ### 集合
 
-```lk
+```lk,fragment
 let s = Set([1, 2, 3, 2]);  // {1, 2, 3}
 s.has(2)      // true
 s.add(4)
@@ -218,7 +217,7 @@ s.values()    // [2, 3, 4]（顺序不保证）
 
 括号可选。`false` 和 `nil` 为假，其余（包括 `0`、`""`）为真：
 
-```lk
+```lk,fragment
 if score > 90 {
     println("A");
 } else if score > 80 {
@@ -227,6 +226,17 @@ if score > 90 {
     println("C");
 }
 ```
+
+`if` 是表达式,块也是 —— `{ … }` 出现在取值位置时,求值为它最后一条表达式:
+
+```lk,fragment
+let grade = if score > 90 { "A" } else { "B" };
+let area = { let w = 3; let h = 4; w * h };   // 12
+```
+
+能是 map 的地方 `{` 仍然是 **map**:`{}` 是空 map,`{"a": 1}` 是 map。只有在
+后面不可能是 map 时才当块 —— 开头是语句关键字(`let`、`return`、`for`……),
+或者在第一个 `;` / `}` 之前没有 `:`。
 
 ### 循环
 
@@ -244,7 +254,8 @@ for ch in "hello" {
     println(ch);
 }
 
-for entry in { "a": 1, "b": 2 } {
+let pairs = { "a": 1, "b": 2 };
+for entry in pairs {
     println(entry);  // ["a", 1]
 }
 ```
@@ -291,7 +302,7 @@ let { "name": n, "age": a, ..other } = { "name": "LK", "age": 1, "lang": "script
 
 ### if let / while let
 
-```lk
+```lk,fragment
 if let { "user": { "id": uid } } = payload {
     println("User ID: {}", uid);
 }
@@ -304,7 +315,7 @@ while let [item, ..tail] = remaining {
 
 ### 守卫与范围
 
-```lk
+```lk,fragment
 match score {
     n if n >= 90 => "A",
     n if n >= 80 => "B",
@@ -317,7 +328,7 @@ match score {
 
 ### 定义
 
-```lk
+```lk,fragment
 fn add(a, b) {
     return a + b;
 }
@@ -345,7 +356,7 @@ draw_rect(0, 0, width: 50, height: 200);
 
 ### 闭包
 
-```lk
+```lk,fragment
 let double = |x| x * 2;
 let add = |a, b| { let sum = a + b; sum };
 
@@ -356,7 +367,7 @@ add(3, 4)      // 7
 闭包捕获并修改外层变量：
 
 ```lk
-let count := 0;
+let count = 0;
 let inc = || { count += 1; };
 inc();
 inc();
@@ -367,7 +378,7 @@ println(count);  // 2
 
 ### 一等函数
 
-```lk
+```lk,fragment
 fn apply(f, x) {
     return f(x);
 }
@@ -379,7 +390,7 @@ apply(|n| n * 3, 7)  // 21
 
 ### 定义与实例化
 
-```lk
+```lk,fragment
 struct Rect { w: Int, h: Int }
 
 let shape = Rect { w: 8, h: 5 };
@@ -388,13 +399,13 @@ shape.w             // 8
 
 调用糖（等价于 `Rect(w: 8, h: 5)`）和更新语法：
 
-```lk
+```lk,fragment
 let bigger = Rect { ..shape, h: 10 };
 ```
 
 ### Trait 与 Impl
 
-```lk
+```lk,fragment
 trait Area {
     fn area(self) -> Int;
 }
@@ -408,9 +419,10 @@ impl Area for Rect {
 shape.area()   // 40
 ```
 
-自动展示：实现 `show`、`display` 或 `to_string` 方法后，`println("{}")` 和 `${value}` 自动使用它：
+自动展示：实现名为 `show` 的方法后，`println("{}")` 和 `${value}` 自动使用它。
+只有这一个名字 —— `display` 和 `to_string` 不会被查找，用这两个名字写的方法不起作用。
 
-```lk
+```lk,fragment
 impl Area for Rect {
     fn area(self) -> Int { return self.w * self.h; }
     fn show(self) -> String { return "Rect(${self.w}x${self.h})"; }
@@ -433,9 +445,9 @@ println("{}", p);  // Point { x: 1, y: 2 }
 
 ## 字符串与字节
 
-String 元方法（无需导入）：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`、`format`
+String 元方法（无需导入）：`len`、`is_empty`、`lower`、`upper`、`trim`、`reverse`、`repeat`、`starts_with`、`ends_with`、`contains`、`count`、`index_of`、`slice`、`get`、`first`、`last`、`take`、`skip`、`replace`、`split`、`chars`、`bytes`、`byte_at`、`capitalize`、`title`、`strip`、`strip_prefix`、`strip_suffix`、`pad_left`、`pad_right`、`format`
 
-```lk
+```lk,fragment
 "Hello".len()                    // 5
 "hello".upper()                  // "HELLO"
 "  hi  ".trim()                  // "hi"
@@ -448,7 +460,7 @@ String 元方法（无需导入）：`len`、`lower`、`upper`、`trim`、`start
 
 `bytes` 模块处理二进制数据（需要 `use bytes`）：
 
-```lk
+```lk,fragment
 use bytes;
 
 let raw = bytes.from_string("hello");
@@ -475,7 +487,7 @@ let total = iter.reduce(evens, 0, |acc, n| acc + n);
 
 `stream` 模块提供懒执行管道（需要 `use stream`）：
 
-```lk
+```lk,fragment
 use stream;
 
 let s = stream.from_list([1, 2, 3, 4, 5]);
@@ -492,7 +504,7 @@ stream.collect(cursor)  // [30, 40, 50]
 
 ### use 导入
 
-```lk
+```lk,fragment
 use math;                          // 整个模块作为命名空间
 use { abs, sqrt } from math;       // 选择性导入
 use math as m;                     // 别名
@@ -576,9 +588,9 @@ let [ok, val] = recv(ch);
 
 // select 选择
 select {
-    case value <- recv(ch) => println("got {}", value),
-    case send(ch, 42) => println("sent"),
-    default => println("none ready"),
+    case value <- recv(ch) => println("got {}", value);
+    case send(ch, 42) => println("sent");
+    default => println("none ready");
 }
 ```
 

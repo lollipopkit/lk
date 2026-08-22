@@ -4,4 +4,29 @@ let precise = answer + 2.5;
 let maybe_float = precise / 2;
 
 // Expect 21.25 after promotion.
+
+// A float rendered into a string reads the same however it got there.
+//
+// Two things used to make that false. The constant folder formatted with `ryu`
+// — a shortest-round-trip formatter — while everything else uses Rust's
+// `Display`, which is the rule `docs/semantics.md` states and which lkrt is
+// aligned to byte for byte. So `"" + 1.0e300` was `1e300` folded and three
+// hundred digits when the same value came from a variable.
+//
+// And the float opcodes had no dynamic fallback while their int twins did: the
+// compiler picks `AddFloat` from *one* operand's type, so `"" + (1.0 + 2.0)`
+// folded its parenthesised half to a float and then added a string to it —
+// `AddInt` dispatches in that situation, `AddFloat` raised, and `lk check` said
+// nothing on the way past.
+fn rendered(from_literal: Bool) -> String {
+    let computed = 1.0 + 2.0;
+    if from_literal { return "" + 3.0; }
+    return "" + computed;
+}
+assert(rendered(true) == rendered(false));
+assert(rendered(true) == "3");
+assert("v=" + (1.0 + 2.0) == "v=3");
+assert((1.0 + 2.0) + "!" == "3!");
+assert(("" + 0.5) == "0.5");
+
 return maybe_float;

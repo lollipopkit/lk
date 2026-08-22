@@ -64,7 +64,10 @@ return id!(7);
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(stdout.contains("# macro id at"), "expected trace line, got: {stdout}");
-    assert!(stdout.contains("return 7;"), "expected expanded return, got: {stdout}");
+    assert!(
+        stdout.contains("return (7);"),
+        "expected expanded return, got: {stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -102,7 +105,7 @@ return answer!();
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(
-        stdout.contains("return 42;"),
+        stdout.contains("return (42);"),
         "expected imported macro expansion, got: {stdout}"
     );
 
@@ -307,7 +310,9 @@ return generated() + decorated() + proc_value!() + user.value();
         "expected manifest attribute provider output in AST expansion, got: {stdout}"
     );
     assert!(
-        stdout.contains("+ 5"),
+        // `(5)`: an expansion in expression position is one expression, and the
+        // rendering carries the grouping.
+        stdout.contains("+ (5)"),
         "expected manifest function-like provider output in token expansion, got: {stdout}"
     );
     assert!(
@@ -413,7 +418,7 @@ return answer!();
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(
-        stdout.contains("return 42;"),
+        stdout.contains("return (42);"),
         "expected package macro expansion, got: {stdout}"
     );
 
@@ -663,20 +668,38 @@ fn test_compile_struct_constructs_to_module_artifact() {
     );
 }
 
+/// `..` in a path argument is a path, not an attack.
+///
+/// This asserted the opposite: a `sanitize_path` refused every `..`, while
+/// letting an **absolute** path through — so it stopped nothing (anything `..`
+/// reaches, `/…` reaches) and refused `lk compile ../x.lk` from a
+/// subdirectory. Now the only failure left is the honest one: the file is not
+/// there.
 #[test]
-fn test_compile_rejects_parent_directory_argument() {
+fn compile_takes_a_parent_directory_argument_as_a_path() {
     let dir = unique_tmp_dir("compile_parent");
     ensure_clean_dir(&dir);
+    let nested = dir.join("nested");
+    create_dir_all(&nested).expect("nested dir");
+    write_file(&dir, "escape.lk", "return 7;\n");
 
-    let out = run_cli(&dir, ["compile", "../escape.lk"])
+    let out = run_cli(&nested, ["compile", "bytecode", "../escape.lk"])
         .output()
         .expect("spawn compile with parent dir");
+    assert!(
+        out.status.success(),
+        "compiling `../escape.lk` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // And a `..` that really is not there fails for that reason, not for its
+    // shape.
+    let out = run_cli(&nested, ["compile", "bytecode", "../nope.lk"])
+        .output()
+        .expect("spawn compile with a missing parent-dir file");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Parent directory components"),
-        "expected sanitize error, got: {stderr}"
-    );
+    assert!(stderr.contains("Failed to read file"), "{stderr}");
 }
 
 #[test]
@@ -744,6 +767,104 @@ fn test_compile_rejects_what_run_and_check_reject() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// What `lk check FILE` accepts, `lk FILE` must run.
+///
+/// It did not. The run path type-checks the program *twice*: the CLI does it with
+/// the imports seeded, and `execute_with_ctx` then does it again with a fresh
+/// checker and `None` for the directory — so the second one cannot open the files
+/// the program imports and rejects every name that crosses a module boundary.
+/// `lk check` passed this file and `lk` answered `Unknown type 'P' in parameter
+/// 'p'`, which makes the pre-flight command a liar about the one thing it is for.
+///
+/// The CLI's own check stays: it is the only one the sandboxed (`LK_FUEL`) and
+/// bytecode-cache branches get. That this path now checks twice is a startup
+/// cost, not a correctness one.
+#[test]
+fn what_check_accepts_the_run_path_accepts() {
+    let dir = unique_tmp_dir("check_and_run_agree");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "lib.lk",
+        "struct P { x: Int, y: Int }\n\
+         impl P { fn sum(self) -> Int { return self.x + self.y; } }\n\
+         fn make() -> P { return P { x: 10, y: 20 }; }\n",
+    );
+    // The parameter annotation names an imported type, and the body calls a
+    // method the imported `impl` declares — the two things the unseeded check
+    // could not resolve.
+    write_file(
+        &dir,
+        "main.lk",
+        "use \"./lib\";\nfn take(p: P) -> Int { return p.sum(); }\nprintln(take(lib.make()));\n",
+    );
+
+    let checked = run_cli(&dir, ["check", "main.lk"]).output().expect("spawn check");
+    assert!(
+        checked.status.success(),
+        "`lk check` rejected it: {}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "`lk check` passed but running failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "30");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An imported `impl`'s method signatures reach the checker.
+///
+/// A method becomes known to the checker by being *type-checked* — the `Impl`
+/// arm sets the self type and each method body's check registers its signature —
+/// and that only ever happens for the program's own statements. So a call on an
+/// imported type was not merely unchecked, it was *unknown*, and unknown falls
+/// through to `Any`: in one file `impl Show for Int` made `a.show(1, 2)` an
+/// error, and with the impl one `use` away the same call passed the checker and
+/// died at run time.
+///
+/// The signature is read from the declaration, so this only makes the arity and
+/// the annotated types visible — an unannotated parameter stays `Any`, exactly as
+/// it is for an imported free function.
+#[test]
+fn an_imported_impls_signatures_are_checked() {
+    let dir = unique_tmp_dir("imported_impl_sigs");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "lib.lk",
+        "struct P { x: Int }\n\
+         impl P { fn scaled(self, k: Int) -> Int { return self.x * k; } }\n\
+         fn make() -> P { return P { x: 2 }; }\n",
+    );
+
+    for (body, expected) in [
+        ("println(lib.make().scaled());", "Method expects 1 arguments"),
+        ("println(lib.make().scaled(1, 2));", "Method expects 1 arguments"),
+        ("println(lib.make().scaled(\"s\"));", "wrong type"),
+    ] {
+        write_file(&dir, "main.lk", &format!("use \"./lib\";\n{body}\n"));
+        let out = run_cli(&dir, ["check", "main.lk"]).output().expect("spawn check");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && stderr.contains(expected),
+            "`{body}` should be refused with {expected:?}, got: {stderr}"
+        );
+    }
+
+    // And the correct call still passes both.
+    write_file(&dir, "main.lk", "use \"./lib\";\nprintln(lib.make().scaled(3));\n");
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "6");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A `trait` implemented in an imported file must dispatch in the importer.
 ///
 /// It did not: the importer executes an imported file in a throwaway
@@ -776,6 +897,123 @@ fn test_trait_impl_from_imported_file_dispatches() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "16");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A trait used as a **type** must accept an implementor from another file.
+///
+/// The trait, the struct and the impl's *methods* all crossed the boundary
+/// already; the relation "this type implements this trait" did not, because
+/// only the importing program's own statements were walked for it. So
+/// `render(v: Shape)` in an imported file reported "expected Shape, got Sq"
+/// for the very type that file declares an impl for — the feature worked
+/// within one file and nowhere else.
+#[test]
+fn test_trait_as_a_type_accepts_an_imported_implementor() {
+    let dir = unique_tmp_dir("cross_module_trait_type");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n\
+         fn describe(v: Area) -> Int { return v.area(); }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make, describe } from \"./shape.lk\";\nprintln(describe(make(5)));\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "a trait-typed parameter refused an imported implementor: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "25");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `lk check` follows a module alias when it checks a member.
+///
+/// `use math as m;` recorded the name it bound and not the module behind it,
+/// so `m.nope(1)` was checked against a module called `m` — which does not
+/// exist, so nothing was checked and the program died at run time with "nil is
+/// not a function". The unaliased spelling had been reporting this properly for
+/// a while, which is what made the gap easy to miss: one of the two forms
+/// worked.
+///
+/// A CLI test rather than a `core` one because the member table only exists
+/// where the standard library is linked.
+#[test]
+fn test_check_follows_a_module_alias() {
+    let dir = unique_tmp_dir("check_module_alias");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "bad.lk", "use math as m;\nprintln(m.nope(1));\n");
+    write_file(&dir, "good.lk", "use math as m;\nprintln(m.abs(0 - 3));\n");
+
+    let bad = run_cli(&dir, ["check", "bad.lk"]).output().expect("spawn check");
+    assert!(!bad.status.success(), "`m.nope` should not check");
+    let message = String::from_utf8_lossy(&bad.stderr).to_string() + &String::from_utf8_lossy(&bad.stdout);
+    assert!(message.contains("has no member `nope`"), "{message}");
+    // Named as `math`: the alias is how it was written, not what it is.
+    assert!(message.contains("`math`"), "{message}");
+
+    let good = run_cli(&dir, ["check", "good.lk"]).output().expect("spawn check");
+    assert!(
+        good.status.success(),
+        "`m.abs` should check: {}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A module whose functions call a *read-only* user method on a parameter is
+/// still bundlable.
+///
+/// Bundling declines a module that could write through a container parameter,
+/// because it hands the caller's container over by reference where the VM
+/// hands a copy. A call to a user method counted as a write on the grounds
+/// that the bytecode carries no types — but the method's body is *in the same
+/// module*, and the same fixpoint is already deciding whether its receiver is
+/// safe. Assuming the worst meant `fn describe(v: Shape) { return v.area(); }`
+/// — the whole point of a trait — made the module unbundlable, so every name it
+/// exported stopped resolving natively.
+#[test]
+fn test_a_read_only_trait_method_does_not_block_bundling() {
+    let dir = unique_tmp_dir("bundle_trait_method");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n\
+         fn describe(v: Area) -> Int { return v.area(); }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make, describe } from \"./shape.lk\";\nprintln(describe(make(5)));\n",
+    );
+
+    let out = run_cli(&dir, ["compile", "main.lk"])
+        .env("LK_AOT_HYBRID", "0")
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .output()
+        .expect("spawn compile");
+    assert!(
+        out.status.success(),
+        "a read-only trait method blocked bundling: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -860,7 +1098,11 @@ fn test_try_catch_is_a_statement_not_a_closure() {
     write_file(
         &dir,
         "outer.lk",
-        "let t = 0;\nfor i in 0..100 {\n  try { t += i / 0; } catch e { t += 1; }\n}\nprintln(t);\n",
+        // `% 0` rather than `/ 0`: `/` yields a Float, so dividing by zero is
+        // an infinity now and raises nothing. Integer remainder still has no
+        // answer at zero, which is what this case needs — it is about try's
+        // scoping, not about division.
+        "let t = 0;\nfor i in 0..100 {\n  try { t += i % 0; } catch e { t += 1; }\n}\nprintln(t);\n",
     );
     let out = run_cli(&dir, ["outer.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -905,7 +1147,7 @@ fn test_try_catch_is_a_statement_not_a_closure() {
         &dir,
         "shadow.lk",
         "fn f() {\n  let e = 0;\n  let bump = || { e = e + 1; };\n  bump();\n\
-         try { 1 / 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
+         try { 1 % 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
     );
     let out = run_cli(&dir, ["shadow.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -920,7 +1162,7 @@ fn test_try_catch_is_a_statement_not_a_closure() {
     write_file(
         &dir,
         "bind.lk",
-        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 / 0; } catch e { println(typeof(e)); }\n",
+        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 % 0; } catch e { println(typeof(e)); }\n",
     );
     let out = run_cli(&dir, ["bind.lk"]).output().expect("spawn run");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -1019,7 +1261,7 @@ fn test_local_trait_impl_dispatches_inside_an_imported_function() {
 /// for the whole context: `A.mk(1).tag()` answered `"B"`. A locally declared
 /// `Point` hijacked the imported one the same way. Both halves of a declared
 /// type's identity — the declaring module and the name — now travel with the
-/// value (`lk_core::vm::TypeScope`).
+/// value (`lk_core::val::TypeScope`).
 #[test]
 fn test_same_type_name_in_two_modules_dispatches_separately() {
     let dir = unique_tmp_dir("type_scope_collision");
@@ -1167,4 +1409,255 @@ fn compile_object_rejects_an_unknown_triple() {
     assert!(!output.status.success(), "an unknown triple must not succeed");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One expression's scratch registers are handed back as it goes.
+///
+/// A register VM needs *one* temporary for `a + b + c + …`, not one per term:
+/// the result is written over the left operand, which is what `x += 1` has
+/// always compiled to. Every intermediate kept its own register instead, so a
+/// single expression could exhaust the 256 a frame has — and the failure was a
+/// refusal to compile a program that is nothing unusual. 300 terms and 40 list
+/// elements are both well past where it used to stop (~250 and 27).
+///
+/// The answers are checked, not just the exit status: reusing an operand's
+/// register is only safe because the opcodes read both operands before writing
+/// the destination, and a compiler that got that wrong would still compile.
+#[test]
+fn one_expression_reuses_its_scratch_registers() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("wide_expr.lk");
+    let chain = (1..=300).map(|i| format!("({i} * 2)")).collect::<Vec<_>>().join(" + ");
+    let elements = (0..40)
+        .map(|i| format!("(\"abc\".count(\"a\") + {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        &path,
+        format!(
+            "let total = {chain};
+let xs = [{elements}];
+println(\"${{total}} ${{xs.len()}} ${{xs[39]}}\");
+"
+        ),
+    )
+    .expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&path)
+        .output()
+        .expect("run lk");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 2 * (1 + … + 300) = 90300; the last element is 1 + 39.
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "90300 40 40");
+}
+
+/// The same, for the two windows an expression can be lowered into: a call's
+/// arguments and a template string's parts.
+///
+/// Both pre-allocate a contiguous window and then lower into it, and both let
+/// every part's scratch pile up behind the window. Two programs, because the
+/// two halves fail differently and one program does not separate them:
+///
+/// - 60 interpolations of `${s.count(t) + i}` **refuse to compile** without the
+///   template half.
+/// - a 60-argument call nested inside a template still compiles without the
+///   call half — it just costs 191 registers where 132 are needed, which is why
+///   the count is asserted rather than the exit status.
+#[test]
+fn a_call_window_and_a_template_reuse_their_scratch_too() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let params = (0..60).map(|i| format!("a{i}: Int")).collect::<Vec<_>>().join(", ");
+    let args = (0..60)
+        .map(|i| format!("(\"aaa\".count(\"a\") + \"b\".len() + {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let template = (0..60)
+        .map(|i| format!("${{\"a\".count(\"a\") + {i}}}"))
+        .collect::<Vec<_>>()
+        .join("-");
+
+    // `a0` is 3 + 1 + 0 and `a59` is 3 + 1 + 59.
+    let call = dir.path().join("wide_call.lk");
+    std::fs::write(
+        &call,
+        format!("fn many({params}) -> Int {{ return a0 + a59; }}\nprintln(\"${{many({args})}}\");\n"),
+    )
+    .expect("write");
+    let rendered = dir.path().join("wide_template.lk");
+    std::fs::write(&rendered, format!("println(\"{template}\");\n")).expect("write");
+
+    let expected = ["67", &(1..=60).map(|i| i.to_string()).collect::<Vec<_>>().join("-")];
+    for (path, expected) in [(&call, expected[0]), (&rendered, expected[1])] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+            .arg(path)
+            .output()
+            .expect("run lk");
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+    }
+
+    // The count itself, not just "it compiled": a call window that stops
+    // recycling is still under the ceiling at this width, so success alone
+    // would not notice. Measured 132 with the reuse and 191 without.
+    let counted = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["coverage", "--disassemble"])
+        .arg(&call)
+        .output()
+        .expect("run lk coverage");
+    let listing = String::from_utf8_lossy(&counted.stdout);
+    let registers: usize = listing
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("registers: "))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no register count in the listing: {listing}"));
+    assert!(
+        registers < 160,
+        "the call window stopped reusing its scratch: {registers} registers"
+    );
+}
+
+/// A struct literal is not capped at a number nobody could reach.
+///
+/// The guard said "max 127 fields", but `NewObject` reads its fields from a
+/// window of *two* registers each plus one for the type name, so 127 fields
+/// need 255 window registers and `dst` has nowhere to go. In practice it broke
+/// around 84, and what came out was "this function needs more than 256
+/// registers" — a message about the enclosing function, for a limit belonging to
+/// one literal. Two diagnostics, one real ceiling, neither of them naming it.
+///
+/// 200 is chosen to sit past every one of those numbers: past 84, past 127, and
+/// past the 255-register window the old path needed.
+#[test]
+fn a_struct_literal_is_not_capped_at_an_unreachable_field_count() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("wide.lk");
+    let fields = (0..200).map(|i| format!("f{i}: Int")).collect::<Vec<_>>().join(", ");
+    let values = (0..200).map(|i| format!("f{i}: {i}")).collect::<Vec<_>>().join(", ");
+    std::fs::write(
+        &path,
+        format!("struct Wide {{ {fields} }}\nlet w = Wide {{ {values} }};\nprintln(\"${{w.f199}} ${{w.f0}}\");\n"),
+    )
+    .expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&path)
+        .output()
+        .expect("run lk");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "199 0");
+}
+
+/// Too many fields is reported as too many fields.
+///
+/// A `struct` declaration emits no code of its own, but every one gets a
+/// generated constructor taking one *named parameter* per field — and parameters
+/// are locals. So a 254-field struct failed with "this function needs more than
+/// 256 registers … split the body into smaller functions": a body the program
+/// does not contain, and advice that cannot be followed, for a limit that is
+/// real and worth stating plainly.
+#[test]
+fn a_struct_too_wide_to_construct_says_so() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("too_wide.lk");
+    let fields = (0..254).map(|i| format!("f{i}: Int")).collect::<Vec<_>>().join(", ");
+    std::fs::write(&path, format!("struct TooWide {{ {fields} }}\n")).expect("write");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run lk check");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(stderr.contains("struct `TooWide` has 254 fields"), "{stderr}");
+    assert!(stderr.contains("253 is the most one can have"), "{stderr}");
+    // The register message named the wrong thing entirely.
+    assert!(!stderr.contains("split the body into smaller functions"), "{stderr}");
+}
+
+/// A package dependency bundles like a file import, in every spelling that
+/// names one.
+///
+/// Before, the bundler queued file imports only, so a call into a dependency
+/// fell to the stdlib-only module lowering and the whole program ran on the
+/// Tier 0 VM bundle — about 3x slower, with nothing said. The sweep pins the
+/// `use dep;` spelling through the workspace example; the other three have no
+/// corpus program, and each is a separate arm of the binding table.
+#[test]
+fn a_package_dependency_lowers_natively_in_every_import_spelling() {
+    let dir = unique_tmp_dir("pkg_bundle_spellings");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "Lk.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[dependencies]\nmathlib = { path = \"mathlib\" }\n",
+    );
+    create_dir_all(dir.join("mathlib/src")).expect("create dep dir");
+    write_file(
+        &dir.join("mathlib"),
+        "Lk.toml",
+        "[package]\nname = \"mathlib\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    );
+    write_file(
+        &dir.join("mathlib/src"),
+        "mod.lk",
+        "fn double(n: Int) -> Int {\n    return n * 2;\n}\n",
+    );
+    create_dir_all(dir.join("src")).expect("create src dir");
+
+    for source in [
+        "use mathlib;\nprintln(mathlib.double(7));\n",
+        "use mathlib as ml;\nprintln(ml.double(7));\n",
+        "use { double } from mathlib;\nprintln(double(7));\n",
+        "use * as m from mathlib;\nprintln(m.double(7));\n",
+    ] {
+        write_file(&dir.join("src"), "main.lk", source);
+        // Strict: no fallback, no hybrid bridge — "compiles" means "lowered".
+        let compiled = run_cli(&dir, ["compile", "src/main.lk"])
+            .env("LK_AOT_NO_FALLBACK", "1")
+            .env("LK_AOT_HYBRID", "0")
+            .output()
+            .expect("spawn compile");
+        assert!(
+            compiled.status.success(),
+            "{source} did not lower: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+
+        let native = Command::new(dir.join("src/main"))
+            .current_dir(&dir)
+            .output()
+            .expect("run the native binary");
+        let vm = run_cli(&dir, ["src/main.lk"])
+            .env("LK_FORCE_VM", "1")
+            .output()
+            .expect("run under the VM");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            String::from_utf8_lossy(&vm.stdout),
+            "{source}: the two executors disagree"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout).trim(), "14", "{source}");
+    }
 }

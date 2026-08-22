@@ -20,7 +20,6 @@ use lk_core::{
         ProcMacroDependencyGraph, ProcMacroProviders,
     },
     package::{PackageGraph, LOCK_FILE, MANIFEST_FILE},
-    token::Tokenizer,
 };
 
 use super::{inlay_hints::compute_inlay_hints_with_margin, utils::compute_content_hash};
@@ -237,7 +236,7 @@ impl WorkspaceCache {
                     .into_iter()
                     .map(|module| (module.name, module.root))
                     .collect();
-                let missing = graph.missing.into_iter().collect();
+                let missing = graph.missing.into_iter().map(|missing| missing.name).collect();
                 if let Ok(mut ctx) = self.package_context.lock() {
                     ctx.modules = modules;
                     ctx.missing = missing;
@@ -349,12 +348,9 @@ fn compute_full_inlay_hints(content: &str) -> Vec<InlayHint> {
     }
     let range = full_range(content);
     let mut hints = compute_inlay_hints_with_margin(content, range, 0);
-    if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(content) {
-        let analyzer = LkAnalyzer::new_light();
-        hints.extend(analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range));
-        hints.extend(analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range));
-        hints.extend(analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range));
-    }
+    let mut analyzer = LkAnalyzer::new_light();
+    hints.extend(analyzer.compute_type_inlay_hints(content, range));
+    hints.extend(analyzer.compute_function_return_type_hints(content, range));
     hints
 }
 

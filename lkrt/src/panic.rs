@@ -1,11 +1,11 @@
-//! Native protected calls (deep-coverage plan G: `try$call`): a setjmp/
+//! Native protected regions (deep-coverage plan G): a setjmp/
 //! longjmp handler stack plus mutable capture cells.
 //!
 //! The generated code executes `_setjmp` itself (declared `returns_twice` in
 //! the IR — the compiler must see it); this module owns the jump buffers,
 //! the raised value, and the raise entry points. `raise` with no live
-//! handler stays `flush_and_abort()` — an uncaught error's observable
-//! behaviour (flushed stdout + abnormal exit) is unchanged.
+//! handler flushes stdout, prints the error, and exits 1 — the same status
+//! the VM gives, because an uncaught error is the program failing.
 //!
 //! longjmp-over-Rust-frames safety: the frames skipped between a raise and
 //! its handler only hold arena-owned values and plain temporaries (the arena
@@ -199,6 +199,20 @@ pub extern "C" fn lkrt_rt_current_error() -> LkDyn {
 }
 
 fn raise_current(value: LkDyn) -> ! {
+    // The rule at the top of this module, asked rather than trusted. A raise
+    // taken with a runtime borrow live does not fail here — it fails at the next
+    // runtime operation, which is somewhere else entirely and reads as a bug in
+    // whatever code happened to be next. Saying it at the raise is the
+    // difference between a name and a puzzle.
+    #[cfg(feature = "std")]
+    if crate::state::runtime_borrow_is_live() {
+        crate::rt_eprintln!(
+            "lkrt: a raise was taken while a runtime borrow was live; the borrow would never be \
+             released. This is an lkrt bug — the entry that raised must drop its runtime borrow \
+             first (see `raising` in abi.rs)."
+        );
+        crate::abi::flush_and_abort()
+    }
     with_current_error(|slot| slot.set(value));
     let target = with_handlers(|handlers| handlers.pop());
     match target {
@@ -222,19 +236,27 @@ fn raise_current(value: LkDyn) -> ! {
                 crate::abi::flush_and_abort()
             }
         }
-        // Uncaught: surface the error before dying — the VM prints its
-        // uncaught message to stderr, a silent abort loses it. (Only the
-        // stderr *text* differs across backends; the differential contract
-        // compares stdout + success only.)
+        // Uncaught: surface the error before dying — a silent abort loses it.
+        // Exit 1 rather than abort: the program failed, the runtime did not.
+        //
+        // `Error: ` is the label the whole language reports with — parse errors,
+        // type errors, and every `diagnostic::error` in the CLI. This said `lk:
+        // uncaught error: ` for as long as the divergence was written off as
+        // "only the stderr text differs, and the differential compares stdout +
+        // success only" — which says what the gate looked at, not what a reader
+        // gets: the same failing program read two different ways depending on
+        // which backend ran it, and `lk:` named a program that a compiled binary
+        // is not. `an_uncaught_error_exits_and_reads_the_same_on_both_backends` now compares
+        // the two byte for byte.
         None => {
-            crate::rt_eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
-            crate::abi::flush_and_abort()
+            crate::rt_eprintln!("Error: {}", crate::lkdyn::display_for_diagnostics(value));
+            crate::abi::flush_and_exit_failure()
         }
     }
 }
 
 /// Internal guard entry: raises a message string to the nearest `try` frame
-/// (arena-owned), or aborts loudly — every lkrt guard that mirrors a
+/// (arena-owned), or reports it and exits 1 — every lkrt guard that mirrors a
 /// *catchable* VM error routes through here (G3). `panic` stays fatal.
 pub(crate) fn raise_str(message: &str) -> ! {
     let owned = arena_c_string(CString::new(message).unwrap_or_default());
@@ -268,6 +290,31 @@ pub unsafe extern "C" fn lkrt_rt_raise_msg(message: *const c_char) {
     raise_current(crate::lkdyn::lkrt_dyn_from_str(owned))
 }
 
+/// Raises `message` when a nullable carrier turned out to be absent.
+///
+/// The counterpart of the `lkrt_maybe_*_unwrap` family, for the sites that know
+/// what the interpreter would have said. Those helpers raise a fixed
+/// `"runtime error"` because they are handed a value and a bit and nothing else;
+/// this one is handed the sentence, built where the operator and both operand
+/// types are still known. `try { xs[9] + 1 } catch e { e }` therefore reads the
+/// same on both backends, which it did not.
+///
+/// # Safety
+/// `message` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_maybe_guard(present: i64, message: *const c_char) {
+    if present != 0 {
+        return;
+    }
+    if message.is_null() {
+        raise_str("runtime error");
+    }
+    // SAFETY: caller passes a NUL-terminated string; the copy outlives the
+    // raising frame because it goes into the arena.
+    let text = unsafe { core::ffi::CStr::from_ptr(message) }.to_owned();
+    raise_current(crate::lkdyn::lkrt_dyn_from_str(arena_c_string(text)))
+}
+
 // ── Mutable capture cells ───────────────────────────────────────────────
 // The VM promotes a local assigned inside a closure to an `UpvalCell` (a
 // shared mutable box). Natively a cell is an arena-owned `LkDyn` slot passed
@@ -287,6 +334,46 @@ pub extern "C" fn lkrt_rt_cell_new(value: LkDyn) -> *mut c_void {
 pub unsafe extern "C" fn lkrt_rt_cell_get(cell: *mut c_void) -> LkDyn {
     // SAFETY: `cell` addresses an `LkDyn` from `lkrt_rt_cell_new`.
     unsafe { *(cell as *mut LkDyn) }
+}
+
+/// Allocates a cell parking a **raw handle** — a typed container, which cannot
+/// survive being boxed (see [`crate::lkdyn::DYN_RAW`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_rt_cell_new_raw(handle: i64) -> *mut c_void {
+    crate::state::arena_handle(LkDyn {
+        tag: crate::lkdyn::DYN_RAW,
+        payload: handle,
+    })
+}
+
+/// Reads a raw-handle cell. Raises if the cell holds a boxed value instead —
+/// the two families must not be crossed, and this is where that is caught.
+///
+/// # Safety
+/// `cell` must be a live handle from [`lkrt_rt_cell_new_raw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_cell_get_raw(cell: *mut c_void) -> i64 {
+    // SAFETY: `cell` addresses an `LkDyn` from one of the cell constructors.
+    let value = unsafe { *(cell as *mut LkDyn) };
+    if value.tag != crate::lkdyn::DYN_RAW {
+        crate::panic::raise_str("runtime error");
+    }
+    value.payload
+}
+
+/// Writes a raw-handle cell.
+///
+/// # Safety
+/// `cell` must be a live handle from [`lkrt_rt_cell_new_raw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_cell_set_raw(cell: *mut c_void, handle: i64) {
+    // SAFETY: as above.
+    unsafe {
+        *(cell as *mut LkDyn) = LkDyn {
+            tag: crate::lkdyn::DYN_RAW,
+            payload: handle,
+        }
+    };
 }
 
 /// Writes a cell.

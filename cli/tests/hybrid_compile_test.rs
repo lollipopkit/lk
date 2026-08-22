@@ -229,7 +229,13 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
          fn user(name) { let f = \"u={}\".trim(); println(f, name); \
          return {\"name\": name, \"score\": 95, \"tags\": [1, 2]}; }\n\
          fn mkp(x: Int) { let f = \"p={}\".trim(); println(f, x); return P { tag: x }; }\n\
-         mkp(7);\n\
+         fn strs(n) { let f = \"s={}\".trim(); println(f, n); return [\"a\", \"b\"]; }\n\
+         let p = mkp(7);\n\
+         let ss = strs(1);\n\
+         println(ss);\n\
+         println(ss[1]);\n\
+         println(typeof(p));\n\
+         println(p);\n\
          let r = rows(3);\n\
          println(r);\n\
          println(r[1]);\n\
@@ -280,13 +286,9 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
 /// first-class value — string and container payloads, consumed-result position
 /// included — byte-identical to the VM.
 ///
-/// It no longer checks that the enclosing `try` is a *native* frame reached by
-/// longjmp across the bridge. `try`/`catch` became a real statement lowering to
-/// `TryBegin`/`TryEnd`, the MIR lowering has no handler region yet, and a
-/// top-level `try` makes the entry function unlowerable — so the whole module
-/// degrades to the Tier 0 bundle and there is no native try frame to reach.
-/// Restore the `Tier 1 hybrid` / no-fallback assertions below when the region
-/// outlining lands (todos.md).
+/// The enclosing `try` stays native while each `boom` helper runs on the bridge;
+/// pinning fallback off proves the raise crosses that boundary rather than being
+/// handled inside a Tier 0 VM bundle.
 #[test]
 fn raises_reach_the_enclosing_try_like_the_vm() {
     let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_raise_{}", std::process::id()));
@@ -317,10 +319,15 @@ fn raises_reach_the_enclosing_try_like_the_vm() {
         .current_dir(&dir)
         .args(["compile", "raise.lk"])
         .env("LK_AOT_HYBRID", "1")
+        .env("LK_AOT_NO_FALLBACK", "1")
         .output()
         .expect("hybrid compile");
     let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
     assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
 
     let native = native_run(&dir, "raise");
     assert_eq!(
@@ -333,7 +340,7 @@ fn raises_reach_the_enclosing_try_like_the_vm() {
 }
 
 #[test]
-fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
+fn an_uncaught_error_exits_and_reads_the_same_on_both_backends() {
     let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_err_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create tmp dir");
@@ -372,10 +379,123 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
         !native.status.success(),
         "the bridged uncaught error must fail the hybrid binary too"
     );
+    // Not just "nonzero": the same status. An uncaught error used to abort
+    // natively, so a script forgetting a `catch` died with SIGABRT (134) once
+    // compiled and with exit 1 under the VM.
+    assert_eq!(
+        native.status.code(),
+        vm.status.code(),
+        "an uncaught error must exit with the same status on both backends"
+    );
+    assert_eq!(vm.status.code(), Some(1), "the VM reports an uncaught error as exit 1");
     let native_stderr = String::from_utf8_lossy(&native.stderr).into_owned();
     assert!(
         native_stderr.contains("bad: 5"),
         "the VM's rendered error must reach stderr: {native_stderr}"
     );
+
+    // And it reads the same. The VM said `Error: VM execution failed` with the
+    // real message demoted to anyhow's `Caused by:` block, while lkrt said `lk:
+    // uncaught error: bad: 5` — one failing program, two reports, and the
+    // divergence was written off in `lkrt/src/panic.rs` because "the
+    // differential compares stdout + success only". That says what the gate
+    // looked at.
+    //
+    // Not byte equality: the VM also prints a call-stack traceback, which a
+    // native binary has no frames for. The contract is the *error line* — the
+    // traceback is something the VM has to offer on top of it.
+    let error_line = |stderr: &str| {
+        stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let vm_stderr = String::from_utf8_lossy(&vm.stderr).into_owned();
+    assert_eq!(
+        error_line(&vm_stderr),
+        error_line(&native_stderr),
+        "an uncaught error must read the same on both backends\nvm:\n{vm_stderr}\nnative:\n{native_stderr}"
+    );
+    assert_eq!(
+        error_line(&native_stderr),
+        "Error: bad: 5",
+        "the label is the one the rest of the language reports with: {native_stderr}"
+    );
+    assert!(
+        vm_stderr.contains("Call stack:"),
+        "the VM keeps offering its traceback above that line: {vm_stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A host error is a *language* error: catchable, and fatal only as exit 1.
+///
+/// `fs.read_dir` on a missing directory raises in the VM and used to abort the
+/// process natively — the same program was recoverable interpreted and fatal
+/// compiled, with SIGABRT instead of a status.
+#[test]
+fn native_host_error_raises_and_exits_one_like_the_vm() {
+    let dir = std::env::temp_dir().join(format!("lk_native_host_err_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let missing = dir.join("no-such-dir");
+    let program = format!(
+        "use fs;\nprintln(fs.read_dir(\"{}\"));\n",
+        missing.to_string_lossy().replace('\\', "\\\\")
+    );
+    std::fs::write(dir.join("dirfail.lk"), program).expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("dirfail.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert_eq!(vm.status.code(), Some(1), "the VM raises a missing directory");
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "dirfail.lk"])
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let native = native_run(&dir, "dirfail");
+    assert_eq!(
+        native.status.code(),
+        Some(1),
+        "a host error must exit 1 natively, not abort: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+
+    // And it is catchable, which aborting made impossible.
+    std::fs::write(
+        dir.join("dircatch.lk"),
+        format!(
+            "use fs;\ntry {{\n  println(fs.read_dir(\"{}\"));\n}} catch e {{\n  println(\"caught\");\n}}\n",
+            missing.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .expect("write program");
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "dircatch.lk"])
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let caught = native_run(&dir, "dircatch");
+    assert!(caught.status.success(), "a caught host error must not end the program");
+    assert_eq!(String::from_utf8_lossy(&caught.stdout).trim(), "caught");
+
     let _ = std::fs::remove_dir_all(&dir);
 }

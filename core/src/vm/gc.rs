@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 use crate::val::{HeapRef, RuntimeVal};
 
@@ -84,17 +84,41 @@ impl RuntimeModuleState {
         // Values host (native) functions hold across re-entrant VM calls —
         // e.g. an HOF's accumulated callback results (see `host_roots`).
         roots.extend_values(&self.host_roots);
+        // The module's own export map: it lives in this heap and nothing in
+        // this heap points at it (see `export_root`).
+        roots.extend_values(self.export_root.iter());
         roots
     }
 }
 
 impl RuntimeCallable {
+    /// Collect the heap this callable's *own* module owns.
+    ///
+    /// Reached from [`HeapStore::collect`](crate::val::HeapStore::collect) when
+    /// marking a heap that holds an imported function: the function's captures
+    /// live in the exporting module's heap, not in the one being marked, so
+    /// that heap has to be collected against its own roots.
+    ///
+    /// `try_lock`, not `lock`. This walk can arrive back at a state that is
+    /// already being collected further up the stack, and neither backing mutex
+    /// is re-entrant — `lock` would hang the process with no error and no
+    /// output. Today the import graph is a DAG (`ModuleResolver` rejects
+    /// circular imports by path), so that cannot happen; but nothing here
+    /// depends on that check, or would notice if it were relaxed. Skipping is
+    /// the conservative answer either way: the heap keeps its objects until the
+    /// collection already in progress, or the next one, reaches them.
     pub fn collect_garbage(&self) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("RuntimeCallable state lock poisoned"))?;
-        state.collect_garbage(self.captures.iter());
+        self.collect_garbage_with_visited(&mut crate::val::CollectedModules::default())
+    }
+
+    /// The same, carrying the set of callables this cycle has already walked so
+    /// the module graph is not re-walked through every path into it — see
+    /// [`HeapStore::collect_with_visited`](crate::val::HeapStore::collect_with_visited).
+    pub fn collect_garbage_with_visited(&self, visited: &mut crate::val::CollectedModules) -> Result<()> {
+        let Some(mut state) = self.state.try_lock() else {
+            return Ok(());
+        };
+        state.collect_garbage_with_visited(self.captures.iter(), visited);
         Ok(())
     }
 }
@@ -152,5 +176,33 @@ mod tests {
         assert!(state.heap.get(exported).is_some());
         assert!(state.heap.get(global).is_some());
         assert!(state.heap.get(dead).is_none());
+    }
+
+    /// The export survives a collection driven from anywhere else, too.
+    ///
+    /// The test above passes the export value in as an extra root, which is
+    /// what `collect_runtime_export` does — and that path was always right.
+    /// Every *other* path was not: `RuntimeCallable::collect_garbage` collects
+    /// an imported module's heap with only the callable's captures as extras,
+    /// and the export map is not reachable from the globals (they hold the
+    /// values, not the map that collects them). Importing one module
+    /// transitively and then directly, under `LK_GC_STRESS=1`, then read a
+    /// handle past the end of a heap that had shrunk: `heap object 82 out of
+    /// bounds`, from `runtime_export_field`.
+    #[test]
+    fn the_export_root_survives_a_collection_with_no_extra_roots() {
+        let mut heap = HeapStore::new();
+        let exported = heap.alloc(HeapValue::String(Arc::<str>::from("exported")));
+        let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
+        let mut state = RuntimeModuleState::new(heap, Vec::new());
+        state.set_export_root(RuntimeVal::Obj(exported));
+
+        state.collect_garbage([]);
+
+        assert!(
+            state.heap.get(exported).is_some(),
+            "the module's own export map must be a root of its own heap"
+        );
+        assert!(state.heap.get(dead).is_none(), "everything else is still collected");
     }
 }

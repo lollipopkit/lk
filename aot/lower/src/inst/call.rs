@@ -16,6 +16,15 @@ pub(super) fn lower(
     let func = ctx.func;
     let funcs = ctx.funcs;
     let entry = ctx.entry;
+    let capture_params = ctx.capture_params;
+    let ctx_func_index = ctx.func_index;
+    // Where an onward capture (`ClosureCapture::CellParam`) reads from: this
+    // function's own hidden trailing parameters.
+    let cap_ctx = CaptureCtx {
+        params: capture_params,
+        index: ctx_func_index,
+        param_count: func.param_count as usize,
+    };
     match instr.opcode() {
         Opcode::CallMethodK => {
             lower_method_call_k(ssa, insts, globals, func, funcs, entry, sig, instr, block, pc)?;
@@ -34,6 +43,7 @@ pub(super) fn lower(
                 funcs,
                 entry,
                 sig,
+                cap_ctx,
                 callee_idx,
                 instr.a(),
                 instr.c() as usize,
@@ -42,11 +52,13 @@ pub(super) fn lower(
                 pc,
             )?;
         }
-        // Direct calls address the callee by index, so the loaded function
-        // value itself only flows into the compiler's global-table storage
-        // (`SetGlobal`), which stays a no-op.
+        // A function value in a register. Usually the compiler's global-table
+        // bookkeeping, which is a no-op natively — but also how a call to a
+        // function past index 255 is spelled, because `CallDirect` names its
+        // target in a byte. The index rides along so the `Call` arm can
+        // devirtualize it.
         Opcode::LoadFunction => {
-            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::UserFn);
+            ssa.bind_ref(block, instr.a(), GlobalRef::UserFn(u32::from(instr.bx())));
         }
         Opcode::MakeClosure => {
             // `a` = dst, `b` = function index, `c` = capture window base. A
@@ -58,18 +70,48 @@ pub(super) fn lower(
             let fidx = instr.b() as usize;
             let callee = funcs.get(fidx).ok_or(Unsupported::BadConst { pc })?;
             if callee.capture_count == 0 {
-                ssa.builtin_regs
-                    .insert((block, instr.a()), GlobalRef::Lambda(fidx as u32));
-                return Ok(());
+                return bind_lambda(
+                    ssa,
+                    insts,
+                    sig,
+                    funcs,
+                    cap_ctx,
+                    GlobalRef::Lambda(fidx as u32),
+                    instr.a(),
+                    block,
+                    pc,
+                );
             }
             let mut captures = Vec::with_capacity(callee.capture_count as usize);
             for k in 0..callee.capture_count {
                 let reg = instr.c().wrapping_add(k as u8);
                 // The compiler captures locals through upvalue cells (shared
                 // mutable boxes); a plain value is captured directly.
-                if let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, reg)) {
-                    captures.push(ClosureCapture::Cell(*cid));
-                    continue;
+                match ssa.builtin_ref_at(reg, block) {
+                    Some(GlobalRef::Cell(cid)) => {
+                        // A cell whose content is a callable *reference* has no
+                        // runtime value to pass: the meaning goes to the callee
+                        // through `sig.ref_captures`, and the slot carries a
+                        // dead `0` so the ABI arity is unchanged.
+                        if let Some(callable) = ssa.cell_refs.get(&cid).cloned() {
+                            let key = (fidx as u32, k as usize);
+                            if sig.ref_captures.get(&key) != Some(&callable) {
+                                sig.ref_captures.insert(key, callable);
+                                return Err(Unsupported::TypeMismatch { pc });
+                            }
+                            captures.push(ClosureCapture::StaticRef);
+                            continue;
+                        }
+                        captures.push(ClosureCapture::Cell(cid));
+                        continue;
+                    }
+                    // A closure nested in a closure captures what its parent
+                    // captured; the parent holds that as a capture parameter.
+                    Some(GlobalRef::CellParam(k)) => {
+                        captures.push(ClosureCapture::CellParam(k));
+                        continue;
+                    }
+                    _ => {}
                 }
                 let (v, ty) = ssa.read(reg, block, pc)?;
                 // Same set as call arguments: scalars and handles pass through,
@@ -79,8 +121,61 @@ pub(super) fn lower(
                 }
                 captures.push(ClosureCapture::Value(v, ty));
             }
-            ssa.builtin_regs
-                .insert((block, instr.a()), GlobalRef::Closure(fidx as u32, captures));
+            // Nothing to pass: this is a plain function reference, which is
+            // what lets the list HOFs' typed fast paths accept it.
+            let global_ref = if captures.iter().all(|c| matches!(c, ClosureCapture::StaticRef)) {
+                GlobalRef::Lambda(fidx as u32)
+            } else {
+                GlobalRef::Closure(fidx as u32, captures)
+            };
+            return bind_lambda(ssa, insts, sig, funcs, cap_ctx, global_ref, instr.a(), block, pc);
+        }
+        // `abx(CallNamed, call_base, (named_count << 7) | positional_count)`:
+        // the callee sits at `call_base`, the positional arguments follow it,
+        // then `named_count` (name, value) pairs. The callee is resolved the
+        // same way `Call` does; the arguments are permuted into frame order by
+        // name (see `lower_named_call`).
+        Opcode::CallNamed => {
+            let base = instr.a();
+            let payload = instr.bx();
+            let positional_count = (payload & 0x7F) as usize;
+            let named_count = (payload >> 7) as usize;
+            let callee_idx = match ssa.builtin_ref_at(base, block) {
+                Some(GlobalRef::Lambda(fidx)) | Some(GlobalRef::UserFn(fidx)) => fidx as usize,
+                // A stdlib member called by name — `regex.replace(s, pattern: p,
+                // replacement: r)`. The names come from the member's own row
+                // rather than from a user function's metadata; everything else
+                // (the permutation, the rejection rules) is the same problem.
+                Some(GlobalRef::ModuleFn(module, name)) => {
+                    return lower_named_module_call(
+                        ssa,
+                        insts,
+                        globals,
+                        &module,
+                        &name,
+                        base,
+                        positional_count,
+                        named_count,
+                        block,
+                        pc,
+                    );
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            };
+            lower_named_call(
+                ssa,
+                insts,
+                funcs,
+                entry,
+                sig,
+                cap_ctx,
+                callee_idx,
+                base,
+                positional_count,
+                named_count,
+                block,
+                pc,
+            )?;
         }
         Opcode::Call => {
             // Register-window call: `a` = window base (the callee slot), `c` =
@@ -89,11 +184,19 @@ pub(super) fn lower(
             // (closures, runtime values) rejects.
             let base = instr.a();
             match ssa.builtin_ref_at(base, block) {
-                Some(GlobalRef::Builtin(Builtin::TryCall)) => {
-                    lower_try_call(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
-                }
                 Some(GlobalRef::Builtin(Builtin::Spawn)) => {
-                    lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                    lower_spawn(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        cap_ctx,
+                        base,
+                        instr.c() as usize,
+                        block,
+                        pc,
+                    )?;
                 }
                 Some(GlobalRef::Builtin(Builtin::MergeFields)) => {
                     lower_merge_fields(ssa, insts, base, instr.c() as usize, block, pc)?;
@@ -141,15 +244,34 @@ pub(super) fn lower(
                     // routes both through the same core_methods) — forward
                     // to the same lowering with the receiver at `base+1`.
                     let argc = instr.c() as usize;
-                    if matches!(module.as_str(), "iter" | "stream")
-                        && method_role(&name).is_some_and(|role| role.forward)
+                    if let Some(method) = forwards_to_method(module.as_str(), &name)
                         && argc >= 1
                     {
                         let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                        // A stream operation works on the list behind the
+                        // stream and answers a stream again. Unboxed here and
+                        // re-boxed below, so `stream.map(s, f)` is a `Stream`
+                        // to `typeof` and to display exactly as it is to the
+                        // interpreter.
+                        let stream_receiver = module.as_str() == "stream";
+                        let (receiver, receiver_ty) = if stream_receiver {
+                            if receiver_ty != Ty::Dyn {
+                                return Err(Unsupported::TypeMismatch { pc });
+                            }
+                            let list = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(list),
+                                callee: AbiRef::new("dyn", "stream_list"),
+                                args: vec![receiver],
+                            });
+                            (list, Ty::ListDyn)
+                        } else {
+                            (receiver, receiver_ty)
+                        };
                         // The HOF spellings reuse the lambda-aware method
                         // path (the lambda register offset matches with the
                         // window base shifted one slot right).
-                        if matches!(name.as_str(), "map" | "filter" | "reduce") {
+                        if matches!(method, "map" | "filter" | "reduce") {
                             if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
                                 && let Some(result) = lower_list_hof_k(
                                     ssa,
@@ -159,13 +281,14 @@ pub(super) fn lower(
                                     sig,
                                     receiver,
                                     receiver_ty,
-                                    &name,
+                                    method,
                                     base.wrapping_add(1),
                                     argc - 1,
                                     block,
                                     pc,
                                 )?
                             {
+                                let result = rebox_stream(ssa, insts, stream_receiver, result, pc)?;
                                 ssa.write(base, block, result);
                                 return Ok(());
                             }
@@ -173,10 +296,35 @@ pub(super) fn lower(
                         }
                         let mut args = Vec::with_capacity(argc - 1);
                         for i in 0..argc - 1 {
-                            args.push(ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?);
+                            let (v, ty) = ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?;
+                            // `stream.chain(a, b)` takes a second *stream*, and
+                            // the list method behind it takes a list. Every
+                            // other stream operation's arguments are scalars,
+                            // so a boxed one here is a stream.
+                            if stream_receiver && ty == Ty::Dyn {
+                                let list = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(list),
+                                    callee: AbiRef::new("dyn", "stream_list"),
+                                    args: vec![v],
+                                });
+                                args.push((list, Ty::ListDyn));
+                                continue;
+                            }
+                            args.push((v, ty));
                         }
-                        let result =
-                            lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+                        let result = lower_method_dispatch(
+                            ssa,
+                            insts,
+                            globals,
+                            receiver,
+                            receiver_ty,
+                            method,
+                            &args,
+                            block,
+                            pc,
+                        )?;
+                        let result = rebox_stream(ssa, insts, stream_receiver, result, pc)?;
                         ssa.write(base, block, result);
                         return Ok(());
                     }
@@ -192,6 +340,7 @@ pub(super) fn lower(
                         funcs,
                         entry,
                         sig,
+                        cap_ctx,
                         fidx as usize,
                         base,
                         instr.c() as usize,
@@ -205,18 +354,61 @@ pub(super) fn lower(
                 // (the VM's shared-mutable-cell semantics) and is appended as
                 // a hidden trailing argument.
                 Some(GlobalRef::Closure(fidx, captures)) => {
+                    let site = CaptureSite::new(cap_ctx, fidx, CaptureMode::Share, block, pc);
                     let mut resolved = Vec::with_capacity(captures.len());
-                    for capture in &captures {
-                        let (v, ty) = match capture {
-                            ClosureCapture::Cell(cid) => {
+                    // A capture the body *assigns* to travels as a runtime cell
+                    // this call site seeds and reads back afterwards
+                    // (`SigInfer::cell_captures`); one it only reads keeps
+                    // passing as a plain value.
+                    let mut writebacks: Vec<(u32, ValueId, Ty)> = Vec::new();
+                    for (k, capture) in captures.iter().enumerate() {
+                        let (v, ty) = match (site.resolve(ssa, insts, sig, capture, k)?, capture) {
+                            (Some(resolved), _) => resolved,
+                            (None, ClosureCapture::Cell(cid)) => {
                                 let slot = ssa.cell_slot(*cid);
-                                ssa.read_slot(slot, block, pc)?
+                                let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
+                                if sig.cell_captures.contains(&(fidx, k)) {
+                                    // What the callee's reads of this cell
+                                    // unbox to. Recorded here because this is
+                                    // where the type is known; the callee never
+                                    // sees anything but the pointer.
+                                    let content =
+                                        join_cell_content(sig.cell_capture_tys.get(&(fidx, k)).copied(), cur_ty);
+                                    sig.cell_capture_tys.insert((fidx, k), content);
+                                    let boxed = to_dyn(ssa, insts, cur, cur_ty, pc)?;
+                                    let cell = ssa.new_val();
+                                    insts.push(Inst::Call {
+                                        dst: Some(cell),
+                                        callee: AbiRef::new("rt", "cell_new"),
+                                        args: vec![boxed],
+                                    });
+                                    writebacks.push((*cid, cell, content));
+                                    (cell, Ty::Cell)
+                                } else {
+                                    (cur, cur_ty)
+                                }
                             }
-                            ClosureCapture::Value(v, ty) => (*v, *ty),
+                            (None, _) => unreachable!("only `Cell` is left to the call site"),
                         };
-                        if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                            return Err(Unsupported::TypeMismatch { pc });
-                        }
+                        // A carrier the function ABI has no word for *boxes*,
+                        // the way a call argument does — `lower_user_call`
+                        // observes the boxed type and the callee reads it back
+                        // as `Dyn`. Refusing instead meant
+                        //
+                        //     let v = nil;
+                        //     let f = || v == nil;
+                        //
+                        // dropped its whole module to the VM: a capture of a
+                        // variable the compiler had proved nil, which is an
+                        // ordinary thing to write. The same shape as a nil
+                        // *argument*, which `SigInfer::observe_param` has
+                        // widened to `Dyn` all along.
+                        let (v, ty) = match ty {
+                            Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                                (to_dyn(ssa, insts, v, ty, pc)?, Ty::Dyn)
+                            }
+                            _ => (v, ty),
+                        };
                         resolved.push((v, ty));
                     }
                     lower_user_call(
@@ -225,6 +417,7 @@ pub(super) fn lower(
                         funcs,
                         entry,
                         sig,
+                        cap_ctx,
                         fidx as usize,
                         base,
                         instr.c() as usize,
@@ -232,10 +425,75 @@ pub(super) fn lower(
                         block,
                         pc,
                     )?;
+                    // Re-sync the parent's tracked cell content from the cell
+                    // the callee wrote through.
+                    for (cid, cell, content) in writebacks {
+                        let cur = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(cur),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![cell],
+                        });
+                        // Back under the type the callee read through, so the
+                        // caller's own later uses stay typed as well.
+                        let (value, ty) = match unbox_cell_value(ssa, insts, cur, content) {
+                            Some(value) if content != Ty::Dyn => (value, content),
+                            _ => (cur, Ty::Dyn),
+                        };
+                        let slot = ssa.cell_slot(cid);
+                        ssa.write_slot(slot, block, (value, ty));
+                    }
+                }
+                // A plain function value, called through the register the
+                // bytecode had to load it into. No captures: a `fn` has none.
+                Some(GlobalRef::UserFn(fidx)) => {
+                    lower_user_call(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        cap_ctx,
+                        fidx as usize,
+                        base,
+                        instr.c() as usize,
+                        &[],
+                        block,
+                        pc,
+                    )?;
+                }
+                // No compile-time ref: the callee may still be an ordinary
+                // value holding a closure, which is what `rt.closure_call` is
+                // for. A carrier counts — a closure read out of a list is a
+                // `Maybe`, and `lower_dyn_call` unwraps it.
+                None if matches!(
+                    ssa.peek(base, block),
+                    Some((_, Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool))
+                ) =>
+                {
+                    lower_dyn_call(ssa, insts, base, instr.c() as usize, block, pc)?;
+                }
+                // The callee is a *capture* holding a closure value — the
+                // shape `fn twice(f) { return |x| f(f(x)); }` produces inside
+                // the returned closure, where `f` arrived as a `Dyn` capture
+                // parameter of the value form.
+                Some(GlobalRef::CellParam(k)) if matches!(cap_ctx.params.get(k), Some(&(_, Ty::Dyn | Ty::Cell))) => {
+                    let &(value, ty) = cap_ctx.params.get(k).expect("checked");
+                    let callee = if ty == Ty::Cell {
+                        let got = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(got),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![value],
+                        });
+                        (got, Ty::Dyn)
+                    } else {
+                        (value, ty)
+                    };
+                    lower_dyn_call_to(ssa, insts, callee, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::Module(_))
                 | Some(GlobalRef::UserModule(_))
-                | Some(GlobalRef::UserFn)
                 | Some(GlobalRef::ArgList(_))
                 | Some(GlobalRef::Cell(_))
                 | Some(GlobalRef::CellParam(_))
@@ -247,4 +505,66 @@ pub(super) fn lower(
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
+}
+
+/// Binds what `MakeClosure` produced to its destination register.
+///
+/// Normally that is the compile-time reference, which is what lets a call to it
+/// devirtualize. A lambda the program also uses *as a value* is built here
+/// instead, once, and the register holds the closure handle from then on.
+///
+/// Doing it at the definition rather than at each use is what makes identity
+/// hold: the VM's closure compares by reference, so `let g = f; f == g` is true
+/// and `[f, f]`'s two elements are one object. Materializing per use answered
+/// `false` to both. The cost is that this lambda's calls stop devirtualizing —
+/// paid only by lambdas the program actually passes around, since
+/// `SigInfer::value_lambdas` is populated by the fixpoint's first attempt to
+/// read one as a value.
+#[allow(clippy::too_many_arguments)]
+fn bind_lambda(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    funcs: &[FunctionData],
+    cap_ctx: CaptureCtx<'_>,
+    global_ref: GlobalRef,
+    dst: u8,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let fidx = match &global_ref {
+        GlobalRef::Lambda(fidx) | GlobalRef::Closure(fidx, _) => *fidx,
+        _ => u32::MAX,
+    };
+    if sig.value_lambdas.contains_key(&fidx)
+        && let Some(value) = materialize_closure(ssa, insts, sig, funcs, cap_ctx, &global_ref, block, pc)?
+    {
+        ssa.write(dst, block, value);
+        return Ok(());
+    }
+    ssa.bind_ref(block, dst, global_ref);
+    Ok(())
+}
+
+/// Re-boxes a stream operation's result, which is a list here and a `Stream`
+/// to the interpreter. A non-stream receiver passes through.
+fn rebox_stream(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    stream_receiver: bool,
+    result: (ValueId, Ty),
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if !stream_receiver {
+        return Ok(result);
+    }
+    let (v, ty) = result;
+    let list = crate::dyn_box::to_dyn_list_handle(ssa, insts, v, ty, pc)?;
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", "from_stream"),
+        args: vec![list],
+    });
+    Ok((boxed, Ty::Dyn))
 }

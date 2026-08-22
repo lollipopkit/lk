@@ -50,6 +50,7 @@ impl Compiler {
     fn inline_direct_function_body(&mut self, params: &[String], args: &[Box<Expr>], body: &Stmt) -> Result<u16> {
         let saved_locals = self.locals.clone();
         let saved_cell_locals = self.cell_locals.clone();
+        let saved_scopes = self.enter_scope();
         let mutated_names = mutated_names_in_stmt(body);
 
         let result = (|| {
@@ -105,6 +106,7 @@ impl Compiler {
         // restore; only names the inline shadowed with a fresh binding revert.
         self.cell_locals = self.scope_restored_cell_locals(&saved_locals, saved_cell_locals);
         self.locals = saved_locals;
+        self.exit_scope(saved_scopes);
         result
     }
 
@@ -157,24 +159,61 @@ impl Compiler {
         match stmt {
             Stmt::Attributed { item, .. } => self.lower_inline_stmt(item, result, returns, tail_position),
             Stmt::Block { statements } => {
+                // The same scope save/restore `Stmt::Block` gets outside an
+                // inline. Without it a `let` in a nested block rebound the
+                // name **permanently**, so
+                // `fn f(c) { let y = 1; if c { let y = 2; } let s = 45; return y; }`
+                // returned 45 once inlined: `y` still pointed at the inner
+                // binding's register, and `s` was handed that register back.
+                let watermark = self.next_reg;
+                let locals = self.locals.clone();
+                let cell_locals = self.cell_locals.clone();
+                let const_map_locals = self.const_map_locals.clone();
+                let scopes = self.enter_scope();
                 self.local_rebind_suppression += 1;
                 self.lower_inline_stmt_sequence(statements, result, returns)?;
                 self.local_rebind_suppression -= 1;
+                // In-block promotions of an *outer* local survive the restore —
+                // see the same note on the non-inline arm.
+                self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
+                self.locals = locals;
+                self.const_map_locals = const_map_locals;
+                self.exit_scope(scopes);
+                self.next_reg = self.live_register_floor().max(watermark);
                 Ok(())
             }
             Stmt::Let {
                 pattern: Pattern::Variable(name),
+                type_annotation,
                 value,
                 ..
-            }
-            | Stmt::Define { name, value } => {
-                let slot = self.alloc_reg();
-                if !self.try_lower_expr_to_register(slot, value)? {
-                    let value = self.lower_expr(value)?;
-                    let move_source = !self.is_current_local_slot(value);
-                    self.emit_move_with_policy(slot, value, "inline local", move_source)?;
+            } => {
+                let slot = self.bind_inline_local(name, value)?;
+                // The same two rules `lower_let` applies, which this arm did
+                // not: the annotation if there is one, otherwise whatever the
+                // initializer establishes.
+                //
+                // Without them a machine integer lost its width the moment its
+                // function was inlined — and a small function is exactly the
+                // one that gets inlined. `fn size(p: u32, m: u32) -> u32 { let
+                // z: u32 = 0; return z - (p & m); }` is `drivers/pci.lk`'s BAR
+                // sizing, and inlined it subtracted at 64 bits and answered a
+                // negative number.
+                match type_annotation {
+                    Some(_) => self.note_machine_reg(slot, type_annotation.as_ref()),
+                    None => {
+                        if let Some(kind) = self.initializer_machine_width(value) {
+                            self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
+                        }
+                    }
                 }
-                self.insert_fresh_local(name.clone(), slot);
+                Ok(())
+            }
+            Stmt::Define { name, value, .. } => {
+                let slot = self.bind_inline_local(name, value)?;
+                if let Some(kind) = self.initializer_machine_width(value) {
+                    self.machine_regs.insert(slot, super::RegisterWidth::Scalar(kind));
+                }
                 Ok(())
             }
             Stmt::Assign { name, value, .. } => self.lower_assign(name, value),
@@ -186,12 +225,26 @@ impl Compiler {
             } => self.lower_inline_if(condition, then_stmt, else_stmt.as_deref(), result, returns),
             Stmt::While { condition, body } => self.lower_inline_while(condition, body, result, returns),
             Stmt::Return { value: Some(value) } => self.lower_inline_return(value, result, returns, tail_position),
-            Stmt::Expr(expr) if inline_dead_expr_is_supported(expr) => {
+            Stmt::Expr { value: expr, .. } if inline_dead_expr_is_supported(expr) => {
                 self.lower_expr(expr)?;
                 Ok(())
             }
             _ => bail!("Compiler unsupported inline prefix statement"),
         }
+    }
+
+    /// Lowers an inlined `let`/`def` initializer into a fresh register and binds
+    /// the name to it, answering the register so the caller can record what it
+    /// knows about the value's width.
+    fn bind_inline_local(&mut self, name: &str, value: &Expr) -> Result<u16> {
+        let slot = self.alloc_reg();
+        if !self.try_lower_expr_to_register(slot, value)? {
+            let lowered = self.lower_expr(value)?;
+            let move_source = !self.is_current_local_slot(lowered);
+            self.emit_move_with_policy(slot, lowered, "inline local", move_source)?;
+        }
+        self.insert_fresh_local(alloc::string::String::from(name), slot);
+        Ok(slot)
     }
 
     fn lower_inline_stmt_sequence(
@@ -327,7 +380,7 @@ fn inline_stmt_is_supported(stmt: &Stmt) -> bool {
         }
         Stmt::While { condition, body } => inline_expr_is_supported(condition) && inline_stmt_is_supported(body),
         Stmt::Return { value: Some(value) } => inline_expr_is_supported(value),
-        Stmt::Expr(expr) => inline_dead_expr_is_supported(expr),
+        Stmt::Expr { value: expr, .. } => inline_dead_expr_is_supported(expr),
         _ => false,
     }
 }
@@ -371,7 +424,13 @@ fn inline_dead_expr_is_supported(expr: &Expr) -> bool {
 
 fn inline_expr_is_supported(expr: &Expr) -> bool {
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::OptionalAccess(inner, _) => inline_expr_is_supported(inner),
+        // `Cast` belongs with the other transparent wrappers. Leaving it out
+        // made any function containing an `as` conversion un-inlinable, which
+        // is not a property of casts — the two traversals below already treat
+        // it exactly this way.
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) | Expr::OptionalAccess(inner, _) => {
+            inline_expr_is_supported(inner)
+        }
         Expr::Literal(_) | Expr::Var(_) => true,
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
@@ -415,11 +474,7 @@ fn inline_call_expr_uses_runtime_method_helper(callee: &Expr) -> bool {
 
 pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
     match stmt {
-        Stmt::Attributed { item, .. } => stmt_contains_call_to(item, target),
-        Stmt::Try { body, handler, .. } => body
-            .iter()
-            .chain(handler)
-            .any(|stmt| stmt_contains_call_to(stmt, target)),
+        Stmt::Attributed { item, .. } | Stmt::Defer { body: item, .. } => stmt_contains_call_to(item, target),
         Stmt::If {
             condition,
             then_stmt,
@@ -459,7 +514,7 @@ pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
         Stmt::Return { value } => value.as_ref().is_some_and(|value| expr_contains_call_to(value, target)),
         Stmt::Function { body, .. } => stmt_contains_call_to(body, target),
         Stmt::Block { statements } => statements.iter().any(|stmt| stmt_contains_call_to(stmt, target)),
-        Stmt::Expr(expr) => expr_contains_call_to(expr, target),
+        Stmt::Expr { value: expr, .. } => expr_contains_call_to(expr, target),
         Stmt::Empty
         | Stmt::Import(_)
         | Stmt::Struct { .. }
@@ -511,6 +566,10 @@ fn expr_contains_call_to(expr: &Expr, target: &str) -> bool {
             crate::expr::TemplateStringPart::Expr(expr) => expr_contains_call_to(expr, target),
         }),
         Expr::Block(statements) => statements.iter().any(|stmt| stmt_contains_call_to(stmt, target)),
+        Expr::Try { body, handler, .. } => body
+            .iter()
+            .chain(handler)
+            .any(|stmt| stmt_contains_call_to(stmt, target)),
         Expr::Range { start, end, step, .. } => [start, end, step]
             .into_iter()
             .flatten()
@@ -572,7 +631,7 @@ fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
             value,
             ..
         }
-        | Stmt::Define { name, value } => {
+        | Stmt::Define { name, value, .. } => {
             names.insert(name.clone());
             collect_assigned_names_in_expr(value, names);
         }
@@ -597,7 +656,7 @@ fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_assigned_names(stmt, names);
             }
         }
-        Stmt::Expr(expr) => collect_assigned_names_in_expr(expr, names),
+        Stmt::Expr { value: expr, .. } => collect_assigned_names_in_expr(expr, names),
         Stmt::Return { value: Some(value) } => collect_assigned_names_in_expr(value, names),
         _ => {}
     }
@@ -669,6 +728,11 @@ fn collect_assigned_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
         }
         Expr::Block(statements) => {
             for stmt in statements {
+                collect_assigned_names(stmt, names);
+            }
+        }
+        Expr::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
                 collect_assigned_names(stmt, names);
             }
         }

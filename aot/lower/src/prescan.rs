@@ -1,5 +1,63 @@
 use super::*;
 
+/// Which functions can read a global, directly or through a call.
+///
+/// Conservative in the two ways that matter: a function whose instructions do
+/// not decode counts as a reader, and so does one that calls anything this
+/// cannot name — an indirect call, a closure, a method. The answer is only used
+/// to *skip* a stop, so being wrong in the other direction would let the scan
+/// prove an initialization that a callee could have observed first.
+fn functions_reading_globals(module: &lk_core::vm::ModuleData) -> Vec<bool> {
+    let n = module.functions.len();
+    let mut reads = vec![false; n];
+    let mut calls: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let has_impls = !module.type_info.impls.is_empty();
+    for (fi, func) in module.functions.iter().enumerate() {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                reads[fi] = true;
+                break;
+            };
+            match instr.opcode() {
+                Opcode::GetGlobal => reads[fi] = true,
+                Opcode::CallDirect => calls[fi].push(instr.b() as usize),
+                // An unknown callee could read anything.
+                Opcode::Call | Opcode::CallNamed | Opcode::MakeClosure => {
+                    reads[fi] = true;
+                }
+                // A method call reaches user code only if the module has an
+                // `impl` for it to dispatch to. Without one, `xs.push(1)` is a
+                // builtin on a container and cannot look at a global — and
+                // treating it as if it could was enough to keep every function
+                // that touches a list out of the answer, which is most of them.
+                Opcode::CallMethodK if has_impls => reads[fi] = true,
+                _ => {}
+            }
+        }
+    }
+    // Propagate along the call edges until nothing changes. Monotone — a
+    // function only ever becomes a reader — so it terminates.
+    loop {
+        let mut changed = false;
+        for fi in 0..n {
+            if reads[fi] {
+                continue;
+            }
+            if calls[fi]
+                .iter()
+                .any(|&callee| reads.get(callee).copied().unwrap_or(true))
+            {
+                reads[fi] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    reads
+}
+
 /// Reachability from the entry over `CallDirect`/`MakeClosure` edges that does
 /// **not** descend into VM-executed functions: their bodies (and everything
 /// only they reach) run on the embedded VM, so no native lowering is needed.
@@ -8,6 +66,7 @@ pub(crate) fn native_reachable_functions(
     funcs: &[FunctionData],
     entry: u32,
     vm_functions: &std::collections::HashMap<u32, usize>,
+    try_bodies: &std::collections::HashMap<(u32, usize), u32>,
 ) -> Vec<bool> {
     let n = funcs.len();
     let mut reachable = vec![false; n];
@@ -32,6 +91,17 @@ pub(crate) fn native_reachable_functions(
             if callee < n && !reachable[callee] {
                 reachable[callee] = true;
                 stack.push(callee);
+            }
+        }
+        // Outlined try bodies are AOT-only functions, so no CallDirect names
+        // them in the original artifact. A native parent reaches every body it
+        // owns; omitting these edges let a hybrid rerun remove a body while the
+        // parent's `TryRegionCall` still named it.
+        for (&(parent, _), &body) in try_bodies {
+            let body = body as usize;
+            if parent as usize == fi && body < n && !reachable[body] {
+                reachable[body] = true;
+                stack.push(body);
             }
         }
     }
@@ -138,6 +208,36 @@ pub(crate) fn bridge_eligibility(
 /// of a zero-capture `MakeClosure`. Only such slots may resolve to
 /// [`GlobalRef::Lambda`] on `GetGlobal` — a slot with any other write could be
 /// observed with a different value at runtime.
+/// Global slots the program **writes**, by slot index.
+///
+/// A written slot is a user global, whatever it is called. Name resolution
+/// (`inst::global`'s `GetGlobal`) otherwise answers "the stdlib module `time`"
+/// for a program whose own `let time = …` shadows it — the same shadowing the
+/// import path already respects, applied to the built-in names too. Before
+/// this, fourteen ordinary variable names (`time`, `env`, `hash`, `iter`,
+/// `os`, `io`, `net`, `math`, `fs`, `bytes`, `regex`, `task`, `process`,
+/// `encoding`) made the whole program fall back the moment a function read one.
+///
+/// Syntactic and whole-module on purpose: a read may lower before the write in
+/// the same pass, so asking "has a write been *observed* yet" would answer
+/// differently depending on pass order.
+pub(crate) fn prescan_shadowed_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<bool> {
+    let mut shadowed = vec![false; global_count];
+    for func in &module.functions {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                break;
+            };
+            if instr.opcode() == Opcode::SetGlobal
+                && let Some(flag) = shadowed.get_mut(instr.bx() as usize)
+            {
+                *flag = true;
+            }
+        }
+    }
+    shadowed
+}
+
 pub(crate) fn prescan_lambda_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<Option<u32>> {
     let mut candidates: Vec<Option<u32>> = vec![None; global_count];
     let mut write_counts = vec![0usize; global_count];
@@ -239,6 +339,7 @@ pub(crate) fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, glob
     let Some(entry) = module.functions.get(module.entry as usize) else {
         return initialized;
     };
+    let global_readers = functions_reading_globals(module);
     for raw in &entry.code {
         let Ok(instr) = Instr::try_from_raw(*raw) else {
             break;
@@ -249,6 +350,23 @@ pub(crate) fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, glob
                     *flag = true;
                 }
             }
+            // A call is a stop only if the callee could *look*.
+            //
+            // The scan is proving that a slot is written before any user code
+            // can read it, so a call in the entry prefix used to end it: the
+            // callee runs user code, and that code might read the slot while it
+            // is still native zero. But a function that reads no global —
+            // transitively — cannot observe one, so it is not the reader this is
+            // guarding against.
+            //
+            // What that recovers is `let g = make();` at the top level, which is
+            // an ordinary way to build a container and which the stop rule sent
+            // to the interpreter: the slot was never proven initialized, so it
+            // was widened to `Dyn`, a container in a `Dyn` slot has to be boxed,
+            // and boxing a container copies it — so the write was refused and
+            // the whole program fell back, for a call that never touched a
+            // global.
+            Opcode::CallDirect if !global_readers.get(instr.b() as usize).copied().unwrap_or(true) => {}
             Opcode::Jmp
             | Opcode::Test
             | Opcode::BrFalse
@@ -306,7 +424,8 @@ pub(crate) fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots:
         }
     }
     while let Some(fi) = stack.pop() {
-        for raw in &module.functions[fi].code {
+        let code = &module.functions[fi].code;
+        for (pc, raw) in code.iter().enumerate() {
             let Ok(instr) = Instr::try_from_raw(*raw) else {
                 continue;
             };
@@ -314,6 +433,31 @@ pub(crate) fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots:
             // refs), so it must be lowered/emitted too.
             let callee = match instr.opcode() {
                 Opcode::CallDirect | Opcode::MakeClosure => instr.b() as usize,
+                // A function *value*, which is two different things.
+                //
+                // Almost always it is the compiler publishing a top-level `fn`
+                // to its global slot — `LoadFunction r; SetGlobal r, slot`,
+                // always adjacent — and that stores a value nothing calls.
+                // Following those would mark every declared function reachable
+                // and leave nothing for this pass to prune.
+                //
+                // Anything else loading a function value can call it, and one
+                // shape in particular does: a call to a function past index 255
+                // cannot be a `CallDirect`, because that names its target in a
+                // byte, so the compiler spells it `LoadFunction` + `Call`.
+                // Missing that edge pruned the callee and then lowered a call
+                // to it — a function with no entry block, reported as failed
+                // MIR validation with nothing to say which function.
+                Opcode::LoadFunction => {
+                    let published = code
+                        .get(pc + 1)
+                        .and_then(|next| Instr::try_from_raw(*next).ok())
+                        .is_some_and(|next| next.opcode() == Opcode::SetGlobal && next.a() == instr.a());
+                    if published {
+                        continue;
+                    }
+                    instr.bx() as usize
+                }
                 _ => continue,
             };
             if callee < n && !reachable[callee] {
@@ -430,7 +574,21 @@ pub(crate) fn empty_map_is_int_keyed(func: &FunctionData, start_pc: usize, dst_r
                     strlist_regs.remove(&instr.a());
                 }
                 regs.remove(&instr.a());
-                str_regs.remove(&instr.a());
+                // A string literal of **eight bytes or more** is a heap
+                // constant, not a `LoadString` — the inline/heap cut is at
+                // seven — so this is where a long one arrives, and clearing the
+                // mark for it made the key look like anything but a string.
+                // `let m = {}; m["averylongkey"] = 1;` guessed an integer-keyed
+                // map and the whole program fell back, while the same code with
+                // a seven-byte key lowered.
+                if matches!(
+                    func.consts.heap_values.get(instr.bx() as usize),
+                    Some(ConstHeapValueData::LongString(_))
+                ) {
+                    str_regs.insert(instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                }
             }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
@@ -532,6 +690,7 @@ pub(crate) fn empty_list_elem_guess(func: &FunctionData, start_pc: usize, dst_re
             | Opcode::SliceFrom
             | Opcode::ToIter
             | Opcode::NewList
+            | Opcode::NewMap
             | Opcode::NewObject => {
                 indexed_regs.insert(instr.a());
                 str_regs.remove(&instr.a());

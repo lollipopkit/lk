@@ -1,4 +1,5 @@
 use lk_core::token::{Token, Tokenizer};
+use lk_core::val::Type;
 #[cfg(feature = "stdlib")]
 use lk_stdlib::{StdlibExportKind, StdlibExportSpec, stdlib_catalog};
 use std::{
@@ -95,6 +96,15 @@ pub struct CompletionRequest<'a> {
     pub trigger: CompletionTrigger,
     pub session_source: Option<&'a str>,
     pub base_dir: Option<&'a Path>,
+    /// Types the caller already knows for names in scope, if it knows any.
+    ///
+    /// Passed in rather than inferred here: a caller with a type checker and a
+    /// cache (the LSP) can hand over the result of a check it already ran,
+    /// while one without (the REPL, or a half-typed line that will not parse)
+    /// leaves it `None` and falls back to reading the token shapes. Deciding a
+    /// receiver's methods from "the token after `=` was a `[`" is a guess;
+    /// this is not.
+    pub known_types: Option<&'a HashMap<String, Type>>,
 }
 
 #[derive(Debug)]
@@ -119,7 +129,7 @@ impl CompletionEngine {
         let cursor = request.cursor.min(request.source.len());
         let ctx = CompletionContext::new(request.source, cursor);
         let symbol_source = merged_symbol_source(request.source, request.session_source);
-        let symbols = SymbolIndex::from_source(&symbol_source);
+        let symbols = SymbolIndex::from_source(&symbol_source, request.known_types);
 
         let mut out = Vec::new();
         if request.mode == CompletionMode::Repl && ctx.line_prefix.trim_start().starts_with(':') {
@@ -625,7 +635,21 @@ struct SymbolIndex {
 }
 
 impl SymbolIndex {
-    fn from_source(source: &str) -> Self {
+    fn from_source(source: &str, known_types: Option<&HashMap<String, Type>>) -> Self {
+        let mut index = Self::scan_source(source);
+        // Known types win: the scan above guessed from token shapes, and a
+        // guess should not outrank a check.
+        if let Some(known_types) = known_types {
+            for (name, ty) in known_types {
+                if let Some(receiver) = receiver_type_from_type(ty) {
+                    index.types.insert(name.clone(), receiver);
+                }
+            }
+        }
+        index
+    }
+
+    fn scan_source(source: &str) -> Self {
         let Ok((tokens, _spans)) = Tokenizer::tokenize_enhanced_with_spans(source) else {
             return Self::scan_lines(source);
         };
@@ -902,14 +926,32 @@ fn infer_receiver_type_from_tokens(token: Option<&Token>) -> Option<ReceiverType
     }
 }
 
-fn receiver_type_from_name(name: &str) -> Option<ReceiverType> {
-    match name {
-        "String" | "Str" => Some(ReceiverType::String),
-        "List" => Some(ReceiverType::List),
-        "Map" => Some(ReceiverType::Map),
-        "Set" => Some(ReceiverType::Set),
+/// The receiver a checked type completes as.
+///
+/// `Optional` unwraps: `x?.` offers the methods of what is inside. Anything
+/// else — `Any`, a type variable, a struct — has no method set here, and
+/// returning `None` leaves the token-shape guess in place rather than
+/// replacing it with nothing.
+fn receiver_type_from_type(ty: &Type) -> Option<ReceiverType> {
+    match ty {
+        Type::String => Some(ReceiverType::String),
+        Type::List(_) => Some(ReceiverType::List),
+        Type::Map(_, _) => Some(ReceiverType::Map),
+        Type::Set(_) => Some(ReceiverType::Set),
+        Type::Optional(inner) | Type::Boxed(inner) => receiver_type_from_type(inner),
         _ => None,
     }
+}
+
+/// The receiver an annotation names, read through the language's own parser.
+///
+/// This used to be a fourth hand-written list of type names, and it had drifted:
+/// it accepted `Str`, which the language has never had, and it had no idea what
+/// `List<String>` was because it only ever saw the bare word. Asking `Type::parse`
+/// costs a string parse on a path that already tokenized the whole document, and
+/// it cannot disagree with the language about what a type is called.
+fn receiver_type_from_name(name: &str) -> Option<ReceiverType> {
+    receiver_type_from_type(&Type::parse(name)?)
 }
 
 fn merged_symbol_source(source: &str, session_source: Option<&str>) -> String {
@@ -1120,64 +1162,51 @@ fn parse_quoted_value(source: &str, mut cursor: usize, quote: u8) -> Option<(Str
     None
 }
 
+/// The methods offered for a receiver, and the detail line each carries.
+///
+/// Derived from `lk_core::typ::BUILTIN_METHODS` rather than listed here. The
+/// list that used to live at this spot had drifted: it offered no `slice`,
+/// `sort`, `pop`, `insert` or `remove_at` on a list, so the completion menu
+/// quietly asserted those did not exist.
 fn method_candidates(receiver_type: Option<ReceiverType>) -> Vec<(&'static str, &'static str)> {
-    const LIST: &[&str] = &[
-        "len",
-        "push",
-        "concat",
-        "join",
-        "get",
-        "first",
-        "last",
-        "map",
-        "filter",
-        "reduce",
-        "take",
-        "skip",
-        "chain",
-        "flatten",
-        "unique",
-        "chunk",
-        "enumerate",
-        "zip",
-        "contains",
-    ];
-    const MAP: &[&str] = &[
-        "len", "keys", "values", "has", "contains", "get", "set", "delete", "clear",
-    ];
-    const SET: &[&str] = &["len", "has", "contains", "insert", "delete", "clear"];
-    const STRING: &[&str] = &[
-        "len",
-        "lower",
-        "upper",
-        "trim",
-        "starts_with",
-        "ends_with",
-        "contains",
-        "replace",
-        "substring",
-        "split",
-        "join",
-        "to_int",
-        "to_float",
-    ];
-    let mut out = Vec::new();
-    let groups: &[(&[&str], &str)] = match receiver_type {
-        Some(ReceiverType::List) => &[(LIST, "List")],
-        Some(ReceiverType::Map) => &[(MAP, "Map")],
-        Some(ReceiverType::Set) => &[(SET, "Set")],
-        Some(ReceiverType::String) => &[(STRING, "String")],
-        None => &[(LIST, "List"), (MAP, "Map"), (SET, "Set"), (STRING, "String")],
+    use lk_core::typ::BuiltinReceiverKind;
+    let kinds: &[BuiltinReceiverKind] = match receiver_type {
+        Some(ReceiverType::List) => &[BuiltinReceiverKind::List, BuiltinReceiverKind::Slice],
+        Some(ReceiverType::Map) => &[BuiltinReceiverKind::Map],
+        Some(ReceiverType::Set) => &[BuiltinReceiverKind::Set],
+        Some(ReceiverType::String) => &[BuiltinReceiverKind::Str],
+        // No receiver type inferred: offer everything, first owner wins, so
+        // the ordering below decides who `len` is attributed to.
+        None => &[
+            BuiltinReceiverKind::List,
+            BuiltinReceiverKind::Map,
+            BuiltinReceiverKind::Set,
+            BuiltinReceiverKind::Str,
+            BuiltinReceiverKind::Slice,
+        ],
     };
+    let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for (items, owner) in groups {
-        for item in *items {
-            if seen.insert(*item) {
-                out.push((*item, *owner));
+    for kind in kinds {
+        for sig in lk_core::typ::builtin_methods_for(*kind) {
+            if seen.insert(sig.name) {
+                out.push((sig.name, receiver_kind_label(*kind)));
             }
         }
     }
     out
+}
+
+fn receiver_kind_label(kind: lk_core::typ::BuiltinReceiverKind) -> &'static str {
+    use lk_core::typ::BuiltinReceiverKind::*;
+    match kind {
+        List => "List",
+        Bytes => "Bytes",
+        Slice => "Slice",
+        Map => "Map",
+        Set => "Set",
+        Str => "String",
+    }
 }
 
 const KEYWORDS: &[&str] = &[
@@ -1190,6 +1219,11 @@ const OPERATORS: &[&str] = &["==", "!=", "<=", ">=", "&&", "||", "in", "<-", "??
 const TYPES: &[&str] = &[
     "Int",
     "Float",
+    // `Int | Float`, and the second spellings of each. A completion list is a
+    // claim about what can be written down.
+    "Number",
+    "i64",
+    "f64",
     "Bool",
     "String",
     "Str",
@@ -1214,6 +1248,40 @@ mod tests {
         items.into_iter().map(|item| item.label).collect()
     }
 
+    #[test]
+    fn a_known_type_narrows_the_member_list() {
+        let engine = CompletionEngine::fallback();
+        let source = "let parts = string.split(\"a,b\", \",\");\nparts.";
+        let request = CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('.'),
+            session_source: None,
+            base_dir: None,
+            known_types: None,
+        };
+
+        // Reading token shapes, the value after `=` is a call, which says
+        // nothing — so every receiver's methods are offered at once.
+        let guessed = labels(engine.complete(request));
+        assert!(
+            guessed.contains(&"keys".to_string()) && guessed.contains(&"push".to_string()),
+            "without a type the engine cannot tell a list from a map: {guessed:?}"
+        );
+
+        let known = HashMap::from([("parts".to_string(), Type::List(Box::new(Type::String)))]);
+        let checked = labels(engine.complete(CompletionRequest {
+            known_types: Some(&known),
+            ..request
+        }));
+        assert!(checked.contains(&"push".to_string()), "list methods: {checked:?}");
+        assert!(
+            !checked.contains(&"keys".to_string()),
+            "a list has no `keys`: {checked:?}"
+        );
+    }
+
     #[cfg(feature = "stdlib")]
     #[test]
     fn completes_stdlib_globals_from_registry() {
@@ -1225,6 +1293,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"assert".to_string()));
         assert!(got.contains(&"assert_eq".to_string()));
@@ -1242,6 +1311,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"read_to_string".to_string()), "{got:?}");
     }
@@ -1256,6 +1326,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some("let user_name = 1;\nfn user_score() { return 1; }"),
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"user_name".to_string()));
         assert!(got.contains(&"user_score".to_string()));
@@ -1273,6 +1344,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(drawable.contains(&"Drawable".to_string()));
 
@@ -1283,6 +1355,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(point.contains(&"Point".to_string()));
 
@@ -1293,6 +1366,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(user_id.contains(&"UserId".to_string()));
     }
@@ -1308,6 +1382,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(
             got.iter()
@@ -1326,6 +1401,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.iter().any(|item| item.label == "Int"));
         assert!(
@@ -1345,6 +1421,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"starts_with".to_string()));
         assert!(!got.contains(&"set".to_string()));
@@ -1362,6 +1439,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: Some(dir.path()),
+            known_types: None,
         }));
         assert!(got.contains(&"main.lk".to_string()));
     }
@@ -1379,6 +1457,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.iter().any(|item| item.label == "prime_trial_division"));
         assert!(!got.iter().any(|item| item.label == "gcd_batch"));
@@ -1399,6 +1478,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"should_run".to_string()));
     }
@@ -1414,6 +1494,7 @@ mod tests {
             trigger: CompletionTrigger::Incomplete,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"should_run".to_string()));
     }
@@ -1429,6 +1510,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.candidates.is_empty());
         assert!(got.is_incomplete);
@@ -1446,6 +1528,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('\''),
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert_eq!(got, vec!["gcd_batch".to_string()]);
     }
@@ -1461,6 +1544,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.is_empty());
     }
@@ -1477,7 +1561,76 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(!got.is_empty());
+    }
+
+    /// Completion offers exactly the methods the checker knows, because both
+    /// read the one table.
+    ///
+    /// The list this replaced had drifted: no `slice`, `sort`, `pop`,
+    /// `insert`, `remove_at` or `index_of` on a list. A completion menu is a
+    /// claim about what exists, and that one was wrong in six places.
+    #[test]
+    fn every_offered_method_is_one_the_checker_has_a_signature_for() {
+        for (name, _) in method_candidates(Some(ReceiverType::List)) {
+            let list = lk_core::val::Type::List(Box::new(lk_core::val::Type::Int));
+            let window = lk_core::typ::slice_of(lk_core::val::Type::Int);
+            assert!(
+                lk_core::typ::builtin_method_signature(&list, name).is_some()
+                    || lk_core::typ::builtin_method_signature(&window, name).is_some(),
+                "completion offers `{name}` on a list, which the checker has no signature for"
+            );
+        }
+        let offered: Vec<&str> = method_candidates(Some(ReceiverType::List))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for expected in ["slice", "sort", "pop", "insert", "remove_at", "index_of"] {
+            assert!(
+                offered.contains(&expected),
+                "a list can `{expected}`, so completion must offer it"
+            );
+        }
+    }
+
+    /// The published string-method table names exactly the methods that exist.
+    ///
+    /// It named three that do not: `substring` (it became `slice`, with an
+    /// *end* rather than a length), `find` (it became `index_of`) and
+    /// `char_at` (it became `get`) — and `join`, which is a module function
+    /// taking the list first, not a method on the separator. It also omitted
+    /// fifteen that do. A reference page is a claim about what exists, and
+    /// nothing until now could disagree with it.
+    #[test]
+    fn the_published_string_method_table_names_the_methods_that_exist() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../website/src/stdlib/STDLIB.md"))
+            .expect("the published stdlib reference");
+        let section = doc
+            .split("\n## ")
+            .find(|section| section.starts_with("string\n"))
+            .expect("a `string` section");
+        let documented: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|line| line.split(['(', '`']).next())
+            .collect();
+        assert!(documented.len() > 20, "the table did not parse: {documented:?}");
+        let declared: Vec<&str> = lk_core::typ::builtin_methods_for(lk_core::typ::BuiltinReceiverKind::Str)
+            .map(|sig| sig.name)
+            .collect();
+        for name in &documented {
+            assert!(
+                declared.contains(name),
+                "the reference documents `{name}` on a string, which is not a method"
+            );
+        }
+        for name in &declared {
+            assert!(
+                documented.contains(name),
+                "a string can `{name}`, and the reference does not say so"
+            );
+        }
     }
 }

@@ -18,6 +18,20 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// What a broken *workspace* looks like on `lk compile`'s stderr, as opposed to
+/// a program the AOT declined to lower.
+///
+/// `rustc`'s own error shapes plus the two the driver prints when the staticlib
+/// step fails. Matched rather than parsed: the point is only to tell "your
+/// checkout does not compile" from "your program does not lower", and any of
+/// these settles that.
+const TOOLCHAIN_FAILURES: &[&str] = &[
+    "error[E",
+    "could not compile",
+    "failed to build lk-api",
+    "linking with `",
+];
+
 fn bin_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lk"))
 }
@@ -688,6 +702,7 @@ impl Generator {
     }
 
     /// Generates one program; the flag reports whether it carries a hybrid
+    /// helper (the harness then asserts the bridge actually engaged).    /// Generates one program; the flag reports whether it carries a hybrid
     /// helper (the harness then asserts the bridge actually engaged).
     fn program(&mut self) -> (String, bool) {
         let mut out = String::new();
@@ -697,6 +712,64 @@ impl Generator {
         let hybrid = if self.rng.chance(50) {
             let kind = self.rng.below(4) as u8;
             Some((self.hybrid_helper(&mut out, kind), kind))
+        } else {
+            None
+        };
+
+        // A container the top level declares and the helpers below mutate.
+        //
+        // This is the shape the generator could not produce, and it is the shape
+        // that miscompiled: a `List<i64>` written to a global slot was boxed,
+        // boxing re-represents a container, and the slot ended up holding a
+        // *second* list while the entry went on reading the first. Both backends
+        // ran, neither complained, and they printed different numbers — a
+        // three-line program, found by accident while writing an example for
+        // something else.
+        //
+        // The generator missed it because a helper's body was built with
+        // `self.vars`, `self.lists` and `self.maps` emptied, so a generated
+        // function could only ever touch its own parameters. Nothing it wrote
+        // shared anything with the top level.
+        let shared_list = if self.rng.chance(60) {
+            let name = self.fresh("shared_xs");
+            let _ = writeln!(out, "let {name}: List<Int> = [];");
+            Some(name)
+        } else {
+            None
+        };
+        let shared_map = if self.rng.chance(40) {
+            let name = self.fresh("shared_m");
+            let _ = writeln!(out, "let {name}: Map<String, Int> = {{}};");
+            Some(name)
+        } else {
+            None
+        };
+        // The same shape on a *different carrier*, because the carrier is what
+        // was wrong last time.
+        //
+        // `container_ty` in the lowering decides both which globals keep their
+        // own type and which are refused when a slot joins to `Dyn`, and it
+        // listed the `List` and `Map` carriers only. A `Bytes` global therefore
+        // got neither: `let b = "abc".bytes(); fn f(n: Int) -> Int { return
+        // b[n] ?? -1; }` printed 98 interpreted and died with `runtime type
+        // error` compiled, for *any* index. This generator already knew to
+        // build a shared global container — it just only knew two of them, so
+        // it reproduced the previous bug's carrier and not the next one's.
+        //
+        // `Bytes` and `Set` are immutable here (no `push` equivalent that both
+        // backends lower), so the helpers *read* them; reading is what
+        // miscompiled.
+        let shared_bytes = if self.rng.chance(40) {
+            let name = self.fresh("shared_b");
+            let _ = writeln!(out, "let {name} = \"abcdef\".bytes();");
+            Some(name)
+        } else {
+            None
+        };
+        let shared_set = if self.rng.chance(30) {
+            let name = self.fresh("shared_s");
+            let _ = writeln!(out, "let {name} = Set([1, 2, 3]);");
+            Some(name)
         } else {
             None
         };
@@ -714,6 +787,39 @@ impl Generator {
                 self.vars.push((param.clone(), Ty::I64));
             }
             let body = self.int_expr(2);
+            // Some helpers reach the top level's container instead of only
+            // their parameters. Written before the body's `return` so the
+            // mutation happens on every call.
+            let touches = match (&shared_list, &shared_map) {
+                (Some(list), _) if self.rng.chance(50) => {
+                    format!("{list}.push(p0); ")
+                }
+                (_, Some(map)) if self.rng.chance(50) => {
+                    // The key interpolates rather than concatenates. `"k" + p0`
+                    // retypes an unannotated `p0` as a String — string
+                    // concatenation is what `+` means once one side is one — and
+                    // the helper then *returns* a String while everything
+                    // generated around it expects an Int. That is a program the
+                    // type checker rightly refuses, and it took a 1500-case run
+                    // on a fresh seed to produce one.
+                    format!("{map}[\"k${{p0}}\"] = p0; ")
+                }
+                _ => String::new(),
+            };
+            // A read of a container global, folded into the returned value so a
+            // wrong answer shows up in stdout rather than only in a crash. The
+            // index is bounded by the helper's own parameter, which is how a
+            // *runtime* index (not a constant) reaches the carrier — the
+            // constant case lowered correctly even while this one did not.
+            let body = match (&shared_bytes, &shared_set) {
+                (Some(bytes), _) if self.rng.chance(50) => {
+                    format!("({body}) + ({bytes}[p0 % 6] ?? 0)")
+                }
+                (_, Some(set)) if self.rng.chance(50) => {
+                    format!("({body}) + (if {set}.contains(p0 % 4) {{ 1 }} else {{ 0 }})")
+                }
+                _ => body,
+            };
             self.vars = saved;
             self.lists = saved_lists;
             self.maps = saved_maps;
@@ -721,12 +827,194 @@ impl Generator {
             // A top-level `let f = |…| …` lambda is call-site identical to a
             // named `fn`, but exercises the zero-capture closure lowering
             // (MakeClosure → GlobalRef::Lambda devirtualization).
-            if self.rng.chance(30) {
+            if touches.is_empty() && self.rng.chance(30) {
                 let _ = writeln!(out, "let {name} = |{}| {body};", params.join(", "));
             } else {
-                let _ = writeln!(out, "fn {name}({}) {{ return {body}; }}", params.join(", "));
+                let _ = writeln!(out, "fn {name}({}) {{ {touches}return {body}; }}", params.join(", "));
             }
             self.fns.push(FnSig { name, arity });
+        }
+
+        // Containers that cross a call boundary, in both directions.
+        //
+        // The generator could not produce these either: a helper's parameters
+        // were always `Int`, so a container never travelled into a function and
+        // never came back out of one. That is the same question the bug found by
+        // accident was about — whether the two sides are looking at one
+        // container or at a copy — asked at the other boundary.
+        //
+        // Each of these is read *after* the call, because a program that only
+        // passes a container agrees whichever answer is right.
+        if self.rng.chance(50) {
+            let taker = self.fresh("fn_taker");
+            let _ = writeln!(
+                out,
+                "fn {taker}(xs: List<Int>, p0: Int) -> Int {{ xs.push(p0); return xs.len(); }}"
+            );
+            let arg = self.fresh("tl");
+            let _ = writeln!(out, "let {arg}: List<Int> = [{}];", self.rng.below(40));
+            let value = self.rng.below(50);
+            // Two *siblings* that hand the same container on, not one relay.
+            //
+            // That plurality is the shape, and it took bisecting a real
+            // miscompile to find out. One caller passing a container down does
+            // not reproduce it; two callers of the same mutator, both reached
+            // from the top level, do — the container's type is settled from
+            // whichever call the fixpoint looked at first, and a pass that fails
+            // to look leaves the other holding a guess.
+            //
+            // The bug this reconstructs was mine: an attempt to make the entry
+            // refuse a call whose callee's return type was not yet known, which
+            // recovered one shape and made this one print an empty list with no
+            // fallback and no warning. See the note in `inst/global.rs`.
+            let relay_a = self.fresh("fn_relay");
+            let relay_b = self.fresh("fn_relay");
+            let _ = writeln!(
+                out,
+                "fn {relay_a}(xs: List<Int>, which: Int) -> Int {{ if (which == 1) {{ {taker}(xs, 91); return 0 - 1; }} {taker}(xs, 92); return 33; }}"
+            );
+            let _ = writeln!(
+                out,
+                "fn {relay_b}(xs: List<Int>) -> Int {{ let r = {taker}(xs, 3); {taker}(xs, 4); return r; }}"
+            );
+            let _ = writeln!(out, "println({relay_a}({arg}, 1));");
+            let _ = writeln!(out, "println({relay_b}({arg}));");
+            let _ = writeln!(out, "println({taker}({arg}, {value}));");
+            let _ = writeln!(out, "println({arg}.len());");
+            let _ = writeln!(out, "println({arg}[{arg}.len() - 1]);");
+        }
+        if self.rng.chance(40) {
+            let maker = self.fresh("fn_maker");
+            let _ = writeln!(
+                out,
+                "fn {maker}(p0: Int) -> List<Int> {{ let out: List<Int> = []; out.push(p0); out.push(p0 + 1); return out; }}"
+            );
+            let made = self.fresh("ml");
+            let seed = self.rng.below(30);
+            let _ = writeln!(out, "let {made} = {maker}({seed});");
+            let _ = writeln!(out, "println({made}.len());");
+            let _ = writeln!(out, "println({made}[1]);");
+            // And mutate what came back, which is where a returned handle that
+            // was really a copy of an already-freed thing would show.
+            let _ = writeln!(out, "{made}.push(7);");
+            let _ = writeln!(out, "println({made}.len());");
+        }
+        // `defer` runs on the way out, whichever way. A generated feature with
+        // no generated coverage is how the next silent difference gets in.
+        if self.rng.chance(40) {
+            let deferred = self.fresh("fn_deferred");
+            let _ = writeln!(
+                out,
+                "fn {deferred}(xs: List<Int>, p0: Int) -> Int {{\n    defer xs.push(0 - 1);\n    if (p0 % 2 == 0) {{ return p0; }}\n    return p0 * 2;\n}}"
+            );
+            let arg = self.fresh("dl");
+            let _ = writeln!(out, "let {arg}: List<Int> = [];");
+            // Both branches, so the release has to happen on both.
+            let _ = writeln!(out, "println({deferred}({arg}, {}));", self.rng.below(20) * 2);
+            let _ = writeln!(out, "println({deferred}({arg}, {}));", self.rng.below(20) * 2 + 1);
+            let _ = writeln!(out, "println({arg}.len());");
+        }
+        // A `try` region with something in it other than a bare call: a
+        // *nested* region, and a closure built outside the region and called
+        // inside it. Both are outlined into functions of their own, so what
+        // crosses the boundary — a write from two frames in, a captured value
+        // that has no machine word — is decided by machinery no flat
+        // `try { f(); } catch` exercises. Both shapes shipped a silent wrong
+        // answer that every other gate passed.
+        if self.rng.chance(45) {
+            let probe = self.fresh("fn_tryshape");
+            let cap = self.rng.below(9) + 1;
+            let bump = self.rng.below(5) + 1;
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n                     let cap = {cap};\n                     let scaled = || -> Int {{ return p0 * cap; }};\n                     let plain = || -> Int {{ return {bump}; }};\n                     let out = 0;\n                     try {{\n                         try {{\n                             if (p0 % 3 == 0) {{ error(\"inner\"); }}\n                             out = scaled() + plain();\n                         }} catch e {{ out = 0 - 1; }}\n                         if (p0 % 5 == 0) {{ error(\"outer\"); }}\n                         out = out + plain();\n                     }} catch e {{ out = out - 100; }}\n                     return out;\n}}"
+            );
+            // Every combination of the two raise conditions, so neither edge
+            // of either region is left untaken.
+            for arg in [1u64, 3, 5, 15] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
+        // A `try` with an **empty** handler, and a body that returns on one
+        // path only.
+        //
+        // Every other generated `catch` has a statement in it, and that is what
+        // hid this: the compiler emits no jump over an empty handler, because
+        // there is nothing to jump over — so the region's fallthrough *is* its
+        // handler, which is also what "the body returns on every path" looks
+        // like. The lowering read the second from the first, skipped the
+        // did-it-return test, and returned a value nobody parked.
+        if self.rng.chance(35) {
+            let probe = self.fresh("fn_emptycatch");
+            let at = self.rng.below(4);
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n    let acc = 0;\n    for v in 0..4 {{\n        try {{\n            if (v == {at} && p0 > 0) {{ return v * 100; }}\n            acc = acc + v;\n        }} catch e {{ }}\n    }}\n    return acc;\n}}"
+            );
+            // Both the path that returns out of the region and the one that
+            // does not — the second is the one that was wrong.
+            for arg in [0u64, 1] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
+        // A `try` whose body leaves through a jump that belongs to the loop
+        // *outside* it. Natively the body is a function of its own, so a `break`
+        // written there has no loop to leave: it reports which way it left
+        // through a flag the caller dispatches on. Three exits — `break`,
+        // `continue`, `return` — plus the ordinary fall-through and a raise, so
+        // every arm of that dispatch is taken.
+        //
+        // The loop kind is drawn because `continue` does not land in the same
+        // place in each: a `for` range jumps forward to the latch, a `while`
+        // jumps backward to the condition, and the first version of this got the
+        // second one wrong.
+        if self.rng.chance(45) {
+            let probe = self.fresh("fn_tryescape");
+            let brk = self.rng.below(4) + 4;
+            let skip = self.rng.below(3) + 1;
+            let bail = self.rng.below(3) + 5;
+            let header = match self.rng.below(2) {
+                0 => "for v in 0..9 {".to_string(),
+                _ => "let v = 0 - 1;\n    while v < 8 {\n        v = v + 1;".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "fn {probe}(p0: Int) -> Int {{\n    let acc = 0;\n    {header}\n        try {{\n            acc = acc + v;\n            if (v == {skip}) {{ continue; }}\n            if (v == 7) {{ error(\"raised\"); }}\n            if (v == {brk}) {{ break; }}\n            if (v == {bail} && p0 > 0) {{ return acc * 10; }}\n            acc = acc + 1;\n        }} catch e {{\n            acc = acc + 100;\n        }}\n    }}\n    return acc;\n}}"
+            );
+            for arg in [0u64, 1] {
+                let _ = writeln!(out, "println({probe}({arg}));");
+            }
+        }
+
+        // A closure used as a *value* — in a list, pushed, iterated and called
+        // back. Everything else the generator makes of a lambda is built and
+        // called where it stands, which is the case the compiler answers
+        // statically; this is the one that has to go through the runtime.
+        if self.rng.chance(40) {
+            let ops = self.fresh("cv");
+            let a = self.rng.below(9) + 1;
+            let b = self.rng.below(9) + 1;
+            let _ = writeln!(out, "let {ops} = [|x| x + {a}, |x| x * {b}];");
+            let _ = writeln!(out, "println({ops}[0]({a}));");
+            let _ = writeln!(out, "println({ops}[1]({b}));");
+            let built = self.fresh("cb");
+            let _ = writeln!(out, "let {built} = [];");
+            let _ = writeln!(out, "{built}.push(|x| x - {a});");
+            let _ = writeln!(out, "println({built}.len());");
+            let _ = writeln!(out, "println(typeof({built}[0]));");
+            let sum = self.fresh("cs");
+            let _ = writeln!(out, "let {sum} = 0;");
+            let _ = writeln!(out, "for f in {ops} {{ {sum} = {sum} + f({b}); }}");
+            let _ = writeln!(out, "println({sum});");
+            // A closure capturing *another closure*: its environment is all
+            // static references, which the compiler erases entirely — and a
+            // value still needs one. That shipped answering "value is not
+            // callable" for a function that exists.
+            let base = self.fresh("cbase");
+            let wrap = self.fresh("cwrap");
+            let _ = writeln!(out, "let {base} = |x| x + {a};");
+            let _ = writeln!(out, "let {wrap} = [|y| {base}(y) * {b}];");
+            let _ = writeln!(out, "println({wrap}[0]({a}));");
         }
 
         let statements = 3 + self.rng.below(5);
@@ -749,6 +1037,33 @@ impl Generator {
                     let _ = writeln!(out, "{name}({arg});");
                 }
             }
+        }
+
+        // What the helpers left behind, read from the top level.
+        //
+        // Read *here*, after the statements have called them, because the whole
+        // question is whether the top level and the functions are looking at the
+        // same container. A program that only wrote it would agree either way.
+        if let Some(list) = &shared_list {
+            let _ = writeln!(out, "println({list}.len());");
+            let _ = writeln!(out, "if ({list}.len() > 0) {{ println({list}[0]); }}");
+        }
+        if let Some(map) = &shared_map {
+            let _ = writeln!(out, "println({map}.len());");
+        }
+        if let Some(bytes) = &shared_bytes {
+            let _ = writeln!(out, "println({bytes}.len());");
+            let _ = writeln!(out, "println({bytes}[0] ?? -1);");
+            // Both ends of the range: out of range is `nil` at either one, and
+            // the negative end is where the interpreter used to raise while the
+            // native build answered nil.
+            let _ = writeln!(out, "println({bytes}[-1] ?? -1);");
+            let _ = writeln!(out, "println({bytes}[99] ?? -1);");
+            let _ = writeln!(out, "println({bytes}[-99] ?? -1);");
+        }
+        if let Some(set) = &shared_set {
+            let _ = writeln!(out, "println({set}.len());");
+            let _ = writeln!(out, "println({set}.contains(2));");
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);
@@ -823,6 +1138,14 @@ impl Generator {
 
 struct CaseOutcome {
     compared: bool,
+    /// The program compiled *fully native* — neither bridged nor dropped to the
+    /// Tier 0 VM bundle.
+    ///
+    /// Counted separately from `compared` because a fallback still compiles,
+    /// still runs, and still answers correctly: a lowering regression is
+    /// invisible to a differential comparison by construction. `compared` alone
+    /// would stay at its floor while every generated program ran on the VM.
+    fully_native: bool,
 }
 
 /// Runs a command to completion with a hard timeout, killing the child on
@@ -891,6 +1214,21 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         context("AOT compile panicked (lower()/codegen must be total)")
     );
     if !exe.status.success() {
+        // A *toolchain* failure is not a compiler answer, and reading it as one
+        // sends the reader to the generated program.
+        //
+        // The prebuild above catches a workspace that was already broken when
+        // the run started. What it cannot catch is one that breaks *during* it:
+        // `lk compile` rebuilds the `lk-api` staticlib on the way, so an edit
+        // landing in another crate mid-run arrives here as "the AOT rejected
+        // your program ungracefully", with `error[E0425]` buried in `stderr`
+        // under a thousand lines of generated program. That happened, and cost
+        // two rounds of reading the program instead of the checkout.
+        assert!(
+            !TOOLCHAIN_FAILURES.iter().any(|marker| exe_stderr.contains(marker)),
+            "the toolchain itself did not build, so this says nothing about the generated \
+             program. Fix the workspace and re-run.\nstderr: {exe_stderr}"
+        );
         assert!(
             exe_stderr.contains("does not support"),
             "{}\nstderr: {exe_stderr}",
@@ -904,8 +1242,12 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
             .trim()
             .to_string();
         println!("  unsupported [{name}]: {reason}");
-        return CaseOutcome { compared: false };
+        return CaseOutcome {
+            compared: false,
+            fully_native: false,
+        };
     }
+    let fully_native = !exe_stderr.contains("Tier 1 hybrid") && !exe_stderr.contains("falling back");
     // A program with a hybrid helper either bridges it ("Tier 1 hybrid") or
     // falls back whole to Tier 0 for some *other* ineligible shape ("falling
     // back") — but it must never compile fully native: that means the
@@ -946,7 +1288,109 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         native.status,
         String::from_utf8_lossy(&native.stderr)
     );
-    CaseOutcome { compared: true }
+    CaseOutcome {
+        compared: true,
+        fully_native,
+    }
+}
+
+/// Programs whose features *cross*, compared without a native-coverage floor.
+///
+/// Five defects came from a throwaway generator that crossed features and none
+/// from the structured probing that moved one axis at a time: a `try` region's
+/// parked `return` not joining with the function's own returns; `"a" + v` with
+/// `v: Any` typed `String` while a list operand makes the answer a list;
+/// `{1: 2} - k` reaching the boxed path through a `Maybe` key; a "cannot hold
+/// this" fold applied to a method the receiver does not have; and a removal
+/// handing back a typed map where the caller unboxes a boxed one.
+///
+/// Separate from `fuzz_differential_vm_vs_native` because these deliberately
+/// reach shapes that may not lower — mixing them into that generator dropped
+/// its native ratio from 13–19 of 40 to 3, which is exactly what its floor is
+/// there to catch. Here the comparison is the whole point and the ratio is not
+/// a property worth asserting.
+#[test]
+fn fuzz_differential_crossed_shapes() {
+    const ERASED: &[&str] = &[
+        "1",
+        "2.5",
+        "\"s\"",
+        "true",
+        "nil",
+        "[1, 2]",
+        "[[1], [2]]",
+        "{\"k\": 1}",
+        "{1: 2}",
+        "Set([1])",
+        "\"ab\".bytes()",
+        "[1, \"a\"]",
+        "[]",
+        "{}",
+    ];
+    const PROBES: &[&str] = &[
+        "a + b",
+        "a - b",
+        "b in a",
+        "a == b",
+        "\"t=\" + a",
+        "a.contains(b)",
+        "a.index_of(b)",
+        "a.count(b)",
+        "a.has(\"k\")",
+        "a.delete(\"k\")",
+        "a.len()",
+        "a.first()",
+        "a.sort()",
+        "a.sum()",
+        "a.join(\",\")",
+        "a[b]",
+    ];
+
+    let cases: u64 = std::env::var("LK_FUZZ_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let seed: u64 = std::env::var("LK_FUZZ_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0xC0FF_EE00);
+    warm_lk_api_staticlib();
+
+    let dir = std::env::temp_dir().join(format!("lk_aot_crossed_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create tmp dir");
+
+    let mut compared = 0_u64;
+    for case in 0..cases {
+        let case_seed = seed.wrapping_add(case);
+        let mut rng = Rng(case_seed);
+        let a = ERASED[rng.below(ERASED.len() as u64) as usize];
+        let b = ERASED[rng.below(ERASED.len() as u64) as usize];
+        let probe = PROBES[rng.below(PROBES.len() as u64) as usize];
+        // Everything is caught and printed, so a program that raises is a
+        // *result*: the two back ends have to agree on which, and on the
+        // message. The `try` arm answers whatever the probe is and the `catch`
+        // arm a string — two arms of one function, disagreeing, which is the
+        // join a region's parked return has to take part in. The nil capture
+        // crosses the region with it.
+        let source = format!(
+            "fn crossed(a: Any, b: Any) -> Any {{\n  \
+             let n = nil;\n  \
+             let f = || n == nil;\n  \
+             try {{ let r: Any = {probe}; return \"ok \" + (r == nil) + f(); }}\n  \
+             catch e {{ return \"E\"; }}\n\
+             }}\n\
+             println(crossed({a}, {b}));\n\
+             println(crossed({b}, {a}));\n"
+        );
+        let name = format!("crossed_{case}");
+        if run_case(&dir, &name, &source, case_seed, false).compared {
+            compared += 1;
+        }
+        let _ = fs::remove_dir_all(dir.join(&name));
+    }
+    let _ = fs::remove_dir_all(&dir);
+    println!("crossed shapes: {compared}/{cases} cases compared (seed {seed:#x})");
 }
 
 /// `lk compile` builds the lk-api staticlib on demand *inside the compile
@@ -961,9 +1405,9 @@ fn warm_lk_api_staticlib() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let status = Command::new("cargo")
         .current_dir(&workspace)
-        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .args(["build", "-p", "lk-api-cabi", "--release"])
         .status()
-        .expect("spawn cargo build lk-api");
+        .expect("spawn cargo build lk-api-cabi");
     assert!(status.success(), "failed to prebuild the lk-api staticlib");
 }
 
@@ -984,6 +1428,7 @@ fn fuzz_differential_vm_vs_native() {
     fs::create_dir_all(&dir).expect("create tmp dir");
 
     let mut compared = 0_u64;
+    let mut fully_native = 0_u64;
     for case in 0..cases {
         let case_seed = seed.wrapping_add(case);
         let mut generator = Generator::new(case_seed);
@@ -992,6 +1437,9 @@ fn fuzz_differential_vm_vs_native() {
         let outcome = run_case(&dir, &name, &source, case_seed, expect_hybrid);
         if outcome.compared {
             compared += 1;
+        }
+        if outcome.fully_native {
+            fully_native += 1;
         }
         // Drop this case's artifacts before generating the next one. Keeping
         // them all until the end costs ~30 MB per case under a sanitizer, so a
@@ -1002,14 +1450,41 @@ fn fuzz_differential_vm_vs_native() {
         let _ = fs::remove_file(dir.join(format!("{name}.lkm")));
     }
 
-    println!("fuzz differential: {compared}/{cases} cases natively compared (seed {seed:#x})");
+    println!(
+        "fuzz differential: {compared}/{cases} cases compared, {fully_native} of them fully native (seed {seed:#x})"
+    );
     let _ = fs::remove_dir_all(&dir);
 
-    // The generator targets the MIR-lowerable subset; if almost nothing lowers
+    // The generator targets the MIR-lowerable subset; if almost nothing compiles
     // any more, the fuzz has silently degraded into a VM-only smoke test.
     assert!(
         compared * 4 >= cases,
-        "only {compared}/{cases} generated programs lowered natively; the generator or the \
+        "only {compared}/{cases} generated programs compiled; the generator or the \
          MIR pipeline coverage has regressed"
+    );
+    // And a second floor on the number that lowered *fully native*. A program
+    // that drops to the hybrid bridge or the Tier 0 bundle still compiles, still
+    // runs, and still agrees with the VM — so the comparison above cannot see a
+    // lowering regression at all, and the count above would not move if every
+    // generated program started running on the VM. The floor is a fifth,
+    // deliberately far below what is measured: the generator emits
+    // deliberately-unlowerable hybrid helpers, so the real ratio is a property
+    // of the generator rather than a gate. What the floor catches is a
+    // collapse, which goes to nearly zero rather than drifting.
+    //
+    // Asserted only on a *large* run, because the ratio is a sample and a small
+    // one is noisy: measured on an unchanged tree it was 10, 12, 13, 16, 16, 18
+    // and 18 out of 60 across seven seeds — 17% to 30% against a 20% floor, so
+    // the seed alone decides whether it fires. It cried wolf twice in one
+    // session here, and both times the change under test was blamed for a
+    // number the seed had already produced. CI runs 500 cases, where the same
+    // spread is a few points wide and the floor means something.
+    //
+    // The ratio is printed either way, so a small run still reports it.
+    const FLOOR_NEEDS: u64 = 200;
+    assert!(
+        compared < FLOOR_NEEDS || fully_native * 5 >= compared,
+        "only {fully_native}/{compared} compiled programs lowered fully native; native coverage \
+         has regressed behind a fallback that still answers correctly"
     );
 }

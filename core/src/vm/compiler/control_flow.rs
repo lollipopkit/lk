@@ -60,13 +60,58 @@ impl Compiler {
     /// the way it returned from the closure, silently — and what removes the
     /// cell-capture of outer locals that made a top-level `try` writing an outer
     /// variable fail at runtime.
-    pub(super) fn lower_try(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<()> {
+    /// `try { body } catch e { handler }` used for effect — no value register,
+    /// so the region is exactly what it was before `try` became an expression.
+    pub(super) fn lower_try_stmt(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<()> {
+        self.lower_try_region(body, catch_var, handler, None)
+    }
+
+    /// `try { body } catch e { handler }`, producing a value: each half's tail
+    /// expression lands in one shared register, which is what makes
+    /// `let r = try { … } catch e { … }` work. In statement position the
+    /// register is simply never read. The register is allocated *before* the region opens, so both the
+    /// body's writes and the handler's are visible after it closes — and it is
+    /// the same shape the AOT's `written_registers` scan already looks for, so
+    /// native lowering needs to know nothing new about it.
+    pub(super) fn lower_try_expr(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<u16> {
+        // Only when a half actually ends in an expression. A `try` used as a
+        // statement — both halves ending in `;` — then emits exactly the code
+        // it always did, with no register reserved and nothing written before
+        // the region opens.
+        let needs_value = ends_in_expression(body) || ends_in_expression(handler);
+        let value_reg = if needs_value {
+            let reg = self.alloc_reg();
+            self.emit(Instr::abc(Opcode::LoadNil, checked_u8("try value", reg)?, 0, 0));
+            Some(reg)
+        } else {
+            None
+        };
+        self.lower_try_region(body, catch_var, handler, value_reg)?;
+        match value_reg {
+            Some(reg) => Ok(reg),
+            // Neither half has a value, so the answer is nil — the same rule an
+            // `if` branch that ends in a statement follows.
+            None => {
+                let reg = self.alloc_reg();
+                self.emit(Instr::abc(Opcode::LoadNil, checked_u8("try value", reg)?, 0, 0));
+                Ok(reg)
+            }
+        }
+    }
+
+    fn lower_try_region(
+        &mut self,
+        body: &[Box<Stmt>],
+        catch_var: &str,
+        handler: &[Box<Stmt>],
+        value_reg: Option<u16>,
+    ) -> Result<()> {
         // Allocated before the region opens: the handler reads it after the
         // body's registers have been recycled, so it must sit below them.
         let catch_reg = self.alloc_reg();
         let region = self.emit_try_begin_placeholder(catch_reg)?;
 
-        let body_returns = self.lower_scoped_stmt_sequence(body, catch_reg)?;
+        let body_returns = self.lower_scoped_stmt_sequence_valued(body, catch_reg, value_reg)?;
         self.emit(Instr::ax(Opcode::TryEnd, 0));
         // A body that always returns never reaches the jump over the handler.
         let jmp_end = (!body_returns).then(|| self.emit_jmp_placeholder());
@@ -81,10 +126,12 @@ impl Compiler {
         // back afterwards, or the shadowed local reads as the raw cell object.
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
+        let scopes = self.enter_scope();
         self.insert_fresh_local(catch_var.to_string(), catch_reg);
-        let handler_returns = self.lower_scoped_stmt_sequence(handler, catch_reg)?;
+        let handler_returns = self.lower_scoped_stmt_sequence_valued(handler, catch_reg, value_reg)?;
         self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
+        self.exit_scope(scopes);
 
         if let Some(jmp_end) = jmp_end {
             let end = self.function.code.len();
@@ -98,13 +145,44 @@ impl Compiler {
     /// Lowers `statements` as their own scope, restoring the enclosing bindings
     /// and register floor afterwards. Returns whether the sequence always
     /// returned. `keep_reg` stays allocated across the restore.
-    fn lower_scoped_stmt_sequence(&mut self, statements: &[Box<Stmt>], keep_reg: u16) -> Result<bool> {
+    ///
+    /// When `value_reg` is given, the sequence's trailing
+    /// expression is moved into it — the sequence's *value*, by the same rule a
+    /// block expression uses. A sequence that ends in a statement leaves the
+    /// register alone, so it keeps the nil it was initialized with; that is what
+    /// `if` does for a branch that ends in a statement too.
+    fn lower_scoped_stmt_sequence_valued(
+        &mut self,
+        statements: &[Box<Stmt>],
+        keep_reg: u16,
+        value_reg: Option<u16>,
+    ) -> Result<bool> {
+        let (statements, tail) = match (value_reg, statements.split_last()) {
+            (Some(_), Some((last, leading))) => match last.as_ref() {
+                Stmt::Expr { value: expr, .. } => (leading, Some(expr.as_ref())),
+                _ => (statements, None),
+            },
+            _ => (statements, None),
+        };
         let locals = self.locals.clone();
         let cell_locals = self.cell_locals.clone();
         let const_map_locals = self.const_map_locals.clone();
+        let scopes = self.enter_scope();
         self.emitted_return = false;
         self.local_rebind_suppression += 1;
         self.lower_stmt_sequence(statements)?;
+        if let (Some(value_reg), Some(tail)) = (value_reg, tail)
+            && !self.emitted_return
+        {
+            // Straight into the value register, not through a scratch one.
+            // A scratch register inside a protected region is a register the
+            // native back end sees the body write, and registers are recycled
+            // once the region ends — so the scratch collides with a *later*
+            // region's body-local and the whole function stops lowering. This
+            // is also what a hand-written `try { r = …; }` does, and it is why
+            // that shape lowered when this one did not.
+            self.lower_expr_to_register(value_reg, tail, "try value")?;
+        }
         self.local_rebind_suppression -= 1;
         let returns = self.emitted_return;
         // Same restore as `Stmt::Block`: an in-region promotion of an *outer*
@@ -112,6 +190,7 @@ impl Compiler {
         self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
         self.const_map_locals = const_map_locals;
+        self.exit_scope(scopes);
         if !returns {
             self.next_reg = self.live_register_floor().max(keep_reg + 1);
         }
@@ -287,6 +366,11 @@ impl Compiler {
                 0,
             ));
             self.set_register_kind(iterable, PerfValueKind::List);
+            // The snapshot holds the same elements, so it holds the same
+            // element width — without this a `for` over anything the compiler
+            // cannot prove is already a list (a parameter, most of the time)
+            // lost it at the `ToIter`.
+            self.copy_element_width(iterable_value, iterable);
             iterable
         };
         let len = self.alloc_reg();
@@ -324,6 +408,7 @@ impl Compiler {
                 self.function.performance.set_index_fact(pc, fact);
             }
         }
+        self.carry_element_width(iterable, value);
         let previous_binding = self.bind_for_pattern(pattern, value)?;
         let previous_single_char_locals = self.single_char_string_locals.clone();
         if matches!(iterable_kind, PerfValueKind::String)
@@ -373,12 +458,28 @@ impl Compiler {
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope_for_exprs(&[], body)?;
         let step_sign = range_step_sign(step);
+        // A zero step never advances the index, so the loop is either infinite
+        // or empty depending on which comparison you write. `NewRange` and
+        // `iter.range` both refuse it; a `for` header is the same absurdity and
+        // gets the same answer, just earlier because the step is right there.
+        if matches!(step_sign, RangeStepSign::Zero) {
+            bail!("Range step cannot be zero");
+        }
         let index = self.alloc_reg();
         match start {
             Some(start) => self.lower_expr_to_register(index, start, "for range initial index")?,
             None => self.emit_literal_to_register(index, &LiteralVal::Int(0))?,
         }
-        let end = end.ok_or_else(|| anyhow!("Compiler open-ended range for loop is not supported"))?;
+        // `for i in 0.. { … }` — a range with no end. The old report named this
+        // compiler and called it "not supported", which reads like something
+        // that might arrive later; a loop over an endless range is a loop that
+        // never finishes, so the answer is what to write instead.
+        let end = end.ok_or_else(|| {
+            anyhow!(
+                "a `for` needs a range with an end — `for i in 0..n` — and `0..` has none, so this loop \
+                 would never finish. Use a `while` if that is what you meant"
+            )
+        })?;
         let body_mutations = mutated_names_in_stmt(body);
         let end = self.lower_loop_snapshot_operand(end, &body_mutations)?;
 
@@ -393,6 +494,7 @@ impl Compiler {
             RangeStepSign::Positive => self.lower_for_range_static_loop(index, end, step, inclusive, true, body)?,
             RangeStepSign::Negative => self.lower_for_range_static_loop(index, end, step, inclusive, false, body)?,
             RangeStepSign::Dynamic => self.lower_for_range_dynamic_loop(index, end, step, inclusive, body)?,
+            RangeStepSign::Zero => unreachable!("a zero step is refused above"),
         }
 
         self.restore_for_pattern(previous_binding);
@@ -453,12 +555,12 @@ impl Compiler {
             }
             ForPattern::Ignore => Ok(()),
             ForPattern::Tuple(patterns) => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), true)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)
             }
             ForPattern::Array { patterns, rest: None } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), true)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)
             }
@@ -466,7 +568,7 @@ impl Compiler {
                 patterns,
                 rest: Some(rest),
             } => {
-                let condition = self.lower_list_pattern_condition(value, patterns.len())?;
+                let condition = self.lower_list_pattern_condition(value, patterns.len(), false)?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)?;
                 let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
@@ -551,4 +653,10 @@ impl Compiler {
         loop_patch.continues.push(pc);
         Ok(())
     }
+}
+
+/// Whether a statement sequence ends in an expression — its *value*, by the
+/// same rule a block expression uses.
+fn ends_in_expression(statements: &[Box<Stmt>]) -> bool {
+    matches!(statements.last().map(|stmt| stmt.as_ref()), Some(Stmt::Expr { .. }))
 }

@@ -1,5 +1,5 @@
 #[cfg(test)]
 mod ast_test;
-mod parser;
+pub(crate) mod parser;
 
 pub use parser::*;

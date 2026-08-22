@@ -43,6 +43,7 @@ use lk_core::vm::{
     ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData,
 };
 
+mod capture;
 mod cfg;
 mod convert;
 mod dyn_box;
@@ -61,14 +62,16 @@ mod tables;
 #[cfg(test)]
 mod tests;
 mod trait_env;
+mod try_region;
 mod unsupported;
 mod vocab;
 
 pub use self::imports::BundledImport;
 pub(crate) use self::imports::ImportEnv;
+pub use self::tables::{module_abi_row_paths, named_parameter_rows};
 pub use self::unsupported::Unsupported;
 pub(crate) use self::{
-    cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,
+    capture::*, cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,
     lower_module::*, ops::*, prescan::*, sig::*, ssa::*, tables::*, trait_env::*, vocab::*,
 };
 
@@ -123,7 +126,23 @@ pub fn lower_bundled(
     // (their `LoadFunction` sites are skipped), invisible to the CallDirect/
     // MakeClosure scan: root them like bundled imports.
     let traits = trait_env_prescan(module);
-    bundle_roots.extend(traits.impls.values().map(|&fidx| fidx as usize));
+    // Impl methods are roots because trait dispatch reaches them through the
+    // registration table, invisible to the call scan — but only the ones whose
+    // *name* some call site actually uses. A method nobody names is not
+    // reachable by dispatch either, and rooting it meant lowering a body with
+    // no call site to type its parameters: they fell back to `I64`, the body
+    // read a field, and the whole module dropped to Tier 0 because of a method
+    // nobody calls. `CallMethodK` takes its name from the constant pool, so
+    // this set is exact.
+    let mut called_methods = called_method_names(module);
+    called_methods.extend(IMPLICIT_METHOD_HOOKS.iter().map(|name| (*name).to_string()));
+    bundle_roots.extend(
+        traits
+            .impls
+            .iter()
+            .filter(|((_, method), _)| called_methods.contains(method))
+            .map(|(_, &fidx)| fidx as usize),
+    );
     let mut reachable = reachable_functions(module, &bundle_roots);
 
     let global_count = module.globals.len();
@@ -137,17 +156,45 @@ pub fn lower_bundled(
             .collect(),
         ret_types: vec![Ty::I64; n],
         ret_known: vec![false; n],
+        try_bodies: std::collections::HashMap::new(),
+        try_body_params: std::collections::HashMap::new(),
+        try_body_param_tys: std::collections::HashMap::new(),
+        try_body_lambdas: std::collections::HashMap::new(),
+        try_body_closure_inputs: std::collections::HashSet::new(),
+        try_body_struct_inputs: std::collections::HashMap::new(),
+        try_body_cell_inputs: std::collections::HashSet::new(),
+        try_body_cell_input_tys: std::collections::HashMap::new(),
+        cell_capture_tys: std::collections::HashMap::new(),
+        value_lambdas: std::collections::HashMap::new(),
+        value_lambda_bodies: std::collections::HashSet::new(),
+        try_body_lambda_env_tys: std::collections::HashMap::new(),
+        try_body_rebound: std::collections::HashMap::new(),
+        try_body_cells: std::collections::HashMap::new(),
+        try_body_raw_cells: std::collections::HashSet::new(),
+        try_body_extra_cells: std::collections::HashMap::new(),
+        try_body_returns: std::collections::HashSet::new(),
+        try_body_ret_tys: std::collections::HashMap::new(),
+        try_body_escapes: std::collections::HashMap::new(),
+        try_body_outer_captures: std::collections::HashMap::new(),
+        try_body_outer_cell_tys: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
+        no_phi_provenance: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
+        cell_captures: std::collections::HashSet::new(),
+        ref_captures: std::collections::HashMap::new(),
+        ret_structs: std::collections::HashMap::new(),
+        param_structs: std::collections::HashMap::new(),
         imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
-        dyn_empty_lists: std::collections::HashSet::new(),
+        dyn_literals: std::collections::HashSet::new(),
+        dyn_params: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
+        shadowed_globals: prescan_shadowed_globals(module, global_count),
         lambda_params: module
             .functions
             .iter()
@@ -169,6 +216,65 @@ pub fn lower_bundled(
     // bodies whose `lambda_params` erase the lambda parameters).
     let mut funcs: Vec<FunctionData> = module.functions.to_vec();
 
+    // Outline every `try` body into a function of its own, before anything is
+    // lowered.
+    //
+    // Before, because a region's parent has to *call* the body, and a call
+    // needs a function to name. Afterwards the bodies are ordinary entries in
+    // this table: reachable, lowered by the same loop, and subject to the same
+    // signature fixpoint as everything else. A region whose body cannot be
+    // outlined is not recorded here, and the parent's own lowering then reports
+    // it — which is why the scan there runs again rather than trusting this one.
+    // Over a *growing* table: a body that itself contains a `try` is scanned
+    // when the loop reaches it, and its inner region is outlined the same way.
+    // That is what makes `try { try { … } catch { … } } catch { … }` lower —
+    // nesting is one more turn of the same crank, not a second mechanism.
+    let mut fi = 0;
+    while fi < funcs.len() {
+        let scanning = fi;
+        fi += 1;
+        if !reachable[scanning] {
+            continue;
+        }
+        let Ok(instrs) = funcs[scanning]
+            .code
+            .iter()
+            .map(|raw| Instr::try_from_raw(*raw))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            continue;
+        };
+        let Ok(regions) = try_region::scan(&funcs[scanning], &instrs) else {
+            continue;
+        };
+        for region in &regions {
+            let body = try_region::outline(&funcs[scanning], region);
+            let body_index = funcs.len() as u32;
+            funcs.push(body);
+            reachable.push(true);
+            // Outside the assertion, because `debug_assert_eq!` discards its
+            // *whole expression* in a release build — the call included. Written
+            // as an assertion, the signature tables never grew a row for a try
+            // body in an optimized `lk`, and the next pass indexed
+            // `sig.ret_types[body_index]` one past the end: every `try` program
+            // panicked the compiler, in every build anyone ships. The debug
+            // build was fine, which is what every gate used.
+            let pushed = sig.push_function(Vec::new(), Ty::Nil);
+            assert_eq!(
+                body_index, pushed,
+                "a try body's index must be its row in the signature tables"
+            );
+            sig.try_bodies.insert((scanning as u32, region.begin_pc), body_index);
+            if region.body_returns {
+                sig.try_body_returns.insert(body_index);
+            }
+            if !region.escape_targets.is_empty() {
+                sig.try_body_escapes.insert(body_index, region.escape_targets.len());
+            }
+            discover_try_params(&mut funcs, body_index, module, &mut sig);
+        }
+    }
+
     // Fixpoint: re-lower every function, refining inferred parameter/return types
     // (bounded — the scalar lattice converges quickly). Transient failures are
     // tolerated here (a function may not lower until the types it depends on have
@@ -187,11 +293,34 @@ pub fn lower_bundled(
                 sig.specializations.len(),
                 sig.ret_closures.clone(),
                 sig.dyn_loop_phis.len(),
-                sig.dyn_empty_lists.len(),
+                sig.dyn_literals.len(),
                 sig.dyn_rets.len(),
+                sig.ret_structs.clone(),
                 sig.global_tys.clone(),
                 sig.spawned_isolate.len(),
                 sig.force_dyn_globals.len(),
+                sig.try_body_extra_cells
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum::<usize>(),
+                sig.try_body_param_tys.clone(),
+                sig.try_body_rebound.clone(),
+                // Appended, not inserted: the snapshot is a positional tuple
+                // and the comparison below indexes it, so a new field in the
+                // middle renumbers every later one into comparing the wrong
+                // thing — silently, and a silent convergence is a miscompile.
+                sig.param_structs.clone(),
+                sig.dyn_params.len(),
+                sig.try_body_lambdas.clone(),
+                sig.try_body_lambda_env_tys.clone(),
+                sig.try_body_params.clone(),
+                sig.try_body_cell_inputs.clone(),
+                sig.try_body_cell_input_tys.clone(),
+                sig.cell_capture_tys.clone(),
+                sig.value_lambdas.clone(),
+                sig.no_phi_provenance.len(),
+                sig.try_body_closure_inputs.clone(),
+                sig.try_body_struct_inputs.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -200,6 +329,32 @@ pub fn lower_bundled(
             // the converged flags of the last fixpoint pass.
             sig.specialized.iter_mut().for_each(|flag| *flag = false);
             sig.plain_called.iter_mut().for_each(|flag| *flag = false);
+            // The first pass's observations are made from *provisional* types —
+            // a callee's return type is still its `I64` default until its body
+            // has been lowered once — and the parameter lattice joins
+            // monotonically, so a provisional observation is permanent:
+            //
+            //     fn mk() -> List<Int> { return [1]; }
+            //     fn add(xs: List<Int>, n: Int) -> Int { xs.push(n); return xs.len(); }
+            //     add(mk(), 2)
+            //
+            // pass 1 saw `mk()` as `I64`, pass 2 saw the real `list<i64>`, the
+            // two joined to `Dyn`, and `add` took a boxed argument forever —
+            // from a fact that was never true. A boxed typed list is a *copy*
+            // (`list_h.i64_to_dyn` rebuilds it), so the push was lost.
+            //
+            // Discarded once, at the start of pass 2, rather than suppressed in
+            // pass 1: the table is also what decides a callee's rendered arity
+            // (hidden environment and capture arguments observe through it), and
+            // a pass that records nothing renders a signature the call sites do
+            // not match — `call to lk_fn_6 passes 2 machine argument(s),
+            // declared with 3`, which the fuzzer found on three seeds. Every
+            // pass from the second on accumulates exactly as before.
+            if passes == 1 {
+                sig.param_obs
+                    .iter_mut()
+                    .for_each(|slots| slots.iter_mut().for_each(|slot| *slot = None));
+            }
             sig.conflict = false;
             for fi in 0..funcs.len() {
                 if !reachable[fi] {
@@ -238,9 +393,76 @@ pub fn lower_bundled(
                     Err(Unsupported::DynLoopPhi { block, slot }) => {
                         sig.dyn_loop_phis.insert((fi as u32, block, slot));
                     }
-                    Err(Unsupported::EmptyListGuessWrong { pcs }) => {
+                    // The provenance twin of the arm above.
+                    Err(Unsupported::PhiProvenance { block, slot }) => {
+                        sig.no_phi_provenance.insert((fi as u32, block, slot));
+                    }
+                    // A closure used where a *value* is required. The value
+                    // form is a clone with an all-`Dyn` signature, queued here
+                    // and materialized with the other clones below; the
+                    // original keeps the signature its static call sites
+                    // resolved.
+                    Err(Unsupported::ReferenceAsValue { lambda: Some(orig), .. })
+                        if !sig.value_lambdas.contains_key(&orig) && (orig as usize) < funcs.len() =>
+                    {
+                        let arity =
+                            funcs[orig as usize].param_count as usize + funcs[orig as usize].capture_count as usize;
+                        let clone = sig.push_function(vec![Some(Ty::Dyn); arity], Ty::Dyn);
+                        sig.ret_closure_poisoned[clone as usize] = true;
+                        sig.dyn_rets.insert(clone);
+                        sig.value_lambda_bodies.insert(clone);
+                        sig.value_lambdas.insert(orig, clone);
+                        sig.pending_clones.push(orig);
+                    }
+                    Err(Unsupported::ParamCarrierContradicted { param }) => {
+                        sig.dyn_params.insert((fi as u32, param));
+                    }
+                    Err(Unsupported::LiteralElemTypeContradicted { pcs }) => {
                         for pc in pcs {
-                            sig.dyn_empty_lists.insert((fi as u32, pc));
+                            sig.dyn_literals.insert((fi as u32, pc));
+                        }
+                    }
+                    // A register read after a `try` region with no definition
+                    // *here* was defined inside the body — which runs in its own
+                    // frame, so the value never came back. It has to travel
+                    // through a cell, and which registers those are is exactly
+                    // what this error names: record it and let the fixpoint
+                    // lower the function again.
+                    //
+                    // Discovered rather than predicted, for the third time in
+                    // this feature: "does anything after the region read what
+                    // the body wrote" is a liveness question, and the SSA is
+                    // already the thing that answers it.
+                    //
+                    // Which region: the one whose poison the read hit, which
+                    // the error names. It used to name none, so the cell went
+                    // to *every* region in the function — and a second region
+                    // in the same function then got a cell for a register the
+                    // first body had merely used as a scratch. The parent has
+                    // no definition for such a register at its own region's
+                    // start, so seeding the cell read it before pc 0 and the
+                    // whole function fell back. An unattributed read is an
+                    // ordinary undefined read: no cell fixes it.
+                    Err(Unsupported::UndefinedOperand {
+                        reg, body: Some(body), ..
+                    }) if reg < 256 => {
+                        sig.try_body_extra_cells.entry(body).or_default().insert(reg as u8);
+                    }
+                    // The mirror image, one frame in: a register *the body
+                    // itself* cannot define is an **input**, and the parent has
+                    // it. `discover_try_params` finds most of them before the
+                    // fixpoint starts, but it stops at the first failure that is
+                    // not this one — and a call through an input whose closure
+                    // identity the parent has not recorded yet is exactly such a
+                    // failure, resolved only on the pass after. Everything the
+                    // body reads past that point is therefore found here.
+                    Err(Unsupported::UndefinedOperand { reg, body: None, .. })
+                        if reg < 256 && sig.try_bodies.values().any(|&body| body == fi as u32) =>
+                    {
+                        let params = sig.try_body_params.entry(fi as u32).or_default();
+                        if !params.contains(&(reg as u8)) {
+                            params.push(reg as u8);
+                            params.sort_unstable();
                         }
                     }
                     _ => {}
@@ -252,6 +474,11 @@ pub fn lower_bundled(
                 funcs.push(funcs[orig as usize].clone());
                 reachable.push(true);
             }
+            // The working list and the per-function tables are one indexing
+            // scheme (`SigInfer::push_function`); a queued clone is the only
+            // moment they legitimately differ, and it ends here.
+            debug_assert_eq!(funcs.len(), sig.param_obs.len(), "function tables out of step");
+            debug_assert_eq!(funcs.len(), reachable.len(), "reachability out of step");
             passes += 1;
             // Field-by-field comparison against the pre-pass snapshot: the same
             // convergence condition without cloning the whole state a second
@@ -264,16 +491,65 @@ pub fn lower_bundled(
                 && snapshot.2 == sig.specializations.len()
                 && snapshot.3 == sig.ret_closures
                 && snapshot.4 == sig.dyn_loop_phis.len()
-                && snapshot.5 == sig.dyn_empty_lists.len()
+                && snapshot.5 == sig.dyn_literals.len()
                 && snapshot.6 == sig.dyn_rets.len()
-                && snapshot.7 == sig.global_tys
-                && snapshot.8 == sig.spawned_isolate.len()
-                && snapshot.9 == sig.force_dyn_globals.len();
+                && snapshot.7 == sig.ret_structs
+                && snapshot.8 == sig.global_tys
+                && snapshot.9 == sig.spawned_isolate.len()
+                && snapshot.10 == sig.force_dyn_globals.len()
+                // Extra cells were counted into the *budget* below but left out
+                // of this conjunction, so a pass that discovered one still
+                // counted as converged — the fixpoint stopped one pass early and
+                // every signature that pass would have refined stayed at its
+                // default. That is how a call to a function returning nothing
+                // was emitted wanting a result: the caller had never seen the
+                // callee's real return type.
+                && snapshot.11
+                    == sig
+                        .try_body_extra_cells
+                        .values()
+                        .map(std::collections::HashSet::len)
+                        .sum::<usize>()
+                && snapshot.12 == sig.try_body_param_tys
+                && snapshot.13 == sig.try_body_rebound
+                && snapshot.14 == sig.param_structs
+                && snapshot.15 == sig.dyn_params.len()
+                && snapshot.16 == sig.try_body_lambdas
+                && snapshot.17 == sig.try_body_lambda_env_tys
+                && snapshot.18 == sig.try_body_params
+                && snapshot.19 == sig.try_body_cell_inputs
+                && snapshot.20 == sig.try_body_cell_input_tys
+                && snapshot.21 == sig.cell_capture_tys
+                && snapshot.22 == sig.value_lambdas
+                && snapshot.23 == sig.no_phi_provenance.len()
+                && snapshot.24 == sig.try_body_closure_inputs
+                && snapshot.25 == sig.try_body_struct_inputs;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
-            let discovery_budget =
-                sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
+            // Extra cells count too, now that they are how *every* cell is
+            // found: a region carries nothing back until a read reports that it
+            // must, and each report costs a pass.
+            let discovery_budget = sig.dyn_loop_phis.len()
+                + sig.no_phi_provenance.len()
+                + sig.dyn_literals.len()
+                + sig.dyn_rets.len()
+                + sig.force_dyn_globals.len()
+                + sig
+                    .try_body_extra_cells
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum::<usize>()
+                + sig.try_body_param_tys.len()
+                + sig.try_body_lambdas.len()
+                + sig.try_body_lambda_env_tys.len()
+                + sig.try_body_params.values().map(Vec::len).sum::<usize>()
+                + sig.try_body_cell_inputs.len()
+                + sig.try_body_cell_input_tys.len()
+                + sig.try_body_closure_inputs.len()
+                + sig.try_body_struct_inputs.len()
+                + sig.cell_capture_tys.len()
+                + sig.value_lambdas.len() * 2;
             if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
                 break;
             }
@@ -359,7 +635,80 @@ pub fn lower_bundled(
         }
         (globals, functions, failures)
     };
-    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable, &funcs);
+    let (globals, functions, failures) = final_pass(&mut sig, &reachable, &funcs);
+    // A retriable discovery made *here* had nowhere to go.
+    //
+    // The fixpoint records them and runs again; `refine_signatures` then runs
+    // once, after convergence, and the final pass lowers against the refined
+    // signatures. A function that lowered cleanly every fixpoint pass can fail
+    // in that final one — refinement changed the types it sees — and its
+    // discovery was simply dropped. `error_unwrap.lk` is exactly that: its
+    // entry succeeds in the only fixpoint pass it needs and then reports a
+    // heterogeneous phi the retry would have fixed, from a pass with no retry
+    // after it.
+    //
+    // So take them and go round once. Once, not to convergence: the second
+    // final pass sees the same refined signatures as the first, so a discovery
+    // it makes is one the first pass could not have made either — and a loop
+    // here would be a loop over a fixed point.
+    let (mut globals, mut functions, failures) = {
+        enum Retriable {
+            LoopPhi(usize, usize),
+            PhiProvenance(usize, usize),
+            ParamCarrier(u8),
+            LiteralElemType(Vec<usize>),
+        }
+        let retriable: Vec<(usize, Retriable)> = failures
+            .iter()
+            .filter_map(|(fi, err)| match err {
+                Unsupported::DynLoopPhi { block, slot } => Some((*fi, Retriable::LoopPhi(*block, *slot))),
+                Unsupported::PhiProvenance { block, slot } => Some((*fi, Retriable::PhiProvenance(*block, *slot))),
+                // A push that widens a parameter's carrier is discovered only
+                // here: the fixpoint wipes its parameter observations once, so
+                // a callee reached only through a call site's observation is
+                // lowered against the `I64` default in every pass and never
+                // sees the typed carrier its caller passes.
+                Unsupported::ParamCarrierContradicted { param } => Some((*fi, Retriable::ParamCarrier(*param))),
+                // The third of the same kind, and it was missing. An empty `[]`
+                // is guessed from a lookahead for the first push into it; with
+                // no push in the function there is no evidence, so the guess is
+                // the default carrier — and a call site that hands it to a
+                // `Dyn` parameter contradicts that guess. Refinement is what
+                // makes the parameter `Dyn`, so the contradiction is *only*
+                // visible in the final pass, where nothing was listening.
+                // `fn f(v) { … } f([]); f(5);` — a list and a non-list at one
+                // parameter, which is an ordinary program — refused to lower.
+                Unsupported::LiteralElemTypeContradicted { pcs } => {
+                    Some((*fi, Retriable::LiteralElemType(pcs.clone())))
+                }
+                _ => None,
+            })
+            .collect();
+        if retriable.is_empty() {
+            (globals, functions, failures)
+        } else {
+            for (fi, what) in retriable {
+                match what {
+                    Retriable::LoopPhi(block, slot) => {
+                        sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    Retriable::PhiProvenance(block, slot) => {
+                        sig.no_phi_provenance.insert((fi as u32, block, slot));
+                    }
+                    Retriable::ParamCarrier(param) => {
+                        sig.dyn_params.insert((fi as u32, param));
+                    }
+                    Retriable::LiteralElemType(pcs) => {
+                        for pc in pcs {
+                            sig.dyn_literals.insert((fi as u32, pc));
+                        }
+                    }
+                }
+            }
+            refine_signatures(&mut sig, &mut funcs, &mut reachable);
+            final_pass(&mut sig, &reachable, &funcs)
+        }
+    };
     // A bundled module exports more than any one importer uses, and those
     // extras are rooted speculatively — their names are reached by a lookup
     // the bytecode scan cannot follow, so there is no telling in advance which
@@ -392,10 +741,48 @@ pub fn lower_bundled(
         // hides behind its caller's transient ret-type check).
         if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
             for (fi, err) in &failures {
-                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}");
+                let at = match (err_pc(err), funcs.get(*fi)) {
+                    (Some(pc), Some(f)) => match f.code.get(pc).and_then(|raw| Instr::try_from_raw(*raw).ok()) {
+                        Some(instr) => {
+                            // A method call's name lives in the constant pool,
+                            // so "no lowering for this method" can say which
+                            // one. Without it the listing named a shape and left
+                            // the reader to look the index up by hand.
+                            let name = match instr.opcode() {
+                                Opcode::CallMethodK => f.consts.strings.get(instr.b() as usize),
+                                Opcode::GetFieldK | Opcode::SetFieldK => f.consts.strings.get(instr.c() as usize),
+                                _ => None,
+                            };
+                            match name {
+                                Some(name) => {
+                                    format!(" [{:?} `{name}` a={} c={}]", instr.opcode(), instr.a(), instr.c())
+                                }
+                                None => format!(
+                                    " [{:?} a={} b={} c={}]",
+                                    instr.opcode(),
+                                    instr.a(),
+                                    instr.b(),
+                                    instr.c()
+                                ),
+                            }
+                        }
+                        None => format!(" [pc {pc} out of range: fn has {} instrs]", f.code.len()),
+                    },
+                    (Some(pc), None) => format!(" [fn{fi} not in table of {}; pc {pc}]", funcs.len()),
+                    _ => String::new(),
+                };
+                // The name, not only the index: `name_failure` already resolves
+                // it for the *first* error, so the listing had it available and
+                // did not use it. Eleven identically-worded failures turned out
+                // to be one method only once they could be told apart.
+                let name = funcs
+                    .get(*fi)
+                    .and_then(|f| f.debug_name.as_deref())
+                    .map_or(String::new(), |n| format!(" `{n}`"));
+                eprintln!("lk-aot-lower: final-pass failure: fn{fi}{name}: {err:?}{at}");
             }
         }
-        let first_error = failures[0].1.clone();
+        let first_error = name_failure(&failures[0], &funcs);
         if !hybrid {
             return Err(first_error);
         }
@@ -421,26 +808,35 @@ pub fn lower_bundled(
         loop {
             let mut marked_any = false;
             for (fi, _) in &current_failures {
-                let eligible = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written);
+                // An outlined try body has no entry in the embedded artifact;
+                // only its nearest real ancestor can execute on the bridge VM.
+                // Nested bodies climb through their synthetic parents. Other
+                // synthetic functions are not bridgeable either.
+                let owner = bridge_artifact_owner(*fi, n, &sig.try_bodies);
+                let eligible = owner
+                    .filter(|owner| !sig.vm_functions.contains_key(&(*owner as u32)))
+                    .and_then(|owner| bridge_eligibility(owner, &funcs, module.entry, &sig, &written));
                 if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
                     // "why was this not bridged" is the usual question when a
                     // program unexpectedly falls back to Tier 0.
-                    eprintln!("lk-aot-lower: fn{fi} failed to lower; bridge-eligible: {eligible:?}");
+                    eprintln!(
+                        "lk-aot-lower: fn{fi} failed to lower; bridge owner: {owner:?}; bridge-eligible: {eligible:?}"
+                    );
                 }
-                if !sig.vm_functions.contains_key(&(*fi as u32))
-                    && let Some(param_count) = eligible
+                if let (Some(owner), Some(param_count)) = (owner, eligible)
+                    && !sig.vm_functions.contains_key(&(owner as u32))
                 {
-                    sig.vm_functions.insert(*fi as u32, param_count);
+                    sig.vm_functions.insert(owner as u32, param_count);
                     marked_any = true;
                 }
             }
             if !marked_any {
                 return Err(current_failures
                     .first()
-                    .map(|(_, err)| err.clone())
+                    .map(|failure| name_failure(failure, &funcs))
                     .unwrap_or(first_error));
             }
-            let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
+            let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions, &sig.try_bodies);
             // Drop VM marks without any native-reachable call site (a callee
             // only ever called from inside the VM needs no bridge signature).
             sig.vm_functions
@@ -493,23 +889,80 @@ pub fn lower_bundled(
     // not-natively-lowerable rather than emitting it as an internal codegen
     // error. Debug the underlying shape with `LK_AOT_DEBUG_FAILURES=1`.
     if let Err(error) = lk_aot_mir::validate(&lowered) {
-        if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
-            eprintln!("lk-aot-lower: lowered module failed validation: {error:?}");
-        }
-        return Err(Unsupported::InvalidMir);
+        return Err(Unsupported::InvalidMir(format!("{error:?}")));
     }
     Ok(lowered)
 }
 
 /// Every function id the emitted code can reach: direct calls, protected
 /// calls, and function addresses taken as constants.
+/// Attaches the failing function's name to its blocker.
+///
+/// The name is what the front end recorded, and a function that has none — an
+/// outlined `try` body, a lambda — keeps the bare blocker rather than being
+/// given a made-up name: `fn41` is not more informative than the pc already is,
+/// and it reads like something the reader could go and look up.
+/// The bytecode offset a blocker is about, for the debug listing above.
+///
+/// Local and private: it exists because the listing has a use for it, not as a
+/// general accessor waiting for one.
+fn err_pc(err: &Unsupported) -> Option<usize> {
+    match err {
+        Unsupported::In { inner, .. } => err_pc(inner),
+        Unsupported::ContainerGlobalBoxed { pc, .. }
+        | Unsupported::BadInstr { pc }
+        | Unsupported::Opcode { pc, .. }
+        | Unsupported::CallShape { pc, .. }
+        | Unsupported::TryRegion { pc, .. }
+        | Unsupported::UnresolvedGlobal { pc, .. }
+        | Unsupported::BadConst { pc }
+        | Unsupported::UndefinedOperand { pc, .. }
+        | Unsupported::ReferenceAsValue { pc, .. }
+        | Unsupported::TypeMismatch { pc }
+        | Unsupported::OperandType { pc, .. }
+        | Unsupported::BadTarget { pc } => Some(*pc),
+        _ => None,
+    }
+}
+
+fn name_failure(failure: &(usize, Unsupported), funcs: &[FunctionData]) -> Unsupported {
+    let (fi, err) = failure;
+    match funcs.get(*fi).and_then(|f| f.debug_name.clone()) {
+        Some(function) => Unsupported::In {
+            function,
+            inner: Box::new(err.clone()),
+        },
+        None => err.clone(),
+    }
+}
+
+/// Maps an AOT-only outlined try body to the original artifact function that
+/// owns it. Other synthetic functions have no VM counterpart and return None.
+fn bridge_artifact_owner(
+    mut fi: usize,
+    artifact_functions: usize,
+    try_bodies: &std::collections::HashMap<(u32, usize), u32>,
+) -> Option<usize> {
+    let parent_of: std::collections::HashMap<u32, u32> =
+        try_bodies.iter().map(|(&(parent, _), &body)| (body, parent)).collect();
+    let mut steps = 0usize;
+    while fi >= artifact_functions {
+        fi = *parent_of.get(&(fi as u32))? as usize;
+        steps += 1;
+        if steps > try_bodies.len() {
+            return None;
+        }
+    }
+    Some(fi)
+}
+
 fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<FuncId> {
     let mut referenced = std::collections::HashSet::new();
     for function in functions {
         for block in &function.blocks {
             for inst in &block.insts {
                 match inst {
-                    Inst::CallFn { func, .. } | Inst::TryCall { func, .. } => {
+                    Inst::CallFn { func, .. } | Inst::TryRegionCall { func, .. } => {
                         referenced.insert(*func);
                     }
                     Inst::Const {
@@ -524,4 +977,55 @@ fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<
         }
     }
     referenced
+}
+
+/// Finds the registers a try body reads from outside itself, by lowering it.
+///
+/// Each attempt either succeeds or names one register that was read with no
+/// definition; that register is an input, so it is added and the body lowered
+/// again. The loop is bounded by the register file, and it converges because
+/// every iteration adds a register that was previously missing.
+///
+/// Discovery rather than a table: knowing which operands each opcode reads
+/// means writing one entry per opcode, and one wrong entry is a body that reads
+/// a stale value — a wrong answer rather than a rejection. The SSA already
+/// knows; this asks it.
+fn discover_try_params(
+    funcs: &mut [FunctionData],
+    body_index: u32,
+    module: &lk_core::vm::ModuleData,
+    sig: &mut SigInfer,
+) {
+    // The trampoline's arity switch caps this; past it the region rejects.
+    const MAX_PARAMS: usize = 8;
+    let mut params: Vec<u8> = Vec::new();
+    for _ in 0..=MAX_PARAMS {
+        let mut scratch = Vec::new();
+        let attempt = lower_function(
+            &funcs[body_index as usize],
+            funcs,
+            body_index,
+            module.entry,
+            false,
+            &mut scratch,
+            &module.globals,
+            sig,
+        );
+        match attempt {
+            Err(Unsupported::UndefinedOperand { reg, .. }) if reg < 256 && !params.contains(&(reg as u8)) => {
+                params.push(reg as u8);
+                params.sort_unstable();
+                // `param_count` stays 0. It is what binds registers 0..n-1 as
+                // parameters, and these parameters are *not* those registers —
+                // they are whichever ones the body reads from outside. Setting
+                // both is how the body ended up with each input twice: once
+                // under its own number and once under the low numbers.
+                sig.try_body_params.insert(body_index, params.clone());
+            }
+            // Anything else — success, or a failure for another reason — ends
+            // the search. A body that cannot lower for its own reasons is the
+            // parent's rejection to report, with its own message.
+            _ => return,
+        }
+    }
 }

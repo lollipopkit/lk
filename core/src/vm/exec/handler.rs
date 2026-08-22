@@ -17,6 +17,31 @@ impl core::fmt::Display for LanguageRaise {
 
 impl core::error::Error for LanguageRaise {}
 
+/// `panic(msg)` — an abort, and the one raise `catch` refuses.
+///
+/// The language has two ways to stop: `error(v)` is recoverable and `catch`
+/// binds it, `panic(msg)` is not. That was the documented design and no host
+/// implemented it: the desktop one called Rust's `panic!` (which works on a
+/// desktop and is an unrecoverable trap in wasm and has no unwinder on bare
+/// metal), while the web and bare hosts returned an ordinary error — which
+/// `catch` catches, making `panic` recoverable there and not here.
+///
+/// Being a distinct type is the whole mechanism: the unwinder checks for it
+/// before consulting the handler stack, so no `try` can swallow it, on any
+/// host, without anyone having to remember.
+#[derive(Clone, Debug)]
+pub struct LkPanic {
+    pub message: alloc::sync::Arc<str>,
+}
+
+impl core::fmt::Display for LkPanic {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.message.as_ref())
+    }
+}
+
+impl core::error::Error for LkPanic {}
+
 /// A recoverable error carrying a first-class LK value. `error(v)` raises this
 /// and `pcall` extracts `value`, so an errored value round-trips as itself
 /// rather than a string — including heap objects (String/List/…), which are

@@ -1,0 +1,117 @@
+// `defer` — a release that happens on every path, written once.
+//
+// The statement runs when the function *returns* — by any `return`, or by
+// falling off the end — and the deferred statements run in reverse: the second
+// thing taken is the first thing given back.
+//
+// It does **not** run when a raise unwinds past it. `core/src/stmt/defer.rs`
+// records the two attempts at closing that gap and what each one cost. Until it
+// closes: a resource that must survive a raise needs `try`/`catch`, not
+// `defer`.
+//
+// It exists because a kernel is where release-on-every-path fails, and it fails
+// quietly. Writing this language's bare-metal demonstration produced, in one
+// sitting, an allocator that leaked the pages it had already taken when a run
+// turned out not to be contiguous, a task-stack allocator with the same bug, and
+// one function that had to be *split in two* so five pages could be released on
+// the seven paths that gave up. None of those was a wrong answer. Each was a
+// machine that ran out of memory later, on a path nothing exercised.
+//
+// It is a rewrite, not a mechanism: the compiler moves the statements to just
+// before every `return` and to the end of the body, and nothing downstream knows
+// `defer` existed. See `core/src/stmt/defer.rs` for why that matters — a runtime
+// version would need an implementation in each backend, which is how an
+// interpreter and a compiled build come to disagree about a program.
+
+// The trace is passed in rather than kept in a global, because what this
+// example is about is *when* things run, and a list handed to a function is the
+// shape both backends agree on down to the order.
+fn note(events: List<Int>, n: Int) -> Int {
+    events.push(n);
+    return n;
+}
+
+// Three ways out, one release each, written once.
+fn three_exits(events: List<Int>, which: Int) -> Int {
+    note(events, 1);
+    defer note(events, 91);
+    note(events, 2);
+    defer note(events, 92);
+
+    if (which == 1) {
+        return 0 - 1;
+    }
+    if (which == 2) {
+        return 22;
+    }
+    return 33;
+}
+
+let events: List<Int> = [];
+println(three_exits(events, 1));
+println(three_exits(events, 2));
+println(three_exits(events, 0));
+
+// The order, and the one detail that is easy to get wrong: the value being
+// returned is computed *before* the releases run. `return note(3)` with a
+// release above it has to answer 3 and then release — a rewrite that put the
+// releases first would compute the return value out of whatever the release had
+// just given away.
+fn value_first(events: List<Int>) -> Int {
+    note(events, 1);
+    defer note(events, 91);
+    note(events, 2);
+    defer note(events, 92);
+    return note(events, 3);
+}
+
+println(value_first(events));
+
+// Every event, in order. The two functions above should have left:
+//   1 2 92 91   1 2 92 91   1 2 92 91   1 2 3 92 91
+for index in 0..events.len() {
+    println(events[index]);
+}
+
+// A function with no `defer` is untouched, and a `defer` with nothing after it
+// still runs at the end of the body.
+fn only_at_the_end(events: List<Int>) -> Int {
+    defer note(events, 80);
+    return 8;
+}
+
+println(only_at_the_end(events));
+println(events.len());
+
+// A closure defers on the way out of the *closure*, and the value it returns is
+// computed first — the same rule a named function follows.
+//
+// It did not. `descend` in the desugar walked into `Stmt::Function` and a lambda
+// is an *expression*, so a closure body reached neither the rewrite nor the
+// check that rejects a misplaced `defer`: the statement was simply compiled
+// where it stood and ran before the return expression was evaluated. The same
+// three lines answered 0 in a function and 1 in a closure.
+fn closure_defer_runs_last() -> Int {
+    let trace = [];
+    let body = || {
+        defer trace.push(1);
+        return trace.len();
+    };
+    let during = body();
+    return during * 10 + trace.len();
+}
+assert(closure_defer_runs_last() == 1);
+
+// And the same three lines written as a named function agree.
+fn body_as_function(t: List<Int>) -> Int {
+    defer t.push(1);
+    return t.len();
+}
+fn named_defer_runs_last() -> Int {
+    let trace = [];
+    let during = body_as_function(trace);
+    return during * 10 + trace.len();
+}
+assert(named_defer_runs_last() == 1);
+
+println("defer: ok");

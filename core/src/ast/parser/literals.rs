@@ -8,7 +8,10 @@ impl<'a> Parser<'a> {
     /// Parse map literal: `{key: value, key: value, ...}`
     pub(super) fn parse_map(&mut self) -> Result<Expr> {
         if self.tokens[self.pos] != Token::LBrace {
-            let msg = format!("Expecting '{{', found {:?}", self.tokens[self.pos]);
+            let msg = format!(
+                "Expecting '{{', found `{}`",
+                crate::token::token_lexeme(&self.tokens[self.pos])
+            );
             return Err(anyhow!(self.err(&msg)));
         }
         self.pos += 1;
@@ -54,7 +57,10 @@ impl<'a> Parser<'a> {
                     }
                     Token::RBrace => break,
                     _ => {
-                        let msg = format!("Expecting ',' or '}}', found {:?}", self.tokens[self.pos]);
+                        let msg = format!(
+                            "Expecting ',' or '}}', found `{}`",
+                            crate::token::token_lexeme(&self.tokens[self.pos])
+                        );
                         return Err(anyhow!(self.err(&msg)));
                     }
                 }
@@ -114,8 +120,16 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(expr)
             }
-            _ => {
-                let msg = format!("Invalid field name: {:?}", self.tokens[self.pos]);
+            // A keyword is a fine member name: this position follows a `.`,
+            // where nothing can start a statement (see `keyword_as_name`).
+            token if crate::token::keyword_as_name(token).is_some() => {
+                let word = crate::token::keyword_as_name(token).expect("checked");
+                let expr = Expr::Literal(LiteralVal::from_str(word));
+                self.pos += 1;
+                Ok(expr)
+            }
+            other => {
+                let msg = alloc::format!("Invalid field name: {}", crate::token::token_lexeme(other));
                 Err(anyhow!(self.err(&msg)))
             }
         }

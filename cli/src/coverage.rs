@@ -72,9 +72,19 @@ fn print_static_coverage(path: &Path, module: &lk_core::vm::Module) {
         }
     }
 
+    // No `natives:` line. It printed `module.natives.len()`, and the only path
+    // that builds a module here — `compile_program_module_with_ctx`, which the
+    // executor uses too — passes `Vec::new()` for that table. The number was 0
+    // for every program ever compiled, including ones whose whole body is a
+    // `println` call: a stdlib native arrives as a context global and is called
+    // through `GetGlobal` + `Call`, both of which the opcode table below counts
+    // honestly. A statistic that cannot be anything but zero reads as "this
+    // program makes no native calls", which is the opposite of true.
+    //
+    // The table it reported on is reachable from no binary at all; see the task
+    // tracking whether `LoadNative` should exist.
     println!("Instr coverage: {}", path.display());
     println!("  functions: {}", module.functions.len());
-    println!("  natives: {}", module.natives.len());
     println!("  globals: {}", module.globals.len());
     println!("  instructions: {instructions}");
     println!("  registers: {registers}");
@@ -88,16 +98,7 @@ fn print_static_coverage(path: &Path, module: &lk_core::vm::Module) {
 fn print_runtime_metrics(metrics: VmRuntimeMetrics) {
     println!("Runtime metrics:");
     println!("  opcode_steps: {}", metrics.opcode_steps);
-    println!("  copy_policy_heap_clones: {}", metrics.copy_policy_heap_clones);
-    println!("  register_copy_heap_clones: {}", metrics.register_copy_heap_clones);
-    println!("  local_copy_heap_clones: {}", metrics.local_copy_heap_clones);
-    println!("  local_load_heap_clones: {}", metrics.local_load_heap_clones);
-    println!("  local_store_heap_clones: {}", metrics.local_store_heap_clones);
-    println!("  const_load_heap_clones: {}", metrics.const_load_heap_clones);
-    println!("  call_arg_heap_clones: {}", metrics.call_arg_heap_clones);
-    println!("  container_copy_heap_clones: {}", metrics.container_copy_heap_clones);
     println!("  register_writes: {}", metrics.register_writes);
-    println!("  return_value_moves: {}", metrics.return_value_moves);
     println!("  branch_ops: {}", metrics.branch_ops);
     println!("  typed_branch_ops: {}", metrics.typed_branch_ops);
     println!("  call_ops: {}", metrics.call_ops);

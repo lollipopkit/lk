@@ -224,6 +224,7 @@ fn generated_statement_shape_origins_are_recorded() {
         body,
     };
     let trait_stmt = Stmt::Trait {
+        default_methods: Vec::new(),
         name: "Reader".to_string(),
         methods: vec![(
             "read".to_string(),
@@ -235,7 +236,7 @@ fn generated_statement_shape_origins_are_recorded() {
         )],
     };
     let impl_stmt = Stmt::Impl {
-        trait_name: "Reader".to_string(),
+        trait_name: Some("Reader".to_string()),
         target_type: Type::Named("File".to_string()),
         methods: vec![Stmt::Function {
             name: "read".to_string(),
@@ -304,7 +305,7 @@ fn generated_top_level_declaration_shape_origins_are_recorded() {
             },
         }),
         Box::new(Stmt::Impl {
-            trait_name: "Show".to_string(),
+            trait_name: Some("Show".to_string()),
             target_type: Type::Named("User".to_string()),
             methods: vec![Stmt::Function {
                 name: "show".to_string(),
@@ -388,30 +389,32 @@ fn generated_remaining_expression_child_role_origins_are_recorded() {
     ));
     let literal = || Box::new(Expr::Literal(LiteralVal::Int(1)));
     let expr = Expr::Block(vec![
-        Box::new(Stmt::Expr(Box::new(Expr::Paren(literal())))),
-        Box::new(Stmt::Expr(Box::new(Expr::StructLiteral {
+        Box::new(Stmt::expr(Box::new(Expr::Paren(literal())))),
+        Box::new(Stmt::expr(Box::new(Expr::StructLiteral {
             name: "User".to_string(),
             fields: vec![("id".to_string(), literal())],
         }))),
-        Box::new(Stmt::Expr(Box::new(Expr::Access(
+        Box::new(Stmt::expr(Box::new(Expr::Access(
             Box::new(Expr::Var("items".to_string())),
             Box::new(Expr::Var("current".to_string())),
         )))),
-        Box::new(Stmt::Expr(Box::new(Expr::OptionalAccess(
+        Box::new(Stmt::expr(Box::new(Expr::OptionalAccess(
             Box::new(Expr::Var("maybe_items".to_string())),
             Box::new(Expr::Var("fallback".to_string())),
         )))),
-        Box::new(Stmt::Expr(Box::new(Expr::Call("make".to_string(), vec![literal()])))),
-        Box::new(Stmt::Expr(Box::new(Expr::CallNamed(
+        Box::new(Stmt::expr(Box::new(Expr::Call("make".to_string(), vec![literal()])))),
+        Box::new(Stmt::expr(Box::new(Expr::CallNamed(
             Box::new(Expr::Var("make".to_string())),
             vec![literal()],
             vec![("id".to_string(), literal())],
         )))),
-        Box::new(Stmt::Expr(Box::new(Expr::Closure {
+        Box::new(Stmt::expr(Box::new(Expr::Closure {
             params: vec!["current".to_string()],
+            param_types: vec![None],
+            return_type: None,
             body: Box::new(Expr::Var("current".to_string())),
         }))),
-        Box::new(Stmt::Expr(Box::new(Expr::Match {
+        Box::new(Stmt::expr(Box::new(Expr::Match {
             value: Box::new(Expr::Var("current".to_string())),
             arms: vec![
                 MatchArm {

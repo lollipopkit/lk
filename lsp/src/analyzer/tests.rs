@@ -1,7 +1,6 @@
 use super::*;
 use lk_core::expr;
 use lk_core::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
-use lk_core::util::fast_map::FastHashMap;
 use lk_core::val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap};
 use std::{fs, path::PathBuf, time::Duration};
 use tower_lsp::lsp_types::{
@@ -35,7 +34,7 @@ fn string_map(heap: &mut HeapStore, entries: impl IntoIterator<Item = (&'static 
     let entries = entries
         .into_iter()
         .map(|(key, value)| (std::sync::Arc::<str>::from(key), value))
-        .collect::<FastHashMap<_, _>>();
+        .collect::<lk_core::util::value_map::ValueMap<_, _>>();
     RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))))
 }
 
@@ -544,15 +543,268 @@ fn test_validate_semantic_tokens_rejects_bad_ranges_and_legend_indexes() {
 
 #[test]
 fn test_type_inlay_hints_let_and_define() {
-    let analyzer = LkAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let src = r#"
         let x = 1;
         y := 1.0;
     "#;
-    let mut hints = analyzer.compute_type_inlay_hints(src, full_range(src));
-    hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
     assert!(!hints.is_empty(), "expected type hints for let/define, got none");
     assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
+}
+
+fn hint_labels(hints: &[InlayHint]) -> Vec<String> {
+    hints
+        .iter()
+        .map(|hint| match &hint.label {
+            tower_lsp::lsp_types::InlayHintLabel::String(label) => label.clone(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn test_type_hints_cover_bindings_that_name_other_things() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "fn greet(name: String) -> String {\n    return name;\n}\nlet who = greet(\"lk\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    // A fresh per-expression checker has never heard of `greet`, so this hint
+    // could not exist before the types came from one document-wide check.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": String"),
+        "expected `who: String`, got {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_type_hints_use_stdlib_signatures() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "use string;\nlet parts = string.split(\"a,b\", \",\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": List<String>"),
+        "expected the declared return type of string.split, got {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_return_type_hints_come_from_the_checked_signature() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "fn greet(name: String) -> String {\n    return name;\n}\nfn call_it() {\n    return greet(\"lk\");\n}\n";
+
+    let hints = analyzer.compute_function_return_type_hints(src, full_range(src));
+
+    // `call_it` returns whatever `greet` returns. Deriving that from the token
+    // stream in a fresh checker — what this used to do — could not know `greet`.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label.trim() == "-> String"),
+        "expected `-> String` for call_it, got {:?}",
+        hint_labels(&hints)
+    );
+    // `greet` says its own return type, so it gets no hint.
+    assert_eq!(
+        hint_labels(&hints).len(),
+        1,
+        "an annotated function needs no hint: {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_hints_never_show_solver_type_variables() {
+    let mut analyzer = LkAnalyzer::new();
+    // The shape from closure.lk: the parameter type is undetermined, the return
+    // type is not. Rendering the whole thing gave `('T0) -> Int`.
+    let src = "let double = |x| x * 2;\nlet plain = 7;\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+    let labels = hint_labels(&hints);
+
+    assert!(
+        !labels.iter().any(|label| label.contains('\'')),
+        "a solver variable reached the editor: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == ": Int"),
+        "the known type should still be shown: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label.contains("(_)")),
+        "an unknown parameter should read as `_`, not disappear: {labels:?}"
+    );
+}
+
+#[test]
+fn test_type_hints_use_imported_signatures() {
+    let dir = unique_tmp_dir("imported_signature_hints");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "fn greet(name: String) -> String {\n    return name;\n}\n",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+    let src = "use { greet } from \"lib\";\nlet who = greet(\"lk\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    // `lk check` has always seeded these signatures; the editor used to know
+    // strictly less about the file than the compiler did.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": String"),
+        "expected the imported function's declared return type, got {:?}",
+        hint_labels(&hints)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The editor must not cry wolf about a type that lives in another file.
+///
+/// An unknown type name is a diagnostic now, and a type crosses a module
+/// boundary by its bare name — `use * as L from "./lib"; fn f() -> Row` names
+/// `Row`, not `L.Row`. Only *functions* used to be seeded from an imported
+/// file, so the checker had never heard of `Row`; while unknown names were
+/// silently accepted that cost nothing, and the moment they became an error it
+/// would have put a red squiggle under correct code.
+#[test]
+fn test_imported_types_are_not_reported_as_unknown() {
+    let dir = unique_tmp_dir("imported_type_diagnostics");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "struct Row { id: Int }
+type Id = Int;
+trait Shown { fn show(self) -> Int; }
+fn mk(v: Int) -> Row { return Row { id: v }; }
+",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+    let src = "use * as L from \"lib\";\n\
+               fn pass(v: Int) -> Row { return L.mk(v); }\n\
+               fn ident(v: Id) -> Id { return v; }\n";
+
+    let result = analyzer.analyze(src);
+    let unknown: Vec<&String> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| &diagnostic.message)
+        .filter(|message| message.contains("Unknown type"))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "imported types should be known to the editor, got {unknown:?}"
+    );
+
+    // …and a name nothing declares is still reported, so this is not vacuous.
+    let typo = analyzer.analyze("let x: Strng = \"a\";\n");
+    assert!(
+        typo.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("Unknown type 'Strng'")),
+        "a typo should still be reported, got {:?}",
+        typo.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_type_hints_use_namespace_import_members() {
+    let dir = unique_tmp_dir("namespace_import_hints");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "fn greet(name: String) -> String {\n    return name;\n}\n",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+
+    // Both spellings bind a namespace whose members are reached as `lib.greet`.
+    for src in [
+        "use \"lib\";\nlet who = lib.greet(\"lk\");\n",
+        "use * as lib from \"lib\";\nlet who = lib.greet(\"lk\");\n",
+    ] {
+        let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+        assert!(
+            hint_labels(&hints).iter().any(|label| label == ": String"),
+            "expected the namespace member's declared return type for {src:?}, got {:?}",
+            hint_labels(&hints)
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_one_bad_statement_does_not_cost_the_rest_their_hints() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "let bad: Int = \"x\";\nlet good = 41 + 1;\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": Int"),
+        "the statement after a type error still has a type, got {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_type_error_points_at_the_offending_statement() {
+    let mut analyzer = create_analyzer();
+    // Two statements whose expressions are token-identical. Locating the error
+    // by hunting the token stream finds the first `1`; the error is in the
+    // second statement.
+    let result = analyzer.analyze("let a: Int = 1;\nlet b: Bool = 1;\n");
+
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("Type mismatch"))
+        .unwrap_or_else(|| panic!("expected a type mismatch, got {:?}", result.diagnostics));
+    assert_eq!(
+        diagnostic.range.start.line, 1,
+        "the error belongs to line 2, got {:?}",
+        diagnostic.range
+    );
+}
+
+#[test]
+fn test_expression_document_is_type_checked_once() {
+    let mut analyzer = create_analyzer();
+    // A document that parses as a single expression never reaches the statement
+    // path, so its type check lives in the expression branch of `analyze`.
+    //
+    // The sample used to be `1 ? 2 : 3`, which was an error only because the
+    // ternary demanded a `Bool` condition where the `if` statement accepted any
+    // truthy value. That divergence is gone — LK's rule is truthiness — so the
+    // sample is now an expression that is ill-typed for a reason unrelated to
+    // conditions.
+    let result = analyzer.analyze("\"a\" - 1");
+
+    assert_eq!(
+        result.diagnostics.len(),
+        1,
+        "expected exactly one type diagnostic, got {:?}",
+        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(result.diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
+    assert!(
+        result.diagnostics[0].message.contains("Type Error"),
+        "unexpected message: {}",
+        result.diagnostics[0].message
+    );
 }
 
 #[test]
@@ -582,8 +834,10 @@ fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
 
     assert_eq!(result.diagnostics.len(), 1);
     let diag = &result.diagnostics[0];
-    assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
+    // A warning, not an error: the compiler accepts this program and runs it,
+    // and only `lk check --strict` reports the finding at all.
+    assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_lint".to_string())));
     assert_eq!(
         diag.message,
         "Function 'should_run' infers implicit Any for parameter 'name'; add explicit annotations"
@@ -609,7 +863,7 @@ fn test_macro_generated_type_diagnostic_includes_origin_stack() {
     let diagnostic = result
         .diagnostics
         .iter()
-        .find(|diag| diag.message.contains("must by numeric types"))
+        .find(|diag| diag.message.contains("must be numeric types"))
         .expect("expected numeric type diagnostic");
     assert!(diagnostic.message.contains("Macro origin stack:"));
     assert!(diagnostic.message.contains("bad_numeric"));
@@ -1054,4 +1308,79 @@ fn full_range(s: &str) -> Range {
     let end_line = (lines.saturating_sub(1)) as u32;
     let end_col = s.lines().last().map(|l| l.len() as u32).unwrap_or(0);
     Range::new(Position::new(0, 0), Position::new(end_line, end_col))
+}
+
+/// The editor's outline shows what the writer wrote.
+///
+/// A parse-time desugar binds a temporary — `a?.m()` and `expr!` both do — and
+/// those temporaries were listed in the document outline beside the real
+/// variables, as `__optcall0` and `__unwrap1`. They could not be filtered by
+/// name either: `__optcall0` is a name a program may legitimately spell. They
+/// are minted with a `$` now, which no source identifier can contain, and the
+/// resolver keeps them out of the list tools read.
+#[test]
+fn the_outline_lists_only_the_writers_variables() {
+    fn flatten(symbols: &[tower_lsp::lsp_types::DocumentSymbol], out: &mut Vec<String>) {
+        for symbol in symbols {
+            out.push(symbol.name.clone());
+            if let Some(children) = &symbol.children {
+                flatten(children, out);
+            }
+        }
+    }
+
+    let mut analyzer = LkAnalyzer::new();
+    let src = "let m = {\"a\": \"xy\"};\nlet n = m.get(\"a\")?.len();\nlet v = n!;\n";
+    let result = analyzer.analyze(src);
+    let mut names = Vec::new();
+    flatten(&result.symbols, &mut names);
+
+    for written in ["m", "n", "v"] {
+        assert!(
+            names.iter().any(|name| name == written),
+            "{written} should be listed: {names:?}"
+        );
+    }
+    assert!(
+        !names.iter().any(|name| name.contains('$')),
+        "a desugar's temporary is not the writer's variable: {names:?}"
+    );
+}
+
+/// The editor and the compiler agree about what is an error.
+///
+/// The analyzer type-checks with the *strict* checker, which adds the
+/// implicit-`Any` lint that `lk check` only reports under `--strict`. Rendering
+/// everything it says as `ERROR` meant a program the compiler accepts, and that
+/// runs, showed a red error in every LSP client — three of this repository's own
+/// examples among them. A lint is advice: it stays, as a warning, under its own
+/// code.
+#[test]
+fn an_implicit_any_lint_is_a_warning_and_a_real_error_is_not() {
+    let mut analyzer = LkAnalyzer::new();
+
+    let lint = analyzer.analyze("fn take(xs) {\n    return xs;\n}\n");
+    let lints: Vec<_> = lint
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("implicit Any"))
+        .collect();
+    assert_eq!(lints.len(), 1, "expected the lint: {:?}", lint.diagnostics);
+    assert_eq!(lints[0].severity, Some(DiagnosticSeverity::WARNING));
+    assert_eq!(
+        lints[0].code,
+        Some(tower_lsp::lsp_types::NumberOrString::String("lk_type_lint".to_string()))
+    );
+
+    // A genuine type error keeps its severity — the point is the distinction,
+    // not silencing the checker.
+    let broken = analyzer.analyze("let a: Int = \"text\";\n");
+    assert!(
+        broken
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+        "a real type error must stay an error: {:?}",
+        broken.diagnostics
+    );
 }

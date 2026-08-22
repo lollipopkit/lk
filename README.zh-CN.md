@@ -60,6 +60,24 @@ println("{} (total: {})", status, m["total"]!);   // ok (total: 30)
 
 细节： [lang.lollipopkit.com](https://lang.lollipopkit.com)
 
+## 在裸机上
+
+LK 能编译成内核。`bare-metal-x86/` 在 QEMU 上启动,底下没有操作系统,依赖图里
+没有 `std`:长模式、中断、抢占式任务(*调度策略是 LK 写的*)、PCI、帧缓冲与本仓库
+自己写的字体、PS/2 键盘与鼠标、ATA 磁盘、只读 tar 文件系统、空闲链表分配器、
+可拖动可层叠的窗口管理器 —— 以及 ring 3、受检的系统调用、每个用户任务自己的
+地址空间。
+
+驱动是 LK 模块(`drivers/*.lk`),中断表本身也是 —— 256 个门由 LK 构造,再由它
+`lidt` 装上。用 Rust 写的是语言不该拥有的那部分:链接脚本、启动路径,以及中断
+蹦床 —— 中断不是调用,被打断的代码从没同意交出自己的寄存器,所以进入一个编译出来
+的处理程序之前,必须先有一段汇编把它们全部压下去。
+
+CI 里跑十一个 QEMU 检查,每一个断言的都是机器*扫描输出*了什么、或者磁盘镜像事后
+留下了什么 —— 而不是程序自以为做了什么。`bare-metal-x86/README.md` 是长
+版本,包括那些错误:静默算错数的 soft-float ABI、与窗口描述符重叠的共享页常量、
+一个错帧之后再也不动的鼠标。
+
 ## 安装
 
 安装 GitHub 最新 release：
@@ -126,6 +144,9 @@ assert_eq!(result.display_first_return(), "true");
 - 原地格式化源码：`lk fmt [PATH...]`（不给路径则格式化整个项目；`--check` 只报告不改写，供 CI 使用）
 - 编译为 native 可执行文件：`lk compile [FILE]`（Cranelift 后端；省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；超出原生切片的形状回退到 Tier 0 VM bundle）
 - 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` → `FILE.lkm`
+- 打包成自带 VM 的独立可执行文件：`lk bundle FILE`（AOT Tier 0 —— 任何程序都能打包,速度是 VM 的）
+- 报告一个文件用到哪些指令：`lk coverage FILE`（`--disassemble` 打印字节码）
+- 查看宏展开：`lk macro expand FILE`（`--trace`、`--deps`、`--origins`,详见 [docs/macros.md](docs/macros.md)）
 - 创建包并管理去中心化 git + lockfile 依赖（无中心 registry）：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg update`、`lk pkg check`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
@@ -134,8 +155,10 @@ assert_eq!(result.display_first_return(), "true");
 
 编辑器集成统一放在 `ecosystem/` 下。
 
-- VS Code 支持已合并为 `ecosystem/vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
+- VS Code 支持已合并为 `ecosystem/vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make install` 安装 CLI、`lk-lsp` 以及扩展（会装进本机探测到的所有 VS Code 系编辑器：VS Code / Insiders / VSCodium / Cursor / Windsurf，含 remote 窗口），`make debug-lsp-ext` 启动本地 Extension Development Host，或 `make vsix` 只构建 VSIX。
 - Zed 支持位于 `ecosystem/zed-ext`，使用 `ecosystem/tree-sitter-lk` 提供 Tree-sitter 高亮，并启动 `lk-lsp` 提供 diagnostics、completion、hover、goto definition、document symbols、semantic tokens 和 inlay hints。使用 `make zed-ext-check` 验证扩展 crate。
+
+参与 LK 本身的开发:[docs/testing.md](docs/testing.md) 列了全部门禁,以及每一条**只有它**抓得住什么 —— 有几条不在 `cargo test --workspace` 里。
 
 ## 许可证
 

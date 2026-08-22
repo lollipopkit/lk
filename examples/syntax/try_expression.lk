@@ -1,0 +1,23 @@
+// `try` is an *expression*, like `if` and `match`.
+//
+// The value is the body's trailing expression, or the handler's when the body
+// raised. A half that ends in a statement has no value, exactly as an `if`
+// branch that ends in one yields nil. Statement position is unchanged: the
+// value is simply discarded, the same way an `if` in statement position is.
+//
+// Before this, `let r = try { … } catch e { … };` was a syntax error, and the
+// way to get a value out was to declare a `nil` first and assign into it from
+// both halves — or to wrap the whole thing in a function and `return` twice.
+
+fn checked_div(a: Int, b: Int) -> Float {
+    if (b == 0) { error("division by zero"); }
+    return a / b;
+}
+
+let recovered = try { checked_div(1, 0) } catch e { -1.0 };
+assert(recovered == -1.0);
+
+let straight = try { checked_div(10, 2) } catch e { -1.0 };
+assert(straight == 5.0);
+
+println("try_expression: all assertions passed");

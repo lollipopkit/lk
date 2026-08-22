@@ -2,6 +2,7 @@ use super::*;
 
 /// The lk-api C-ABI staticlib (VM + `lk_hybrid_*` bridge), built on demand.
 /// Shared by the Tier 0 bundle and the Tier 1 hybrid link.
+#[cfg(feature = "aot")]
 pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
     // A caller that supplies its own `lkrt` (`LKRT_STATICLIB`) must be able to
     // supply a matching `lk-api`. Both archives statically link `std`, so two
@@ -18,7 +19,11 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
         return Ok(path);
     }
     let workspace = workspace_root()?;
-    let staticlib = workspace.join("target/release/liblk_api.a");
+    // `lk-api-cabi`, not `lk-api`: the archive was split into its own crate so
+    // that an ordinary `cargo build`/`cargo test` stops emitting 172MB of it
+    // for a linker path it never takes. See that crate's docs. The `ffi`
+    // feature now rides along in its manifest rather than on this command line.
+    let staticlib = workspace.join("target/release/liblk_api_cabi.a");
     if !staticlib.exists() {
         eprintln!("building lk-api staticlib (one-time)…");
     }
@@ -27,9 +32,9 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
     // sub-second no-op under cargo's fingerprinting.
     let status = std::process::Command::new("cargo")
         .current_dir(&workspace)
-        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .args(["build", "-p", "lk-api-cabi", "--release"])
         .status()
-        .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cargo build lk-api-cabi: {e}"))?;
     if !status.success() {
         anyhow::bail!("failed to build lk-api staticlib");
     }
@@ -37,6 +42,7 @@ pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
 }
 
 /// Escape a string for embedding as a C double-quoted string literal.
+#[cfg(feature = "aot")]
 pub(super) fn c_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for ch in s.chars() {
@@ -52,9 +58,12 @@ pub(super) fn c_escape(s: &str) -> String {
     out
 }
 
-pub(super) fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
+pub(super) fn compile_instr_module(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let output = path.with_extension("lkm");
+    // A package build's output belongs at the package root, not in `src/` —
+    // see `split_compile_args_with_cwd`. `.lkm` is as much a build artifact as
+    // the executable is.
+    let output = output.map_or_else(|| path.with_extension("lkm"), |dir| dir.with_extension("lkm"));
     std::fs::write(&output, artifact.to_json_string()?)
         .with_context(|| format!("write Instr module {}", output.display()))?;
     println!("{}", output.display());
@@ -83,6 +92,7 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     // for `lk FILE`. Without this the two paths disagreed on which programs are
     // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
     // compiled and *ran* fine as a native binary, printing `s`.
+    crate::ensure_stdlib_signatures();
     let mut type_checker = lk_core::typ::TypeChecker::new();
     // Cross-file signatures first: without them an imported call is unchecked
     // here and fails much later in the lowering, naming an opcode.
@@ -202,7 +212,7 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
             }
             // The Cranelift native backend covers only a lowerable subset.
             // Instead of failing the whole program (the old all-or-nothing —
-            // plan 问题 2), fall back to the Tier 0 VM bundle, which embeds the
+            // plan issue 2), fall back to the Tier 0 VM bundle, which embeds the
             // interpreter and runs any valid program. `lk compile` thus never
             // rejects a valid program: native when possible, VM-embed otherwise.
             diagnostic::warning(format!(
@@ -245,12 +255,24 @@ pub(super) fn compile_native_executable_from_artifact(
     artifact: &ModuleArtifact,
 ) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
+    // Why the imports were not bundled, if they were not.
+    //
+    // Kept because the failure it causes names a symptom. Without bundling, a
+    // call into an imported module is a `GetGlobal` that resolves to nothing, so
+    // the program falls back and the warning says "global `extend` does not
+    // resolve" — sending the reader to look for a missing import when the cause
+    // is a module that was deliberately not merged, and for a specific reason
+    // that was known one function ago. `compile object:` already reports the
+    // cause because it has no fallback; this path had the same answer and
+    // discarded it.
+    let mut declined: Option<String> = None;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
         crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
         crate::BundleOutcome::Declined(reason) => {
             if native_trace_enabled() {
                 eprintln!("clif: not bundling imports of {}: {reason}", path.display());
             }
+            declined = Some(reason.clone());
             (artifact, Vec::new())
         }
         crate::BundleOutcome::Nothing => (artifact, Vec::new()),
@@ -259,7 +281,19 @@ pub(super) fn compile_native_executable_from_artifact(
     // codegen/validation bug (propagate).
     let clif = match lk_aot::compile_artifact_to_clif_object(artifact, &bundles)? {
         Ok(clif) => clif,
-        Err(reason) => return Ok(NativeOutcome::Unsupported(reason)),
+        Err(reason) => {
+            // The decline goes with it. Without bundling, a call into an
+            // imported module is a `GetGlobal` that resolves to nothing, so what
+            // the user is about to be told is "global `extend` does not resolve"
+            // — a symptom that sends them looking for a missing import, when the
+            // cause is a module deliberately not merged for a reason that was
+            // known one function ago. `compile object:` already says the cause,
+            // because it has no fallback to hide behind.
+            return Ok(NativeOutcome::Unsupported(match declined {
+                Some(why) => format!("{reason}; the imports were not bundled because {why}"),
+                None => reason,
+            }));
+        }
     };
     if native_trace_enabled() {
         eprintln!("clif: native object for {}", path.display());

@@ -1,0 +1,74 @@
+// `cpu_raise_interrupt` — the one x86 instruction whose operand a program
+// cannot supply.
+//
+// `int` takes its vector as an *immediate*. There is no register form, so a
+// program that wants to raise a vector it computed has nowhere to put it, and
+// every kernel written in a language without inline assembly ends up with the
+// number written down twice: once where the gate is installed, and once inside a
+// hand-written stub in whatever language could say `int 0x30`.
+//
+// That is not a small gap. A kernel that can *handle* an interrupt but not raise
+// one can answer a syscall and not define one, and cannot reschedule itself.
+//
+// The answer is the same one the entry side already uses: 256 stubs, each one
+// `int n` and a return, and the vector becomes an index. See `lkrt/src/isr.rs`,
+// which holds both directions of it.
+//
+// This example runs hosted, where there are no interrupts to raise — so what it
+// checks is the part that is the same everywhere: the call type-checks, takes
+// one argument, and is a statement rather than a value. What it does on a
+// machine with an interrupt table is in `bare-metal-x86/program.lk`, where
+// `task_yield` is now one line naming the same constant its gate was installed
+// with.
+
+// A vector a kernel would give a name to. The point of the intrinsic is that
+// this is an ordinary constant — computed, passed around, and used in both
+// places — rather than a literal baked into an instruction.
+const VECTOR_YIELD = 0x30;
+const VECTOR_SYSCALL = 0x80;
+
+// Both directions of the same number: what a kernel installs a gate for, and
+// what it raises. One spelling.
+fn vector_of(name: String) -> Int {
+    if (name.byte_at(0) == 121) {   // 'y'
+        return VECTOR_YIELD;
+    }
+    return VECTOR_SYSCALL;
+}
+
+// Hosted, this is *refused*, and the refusal is the interesting part.
+//
+// There is no interrupt table under a process, and a runtime that went ahead and
+// raised a real `int 0x80` would be making a Linux system call with whatever
+// happened to be in the registers. Doing nothing would be worse than either: it
+// is the answer that lets a program look like it worked.
+//
+// Both backends refuse, with the same message, which is the property that
+// matters — an intrinsic the interpreter rejects and the compiled build ignores
+// is two languages wearing one name.
+// The answer comes back in a variable rather than out of a `return` inside the
+// `try`, because a region whose body returns from the enclosing function cannot
+// be outlined — the body becomes a function of its own, and a `return` in it
+// would return from *that*. The lowering says so; this is what it looks like to
+// write for it.
+fn raise_or_say_why(vector: Int) -> String {
+    let outcome = "raised";
+    try {
+        unsafe { cpu_raise_interrupt(vector); };
+    } catch e {
+        outcome = "refused";
+    }
+    return outcome;
+}
+
+println(raise_or_say_why(vector_of("yield")));
+println(raise_or_say_why(vector_of("syscall")));
+
+// The vectors are what a reader should be able to check, so print them: a table
+// installed at one number and raised at another is the failure this intrinsic
+// exists to make impossible, and it is invisible at run time.
+println(VECTOR_YIELD);
+println(VECTOR_SYSCALL);
+println(vector_of("yield"));
+println(vector_of("syscall"));
+println("raise-interrupt: ok");

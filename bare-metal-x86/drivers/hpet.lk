@@ -1,0 +1,139 @@
+// The high precision event timer, which is the one clock on this machine that
+// is both fast and honest about how fast it is.
+//
+// The PIT counts down from a divisor and raises an interrupt; the kernel counts
+// those, so what it knows is "about a thousand of something per second". The RTC
+// next door knows what day it is and nothing finer. The HPET is a free-running
+// counter with a period the chip *states*, in femtoseconds, in its own
+// capability register — so a reading converts to real time by arithmetic rather
+// than by a number someone measured once.
+//
+// Everything here is a 64-bit memory-mapped register, and that is the reason
+// this driver exists as well as what it does. A counter that fills all 64 bits
+// is where an `i64` carrier stops being an accident: the period is in the *high*
+// half of the capability word, the counter passes through values whose top bit
+// is set, and both a shift and a divide on those have to be unsigned or the
+// answer is negative time.
+
+// Where the block is.
+//
+// Not discovered: the HPET's address is published in an ACPI table, and parsing
+// ACPI to find a timer is a larger machine than the timer. Every PC chipset
+// since the specification puts it here, and the firmware that could move it
+// would also have to tell an operating system it had — so this is the address a
+// bootloader-free kernel uses, and a `hpet_present` that reads the register back
+// is what keeps the assumption honest.
+const HPET_BASE = 0xFED00000;
+
+// The three registers this uses, at their offsets from the block's base.
+//
+//   +0x000  capabilities and period
+//   +0x010  configuration
+//   +0x0F0  the main counter
+const REG_CAPABILITIES = 0x000;
+const REG_CONFIGURATION = 0x010;
+const REG_COUNTER = 0x0F0;
+
+// Configuration bit 0 starts the counter. A chip left as the firmware found it
+// may have it clear, and a stopped counter reads the same value twice — which
+// is indistinguishable from a counter this driver failed to find.
+const CONFIG_ENABLE = 0x01;
+
+// The capability word's low 16 bits are a revision, and a revision of zero (or
+// of all ones) is not a chip answering.
+const REVISION_MASK = 0xFFFF;
+
+// A femtosecond is 10^-15 s, so a tick period stated in them divides into a
+// second exactly this many times.
+const FEMTOSECONDS_PER_SECOND: u64 = 1000000000000000;
+const FEMTOSECONDS_PER_MICROSECOND: u64 = 1000000000;
+
+fn read_register(offset: Int) -> u64 {
+    return unsafe { volatile_read_u64((HPET_BASE + offset) as *mut u64) };
+}
+
+fn write_register(offset: Int, value: u64) {
+    unsafe { volatile_write_u64((HPET_BASE + offset) as *mut u64, value); };
+}
+
+// Whether there is a chip here at all.
+//
+// An address nothing decodes reads as all ones on this bus and as zero on some
+// emulators; both are refused, and so is a revision of zero. Checked rather than
+// assumed because the address above is a convention, and a driver that believes
+// a convention reports a timer running at whatever the open bus happened to say.
+fn hpet_present() -> Bool {
+    let capabilities = read_register(REG_CAPABILITIES);
+    if (capabilities == 0) {
+        return false;
+    }
+    let all_ones: u64 = 0xFFFFFFFFFFFFFFFF;
+    if (capabilities == all_ones) {
+        return false;
+    }
+    let revision = capabilities & (REVISION_MASK as u64);
+    return revision != 0;
+}
+
+// How long one tick is, in femtoseconds.
+//
+// The *high* 32 bits of the capability word, which is why this is a `u64` shift
+// and not an `Int` one: `capabilities >> 32` on an `i64` carrier sign-extends
+// once the chip's own bit 63 is set, and the period comes back as a number with
+// no relation to time.
+fn hpet_period_femtoseconds() -> u64 {
+    return read_register(REG_CAPABILITIES) >> 32;
+}
+
+// Ticks per second, from the period the chip stated.
+//
+// An unsigned divide, for the same reason. A period of zero would be a chip
+// claiming an infinitely fast clock; answering 0 there is what lets the caller
+// say "no timer" instead of dividing by it.
+fn hpet_frequency() -> u64 {
+    let period = hpet_period_femtoseconds();
+    let zero: u64 = 0;
+    if (period == zero) {
+        return zero;
+    }
+    return FEMTOSECONDS_PER_SECOND / period;
+}
+
+// Starts the counter, and answers whether there was one to start.
+fn hpet_start() -> Bool {
+    if (!hpet_present()) {
+        return false;
+    }
+    let configuration = read_register(REG_CONFIGURATION);
+    write_register(REG_CONFIGURATION, configuration | (CONFIG_ENABLE as u64));
+    return true;
+}
+
+// The main counter, free-running.
+//
+// Returned as a `u64` rather than an `Int` because it is one: at the frequencies
+// a chipset reports — tens of megahertz — this passes `i64::MAX` after a few
+// thousand years, which is not the reason. The reason is that every arithmetic
+// this feeds is unsigned, and a value that says so cannot be compared or divided
+// the wrong way by accident.
+fn hpet_counter() -> u64 {
+    return read_register(REG_COUNTER);
+}
+
+// The time between two readings, in microseconds.
+//
+// `later - earlier` at 64 bits, which wraps correctly across the counter's own
+// wrap — the subtraction of two points on a circle is a distance whatever the
+// origin. Then a divide by ticks-per-microsecond, both unsigned.
+fn hpet_elapsed_microseconds(earlier: u64, later: u64) -> u64 {
+    let period = hpet_period_femtoseconds();
+    let zero: u64 = 0;
+    if (period == zero) {
+        return zero;
+    }
+    let ticks_per_microsecond = FEMTOSECONDS_PER_MICROSECOND / period;
+    if (ticks_per_microsecond == zero) {
+        return zero;
+    }
+    return (later - earlier) / ticks_per_microsecond;
+}
